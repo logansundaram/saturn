@@ -1,3 +1,8 @@
+//system monitor component, will ping the system useage/resources and siplay them
+//currently thinking gpu, cpu ,vram, ram, but can add more relevant metrics
+//should make the each resource modular
+//realtime graphj owuld be cool too
+
 
 function SystemMonitor(): React.JSX.Element {
     return (

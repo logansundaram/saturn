@@ -11,7 +11,7 @@ function App(): React.JSX.Element {
       </div>
       <StatusBar/>
     </div>
-  )
+  )   
 }
 
 export default App

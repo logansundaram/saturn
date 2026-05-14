@@ -9,7 +9,12 @@ interface LogProps {
 }
 
 function Log({ agentName, dateRan, status }: LogProps): React.JSX.Element {
-  return <div className="text-sm">Log</div>
+  return (
+    <div className="text-xs">
+      <div>{agentName}</div>
+      <div></div>
+    </div>
+  )
 }
 
 export default Log

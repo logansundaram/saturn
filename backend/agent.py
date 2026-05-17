@@ -8,18 +8,29 @@ call_tool = SystemMessage(content="Call the relevante tools based on the user re
 
 fetch_docs = SystemMessage(content="Fetch the relevant documents based on the user request") 
 
+synthesize_output = SystemMessage(content="Synthesize the output based on the user request")
 
 llm = ChatOllama(model="qwen3.6:35b")
 
+@tool
+def addition(a: int, b: int) -> int:
+    """Adds a and b."""
+    return a + b
 
-def fetch_docs():
-    return "my name is logan"
 
-def call_tools():
-    llm_response = llm.invoke(state["messages"].append(call_tool))
+llm_with_tools = llm.bind_tools([addition])
+
+
+def fetch_docs(state: MessagesState):
+    relevant_docs = "my name is logan"
+    return {"messages": relevant_docs}
+
+def call_tools(state: MessagesState):
+    #double check this is correct syntax for appending system_message
+    llm_response = llm_with_tools.invoke(state["messages"] + call_tool)
     return {"messages" : llm_response}
 
-def tool_node(state: dict):
+def tool_node(state: MessagesState):
     """Performs the tool call"""
 
     result = []
@@ -29,13 +40,11 @@ def tool_node(state: dict):
         result.append(ToolMessage(content=observation, tool_call_id=tool_call["id"]))
     return {"messages": result}
 
-def synthesize_output():
-    pass
+def synthesize_output(state: MessagesState):
+    llm_response = llm.invoke(state["messages"].append(call_tool))
+    return {"messages" : llm_response}
 
-@tool
-def addition(a: int, b: int) -> int:
-    """Adds a and b."""
-    return a + b
+
 
 
 

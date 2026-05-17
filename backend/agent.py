@@ -1,8 +1,44 @@
 from langgraph.graph import StateGraph, START, END, MessagesState
 from langchain_ollama import ChatOllama
+from langchain.tools import tool
+from langchain.messages import SystemMessage, HumanMessage, ToolMessage
+from typing import List, Dict, Any, Optional
+
+call_tool = SystemMessage(content="Call the relevante tools based on the user request")
+
+fetch_docs = SystemMessage(content="Fetch the relevant documents based on the user request") 
 
 
 llm = ChatOllama(model="qwen3.6:35b")
+
+
+def fetch_docs():
+    return "my name is logan"
+
+def call_tools():
+    llm_response = llm.invoke(state["messages"].append(call_tool))
+    return {"messages" : llm_response}
+
+def tool_node(state: dict):
+    """Performs the tool call"""
+
+    result = []
+    for tool_call in state["messages"][-1].tool_calls:
+        tool = tools_by_name[tool_call["name"]]
+        observation = tool.invoke(tool_call["args"])
+        result.append(ToolMessage(content=observation, tool_call_id=tool_call["id"]))
+    return {"messages": result}
+
+def synthesize_output():
+    pass
+
+@tool
+def addition(a: int, b: int) -> int:
+    """Adds a and b."""
+    return a + b
+
+
+
 
 
 def respond(state: MessagesState):

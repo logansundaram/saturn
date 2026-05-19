@@ -4,6 +4,13 @@ from langchain.tools import tool
 from langchain.messages import SystemMessage, HumanMessage, ToolMessage
 from typing import List, Dict, Any, Optional
 
+
+# todo: need to define custom state
+# todo: need to create router function to route to different subgraphs based on the complexity of the request using structured output
+# todo: need to create the workflow grpahs in seperate files and import them here
+# todo: need to create the state checkpoint using langgraph and write to sqlite db
+
+
 call_tool_msg = SystemMessage(
     content="Call the relevante tools based on the user request"
 )

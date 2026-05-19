@@ -1,5 +1,4 @@
 from langgraph.graph import StateGraph, START, END, MessagesState
-from langchain_ollama import ChatOllama
 from langchain.tools import tool
 from langchain.messages import SystemMessage, HumanMessage, ToolMessage
 from typing import List, Dict, Any, Optional
@@ -12,6 +11,13 @@ from messages import call_tool_msg
 from messages import fetch_docs_msg
 from messages import synthesize_output_msg
 
+# import llm for llms file
+from llms import llm
+from llms import llm_with_tools
+
+# tools from tools file
+from tools import tool
+
 
 # todo: need to define custom state
 # todo: need to create router function to route to different subgraphs based on the complexity of the request using structured output
@@ -19,19 +25,11 @@ from messages import synthesize_output_msg
 # todo: need to create the state checkpoint using langgraph and write to sqlite db
 
 
-# define custom agent state, needs work and correct typings
-class AgentState(TypedDict):
-    messages: Annotated[List[Any], add_messages]
-    # should contain the generated tool call adn the ouput of that tool call
+# import agentstate class from state file
+from state import AgentState
 
 
-llm = ChatOllama(model="gemma4:e4b")
-
-
-@tool
-def addition(a: int, b: int) -> int:
-    """Adds a and b."""
-    return a + b
+tools_by_name = {t.name: t for t in tool}
 
 
 def fetch_docs(state: AgentState):
@@ -43,12 +41,6 @@ def call_tools(state: AgentState):
     # double check this is correct syntax for appending system_message
     llm_response = llm_with_tools.invoke(state["messages"] + [call_tool_msg])
     return {"messages": llm_response}
-
-
-tools = [addition]
-tools_by_name = {t.name: t for t in tools}
-
-llm_with_tools = llm.bind_tools(tools)
 
 
 def tool_node(state: AgentState):

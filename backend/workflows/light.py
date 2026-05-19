@@ -1,13 +1,17 @@
 # build and compile light subgraph to be routed to from main graph
 from langgraph.graph import StateGraph, START, END, MessagesState
 
+from llms import llm_with_tools
+
+from messages import light_llm_msg
+
 
 def llm_call(state: MessagesState):
-    pass
+    return llm_with_tools.invoke(state["messages"] + [light_llm_msg])
 
 
-builder = StateGraph(MessagesState)
-builder.add_node("llm_call", llm_call)
-builder.add_edge(START, "llm_call")
-builder.add_edge("llm_call", END)
-graph = builder.compile()
+light_builder = StateGraph(MessagesState)
+light_builder.add_node("llm_call", llm_call)
+light_builder.add_edge(START, "llm_call")
+light_builder.add_edge("llm_call", END)
+light_graph = light_builder.compile()

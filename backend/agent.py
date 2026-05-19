@@ -32,6 +32,17 @@ from state import AgentState
 tools_by_name = {t.name: t for t in tool}
 
 
+# need to define structured output for the router node
+
+
+# router node to route to three different subgraphs based on the complexity of the query
+# need to utilize structured output and conditional edges to route to different subgraphs
+def complexity_router(state: AgentState):
+    # lightweight llm currently, could use an ml model or a hyperspecific llm for this task to reduce overhead
+    # should make it configurable as well
+    return "light"
+
+
 def fetch_docs(state: AgentState):
     relevant_docs = "my name is logan"
     return {"messages": relevant_docs}
@@ -70,6 +81,7 @@ def tools_necessary(state: AgentState):
 
 builder = StateGraph(AgentState)
 # langgraph nodes
+builder.add_node("complexity_router", complexity_router)
 builder.add_node("fetch_docs", fetch_docs)
 builder.add_node("call_tools", call_tools)
 builder.add_node("tool_node", tool_node)
@@ -78,6 +90,12 @@ builder.add_node("synthesize_output", synthesize_output)
 # build out graph edges
 # should be fetch docs -> call tools -> execute tools -> synthesize output
 # basic proof of concept agent
+builder.add_conditional_edges(
+    "complexity_router",  # source node
+    complexity_router,  # routing function
+    {0: "light", 1: "moderate", 2: "complex"},  # mapping of return values to node names
+)
+
 builder.add_edge(START, "fetch_docs")
 builder.add_edge("fetch_docs", "call_tools")
 # condiitonal edge if tools calls are needed
@@ -91,6 +109,8 @@ graph = builder.compile()
 
 messages = []
 
+
+# inf loop to allow for chat like experience
 while True:
     user_input = input("User: ")
 

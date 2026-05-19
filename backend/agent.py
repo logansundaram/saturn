@@ -3,6 +3,14 @@ from langchain_ollama import ChatOllama
 from langchain.tools import tool
 from langchain.messages import SystemMessage, HumanMessage, ToolMessage
 from typing import List, Dict, Any, Optional
+from langgraph.graph.message import add_messages
+from typing_extensions import TypedDict, Annotated
+
+
+# import system messages from messages file
+from messages import call_tool_msg
+from messages import fetch_docs_msg
+from messages import synthesize_output_msg
 
 
 # todo: need to define custom state
@@ -11,17 +19,11 @@ from typing import List, Dict, Any, Optional
 # todo: need to create the state checkpoint using langgraph and write to sqlite db
 
 
-call_tool_msg = SystemMessage(
-    content="Call the relevante tools based on the user request"
-)
+# define custom agent state, needs work and correct typings
+class AgentState(TypedDict):
+    messages: Annotated[List[Any], add_messages]
+    # should contain the generated tool call adn the ouput of that tool call
 
-fetch_docs_msg = SystemMessage(
-    content="Fetch the relevant documents based on the user request"
-)
-
-synthesize_output_msg = SystemMessage(
-    content="Synthesize the output based on the user request"
-)
 
 llm = ChatOllama(model="gemma4:e4b")
 
@@ -32,12 +34,12 @@ def addition(a: int, b: int) -> int:
     return a + b
 
 
-def fetch_docs(state: MessagesState):
+def fetch_docs(state: AgentState):
     relevant_docs = "my name is logan"
     return {"messages": relevant_docs}
 
 
-def call_tools(state: MessagesState):
+def call_tools(state: AgentState):
     # double check this is correct syntax for appending system_message
     llm_response = llm_with_tools.invoke(state["messages"] + [call_tool_msg])
     return {"messages": llm_response}
@@ -49,7 +51,7 @@ tools_by_name = {t.name: t for t in tools}
 llm_with_tools = llm.bind_tools(tools)
 
 
-def tool_node(state: MessagesState):
+def tool_node(state: AgentState):
     result = []
 
     for tool_call in state["messages"][-1].tool_calls:
@@ -63,18 +65,18 @@ def tool_node(state: MessagesState):
     return {"messages": result}
 
 
-def synthesize_output(state: MessagesState):
+def synthesize_output(state: AgentState):
     llm_response = llm.invoke(state["messages"] + [synthesize_output_msg])
     return {"messages": llm_response}
 
 
-def tools_necessary(state: MessagesState):
+def tools_necessary(state: AgentState):
     if state["messages"][-1].tool_calls:
         return True
     return False
 
 
-builder = StateGraph(MessagesState)
+builder = StateGraph(AgentState)
 # langgraph nodes
 builder.add_node("fetch_docs", fetch_docs)
 builder.add_node("call_tools", call_tools)

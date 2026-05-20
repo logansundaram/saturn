@@ -10,6 +10,8 @@ from typing_extensions import TypedDict, Annotated
 from messages import call_tool_msg
 from messages import fetch_docs_msg
 from messages import synthesize_output_msg
+from messages import complexity_router_msg
+
 
 # import llm for llms file
 from llms import llm
@@ -18,6 +20,8 @@ from llms import llm_with_tools
 # tools from tools file
 from tools import tool
 
+# libraries for structured output
+from pydantic import BaseModel, Field
 
 # todo: need to define custom state
 # todo: need to create router function to route to different subgraphs based on the complexity of the request using structured output
@@ -38,11 +42,42 @@ tools_by_name = {t.name: t for t in tool}
 # router node to route to three different subgraphs based on the complexity of the query
 # need to utilize structured output and conditional edges to route to different subgraphs
 def complexity_router(state: AgentState):
+    pass
+
+
+class RouterOutput(BaseModel):
+    # need to define the output structure for the router node
+    complexity: int = Field(description="0 for light, 1 for moderate, 2 for complex")
+
+
+def complexity_router_function(state: AgentState):
     # lightweight llm currently, could use an ml model or a hyperspecific llm for this task to reduce overhead
     # should make it configurable as well
-    return "light"
+    llm_with_router_structure = llm.with_structured_output(RouterOutput)
+    complexity = int(
+        llm_with_router_structure.invoke(
+            state["messages"] + [complexity_router_msg]
+        ).complexity
+    )
+    print(complexity)
+    print(type(complexity))
+    # switch llm with structured output here to make sure the output is always a single digit between 0-2
+    return complexity
 
 
+def light(state: AgentState):
+    return {"messages": "light"}
+
+
+def moderate(state: AgentState):
+    return {"messages": "moderate"}
+
+
+def complex(state: AgentState):
+    return {"messages": "complex"}
+
+
+"""
 def fetch_docs(state: AgentState):
     relevant_docs = "my name is logan"
     return {"messages": relevant_docs}
@@ -76,34 +111,47 @@ def synthesize_output(state: AgentState):
 def tools_necessary(state: AgentState):
     if state["messages"][-1].tool_calls:
         return True
-    return False
+    return False """
 
 
 builder = StateGraph(AgentState)
 # langgraph nodes
 builder.add_node("complexity_router", complexity_router)
+
+"""
 builder.add_node("fetch_docs", fetch_docs)
 builder.add_node("call_tools", call_tools)
 builder.add_node("tool_node", tool_node)
-builder.add_node("synthesize_output", synthesize_output)
+builder.add_node("synthesize_output", synthesize_output)"""
+
+builder.add_node("light", light)
+builder.add_node("moderate", moderate)
+builder.add_node("complex", complex)
+
+builder.add_edge(START, "complexity_router")
+
 
 # build out graph edges
 # should be fetch docs -> call tools -> execute tools -> synthesize output
 # basic proof of concept agent
 builder.add_conditional_edges(
     "complexity_router",  # source node
-    complexity_router,  # routing function
+    complexity_router_function,  # routing function
     {0: "light", 1: "moderate", 2: "complex"},  # mapping of return values to node names
 )
 
-builder.add_edge(START, "fetch_docs")
-builder.add_edge("fetch_docs", "call_tools")
 # condiitonal edge if tools calls are needed
+"""
 builder.add_conditional_edges(
     "call_tools", tools_necessary, {True: "tool_node", False: "synthesize_output"}
 )
 builder.add_edge("tool_node", "synthesize_output")
-builder.add_edge("synthesize_output", END)
+builder.add_edge("fetch_docs", "call_tools")
+
+"""
+builder.add_edge("moderate", END)
+builder.add_edge("complex", END)
+builder.add_edge("light", END)
 
 graph = builder.compile()
 

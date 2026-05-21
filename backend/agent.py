@@ -12,10 +12,7 @@ from messages import complexity_router_msg
 
 # import llm for llms file
 from llms import llm
-from llms import llm_with_tools
 
-# tools from tools file
-from tools import tool
 
 # libraries for structured output
 from pydantic import BaseModel, Field
@@ -30,18 +27,24 @@ from pydantic import BaseModel, Field
 from state import AgentState
 
 
-tools_by_name = {t.name: t for t in tool}
+# import subgraphs
+from workflows.light import build_light
+from workflows.moderate import build_moderate
+from workflows.complex import build_complex
 
-
-# need to define structured output for the router node
+# create subgraphs
+light_graph = build_light()
+moderate_graph = build_moderate()
+complex_graph = build_complex()
 
 
 # router node to route to three different subgraphs based on the complexity of the query
 # need to utilize structured output and conditional edges to route to different subgraphs
 def complexity_router(state: AgentState):
-    pass
+    print("routing to subgraph based on complexity of query")
 
 
+# need to define structured output for the router node
 class RouterOutput(BaseModel):
     # need to define the output structure for the router node
     complexity: int = Field(description="0 for light, 1 for moderate, 2 for complex")
@@ -62,25 +65,13 @@ def complexity_router_function(state: AgentState):
     return complexity
 
 
-def light(state: AgentState):
-    return {"messages": "light"}
-
-
-def moderate(state: AgentState):
-    return {"messages": "moderate"}
-
-
-def complex(state: AgentState):
-    return {"messages": "complex"}
-
-
 # build out the main graph
 builder = StateGraph(AgentState)
 
-
-builder.add_node("light", light)
-builder.add_node("moderate", moderate)
-builder.add_node("complex", complex)
+builder.add_node("complexity_router", complexity_router)
+builder.add_node("light", light_graph)
+builder.add_node("moderate", moderate_graph)
+builder.add_node("complex", complex_graph)
 
 builder.add_edge(START, "complexity_router")
 

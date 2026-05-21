@@ -27,3 +27,5 @@ def division(a: int, b: int) -> int:
 
 
 tool = [addition, subtraction, multiplication, division]
+
+tools_by_name = {t.name: t for t in tool}

@@ -3,9 +3,17 @@ from langgraph.graph import StateGraph, START, END, MessagesState
 
 from llms import llm_with_tools, llm
 
-from messages import light_llm_msg
+from messages import (
+    medium_call_tool_msg,
+    medium_fetch_docs_msg,
+    medium_synthesize_output_msg,
+)
 
 from state import AgentState
+
+from langchain.messages import ToolMessage
+
+from tools import tools_by_name
 
 
 def build_moderate():
@@ -15,7 +23,7 @@ def build_moderate():
 
     def call_tools(state: AgentState):
         # double check this is correct syntax for appending system_message
-        llm_response = llm_with_tools.invoke(state["messages"] + [call_tool_msg])
+        llm_response = llm_with_tools.invoke(state["messages"] + [medium_call_tool_msg])
         return {"messages": llm_response}
 
     def tools_necessary(state: AgentState):
@@ -37,12 +45,27 @@ def build_moderate():
         return {"messages": result}
 
     def synthesize_output(state: AgentState):
-        llm_response = llm.invoke(state["messages"] + [synthesize_output_msg])
+        llm_response = llm.invoke(state["messages"] + [medium_synthesize_output_msg])
         return {"messages": llm_response}
 
+    # instantiate builder
     moderate_builder = StateGraph(MessagesState)
-    moderate_builder.add_node("llm_call", llm_call)
-    moderate_builder.add_edge(START, "llm_call")
-    moderate_builder.add_edge("llm_call", END)
+
+    # add nodes
+    moderate_builder.add_node("fetch_docs", fetch_docs)
+    moderate_builder.add_node("call_tools", call_tools)
+    moderate_builder.add_node("tool_node", tool_node)
+    moderate_builder.add_node("synthesize_output", synthesize_output)
+
+    # add edges
+    moderate_builder.add_edge(START, "fetch_docs")
+    moderate_builder.add_edge("fetch_docs", "call_tools")
+    moderate_builder.add_conditional_edges(
+        "call_tools", tools_necessary, {True: "tool_node", False: "synthesize_output"}
+    )
+    moderate_builder.add_edge("tool_node", "synthesize_output")
+    moderate_builder.add_edge("fetch_docs", "call_tools")
+    moderate_builder.add_edge("synthesize_output", END)
+
     moderate_graph = moderate_builder.compile()
     return moderate_graph

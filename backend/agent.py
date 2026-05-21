@@ -7,9 +7,6 @@ from typing_extensions import TypedDict, Annotated
 
 
 # import system messages from messages file
-from messages import call_tool_msg
-from messages import fetch_docs_msg
-from messages import synthesize_output_msg
 from messages import complexity_router_msg
 
 
@@ -77,52 +74,9 @@ def complex(state: AgentState):
     return {"messages": "complex"}
 
 
-"""
-def fetch_docs(state: AgentState):
-    relevant_docs = "my name is logan"
-    return {"messages": relevant_docs}
-
-
-def call_tools(state: AgentState):
-    # double check this is correct syntax for appending system_message
-    llm_response = llm_with_tools.invoke(state["messages"] + [call_tool_msg])
-    return {"messages": llm_response}
-
-
-def tool_node(state: AgentState):
-    result = []
-
-    for tool_call in state["messages"][-1].tool_calls:
-        selected_tool = tools_by_name[tool_call["name"]]
-        observation = selected_tool.invoke(tool_call["args"])
-
-        result.append(
-            ToolMessage(content=str(observation), tool_call_id=tool_call["id"])
-        )
-
-    return {"messages": result}
-
-
-def synthesize_output(state: AgentState):
-    llm_response = llm.invoke(state["messages"] + [synthesize_output_msg])
-    return {"messages": llm_response}
-
-
-def tools_necessary(state: AgentState):
-    if state["messages"][-1].tool_calls:
-        return True
-    return False """
-
-
+# build out the main graph
 builder = StateGraph(AgentState)
-# langgraph nodes
-builder.add_node("complexity_router", complexity_router)
 
-"""
-builder.add_node("fetch_docs", fetch_docs)
-builder.add_node("call_tools", call_tools)
-builder.add_node("tool_node", tool_node)
-builder.add_node("synthesize_output", synthesize_output)"""
 
 builder.add_node("light", light)
 builder.add_node("moderate", moderate)

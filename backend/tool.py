@@ -4,6 +4,10 @@ from llms import llm_with_tools
 from state import AgentState
 from messages import medium_call_tool_msg
 from langchain.messages import ToolMessage
+from typing import Literal
+from langgraph.types import interrupt, Command
+
+# should  have benchmark to measure the overhead of langgraph and agent architecture vs direct llm call
 
 
 def exectue_tool_call(state: AgentState):
@@ -15,6 +19,24 @@ def exectue_tool_call(state: AgentState):
         if state["messages"][-1].tool_calls:
             return True
         return False
+
+    def approval_node(state: AgentState) -> Command[Literal["proceed", "cancel"]]:
+        # Pause execution; payload shows up in result.interrupts (v2) or result["__interrupt__"] (v1)
+        is_approved = interrupt(
+            {
+                "question": "Do you want to proceed with this action?",
+                "details": state["action_details"],
+            }
+        )
+
+        # Route based on the response
+        if is_approved:
+            return Command(
+                goto="tool_node"
+            )  # Runs after the resume payload is provided
+        else:
+            print("Execution of the tool cancelled")
+            return Command(goto=END)  # Cancel the exection
 
     def tool_node(state: AgentState):
         result = []
@@ -32,9 +54,14 @@ def exectue_tool_call(state: AgentState):
     tool_builder = StateGraph(AgentState)
     tool_builder.add_node("call_tools", call_tools)
     tool_builder.add_node("tool_node", tool_node)
+    tool_builder.add_node("approval_node", approval_node)
+
+    # the edges need to be fixed
+
     tool_builder.add_conditional_edges(
         "call_tools", tools_necessary, {True: "tool_node", False: "synthesize_output"}
     )
+
     tool_builder.add_edge("tool_node", "call_tools")
     tool_builder.add_edge(START, "call_tools")
     tool_builder.add_edge("call_tools", END)

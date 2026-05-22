@@ -68,6 +68,10 @@ Critical Rules:
 """
 )
 
+agent_verifier_msg = SystemMessage(
+    content="Verify the output of the agent and ensure it is correct and complete. Use the inital query to verify the output. If the output is not correct, ask for clarification. If the output is correct, proceed with the next step. If the output is incomplete, ask for more information. If"
+)
+
 light_llm_msg = SystemMessage(
     content="Answer the users requests using the available tools, if necessary. If you don't know the answer, say so."
 )

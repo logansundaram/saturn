@@ -7,3 +7,4 @@ from typing_extensions import TypedDict, Annotated
 class AgentState(TypedDict):
     messages: Annotated[List[Any], add_messages]
     # should contain the generated tool call adn the ouput of that tool call
+    initial_query: List[str]

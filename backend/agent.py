@@ -7,7 +7,7 @@ from typing_extensions import TypedDict, Annotated
 
 
 # import system messages from messages file
-from messages import complexity_router_msg
+from messages import complexity_router_msg, agent_verifier_msg
 
 
 # import llm for llms file
@@ -50,9 +50,20 @@ class RouterOutput(BaseModel):
     complexity: int = Field(description="0 for light, 1 for moderate, 2 for complex")
 
 
+# need to define structered output for the verifier node
+class VerifierOutput(BaseModel):
+    # need to define the output structure for the verifier node
+    valid: bool = Field(
+        description="True if the output is valid and answers the initial query, False otherwise"
+    )
+
+
 def complexity_router_function(state: AgentState):
     # lightweight llm currently, could use an ml model or a hyperspecific llm for this task to reduce overhead
     # should make it configurable as well
+    # should mkae more complex, give a frameowkr to the llm to deduce the complexity of the query
+    # can add a conifdence rating, default to moderate complexity if confidence is too low
+    # can move to an external file as it grows in code and complexity
     llm_with_router_structure = llm.with_structured_output(RouterOutput)
     complexity = int(
         llm_with_router_structure.invoke(
@@ -65,6 +76,28 @@ def complexity_router_function(state: AgentState):
     return complexity
 
 
+def agent_verfier(state: AgentState):
+    # verify the output of the agent and make sure it is correct and complete
+    # can add a verification step here to make sure the output is correct and complete
+    # can add a feedback loop to improve the agent over time
+    # can escalate to a different subgraph if the output is not correct or complete
+    print("this is the agent verfier")
+    llm_with_verifier_structure = llm.with_structured_output(VerifierOutput)
+    # could formatted string here later
+    llm_response = llm_with_verifier_structure.invoke(
+        "initial query: "
+        + state["initial_query"][-1]
+        + "output: "
+        + state["messages"][-1].content
+        + agent_verifier_msg.content
+    )
+    if llm_response:
+        print("passed")
+    else:
+        print("failed")
+    pass
+
+
 # build out the main graph
 builder = StateGraph(AgentState)
 
@@ -72,6 +105,8 @@ builder.add_node("complexity_router", complexity_router)
 builder.add_node("light", light_graph)
 builder.add_node("moderate", moderate_graph)
 builder.add_node("complex", complex_graph)
+builder.add_node("agent_verifier", agent_verfier)
+
 
 builder.add_edge(START, "complexity_router")
 
@@ -84,23 +119,14 @@ builder.add_conditional_edges(
     complexity_router_function,  # routing function
     {0: "light", 1: "moderate", 2: "complex"},  # mapping of return values to node names
 )
+builder.add_edge("moderate", "agent_verifier")
+builder.add_edge("complex", "agent_verifier")
+builder.add_edge("light", "agent_verifier")
 
-# condiitonal edge if tools calls are needed
-"""
-builder.add_conditional_edges(
-    "call_tools", tools_necessary, {True: "tool_node", False: "synthesize_output"}
-)
-builder.add_edge("tool_node", "synthesize_output")
-builder.add_edge("fetch_docs", "call_tools")
-
-"""
-builder.add_edge("moderate", END)
-builder.add_edge("complex", END)
-builder.add_edge("light", END)
-
+builder.add_edge("agent_verifier", END)
 graph = builder.compile()
 
-messages = []
+state = AgentState(messages=[], initial_query=[])
 
 
 # inf loop to allow for chat like experience
@@ -111,12 +137,13 @@ while True:
         break
 
     if user_input.lower() == "state":
-        print(messages)
+        print(state)
         continue
 
-    messages.append({"role": "user", "content": user_input})
+    state["messages"].append({"role": "user", "content": user_input})
+    state["initial_query"].append(user_input)
 
-    result = graph.invoke({"messages": messages})
+    result = graph.invoke(state)
 
     messages = result["messages"]
 

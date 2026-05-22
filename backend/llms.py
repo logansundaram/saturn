@@ -1,5 +1,5 @@
 from langchain_ollama import ChatOllama
-from tools import tool
+from registry import tool
 
 
 llm = ChatOllama(model="gemma4:e4b")

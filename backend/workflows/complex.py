@@ -14,7 +14,7 @@ from state import AgentState
 
 from langchain.messages import ToolMessage
 
-from tools import tools_by_name
+from registry import tools_by_name
 
 
 def build_complex():

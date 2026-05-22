@@ -1,6 +1,5 @@
-from registry import tool, tools_by_name
+from registry import tools_by_name
 from langgraph import StateGraph, START, END
-from messages import tool_msg
 from llms import llm_with_tools
 from state import AgentState
 from messages import medium_call_tool_msg
@@ -9,7 +8,6 @@ from langchain.messages import ToolMessage
 
 def exectue_tool_call(state: AgentState):
     def call_tools(state: AgentState):
-        # double check this is correct syntax for appending system_message
         llm_response = llm_with_tools.invoke(state["messages"] + [medium_call_tool_msg])
         return {"messages": llm_response}
 

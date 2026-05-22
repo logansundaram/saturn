@@ -50,7 +50,7 @@ def build_complex():
         return {"messages": llm_response}
 
     # instantiate builder
-    moderate_builder = StateGraph(MessagesState)
+    moderate_builder = StateGraph(AgentState)
 
     # add nodes
     moderate_builder.add_node("fetch_docs", fetch_docs)

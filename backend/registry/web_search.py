@@ -3,7 +3,6 @@ from langchain.tools import tool
 from dotenv import load_dotenv
 import os
 from tavily import TavilyClient
-from langchain_community.agent_toolkits import FileManagementToolkit
 
 """
   Tier 1 — Core utility (build these first)
@@ -36,29 +35,3 @@ def web_search(query: str):
     tavily_client = TavilyClient(api_key=tavily_api_key)
     response = tavily_client.search(query)
     return response
-
-
-"""
-@tool
-def web_extract(url: str):
-    'Extracts content of the given URL for content.'
-    tavily_client = TavilyClient(api_key=tavily_api_key)
-    response = tavily_client.search(url)
-    return response
-
-
-@tool
-def web_crawl(url: str, instructions: str):
-    'Crawls the content of a given url'
-    tavily_client = TavilyClient(api_key=tavily_api_key)
-    response = tavily_client.crawl(url, instructions)
-    return response
-
-
-@tool
-def web_map(url: str):
-    'Maps the content of a given url'
-    tavily_client = TavilyClient(api_key=tavily_api_key)
-    response = tavily_client.map(url)
-    return response
-"""

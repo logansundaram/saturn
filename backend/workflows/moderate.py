@@ -15,11 +15,15 @@ from langchain.messages import ToolMessage
 
 from registry import tools_by_name
 
+from tool import build_tool
+
 
 def build_moderate():
     def fetch_docs(state: AgentState):
         relevant_docs = "my name is logan"
         return {"messages": relevant_docs}
+
+    tool_subgraph = build_tool()
 
     def call_tools(state: AgentState):
         # double check this is correct syntax for appending system_message
@@ -53,18 +57,20 @@ def build_moderate():
 
     # add nodes
     moderate_builder.add_node("fetch_docs", fetch_docs)
-    moderate_builder.add_node("call_tools", call_tools)
-    moderate_builder.add_node("tool_node", tool_node)
+    # moderate_builder.add_node("call_tools", call_tools)
+    # moderate_builder.add_node("tool_node", tool_node)
+    moderate_builder.add_node("tool_subgraph", tool_subgraph)
     moderate_builder.add_node("synthesize_output", synthesize_output)
 
     # add edges
     moderate_builder.add_edge(START, "fetch_docs")
-    moderate_builder.add_edge("fetch_docs", "call_tools")
-    moderate_builder.add_conditional_edges(
-        "call_tools", tools_necessary, {True: "tool_node", False: "synthesize_output"}
-    )
-    moderate_builder.add_edge("tool_node", "synthesize_output")
-    moderate_builder.add_edge("fetch_docs", "call_tools")
+    moderate_builder.add_edge("fetch_docs", "tool_subgraph")
+    # moderate_builder.add_conditional_edges(
+    # "call_tools", tools_necessary, {True: "tool_node", False: "synthesize_output"}
+    # )
+    # moderate_builder.add_edge("tool_node", "synthesize_output")
+    # moderate_builder.add_edge("fetch_docs", "call_tools")
+    moderate_builder.add_edge("tool_subgraph", "synthesize_output")
     moderate_builder.add_edge("synthesize_output", END)
 
     moderate_graph = moderate_builder.compile()

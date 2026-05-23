@@ -68,7 +68,7 @@ def build_tool():
     # the edges need to be fixed
     tool_builder.add_edge(START, "call_tools")
     tool_builder.add_conditional_edges(
-        "call_tools", tools_necessary, {True: "approval_node", False: END}
+        "call_tools", tools_necessary, {True: "tool_node", False: END}
     )
     tool_builder.add_edge("approval_node", "tool_node")
     tool_builder.add_edge("tool_node", END)

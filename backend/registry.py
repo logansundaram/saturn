@@ -1,5 +1,9 @@
 # file to add the tools for the agents to use
 from langchain.tools import tool
+from dotenv import load_dotenv
+import os
+from tavily import TavilyClient
+
 
 """
   Tier 1 — Core utility (build these first)
@@ -15,6 +19,51 @@ from langchain.tools import tool
   - Shell/terminal — for system tasks, running builds, git operations
   - Python REPL — heavier than subprocess but stateful across calls, good for data work
 """
+
+load_dotenv()
+
+tavily_api_key = os.getenv("TAVILY_API_KEY")
+print(tavily_api_key)
+
+# web tool suite
+
+
+@tool
+def web_search(query: str):
+    """Searches the web for the given query."""
+    tavily_client = TavilyClient(api_key=tavily_api_key)
+    response = tavily_client.search(query)
+    return response
+
+
+@tool
+def web_extract(url: str):
+    """Extracts content of the given URL for content."""
+    tavily_client = TavilyClient(api_key=tavily_api_key)
+    response = tavily_client.search(url)
+    return response
+
+
+@tool
+def web_crawl(url: str, instructions: str):
+    """Crawls the content of a given url"""
+    tavily_client = TavilyClient(api_key=tavily_api_key)
+    response = tavily_client.crawl(url, instructions)
+    return response
+
+
+@tool
+def web_map(url: str):
+    """Maps the content of a given url"""
+    tavily_client = TavilyClient(api_key=tavily_api_key)
+    response = tavily_client.map(url)
+    return response
+
+
+# should make it easy for end users to generate and supply their own tavily API key
+
+
+# file tool suite
 
 
 @tool
@@ -41,6 +90,6 @@ def division(a: int, b: int) -> int:
     return a / b
 
 
-tool = [addition, subtraction, multiplication, division]
+tool = [addition, subtraction, multiplication, division, web_search]
 
 tools_by_name = {t.name: t for t in tool}

@@ -13,6 +13,8 @@ print(tavily_api_key)
 
 # docstring of the tool is automatically exposed to the llm, that is how it determines what tool to call
 
+# might need to code this one by hand, not using tavily
+
 
 @tool
 def deep_research(query: str):

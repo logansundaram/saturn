@@ -21,7 +21,9 @@ from pydantic import BaseModel, Field
 # todo: need to create router function to route to different subgraphs based on the complexity of the request using structured output
 # todo: need to create the workflow grpahs in seperate files and import them here
 # todo: need to create the state checkpoint using langgraph and write to sqlite db
-
+# todo: need to flesh out tool and node registryies
+# todo: neeed to resassemble the graph workflows in terms of the nodes in the node registry
+# todo: need to create a standard trace function that can wrap each node and emits traces to make the graph debuggable
 
 # import agentstate class from state file
 from state import AgentState

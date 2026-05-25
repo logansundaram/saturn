@@ -70,7 +70,7 @@ def build_tool():
     tool_builder.add_conditional_edges(
         "call_tools", tools_necessary, {True: "tool_node", False: END}
     )
-    tool_builder.add_edge("approval_node", "tool_node")
+    # tool_builder.add_edge("approval_node", "tool_node")
     tool_builder.add_edge("tool_node", END)
 
     tool_graph = tool_builder.compile()

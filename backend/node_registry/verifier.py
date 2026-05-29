@@ -1,3 +1,4 @@
+import time
 from state import AgentState
 from llms import llm
 from messages import agent_verifier_msg
@@ -18,6 +19,7 @@ verifier_llm = llm.with_structured_output(VerifierOutput)
 
 
 def verifier_node(state: AgentState) -> dict:
+    start = time.perf_counter()
     prompt = HumanMessage(
         content=(
             f"Initial query: {state['initial_query'][-1]}\n\n"
@@ -25,6 +27,7 @@ def verifier_node(state: AgentState) -> dict:
         )
     )
     result = verifier_llm.invoke([prompt, agent_verifier_msg])
+    print(f"verifier_node : {time.perf_counter() - start:.4f}s")
     return {"verification": result}
 
 

@@ -1,3 +1,4 @@
+import time
 from langchain.tools import tool
 
 
@@ -7,6 +8,7 @@ def calculate(expression: str) -> str:
     Supports basic arithmetic (+, -, *, /), exponentiation (**), modulo (%),
     and standard math functions (abs, round, min, max, pow, sum).
     Input should be a valid Python math expression as a string, e.g. '2 + 3 * 4' or 'round(3.14159, 2)'."""
+    start = time.perf_counter()
     allowed_names = {
         "abs": abs,
         "round": round,
@@ -22,3 +24,5 @@ def calculate(expression: str) -> str:
         return "Error: division by zero"
     except Exception as e:
         return f"Error: {e}"
+    finally:
+        print(f"calculate : {time.perf_counter() - start:.4f}s")

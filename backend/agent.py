@@ -6,9 +6,10 @@ from langgraph.graph.message import add_messages
 from typing_extensions import TypedDict, Annotated
 
 # import llm for llms file
-from node_registry.llm_call import llm_call
-from node_registry.synthesize import synthesize_node
 from node_registry.plan import plan_node
+from node_registry.synthesize import synthesize_node
+from node_registry.verifier import verifier_node
+from node_registry.repair import repair_node
 
 # state
 from state import AgentState
@@ -18,6 +19,9 @@ from tool import build_tool
 tool_node = build_tool()
 
 # from rag import
+from rag import build_retrieval
+
+rag_node = build_retrieval()
 
 # libraries for structured output
 from pydantic import BaseModel, Field
@@ -27,21 +31,36 @@ from pydantic import BaseModel, Field
 builder = StateGraph(AgentState)
 
 # add nodes
-builder.add_node("tool_node", tool_node)
-builder.add_node("plane_node", plan_node)
-builder.add_node("synthesize_node", synthesize_node)
+builder.add_node("plan", plan_node)
+builder.add_node("rag", rag_node)
+builder.add_node("tool", tool_node)
+builder.add_node("synthesize", synthesize_node)
+builder.add_node("verifier", verifier_node)
+builder.add_node("repair", repair_node)
 
 
 # add edges
-builder.add_edge(START, "plane_node")
-builder.add_edge("plane_node", "tool_node")
-builder.add_edge("tool_node", "synthesize_node")
-builder.add_edge("synthesize_node", END)
+builder.add_edge(START, "plan")
+builder.add_edge("plan", "rag")
+builder.add_edge("rag", "tool")
+builder.add_edge("tool", "synthesize")
+
+# need to add conditional edges
+builder.add_edge("synthesize", "verifier")
+builder.add_edge("verifier", "repair")
+builder.add_edge("repair", END)
+
 
 graph = builder.compile()
 
-state = AgentState(messages=[], initial_query=[])
-
+state: AgentState = {
+    "messages": [],
+    "current_query": "",
+    "current_response": "",
+    "tools_called": [],
+    "tool_results": [],
+    "context": [],
+}
 
 # inf loop to allow for chat like experience
 while True:
@@ -54,11 +73,17 @@ while True:
         print(state)
         continue
 
-    state["messages"].append({"role": "user", "content": user_input})
-    state["initial_query"].append(user_input)
+    state["messages"].append(HumanMessage(content=user_input))
 
-    result = graph.invoke(state)
+    state["current_query"] = user_input
 
-    messages = result["messages"]
+    state["context"] = []
+    state["tool_results"] = []
 
-    print(f"Assistant: {messages[-1].content}")
+    # IMPORTANT: save returned state
+    state = graph.invoke(state)
+
+    messages = state["messages"]
+    last_msg = messages[-1]
+
+    print(f"Assistant: {last_msg.content}")

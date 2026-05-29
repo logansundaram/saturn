@@ -1,3 +1,4 @@
+import time
 from state import AgentState
 from llms import llm
 from pydantic import BaseModel, Field
@@ -30,8 +31,10 @@ def build_router(
     system_message = SystemMessage(content=system_prompt)
 
     def router_node(state: AgentState) -> dict:
+        start = time.perf_counter()
         decision = router_llm.invoke(state["messages"] + [system_message])
         choice = decision.choice if decision.choice in routes else routes[0]
+        print(f"router_node : {time.perf_counter() - start:.4f}s")
         return {"route_decision": choice}
 
     def routing_fn(state: AgentState) -> str:

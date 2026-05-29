@@ -8,8 +8,8 @@ from langchain.messages import SystemMessage
 from messages import generic_llm_call_msg
 
 
-def llm_call(state: AgentState, system_prompt: SystemMessage = generic_llm_call_msg):
+def repair_node(state: AgentState, system_prompt: SystemMessage = generic_llm_call_msg):
     start = time.perf_counter()
     llm_response = llm.invoke([system_prompt] + state["messages"])
-    print(f"llm_call : {time.perf_counter() - start:.4f}s")
+    print(f"repair_node : {time.perf_counter() - start:.4f}s")
     return {"messages": [llm_response]}

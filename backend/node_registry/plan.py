@@ -1,3 +1,4 @@
+import time
 from state import AgentState
 from llms import llm
 from messages import plan_freeform_system_msg
@@ -16,6 +17,7 @@ class PlanOutput(BaseModel):
 
 
 def plan_node(state: AgentState):
-    # planner = llm.with_structured_output(PlanOutput)
+    start = time.perf_counter()
     result = llm.invoke(state["messages"] + [plan_freeform_system_msg])
+    print(f"plan_node : {time.perf_counter() - start:.4f}s")
     return {"messages": result}

@@ -1,6 +1,6 @@
 from state import AgentState
 from llms import llm
-from messages import plan_system_msg
+from messages import plan_freeform_system_msg
 from pydantic import BaseModel, Field
 from typing import List
 
@@ -16,6 +16,6 @@ class PlanOutput(BaseModel):
 
 
 def plan_node(state: AgentState):
-    planner = llm.with_structured_output(PlanOutput)
-    result = planner.invoke(state["messages"] + [plan_system_msg])
+    # planner = llm.with_structured_output(PlanOutput)
+    result = llm.invoke(state["messages"] + [plan_freeform_system_msg])
     return {"messages": result}

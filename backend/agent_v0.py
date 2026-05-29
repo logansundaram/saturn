@@ -1,3 +1,7 @@
+"""
+Deprecated. agent located in agent.py instead. This file is kept for reference purposes only.
+"""
+
 from langgraph.graph import StateGraph, START, END, MessagesState
 from langchain.tools import tool
 from langchain.messages import SystemMessage, HumanMessage, ToolMessage

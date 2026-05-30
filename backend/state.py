@@ -11,3 +11,5 @@ class AgentState(TypedDict):
     tools_called: List[str]
     tool_results: List[Any]
     context: List[str]
+    tools_necessary: bool
+    rag_necessary: bool

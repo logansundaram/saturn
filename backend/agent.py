@@ -39,19 +39,47 @@ builder.add_node("verifier", verifier_node)
 builder.add_node("repair", repair_node)
 
 
+def determine_tool(state: AgentState):
+    return state["tool_results"]
+
+
+def determine_rag(state: AgentState):
+    return state["rag_necessary"]
+
+
 # add edges
 builder.add_edge(START, "plan")
-builder.add_edge("plan", "rag")
-builder.add_edge("rag", "tool")
-builder.add_edge("tool", "synthesize")
+builder.add_conditional_edges("plan", determine_rag, {True: "rag", False: "synthesize"})
 
-# need to add conditional edges
-builder.add_edge("synthesize", "verifier")
-builder.add_edge("verifier", "repair")
-builder.add_edge("repair", END)
+builder.add_conditional_edges(
+    "plan", determine_tool, {True: "tool", False: "synthesize"}
+)
+
+builder.add_edge("rag", "synthesize")
+builder.add_edge("tool", "synthesize")
+builder.add_edge("synthesize", END)
+
+# builder.add_edge("rag", "tool")
+# builder.add_edge("tool", "synthesize")
+
+# # need to add conditional edges
+# builder.add_edge("synthesize", "verifier")
+# builder.add_edge("verifier", "repair")
+# builder.add_edge("repair", END)
 
 
 graph = builder.compile()
+
+
+# class AgentState(TypedDict):
+#     messages: Annotated[List[Any], add_messages]
+#     current_query: str
+#     current_response: str
+#     tools_called: List[str]
+#     tool_results: List[Any]
+#     context: List[str]
+# tools_necessary: bool
+# rag_necessary: bool
 
 state: AgentState = {
     "messages": [],
@@ -60,6 +88,8 @@ state: AgentState = {
     "tools_called": [],
     "tool_results": [],
     "context": [],
+    "tools_necessary": False,
+    "rag_necessary": False,
 }
 
 # inf loop to allow for chat like experience

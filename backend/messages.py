@@ -255,3 +255,14 @@ medium_call_tool_msg = SystemMessage(
 medium_synthesize_output_msg = SystemMessage(
     content="Synthesize the output based on the user request"
 )
+
+# Used as a format-string; caller substitutes all three fields at runtime.
+context_builder_system_msg_template = (
+    "## Session context\n\n"
+    "### Available tools\n"
+    "{tool_inventory}\n\n"
+    "### Workspace files (accessible via read_file / write_file)\n"
+    "{workspace_docs}\n"
+    "### Ingested documents (searchable via RAG retrieval)\n"
+    "{rag_docs}"
+)

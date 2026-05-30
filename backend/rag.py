@@ -8,12 +8,15 @@ from langchain.messages import SystemMessage
 from typing import TypedDict, List, Any
 
 from state import AgentState
+from document_registry import register_rag_document
 
 
 DOCUMENTS_DIR = Path("database/documents").resolve()
 SUPPORTED_EXTENSIONS = {".txt", ".md"}
 
-embeddings = OllamaEmbeddings(model="gemma3:4b")
+
+# need a new embedding model
+embeddings = OllamaEmbeddings(model="qwen3-embedding:8b")
 vector_store = InMemoryVectorStore(embeddings)
 
 
@@ -27,10 +30,9 @@ def build_ingest():
         for file_path in DOCUMENTS_DIR.glob("**/*"):
             if file_path.is_file() and file_path.suffix in SUPPORTED_EXTENSIONS:
                 text = file_path.read_text(encoding="utf-8")
-                docs.append(Document(
-                    page_content=text,
-                    metadata={"source": str(file_path.relative_to(DOCUMENTS_DIR))}
-                ))
+                source = str(file_path.relative_to(DOCUMENTS_DIR))
+                docs.append(Document(page_content=text, metadata={"source": source}))
+                register_rag_document(source, text)
         print(f"Loaded {len(docs)} documents from {DOCUMENTS_DIR}")
         return {"documents": docs}
 

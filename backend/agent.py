@@ -6,6 +6,7 @@ from langgraph.graph.message import add_messages
 from typing_extensions import TypedDict, Annotated
 
 # import llm for llms file
+from node_registry.context_builder import context_builder_node
 from node_registry.plan import plan_node
 from node_registry.synthesize import synthesize_node
 from node_registry.verifier import verifier_node
@@ -31,6 +32,7 @@ from pydantic import BaseModel, Field
 builder = StateGraph(AgentState)
 
 # add nodes
+builder.add_node("context_builder", context_builder_node)
 builder.add_node("plan", plan_node)
 builder.add_node("rag", rag_node)
 builder.add_node("tool", tool_node)
@@ -48,7 +50,8 @@ def determine_rag(state: AgentState):
 
 
 # add edges
-builder.add_edge(START, "plan")
+builder.add_edge(START, "context_builder")
+builder.add_edge("context_builder", "plan")
 builder.add_conditional_edges("plan", determine_rag, {True: "rag", False: "synthesize"})
 
 builder.add_conditional_edges(

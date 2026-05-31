@@ -67,6 +67,7 @@ def _build_context(state: AgentState) -> SystemMessage:
 def context_builder_node(state: AgentState) -> dict:
     start = time.perf_counter()
 
+    print("building context")
     context_sys_msg = _build_context(state)
 
     print(f"context_builder_node : {time.perf_counter() - start:.4f}s")

@@ -31,12 +31,13 @@ class PlanOutput(BaseModel):
     )
 
 
+# need to alter this node to access to relevant context
 def plan_node(state: AgentState):
     # plan node does not have access to tools avaible nor document metadata in the rag previous messages
     # should have context -> plan
     start = time.perf_counter()
     llm_with_structued_output = llm.with_structured_output(PlanOutput)
-    llm_response = llm_with_structued_output.invoke(state["messages"])
+    llm_response = llm_with_structued_output.invoke(state["context"])
     print(f"plan_node : {time.perf_counter() - start:.4f}s")
     if llm_response.tools_necessary:
         print("tools_needed")

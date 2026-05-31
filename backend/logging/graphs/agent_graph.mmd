@@ -1,0 +1,29 @@
+---
+config:
+  flowchart:
+    curve: linear
+---
+graph TD;
+	__start__([<p>__start__</p>]):::first
+	context_builder(context_builder)
+	plan(plan)
+	rag(rag)
+	tool(tool)
+	synthesize(synthesize)
+	verifier(verifier)
+	repair(repair)
+	__end__([<p>__end__</p>]):::last
+	__start__ --> context_builder;
+	context_builder --> plan;
+	plan -. &nbsp;True&nbsp; .-> rag;
+	plan -. &nbsp;False&nbsp; .-> synthesize;
+	plan -. &nbsp;True&nbsp; .-> tool;
+	rag --> synthesize;
+	repair --> plan;
+	synthesize --> verifier;
+	tool --> synthesize;
+	verifier -. &nbsp;False&nbsp; .-> __end__;
+	verifier -. &nbsp;True&nbsp; .-> repair;
+	classDef default fill:#f2f0ff,line-height:1.2
+	classDef first fill-opacity:0
+	classDef last fill:#bfb6fc

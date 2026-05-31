@@ -28,6 +28,8 @@ rag_node = build_retrieval()
 from pydantic import BaseModel, Field
 
 
+from debug import print_graph
+
 # build out the main graph
 builder = StateGraph(AgentState)
 
@@ -49,9 +51,16 @@ def determine_rag(state: AgentState):
     return state["rag_necessary"]
 
 
+def determine_repair(state: AgentState):
+    # some function to determine if past results, tools calls, document6s retrieved, syntheisis, etc are incomplete and wrong
+    # need to flesh out this part
+    return True
+
+
 # add edges
 builder.add_edge(START, "context_builder")
 builder.add_edge("context_builder", "plan")
+# parallel execution
 builder.add_conditional_edges("plan", determine_rag, {True: "rag", False: "synthesize"})
 
 builder.add_conditional_edges(
@@ -60,18 +69,20 @@ builder.add_conditional_edges(
 
 builder.add_edge("rag", "synthesize")
 builder.add_edge("tool", "synthesize")
-builder.add_edge("synthesize", END)
 
-# builder.add_edge("rag", "tool")
-# builder.add_edge("tool", "synthesize")
+# loop logic
 
-# # need to add conditional edges
-# builder.add_edge("synthesize", "verifier")
-# builder.add_edge("verifier", "repair")
-# builder.add_edge("repair", END)
+builder.add_edge("synthesize", "verifier")
+builder.add_conditional_edges(
+    "verifier", determine_repair, {True: "repair", False: END}
+)
+builder.add_edge("repair", "plan")
 
 
 graph = builder.compile()
+
+# should visualize the graph
+print_graph(graph)
 
 
 # class AgentState(TypedDict):

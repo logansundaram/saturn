@@ -25,9 +25,8 @@ python -m node_registry.context_builder to run from root backend folder
 def _build_tool_inventory() -> str:
     lines = []
     for t in tool_list:
-        print(f"tool name: {t.name}, tool description: {t.description}")  # debug print
         lines.append(f"- {t.name}: {t.description}")
-    tool_content = "Available tools: \n".join(lines)
+    tool_content = "Available tools: \n" + "\n".join(lines)
     return tool_content
 
 
@@ -37,20 +36,33 @@ def _build_document_inventory() -> str:
 
 
 def _build_chat_history(state: AgentState) -> str:
-    message_content = "\nPrevious messages: \n".join(state["messages"])
-    return message_content
+    messages = state.get("messages", [])
+
+    lines = []
+
+    for msg in messages:
+        if not hasattr(msg, "content"):
+            continue
+
+        role = msg.__class__.__name__.replace("Message", "")
+        lines.append(f"{role}: {msg.content}")
+
+    if not lines:
+        return "No previous messages."
+
+    return "Previous messages:\n" + "\n".join(lines)
 
 
 # might need a better system message here
-def _build_context(state: AgentState) -> SystemMessage:
+def _build_context(state: AgentState) -> str:
     """Build the context for the agent."""
     context = (
         "This is the avaible context. Use this information to determine if RAG is necessary, tools are necessary, and if the past chat history is relevant"
-        + _build_tool_inventory(state)
-        + _build_document_inventory(state)
+        + _build_tool_inventory()
+        + _build_document_inventory()
         + _build_chat_history(state)
     )
-    return SystemMessage(content=context)
+    return context
 
 
 # def _format_manifest(raw: str, empty_label: str) -> str:

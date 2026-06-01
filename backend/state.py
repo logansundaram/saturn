@@ -6,10 +6,12 @@ from typing_extensions import TypedDict, Annotated
 
 class AgentState(TypedDict):
     messages: Annotated[List[Any], add_messages]
-    current_query: str
-    current_response: str
+    current_query: str  # may need to cahnge to human message
+    current_response: str  # may need to cahnge to ai message
     tools_called: List[str]
     tool_results: List[Any]
-    context: List[str]
+    documents_retrieved: List[Any]
+    context: str
     tools_necessary: bool
     rag_necessary: bool
+    messages_relevant: bool

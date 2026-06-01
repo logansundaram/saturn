@@ -28,8 +28,6 @@ rag_node = build_retrieval()
 from pydantic import BaseModel, Field
 
 
-from debug import print_graph
-
 # build out the main graph
 builder = StateGraph(AgentState)
 
@@ -39,50 +37,42 @@ builder.add_node("plan", plan_node)
 builder.add_node("rag", rag_node)
 builder.add_node("tool", tool_node)
 builder.add_node("synthesize", synthesize_node)
-builder.add_node("verifier", verifier_node)
+# builder.add_node("verifier", verifier_node)
 builder.add_node("repair", repair_node)
 
 
-def determine_tool(state: AgentState):
-    return state["tool_results"]
-
-
-def determine_rag(state: AgentState):
-    return state["rag_necessary"]
-
-
-def determine_repair(state: AgentState):
-    # some function to determine if past results, tools calls, document6s retrieved, syntheisis, etc are incomplete and wrong
-    # need to flesh out this part
-    return True
+def determine_next_nodes(state: AgentState):
+    targets = []
+    if state["rag_necessary"]:
+        targets.append("rag")
+    if state["tools_necessary"]:
+        targets.append("tool")
+    if not targets:
+        return "synthesize"
+    return targets
 
 
 # add edges
 builder.add_edge(START, "context_builder")
 builder.add_edge("context_builder", "plan")
-# parallel execution
-builder.add_conditional_edges("plan", determine_rag, {True: "rag", False: "synthesize"})
-
-builder.add_conditional_edges(
-    "plan", determine_tool, {True: "tool", False: "synthesize"}
-)
+builder.add_conditional_edges("plan", determine_next_nodes, ["rag", "tool", "synthesize"])
 
 builder.add_edge("rag", "synthesize")
 builder.add_edge("tool", "synthesize")
 
 # loop logic
 
-builder.add_edge("synthesize", "verifier")
-builder.add_conditional_edges(
-    "verifier", determine_repair, {True: "repair", False: END}
-)
-builder.add_edge("repair", "plan")
+builder.add_edge("synthesize", END)
+# builder.add_conditional_edges(
+#     "verifier", determine_repair, {True: "repair", False: END}
+# )
+# builder.add_edge("repair", "plan")
 
 
 graph = builder.compile()
 
 # should visualize the graph
-print_graph(graph)
+# print_graph(graph)
 
 
 # class AgentState(TypedDict):
@@ -101,9 +91,11 @@ state: AgentState = {
     "current_response": "",
     "tools_called": [],
     "tool_results": [],
-    "context": [],
+    "documents_retrieved": [],
+    "context": "",
     "tools_necessary": False,
     "rag_necessary": False,
+    "messages_relevant": False,
 }
 
 # inf loop to allow for chat like experience
@@ -121,7 +113,7 @@ while True:
 
     state["current_query"] = user_input
 
-    state["context"] = []
+    state["context"] = ""
     state["tool_results"] = []
 
     # IMPORTANT: save returned state

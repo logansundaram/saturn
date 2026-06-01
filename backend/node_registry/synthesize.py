@@ -5,21 +5,22 @@ from messages import synthesize_system_msg
 from langchain.messages import SystemMessage, HumanMessage
 
 
+# need to change to properly utilize the relevant states
+
+
 def synthesize_node(
     state: AgentState,
     system_prompt: SystemMessage = synthesize_system_msg,
 ):
     start = time.perf_counter()
     query = state["current_query"]
-    context = state.get("context", [])
+    context = state["context"]
     tool_results = state.get("tool_results", [])
 
     llm_input = [system_prompt]
 
     if context:
-        llm_input.append(
-            HumanMessage(content="Relevant context:\n" + "\n\n".join(context))
-        )
+        llm_input.append(HumanMessage(content=f"Relevant context:\n{context}"))
 
     if tool_results:
         llm_input.append(
@@ -28,7 +29,16 @@ def synthesize_node(
             )
         )
 
+    if documents_retrieved := state.get("documents_retrieved", []):
+        llm_input.append(
+            HumanMessage(
+                content="Retrieved documents:\n"
+                + "\n\n".join([doc.page_content for doc in documents_retrieved])
+            )
+        )
+
     llm_input.append(HumanMessage(content=f"Current user query:\n{query}"))
+    print(llm_input)
 
     llm_response = llm.invoke(llm_input)
     print(f"synthesize_node : {time.perf_counter() - start:.4f}s")

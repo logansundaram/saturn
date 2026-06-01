@@ -18,17 +18,25 @@ class VerifierOutput(BaseModel):
 verifier_llm = llm.with_structured_output(VerifierOutput)
 
 
-def verifier_node(state: AgentState) -> dict:
+def verifier_node(state: AgentState) -> bool:
     start = time.perf_counter()
-    prompt = HumanMessage(
-        content=(
-            f"Initial query: {state['initial_query'][-1]}\n\n"
-            f"Agent response: {state['messages'][-1].content}"
-        )
-    )
-    result = verifier_llm.invoke([prompt, agent_verifier_msg])
+    # implement later
     print(f"verifier_node : {time.perf_counter() - start:.4f}s")
-    return {"verification": result}
+
+    return False
+
+
+# def verifier_node(state: AgentState) -> dict:
+#     start = time.perf_counter()
+#     prompt = HumanMessage(
+#         content=(
+#             f"Initial query: {state['initial_query'][-1]}\n\n"
+#             f"Agent response: {state['messages'][-1].content}"
+#         )
+#     )
+#     result = verifier_llm.invoke([prompt, agent_verifier_msg])
+#     print(f"verifier_node : {time.perf_counter() - start:.4f}s")
+#     return {"verification": result}
 
 
 def routing_fn(state: AgentState) -> str:

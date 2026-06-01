@@ -6,13 +6,12 @@ from langchain.messages import SystemMessage
 from typing import List, Tuple, Callable
 
 
+# unused
 class RouteDecision(BaseModel):
     choice: str = Field(description="The selected route name")
 
 
-def build_router(
-    routes: List[str], system_prompt: str
-) -> Tuple[Callable, Callable]:
+def build_router(routes: List[str], system_prompt: str) -> Tuple[Callable, Callable]:
     """
     Factory that returns (router_node, routing_fn) for a given set of routes.
 

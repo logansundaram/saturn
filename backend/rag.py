@@ -4,7 +4,6 @@ from langchain_ollama import OllamaEmbeddings
 from langchain_core.vectorstores import InMemoryVectorStore
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.documents import Document
-from langchain.messages import SystemMessage
 from typing import TypedDict, List, Any
 
 from state import AgentState
@@ -61,11 +60,7 @@ def build_retrieval():
     def retrieve_docs(state: AgentState):
         query = state["messages"][-1].content
         docs = vector_store.similarity_search(query, k=3)
-        context = "\n\n".join(
-            f"[{doc.metadata.get('source', 'unknown')}]\n{doc.page_content}"
-            for doc in docs
-        )
-        return {"messages": SystemMessage(content=f"Relevant context:\n{context}")}
+        return {"documents_retrieved": docs}
 
     retrieval_builder = StateGraph(AgentState)
     retrieval_builder.add_node("retrieve_docs", retrieve_docs)

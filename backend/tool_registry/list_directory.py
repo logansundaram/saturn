@@ -7,11 +7,11 @@ WORKSPACE_DIR = Path("database/workspace").resolve()
 
 
 @tool
-def list_directory(directory_path: str = "."):
-    """Lists the contents of a directory inside the workspace."""
+def list_directory(directory: str = "."):
+    """Lists the files and folders inside a workspace directory. directory is a path relative to the workspace root. Use '.' to list the workspace root."""
     start = time.perf_counter()
     try:
-        target_path = (WORKSPACE_DIR / directory_path).resolve()
+        target_path = (WORKSPACE_DIR / directory).resolve()
 
         if not str(target_path).startswith(str(WORKSPACE_DIR)):
             return "Invalid directory path."

@@ -9,7 +9,7 @@ WORKSPACE_DIR = Path("database/workspace").resolve()
 
 @tool
 def write_file(file_path: str, content: str, overwrite: bool = False):
-    """Writes the given content to a file at the specified file path. Takes the file path, content, and operation as input parameters. Should be a string The file path should be a string. The file path should be a valid path to a file."""
+    """Writes content to a file in the workspace. file_path is relative to the workspace root. content is the text to write. overwrite=True replaces the file; overwrite=False (default) appends to it."""
     start = time.perf_counter()
     try:
         target_path = (WORKSPACE_DIR / file_path).resolve()

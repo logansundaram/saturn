@@ -10,12 +10,6 @@ def plan_node(state: AgentState):
     start = time.perf_counter()
     llm_response = llm_with_structued_output.invoke(str("context: " + state["context"]))
     print(f"plan_node : {time.perf_counter() - start:.4f}s")
-    if llm_response.tools_necessary:
-        print("tools_needed")
-    elif llm_response.rag_necessary:
-        print("rag_needed")
-    else:
-        print("no tools or rag needed")
     # need to add the plan to the state
     # plan = PlanStep.model_validate_json(llm_response.content)
     # plan = plan.model_dump()

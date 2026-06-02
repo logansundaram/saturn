@@ -35,3 +35,6 @@ Agent-wide and project-wide memory, descide what emmories are relvant to be shar
 
 Config own tools and agent archietecture
 
+Vision???
+
+Need to work on rag, preprocess pdf's more effectively, append more descriptive medtadata so that the planner can make smarter choices, etc.

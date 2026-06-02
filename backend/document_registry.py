@@ -21,8 +21,9 @@ from pathlib import Path
 
 from langchain.messages import HumanMessage
 
-WORKSPACE_DIR = Path("database/workspace").resolve()
-DOCUMENTS_DIR = Path("database/documents").resolve()
+_DB_ROOT = Path(__file__).parent.parent / "database"
+DOCUMENTS_DIR = _DB_ROOT / "documents"
+WORKSPACE_DIR = DOCUMENTS_DIR / "workspace"
 
 WORKSPACE_MANIFEST = WORKSPACE_DIR / ".manifest.md"
 DOCUMENTS_MANIFEST = DOCUMENTS_DIR / ".manifest.md"

@@ -10,32 +10,60 @@ from agent import build_agent
 from state import AgentState
 
 SUITES: dict[str, list[str]] = {
+    # Pure LLM reasoning — no tools, no retrieval. Tests knowledge, explanation quality, and reasoning.
     "llm": [
         "Explain the difference between a list and a tuple in Python.",
         "What are three pros and cons of microservices?",
+        "What is the difference between concurrency and parallelism?",
+        "Explain how garbage collection works in Python.",
+        "What is the CAP theorem and why does it matter for distributed systems?",
+        "Compare REST and GraphQL — when would you choose one over the other?",
     ],
+    # Calculator tool — tests routing to calculate and correctness of results.
     "calculator": [
         "What is 847 × 293 + 12,450?",
         "If I invest $5,000 at 7% annual interest for 10 years, what is the final value?",
+        "A rectangle is 47.3 meters long and 18.6 meters wide. What is its area and perimeter?",
+        "What is 17.5% of 3,842?",
+        "If a car travels 240 miles on 8 gallons of gas, what is its fuel efficiency in miles per gallon?",
+        "Convert 98.6 degrees Fahrenheit to Celsius.",
     ],
+    # Web search — tests routing to web_search and synthesis of live results.
     "web_search": [
         "What is the current price of Bitcoin?",
         "Who won the most recent Super Bowl?",
+        "What is the latest version of Python?",
+        "What is the current weather in New York City?",
+        "What are the top headlines in technology news today?",
+        "What is the current USD to EUR exchange rate?",
     ],
+    # Filesystem tools — tests list_directory, read_file, and write_file routing and execution.
     "filesystem": [
         "List the files in the workspace.",
         "Read the file .manifest.md from the workspace and summarize it.",
         "Create a file called test_output.txt in the workspace with the text 'benchmark test'.",
+        "Create a file called notes.md in the workspace with a short note about Python lists.",
+        "List the workspace files again to confirm test_output.txt was created.",
+        "Read the file test_output.txt from the workspace and tell me what it says.",
     ],
+    # RAG retrieval — tests rag_necessary routing and document retrieval.
     "rag": [
         "What documents are available in the knowledge base?",
+        "Summarize everything in the knowledge base.",
+        "What topics are covered in the ingested documents?",
     ],
+    # Multi-tool chaining — tests sequential use of two or more tools in one turn.
     "multi_tool": [
         "Search the web for the latest news on LangGraph and save a summary to a file called langgraph_news.md in the workspace.",
         "Calculate 15% of 2,340 and then write the result to a file called calc_result.txt in the workspace.",
+        "Search the web for the current price of Bitcoin and write it to a file called btc_price.txt in the workspace.",
+        "Calculate the area of a circle with radius 12.5, then save the result to a file called circle_area.txt in the workspace.",
     ],
+    # Deep research — tests deep_research tool for multi-source synthesis. Slow by design.
     "deep_research": [
         "Do a deep research report on the current state of local LLMs.",
+        "Research the pros and cons of using LangGraph versus CrewAI for building AI agents.",
+        "Do a deep research report on the best open-source embedding models available for local use.",
     ],
 }
 

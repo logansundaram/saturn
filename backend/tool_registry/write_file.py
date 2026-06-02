@@ -4,7 +4,8 @@ from pathlib import Path
 
 from document_registry import register_workspace_file
 
-WORKSPACE_DIR = Path("database/workspace").resolve()
+WORKSPACE_DIR = Path(__file__).parent.parent.parent / "database" / "documents" / "workspace"
+WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
 
 
 @tool

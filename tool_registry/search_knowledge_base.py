@@ -10,7 +10,9 @@ def search_knowledge_base(query: str):
         # Lazy import so merely importing the registry doesn't load the embedding model.
         from rag import vector_store
 
-        docs = vector_store.similarity_search(query, k=3)
+        # k=6: at k=3 recall was too low and the agent compensated by re-searching and
+        # falling back to read_file (see benchmark thrashing on RAG queries).
+        docs = vector_store.similarity_search(query, k=6)
         if not docs:
             return "No relevant documents found in the knowledge base."
         return "\n\n".join(

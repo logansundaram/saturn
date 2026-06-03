@@ -1,23 +1,17 @@
 import time
 from state import AgentState
 from llms import llm
-from messages import synthesize_system_msg
-from langchain.messages import SystemMessage, HumanMessage
+from messages import synthesize_sys_msg
+from langchain.messages import HumanMessage
 
 
-# need to change to properly utilize the relevant states
-
-
-def synthesize_node(
-    state: AgentState,
-    system_prompt: SystemMessage = synthesize_system_msg,
-):
+def synthesize_node(state: AgentState):
     start = time.perf_counter()
     query = state["current_query"]
     context = state["context"]
     tool_results = state.get("tool_results", [])
 
-    llm_input = [system_prompt]
+    llm_input = [synthesize_sys_msg]
 
     if context:
         llm_input.append(HumanMessage(content=f"Relevant context:\n{context}"))

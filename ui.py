@@ -1,6 +1,10 @@
 """
-CLI rendering for the live plan and the approval prompt — "blueprint terminal" aesthetic:
-thin single-line grids, uppercase labels, a calm cyan accent, no emoji. Engineered, not edgy.
+CLI rendering for the live plan and the approval prompt.
+
+The plan is rendered as a quiet, gutter-aligned list that nests under the node stream
+(`show_node` prints `|  <node>`), so it reads as ambient progress rather than a separate
+panel — it blends with the rest of the terminal instead of standing out. The approval prompt
+keeps a thin boxed grid on purpose: it is a blocking safety gate and *should* draw the eye.
 
 The agent emits plan/state updates; this module is one *subscriber* that renders them (the
 "side window" of SATURDAY_MVP_PLAN.md §6). Swapping it for a Textual sidebar or an Electron
@@ -10,6 +14,7 @@ window later requires no change to the graph. Degrades to plain ASCII if `rich` 
 try:
     from rich.console import Console
     from rich.table import Table
+    from rich.text import Text
     from rich import box
 
     _console = Console()
@@ -22,58 +27,41 @@ except Exception:  # pragma: no cover - fallback path
 _ACCENT = "cyan"
 _LINE = "dim cyan"
 
-# status -> (label, rich style) for the grid, and (marker) for the ASCII fallback.
+# status -> rich style for the plan line. The marker carries the state; only the active step
+# gets a touch of accent so the current step is findable. Everything else recedes (dim).
 _STATUS = {
-    "pending": ("PENDING", "dim"),
-    "active": ("ACTIVE", f"bold {_ACCENT}"),
-    "done": ("DONE", _ACCENT),
-    "skipped": ("SKIPPED", "dim strike"),
+    "pending": "dim",
+    "active": _ACCENT,
+    "done": "dim",
+    "skipped": "dim strike",
 }
 _MARKER = {"pending": "[ ]", "active": "[~]", "done": "[x]", "skipped": "[-]"}
 
 
-def render_plan(plan) -> str:
-    """Plain-text (ASCII) plan, used as the fallback and by callers that want a string."""
-    if not plan:
-        return "(no plan)"
-    lines = []
-    for s in plan:
-        tool = f"  ::{s['intended_tool']}" if s.get("intended_tool") else ""
-        lines.append(f"{_MARKER.get(s['status'], '[ ]')} {s['step_id']:>2}  {s['label']}{tool}")
-    return "\n".join(lines)
-
-
 def show_plan(plan) -> None:
-    if not _RICH:
-        print("\n+-- PLAN " + "-" * 40)
-        print(render_plan(plan))
-        print("+" + "-" * 48 + "\n")
+    """Quiet, gutter-aligned plan list that nests under the node stream — no box, no rules,
+    no title. Reads as ambient progress, not a separate panel."""
+    if not plan:
         return
 
-    table = Table(
-        box=box.SQUARE,
-        border_style=_LINE,
-        header_style=f"bold {_ACCENT}",
-        title="PLAN",
-        title_style=f"bold {_ACCENT}",
-        title_justify="left",
-        show_lines=True,
-        expand=False,
-        pad_edge=False,
-    )
-    table.add_column("#", justify="right", style="dim", no_wrap=True)
-    table.add_column("STATUS", no_wrap=True)
-    table.add_column("STEP")
-    table.add_column("TOOL", style=_LINE, no_wrap=True)
     for s in plan:
-        label, style = _STATUS.get(s["status"], ("PENDING", "dim"))
-        table.add_row(
-            str(s["step_id"]),
-            f"[{style}]{label}[/{style}]",
-            s["label"],
-            s.get("intended_tool") or "-",
-        )
-    _console.print(table)
+        marker = _MARKER.get(s["status"], "[ ]")
+        tool = s.get("intended_tool")
+        if _RICH:
+            # Build with Text.append (no markup parsing) so brackets in markers/labels are
+            # treated literally, not as Rich style tags.
+            line = Text()
+            line.append("|   ", style=_LINE)
+            line.append(
+                f"{marker} {s['step_id']:>2}  {s['label']}",
+                style=_STATUS.get(s["status"], "dim"),
+            )
+            if tool:
+                line.append(f"  ::{tool}", style="dim")
+            _console.print(line)
+        else:
+            tool_txt = f"  ::{tool}" if tool else ""
+            print(f"|    {marker} {s['step_id']:>2}  {s['label']}{tool_txt}")
 
 
 def show_node(node: str) -> None:

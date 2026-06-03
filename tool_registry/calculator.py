@@ -19,6 +19,12 @@ def calculate(expression: str) -> str:
     }
     try:
         result = eval(expression, {"__builtins__": {}}, allowed_names)
+        # Tame float noise (e.g. 672.3499999999999 -> 672.35) and render whole-number
+        # floats as ints (37.0 -> 37) so the agent reports clean values.
+        if isinstance(result, float):
+            result = round(result, 4)
+            if result.is_integer():
+                result = int(result)
         return str(result)
     except ZeroDivisionError:
         return "Error: division by zero"

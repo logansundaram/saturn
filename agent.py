@@ -18,11 +18,13 @@ from langchain.messages import HumanMessage
 from state import AgentState
 
 # loop nodes
-from node_registry.context_builder import context_builder_node
+from node_registry.ground import grounding_node
 from node_registry.plan import plan_node
 from node_registry.synthesize import synthesize_node
-from node_registry.reflect import update_plan_node
-from tool import agent_node, tool_node, approval_node, route_after_agent
+from node_registry.update_plan import update_plan_node
+from node_registry.agent import agent_node, route_after_agent
+from node_registry.tools import tool_node
+from node_registry.approval import approval_node
 
 # RAG ingest (populates the in-memory vector store the search_knowledge_base tool reads)
 from rag import build_ingest
@@ -48,7 +50,7 @@ def build_agent():
     """
     builder = StateGraph(AgentState)
 
-    builder.add_node("ground", context_builder_node)
+    builder.add_node("ground", grounding_node)
     builder.add_node("plan", plan_node)
     builder.add_node("agent", agent_node)
     builder.add_node("approval", approval_node)

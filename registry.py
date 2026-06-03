@@ -21,7 +21,7 @@ tool = [
 tools_by_name = {t.name: t for t in tool}
 
 
-# Risk tiers drive the approval gate (see tool.approval_node):
+# Risk tiers drive the approval gate (see node_registry/approval.py):
 #   read_only      — no side effects; runs freely, never prompts
 #   side_effecting — writes/external actions; prompts for approval
 #   destructive     — irreversible/dangerous; prompts for approval

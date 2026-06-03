@@ -2,7 +2,7 @@ import time
 from langchain.messages import HumanMessage
 from state import AgentState, steps_to_dicts
 from llms import llm_with_plan
-from messages import planner_system_msg
+from messages import planner_sys_msg
 
 
 def plan_node(state: AgentState):
@@ -16,7 +16,7 @@ def plan_node(state: AgentState):
     try:
         result = llm_with_plan.invoke(
             [
-                planner_system_msg,
+                planner_sys_msg,
                 HumanMessage(
                     content="Grounding context:\n"
                     + state.get("context", "")

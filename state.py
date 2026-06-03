@@ -62,9 +62,9 @@ class AgentState(TypedDict):
     current_query: str
     current_response: str
 
-    # Context string built by `context_builder` (tool inventory, document
-    # manifests, persistent memory/profiles, chat history). Sole writer:
-    # context_builder; downstream nodes read but never mutate it.
+    # Grounding string built by the `ground` node (document/workspace manifests
+    # + persistent memory/profiles). Sole writer: grounding_node; downstream
+    # nodes read but never mutate it.
     context: str
 
     # Living plan (see above), stored as plain dicts: {step_id, label, status, intended_tool}.

@@ -6,7 +6,7 @@ Two manifests:
   database/workspace/.manifest.md  — files the agent can read/write via tools
   database/documents/.manifest.md  — files ingested into the RAG vector store
 
-The context_builder node reads both at the start of each turn so the planning LLM
+The grounding (`ground`) node reads both at the start of each turn so the planning LLM
 knows exactly what documents exist and what they contain before deciding whether to
 call read_file or trigger retrieval.
 """

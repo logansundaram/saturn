@@ -4,18 +4,19 @@ from langchain.tools import tool
 from config import get_config
 from document_registry import register_workspace_file
 
-WORKSPACE_DIR = get_config().path("workspace")
-WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
-
 
 @tool
 def write_file(file_path: str, content: str, overwrite: bool = False):
     """Writes content to a file in the workspace. file_path is relative to the workspace root. content is the text to write. overwrite=True replaces the file; overwrite=False (default) appends to it."""
     start = time.perf_counter()
     try:
-        target_path = (WORKSPACE_DIR / file_path).resolve()
+        # Resolve the workspace from config per call (honors a live `/config paths.workspace`
+        # change) and ensure it exists before writing.
+        workspace = get_config().path("workspace")
+        workspace.mkdir(parents=True, exist_ok=True)
+        target_path = (workspace / file_path).resolve()
 
-        if not target_path.is_relative_to(WORKSPACE_DIR):
+        if not target_path.is_relative_to(workspace):
             return "Invalid file path: outside the workspace."
         if overwrite:
             with open(target_path, "w") as file:

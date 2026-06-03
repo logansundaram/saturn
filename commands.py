@@ -216,6 +216,15 @@ def _docs(ctx: CommandContext, args: list[str]) -> None:
 _ROLES = ("planner", "tool_caller", "synthesizer", "utility", "judge")
 
 
+def _resync_rag_after_model_change() -> None:
+    """A model/tier change may have swapped the active tier's embedder. reset_models() only
+    drops the chat-model caches, so re-embed the corpus here if the embedder actually changed."""
+    from rag import sync_to_config
+
+    if sync_to_config():
+        _print("  embedder changed -> re-embedded the document corpus.")
+
+
 @command(
     "model",
     "Show or switch the per-role model bindings / hardware tier.",
@@ -257,6 +266,7 @@ def _model(ctx: CommandContext, args: list[str]) -> None:
         cfg.set("active_tier", tier)
         reset_models()
         _print(f"  active tier -> {tier}; models will rebuild on next use (session only).")
+        _resync_rag_after_model_change()
         return
 
     role = args[0]
@@ -288,6 +298,7 @@ def _model(ctx: CommandContext, args: list[str]) -> None:
     reset_models()
     _print(f"  {role} -> {bound} on tier '{cfg.active_tier}' (session only).")
     _print("  edit config.yaml to make it permanent.")
+    _resync_rag_after_model_change()
 
 
 # ---------------------------------------------------------------------------
@@ -350,7 +361,7 @@ def _reingest(ctx: CommandContext, args: list[str]) -> None:
     implemented=False,
 )
 def _workspace(ctx: CommandContext, args: list[str]) -> None:
-    # TODO: list database/workspace/ (see document_registry.WORKSPACE_DIR), skipping .manifest.md.
+    # TODO: list get_config().path("workspace"), skipping .manifest.md.
     ...
 
 
@@ -442,12 +453,17 @@ def _config(ctx: CommandContext, args: list[str]) -> None:
         _print("  paths:")
         for name in ("documents", "workspace", "memory", "db_sqlite"):
             _print(f"    {name:<10}: {cfg.get('paths.' + name)}")
+        _print("  (workspace & memory resolve live; documents/db_sqlite apply on re-ingest/restart)")
         _print("  set a value: /config <dotted.key> <value>   (e.g. /config runtime.max_iterations 12)")
         return
 
     if args[0] == "reload":
         reload()
+        from llms import reset_models
+
+        reset_models()  # discarding session edits changes the bindings; drop the stale caches
         _print("  config.yaml reloaded from disk (any session edits discarded).")
+        _resync_rag_after_model_change()
         return
 
     key = args[0]
@@ -464,3 +480,4 @@ def _config(ctx: CommandContext, args: list[str]) -> None:
 
         reset_models()
         _print("  (models will rebuild on next use)")
+        _resync_rag_after_model_change()

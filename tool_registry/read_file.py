@@ -3,17 +3,18 @@ from langchain.tools import tool
 
 from config import get_config
 
-WORKSPACE_DIR = get_config().path("workspace")
-
 
 @tool
 def read_file(file_path: str):
     """Reads the contents of a file in the workspace and returns it as a string. file_path is relative to the workspace root."""
     start = time.perf_counter()
     try:
-        target_path = (WORKSPACE_DIR / file_path).resolve()
+        # Resolve the workspace from config per call so a live `/config paths.workspace` change
+        # is honored without a restart (config is the single source of truth).
+        workspace = get_config().path("workspace")
+        target_path = (workspace / file_path).resolve()
 
-        if not target_path.is_relative_to(WORKSPACE_DIR):
+        if not target_path.is_relative_to(workspace):
             return "Invalid file path: outside the workspace."
         with open(target_path, "r") as file:
             content = file.read()

@@ -23,13 +23,17 @@ from langchain.messages import HumanMessage
 
 from config import get_config
 
-DOCUMENTS_DIR = get_config().path("documents")
-WORKSPACE_DIR = get_config().path("workspace")
-
-WORKSPACE_MANIFEST = WORKSPACE_DIR / ".manifest.md"
-DOCUMENTS_MANIFEST = DOCUMENTS_DIR / ".manifest.md"
-
 _MANIFEST_HEADER = "# Document manifest\n\n"
+
+
+# Manifest paths resolve from config at *call time*, not import time, so a live `/config
+# paths.*` change is honored without a restart (config.py is the single source of truth).
+def _workspace_manifest() -> Path:
+    return get_config().path("workspace") / ".manifest.md"
+
+
+def _documents_manifest() -> Path:
+    return get_config().path("documents") / ".manifest.md"
 
 
 # ---------------------------------------------------------------------------
@@ -40,29 +44,23 @@ _MANIFEST_HEADER = "# Document manifest\n\n"
 def register_workspace_file(file_path: str, content: str) -> None:
     """Called by write_file after a successful write."""
     path = Path(file_path)
-    _upsert(WORKSPACE_MANIFEST, path.name, content, path.suffix)
+    _upsert(_workspace_manifest(), path.name, content, path.suffix)
 
 
 def register_rag_document(source: str, content: str) -> None:
     """Called by rag.build_ingest for each loaded document."""
     path = Path(source)
-    _upsert(DOCUMENTS_MANIFEST, path.name, content, path.suffix)
+    _upsert(_documents_manifest(), path.name, content, path.suffix)
 
 
 def read_workspace_manifest() -> str:
-    return (
-        WORKSPACE_MANIFEST.read_text(encoding="utf-8")
-        if WORKSPACE_MANIFEST.exists()
-        else ""
-    )
+    manifest = _workspace_manifest()
+    return manifest.read_text(encoding="utf-8") if manifest.exists() else ""
 
 
 def read_documents_manifest() -> str:
-    return (
-        DOCUMENTS_MANIFEST.read_text(encoding="utf-8")
-        if DOCUMENTS_MANIFEST.exists()
-        else ""
-    )
+    manifest = _documents_manifest()
+    return manifest.read_text(encoding="utf-8") if manifest.exists() else ""
 
 
 # ---------------------------------------------------------------------------

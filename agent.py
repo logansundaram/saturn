@@ -33,6 +33,9 @@ from rag import build_ingest
 from trace import Tracer
 import ui
 
+# REPL meta-commands (lines starting with `/`)
+import commands
+
 DB_PATH = "database/db.sqlite"
 
 
@@ -158,13 +161,24 @@ if __name__ == "__main__":
     tracer = Tracer(DB_PATH)
     state = _initial_state()
 
+    # Carries the live session into slash-command handlers. `make_initial_state` lets
+    # /reset rebuild state without commands.py importing back into agent.py.
+    cmd_ctx = commands.CommandContext(
+        state=state, make_initial_state=_initial_state, db_path=DB_PATH
+    )
+
     while True:
         user_input = input("User: ")
 
-        if user_input.lower() == "quit":
-            break
-        if user_input.lower() == "state":
-            print(state)
+        # `/`-prefixed lines are REPL meta-commands, not agent turns — intercept them here.
+        if commands.is_command(user_input):
+            commands.dispatch(user_input, cmd_ctx)
+            if cmd_ctx.should_quit:
+                break
+            state = cmd_ctx.state  # a command (e.g. /reset) may have swapped state out
+            continue
+
+        if not user_input.strip():
             continue
 
         state = _fresh_turn(state, user_input)
@@ -187,4 +201,5 @@ if __name__ == "__main__":
             tracer.end_run(run_id, "error", str(exc))
             raise
 
+        cmd_ctx.state = state  # keep the command context pointed at the latest state
         print(f"Assistant: {state['messages'][-1].content}")

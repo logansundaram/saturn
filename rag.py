@@ -38,10 +38,12 @@ def build_ingest():
                 for page_num, page in enumerate(reader.pages):
                     text = page.extract_text() or ""
                     if text.strip():
-                        docs.append(Document(
-                            page_content=text,
-                            metadata={"source": source, "page": page_num + 1},
-                        ))
+                        docs.append(
+                            Document(
+                                page_content=text,
+                                metadata={"source": source, "page": page_num + 1},
+                            )
+                        )
                 full_text = "\n".join(p.extract_text() or "" for p in reader.pages)
                 register_rag_document(source, full_text)
             else:
@@ -75,7 +77,7 @@ def build_ingest():
 def build_retrieval():
     def retrieve_docs(state: AgentState):
         query = state["messages"][-1].content
-        docs = vector_store.similarity_search(query, k=3)
+        docs = vector_store.similarity_search(query, k=4)
         return {"documents_retrieved": docs}
 
     retrieval_builder = StateGraph(AgentState)

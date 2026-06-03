@@ -1,90 +1,65 @@
 import time
-from langchain.messages import SystemMessage, HumanMessage, AIMessage
-from langchain_core.messages import RemoveMessage
+from pathlib import Path
 
 from state import AgentState
-from registry import tool as tool_list
-from messages import context_builder_system_msg_template
-from document_registry import read_workspace_manifest, read_documents_manifest
-
+from document_registry import (
+    read_workspace_manifest,
+    read_documents_manifest,
+    WORKSPACE_DIR,
+)
 
 """
-vibe coded, need to review
+Grounding node (re-scoped from the old context_builder; see SATURDAY_MVP_PLAN.md §8).
 
-python -m node_registry.context_builder to run from root backend folder
+Its ONLY job is to load the things that are NOT already available to the model:
+  - the document + workspace manifests (so the planner knows what docs/files exist), and
+  - persistent user/agent profiles (the persistent layer of memory), if present.
+
+It deliberately does NOT include:
+  - the tool inventory  -> tools are bound natively via bind_tools; duplicating them as text
+                           hurts tool-calling on small local models.
+  - the chat history    -> `messages` is already passed to the model directly.
+
+Built once per turn (manifests/profiles are static within a turn). Dynamic information —
+tool results — flows through `messages`, never this frozen grounding string.
 """
-# # Maximum conversational (Human/AI) messages to keep.
-# # Older turns beyond this window are deleted via RemoveMessage so state doesn't grow unbounded.
-# _MAX_HISTORY_TURNS = 10
 
-# # Stable ID so add_messages updates this message in place each turn rather than appending a duplicate.
-# _ENV_MSG_ID = "__context_builder_env__"
+# Persistent profiles live alongside the workspace. Optional — missing files are fine.
+_PROFILE_FILES = ("user_profile.md", "agent_profile.md")
 
 
-# build tool context
-def _build_tool_inventory() -> str:
-    lines = []
-    for t in tool_list:
-        lines.append(f"- {t.name}: {t.description}")
-    tool_content = "Available tools: \n" + "\n".join(lines)
-    return tool_content
-
-
-def _build_document_inventory() -> str:
-    # TODO: implement this
-    return "\nAvailable Documents: No documents yet."  # placeholder
-
-
-def _build_chat_history(state: AgentState) -> str:
-    messages = state.get("messages", [])
-
-    lines = []
-
-    for msg in messages:
-        if not hasattr(msg, "content"):
-            continue
-
-        role = msg.__class__.__name__.replace("Message", "")
-        lines.append(f"{role}: {msg.content}")
-
-    if not lines:
-        return "No previous messages."
-
-    return "Previous messages:\n" + "\n".join(lines)
-
-
-# might need a better system message here
-def _build_context(state: AgentState) -> str:
-    """Build the context for the agent."""
-    context = (
-        "This is the avaible context. Use this information to determine if RAG is necessary, tools are necessary, and if the past chat history is relevant"
-        + _build_tool_inventory()
-        + _build_document_inventory()
-        + _build_chat_history(state)
-    )
-    return context
-
-
-# def _format_manifest(raw: str, empty_label: str) -> str:
-#     """Strip the manifest header line and return body, or a fallback label."""
-#     if not raw.strip():
-#         return empty_label
-#     lines = raw.splitlines()
-#     # Drop the "# Document manifest" header line
-#     body_lines = [l for l in lines if not l.startswith("# ")]
-#     body = "\n".join(body_lines).strip()
-#     return body if body else empty_label
+def _read_profiles() -> str:
+    chunks = []
+    for name in _PROFILE_FILES:
+        path = WORKSPACE_DIR / name
+        if path.exists():
+            text = path.read_text(encoding="utf-8").strip()
+            if text:
+                chunks.append(text)
+    return "\n\n".join(chunks)
 
 
 def context_builder_node(state: AgentState) -> dict:
     start = time.perf_counter()
 
-    print("building context")
-    context_sys_msg = _build_context(state)
+    sections = ["## Grounding context"]
 
+    profiles = _read_profiles()
+    if profiles:
+        sections.append("### Profiles & persistent memory\n" + profiles)
+
+    docs_manifest = read_documents_manifest().strip()
+    sections.append(
+        "### Knowledge base (searchable via `search_knowledge_base`)\n"
+        + (docs_manifest or "No ingested documents yet.")
+    )
+
+    ws_manifest = read_workspace_manifest().strip()
+    sections.append(
+        "### Workspace files (accessible via read_file / write_file / list_directory)\n"
+        + (ws_manifest or "No workspace files yet.")
+    )
+
+    context = "\n\n".join(sections)
     print(f"context_builder_node : {time.perf_counter() - start:.4f}s")
-    return {"context": context_sys_msg}
-
-
-# if __name__ == "__main__":
-#     _build_tool_inventory()
+    return {"context": context}

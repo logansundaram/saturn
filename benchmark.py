@@ -75,13 +75,14 @@ def _fresh_state() -> AgentState:
         "messages": [],
         "current_query": "",
         "current_response": "",
+        "context": "",
+        "plan": [],
+        "iteration": 0,
+        "verified": False,
+        "verifier_feedback": "",
         "tools_called": [],
         "tool_results": [],
         "documents_retrieved": [],
-        "context": "",
-        "tools_necessary": False,
-        "rag_necessary": False,
-        "messages_relevant": False,
     }
 
 
@@ -100,11 +101,10 @@ def run_query(graph, query: str) -> dict:
             "query": query,
             "response": last_msg.content,
             "latency_s": elapsed,
-            "plan_flags": {
-                "tools_necessary": result.get("tools_necessary"),
-                "rag_necessary": result.get("rag_necessary"),
-                "messages_relevant": result.get("messages_relevant"),
-            },
+            "plan": [
+                {"label": s.label, "status": s.status} for s in result.get("plan", [])
+            ],
+            "iterations": result.get("iteration"),
             "tools_called": result.get("tools_called", []),
             "docs_retrieved": len(result.get("documents_retrieved", [])),
         }

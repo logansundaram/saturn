@@ -1,79 +1,116 @@
+"""
+Core nodes of the living-plan ReAct loop (Phase 1).
+
+  agent_node       — the reason-and-act step: model with tools bound natively. Emits tool
+                     calls, or no tool calls to signal it is done gathering.
+  tool_node        — executes the requested tool calls, appends ToolMessages back into
+                     `messages` (so the model sees results next iteration), and mirrors them
+                     into the trace accumulators.
+  route_after_agent — conditional edge: loop to tools, or finish at synthesize. Also enforces
+                      the max-iteration guardrail.
+
+The loop is assembled in agent.py:
+    ground -> plan -> agent -> (tools -> update_plan -> agent)*  -> synthesize -> END
+
+approval_node (Phase 2) will wrap tool_node with an interrupt for side-effecting tools.
+"""
+
+import time
+
+from langchain.messages import SystemMessage, ToolMessage
+
 from registry import tools_by_name
-from langgraph.graph import START, END
-from langgraph.graph import StateGraph
 from llms import llm_with_tools
-from state import AgentState
-from messages import medium_call_tool_msg
-from langchain.messages import ToolMessage
-from typing import Literal
-from langgraph.types import interrupt, Command
+from state import AgentState, PlanStep
+from messages import agent_loop_system_msg
 
-# should  have benchmark to measure the overhead of langgraph and agent architecture vs direct llm call
+# Hard cap on loop iterations so a confused model can't spin forever. Becomes config in Phase 3.
+MAX_ITERATIONS = 8
+
+# Tools whose results are documents worth recording as retrieved (for citations / trace).
+_RETRIEVAL_TOOLS = {"search_knowledge_base"}
+
+_STATUS_GLYPH = {"pending": "○", "active": "▶", "done": "✓", "skipped": "—"}
 
 
-def build_tool():
-    def call_tools(state: AgentState):
-        print(state["messages"])
+def render_plan(plan: list[PlanStep]) -> str:
+    """Human-readable checklist, injected into the agent's context and streamed to the UI."""
+    if not plan:
+        return "(no plan)"
+    lines = []
+    for step in plan:
+        glyph = _STATUS_GLYPH.get(step.status, "○")
+        tool = f"  [{step.intended_tool}]" if step.intended_tool else ""
+        lines.append(f"{glyph} {step.step_id}. {step.label}{tool}")
+    return "\n".join(lines)
 
-        llm_response = llm_with_tools.invoke(state["messages"] + [medium_call_tool_msg])
 
-        print("calling tool")
-        print(llm_response)
+def agent_node(state: AgentState):
+    """One ReAct decision: look at the plan + conversation, then call tools or finish."""
+    start = time.perf_counter()
 
-        # Keep this in messages because it contains .tool_calls
-        return {"messages": [llm_response]}
+    messages = [
+        agent_loop_system_msg,
+        SystemMessage(content=state.get("context", "")),
+        SystemMessage(content="Current plan:\n" + render_plan(state.get("plan", []))),
+        *state["messages"],
+    ]
 
-    def approval_node(
-        state: AgentState,
-    ):
-        pass
-        # Pause execution; payload shows up in result.interrupts (v2) or result["__interrupt__"] (v1) is_approved = interrupt( { "question": "Do you want to proceed with this action?", "details": state["messages"], } ) # Route based on the response if is_approved: return Command( goto="tool_node" ) # Runs after the resume payload is provided else: print("Execution of the tool cancelled") return Command(goto=END) # Cancel the exection
+    response = llm_with_tools.invoke(messages)
 
-    def tools_necessary(state: AgentState):
-        if state["messages"][-1].tool_calls:
-            print("tool is necessary")
-            return True
-        return False
-
-    def tool_node(state: AgentState):
-        tools_called = []
-        tool_results = []
-
-        for tool_call in state["messages"][-1].tool_calls:
-            tool_name = tool_call["name"]
-            tool_args = tool_call["args"]
-
-            selected_tool = tools_by_name[tool_name]
-            observation = selected_tool.invoke(tool_args)
-
-            tools_called.append(tool_name)
-            tool_results.append(str(observation))
-
-            print(observation)
-
-        return {
-            "tools_called": tools_called,
-            "tool_results": tool_results,
-        }
-
-    tool_builder = StateGraph(AgentState)
-
-    tool_builder.add_node("call_tools", call_tools)
-    tool_builder.add_node("tool_node", tool_node)
-    tool_builder.add_node("approval_node", approval_node)
-
-    tool_builder.add_edge(START, "call_tools")
-
-    tool_builder.add_conditional_edges(
-        "call_tools",
-        tools_necessary,
-        {
-            True: "tool_node",
-            False: END,
-        },
+    tool_calls = getattr(response, "tool_calls", None) or []
+    print(
+        f"agent_node : {time.perf_counter() - start:.4f}s "
+        f"(iter {state.get('iteration', 0)}, {len(tool_calls)} tool call(s))"
     )
+    return {"messages": [response], "iteration": state.get("iteration", 0) + 1}
 
-    tool_builder.add_edge("tool_node", END)
 
-    tool_graph = tool_builder.compile()
-    return tool_graph
+def tool_node(state: AgentState):
+    """Execute the tool calls on the last AI message and feed results back as ToolMessages."""
+    start = time.perf_counter()
+
+    last = state["messages"][-1]
+    tool_messages = []
+    tools_called = []
+    tool_results = []
+    documents_retrieved = []
+
+    for tool_call in last.tool_calls:
+        name = tool_call["name"]
+        args = tool_call["args"]
+
+        selected = tools_by_name.get(name)
+        if selected is None:
+            observation = f"Error: unknown tool '{name}'."
+        else:
+            try:
+                observation = selected.invoke(args)
+            except Exception as exc:  # surface tool errors to the model instead of crashing
+                observation = f"Error calling {name}: {exc}"
+
+        observation = str(observation)
+        tool_messages.append(
+            ToolMessage(content=observation, tool_call_id=tool_call["id"], name=name)
+        )
+        tools_called.append(name)
+        tool_results.append(observation)
+        if name in _RETRIEVAL_TOOLS:
+            documents_retrieved.append(observation)
+
+    print(f"tool_node : {time.perf_counter() - start:.4f}s ({len(tool_messages)} executed)")
+    return {
+        "messages": tool_messages,
+        "tools_called": tools_called,
+        "tool_results": tool_results,
+        "documents_retrieved": documents_retrieved,
+    }
+
+
+def route_after_agent(state: AgentState) -> str:
+    """Loop back to tools if the model requested any (and we're under the cap); else finish."""
+    last = state["messages"][-1]
+    has_tool_calls = bool(getattr(last, "tool_calls", None))
+    if has_tool_calls and state.get("iteration", 0) < MAX_ITERATIONS:
+        return "tools"
+    return "synthesize"

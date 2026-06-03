@@ -1,1 +1,0 @@
-Python lists are ordered, mutable collections of items. They can store different data types (integers, strings, etc.) and are defined using square brackets []. Lists are one of the most versatile data structures in Python.

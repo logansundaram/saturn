@@ -3,7 +3,7 @@ from langchain.tools import tool
 from pathlib import Path
 
 
-WORKSPACE_DIR = Path(__file__).parent.parent.parent / "database" / "documents" / "workspace"
+WORKSPACE_DIR = Path(__file__).parent.parent / "database" / "workspace"
 
 
 @tool

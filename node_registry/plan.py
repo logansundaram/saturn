@@ -1,31 +1,42 @@
 import time
-from langchain.messages import HumanMessage, SystemMessage
-from state import AgentState
-from llms import llm_with_structued_output
-
-_plan_routing_msg = SystemMessage(content="""
-You are a routing classifier. Given the session context and the user's current query, set each flag:
-
-- tools_necessary: true if answering the query requires calling ANY tool — this includes math/calculation, current or real-time information, reading files, writing files, listing directories, or any external action. If the task cannot be completed from memory alone, set this to true.
-- rag_necessary: true if the query asks about content that may exist in the local document knowledge base.
-- messages_relevant: true ONLY if prior conversation turns (not the current query itself) contain context that is needed to answer the current query. If there are no prior turns, set this to false.
-
-When in doubt about tools_necessary, prefer true over false.
-""")
+from langchain.messages import HumanMessage
+from state import AgentState, PlanStep
+from llms import llm_with_plan
+from messages import planner_system_msg
 
 
 def plan_node(state: AgentState):
+    """Draft the initial living plan: a short, ordered list of PlanStep with human-readable
+    labels. The plan is advisory and will be revised in-loop by update_plan.
+
+    If the local model fails to emit valid structured output, fall back to a single generic
+    step rather than aborting the turn — the agent loop can still resolve the request."""
     start = time.perf_counter()
-    llm_response = llm_with_structued_output.invoke(
-        [_plan_routing_msg, HumanMessage(content="context: " + state["context"])]
-    )
-    print(f"plan_node : {time.perf_counter() - start:.4f}s")
-    # need to add the plan to the state
-    # plan = PlanStep.model_validate_json(llm_response.content)
-    # plan = plan.model_dump()
-    # print(plan)
-    return {
-        "tools_necessary": llm_response.tools_necessary,
-        "rag_necessary": llm_response.rag_necessary,
-        "messages_relevant": llm_response.messages_relevant,
-    }
+
+    try:
+        result = llm_with_plan.invoke(
+            [
+                planner_system_msg,
+                HumanMessage(
+                    content="Grounding context:\n"
+                    + state.get("context", "")
+                    + "\n\nUser request:\n"
+                    + state["current_query"]
+                ),
+            ]
+        )
+        steps = result.steps
+    except Exception as exc:
+        print(f"plan_node : structured-output failed ({exc}); using fallback plan")
+        steps = []
+
+    if not steps:
+        steps = [PlanStep(step_id=1, label="Resolve the user's request", status="pending")]
+
+    # Normalize: ensure sequential 1-based ids and a pending start state.
+    for i, step in enumerate(steps, start=1):
+        step.step_id = i
+        step.status = "pending"
+
+    print(f"plan_node : {time.perf_counter() - start:.4f}s ({len(steps)} steps)")
+    return {"plan": steps}

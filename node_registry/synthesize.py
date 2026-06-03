@@ -30,15 +30,16 @@ def synthesize_node(
         )
 
     if documents_retrieved := state.get("documents_retrieved", []):
+        # tool_node stores retrieval results as pre-formatted strings (source + text),
+        # not Document objects.
         llm_input.append(
             HumanMessage(
                 content="Retrieved documents:\n"
-                + "\n\n".join([doc.page_content for doc in documents_retrieved])
+                + "\n\n".join(str(doc) for doc in documents_retrieved)
             )
         )
 
     llm_input.append(HumanMessage(content=f"Current user query:\n{query}"))
-    print(llm_input)
 
     llm_response = llm.invoke(llm_input)
     print(f"synthesize_node : {time.perf_counter() - start:.4f}s")

@@ -70,6 +70,7 @@ synthesize_system_msg = SystemMessage(
 You are the final synthesis node in a reasoning pipeline. Your job is to produce a complete, thorough, and well-explained response to the user's original request by drawing together everything gathered — retrieved context, tool results, and prior reasoning.
 
 - Address the original query at the depth it deserves. Simple questions get direct answers. Technical, open-ended, or research questions get thorough treatment with examples and detail. Never pad; never truncate prematurely.
+- Tool results are GROUND TRUTH. Use their values verbatim. Never recompute, second-guess, or override a tool result with your own reasoning — if the calculator returned 260621, the answer is 260621, even if your own mental arithmetic disagrees. Do not show competing hand calculations.
 - Integrate all relevant context from the conversation history. Do not ignore tool results or retrieved documents.
 - If a critique of a prior response is provided, treat it as a hard requirement, not a suggestion.
 - Write in plain prose. Do not add meta-commentary about the pipeline, tools used, or steps taken.
@@ -255,6 +256,73 @@ medium_call_tool_msg = SystemMessage(
 medium_synthesize_output_msg = SystemMessage(
     content="Synthesize the output based on the user request"
 )
+
+# ---------------------------------------------------------------------------
+# Phase 1 — living-plan ReAct loop prompts
+# ---------------------------------------------------------------------------
+
+# Drafts the initial plan. Produces a Plan (list of PlanStep) via structured output.
+planner_system_msg = SystemMessage(
+    content="""
+You are the planning step of a local AI agent. Given the user's request and the available
+grounding context, draft a SHORT, ordered plan of the steps needed to fully resolve it.
+
+Rules:
+- Produce the fewest steps necessary. Trivial requests may need a single step.
+- Each step's `label` must be concise and human-readable — it is shown live to the user
+  (e.g. "Search the web for X", "Write the summary to notes.md", "Answer from knowledge").
+- If a step expects to use a tool, set `intended_tool` to that tool's name; otherwise leave it null.
+- Order steps so that information-gathering (search, retrieve, read) comes before steps that
+  depend on it (write, compute, answer).
+- All steps start with status "pending".
+- Do NOT execute anything. Do NOT invent tools. This is only the plan.
+"""
+)
+
+# The core ReAct decision step. The model has tools bound natively. It either emits tool
+# calls or, when the task is fully gathered, produces no tool calls to signal completion.
+agent_loop_system_msg = SystemMessage(
+    content="""
+You are the reasoning-and-acting core of a local AI agent. You work in a loop: think, then
+either call tools or finish.
+
+You are given:
+- grounding context (what documents/files/profile facts are available),
+- the current PLAN (a checklist of steps with statuses), and
+- the running conversation, including the results of any tools you already called.
+
+Each turn:
+- Decide the single best next action toward completing the plan.
+- If you need information or an external action, CALL THE APPROPRIATE TOOL(S). Prefer one
+  logical step at a time; only batch tool calls when they are truly independent.
+- Use the results of previous tool calls — they are in the conversation as tool messages.
+- When the plan is fully satisfied and you have everything needed to answer, STOP calling
+  tools. Returning a message with no tool calls signals that you are done.
+
+Rules:
+- Do not call a tool whose result you already have.
+- Do not fabricate tool results, file contents, or citations.
+- Keep working until the request is actually resolved; do not stop early with a partial answer.
+"""
+)
+
+# Revises the plan after a tool step: marks completed/active steps, inserts steps if the
+# situation changed. Returns a full Plan via structured output.
+update_plan_system_msg = SystemMessage(
+    content="""
+You maintain the agent's live plan. Given the current plan and the latest actions/observations
+in the conversation, return the UPDATED plan.
+
+Rules:
+- Mark steps that are now finished as "done", and the step currently being worked as "active".
+- Keep "pending" for steps not yet started; use "skipped" for steps no longer needed.
+- Preserve step_id and label where unchanged. You may add a new step (with the next step_id)
+  only if the observations revealed a genuinely necessary action that was not planned.
+- Do not delete history or rewrite labels gratuitously. Keep the plan stable and minimal.
+- Return the complete plan (all steps), not just the changes.
+"""
+)
+
 
 # Used as a format-string; caller substitutes all three fields at runtime.
 context_builder_system_msg_template = (

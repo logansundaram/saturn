@@ -34,6 +34,23 @@ class Plan(BaseModel):
     steps: List[PlanStep] = Field(default_factory=list)
 
 
+def steps_to_dicts(steps: List[PlanStep]) -> List[dict]:
+    """Convert planner structured-output PlanSteps into the plain dicts stored in state.
+
+    The plan lives in state as a list of dicts (not Pydantic objects) so the SqliteSaver
+    checkpointer's serializer never has to round-trip a custom type. Pydantic PlanStep/Plan
+    are used only at the planner boundary."""
+    return [
+        {
+            "step_id": i,
+            "label": s.label,
+            "status": "pending",
+            "intended_tool": s.intended_tool,
+        }
+        for i, s in enumerate(steps, start=1)
+    ]
+
+
 # --- Agent state ------------------------------------------------------------
 class AgentState(TypedDict):
     # ReAct scratchpad. Human/AI/Tool messages. Tool calls AND their ToolMessage
@@ -50,8 +67,10 @@ class AgentState(TypedDict):
     # context_builder; downstream nodes read but never mutate it.
     context: str
 
-    # Living plan (see above). Overwritten wholesale by `plan` and `update_plan`.
-    plan: List[PlanStep]
+    # Living plan (see above), stored as plain dicts: {step_id, label, status, intended_tool}.
+    # Overwritten wholesale by `plan` and `update_plan`. Kept as dicts (not PlanStep objects)
+    # so the checkpointer serializes it without custom-type warnings.
+    plan: List[dict]
 
     # Loop control / guardrails for the ReAct loop. Incremented each agent pass;
     # bounded by a max-iteration cap in config to prevent runaway loops.

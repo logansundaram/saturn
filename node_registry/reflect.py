@@ -30,24 +30,24 @@ def update_plan_node(state: AgentState):
     # 1) Mark any not-yet-finished step whose intended tool has been called as done.
     marked = False
     for step in plan:
-        if step.status in _TERMINAL:
+        if step["status"] in _TERMINAL:
             continue
-        if step.intended_tool and step.intended_tool in called:
-            step.status = "done"
+        if step.get("intended_tool") and step["intended_tool"] in called:
+            step["status"] = "done"
             marked = True
 
     # 2) If a tool round happened but matched no intended_tool (null/mismatched), still show
     #    progress by completing the earliest unfinished step.
     if called and not marked:
         for step in plan:
-            if step.status not in _TERMINAL:
-                step.status = "done"
+            if step["status"] not in _TERMINAL:
+                step["status"] = "done"
                 break
 
     # 3) Surface the next remaining step as active.
     for step in plan:
-        if step.status == "pending":
-            step.status = "active"
+        if step["status"] == "pending":
+            step["status"] = "active"
             break
 
     print(f"update_plan_node : {time.perf_counter() - start:.4f}s")

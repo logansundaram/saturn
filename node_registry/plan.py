@@ -1,12 +1,12 @@
 import time
 from langchain.messages import HumanMessage
-from state import AgentState, PlanStep
+from state import AgentState, steps_to_dicts
 from llms import llm_with_plan
 from messages import planner_system_msg
 
 
 def plan_node(state: AgentState):
-    """Draft the initial living plan: a short, ordered list of PlanStep with human-readable
+    """Draft the initial living plan: a short, ordered list of steps with human-readable
     labels. The plan is advisory and will be revised in-loop by update_plan.
 
     If the local model fails to emit valid structured output, fall back to a single generic
@@ -25,18 +25,20 @@ def plan_node(state: AgentState):
                 ),
             ]
         )
-        steps = result.steps
+        plan = steps_to_dicts(result.steps)
     except Exception as exc:
         print(f"plan_node : structured-output failed ({exc}); using fallback plan")
-        steps = []
+        plan = []
 
-    if not steps:
-        steps = [PlanStep(step_id=1, label="Resolve the user's request", status="pending")]
+    if not plan:
+        plan = [
+            {
+                "step_id": 1,
+                "label": "Resolve the user's request",
+                "status": "pending",
+                "intended_tool": None,
+            }
+        ]
 
-    # Normalize: ensure sequential 1-based ids and a pending start state.
-    for i, step in enumerate(steps, start=1):
-        step.step_id = i
-        step.status = "pending"
-
-    print(f"plan_node : {time.perf_counter() - start:.4f}s ({len(steps)} steps)")
-    return {"plan": steps}
+    print(f"plan_node : {time.perf_counter() - start:.4f}s ({len(plan)} steps)")
+    return {"plan": plan}

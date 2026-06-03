@@ -1,12 +1,13 @@
 import argparse
 import json
 import time
+import uuid
 from datetime import datetime
 from pathlib import Path
 
 from langchain.messages import HumanMessage
 
-from agent import build_agent
+from agent import build_agent, run_turn
 from state import AgentState
 
 SUITES: dict[str, list[str]] = {
@@ -93,7 +94,10 @@ def run_query(graph, query: str) -> dict:
 
     start = time.perf_counter()
     try:
-        result = graph.invoke(state)
+        # Auto-approve gated tools so the benchmark measures capability without blocking on
+        # the human approval gate. thread_id is required now that the graph is checkpointed.
+        config = {"configurable": {"thread_id": str(uuid.uuid4())}}
+        result = run_turn(graph, state, config, approver=lambda _v: True)
         elapsed = round(time.perf_counter() - start, 3)
         last_msg = result["messages"][-1]
         return {
@@ -102,7 +106,7 @@ def run_query(graph, query: str) -> dict:
             "response": last_msg.content,
             "latency_s": elapsed,
             "plan": [
-                {"label": s.label, "status": s.status} for s in result.get("plan", [])
+                {"label": s["label"], "status": s["status"]} for s in result.get("plan", [])
             ],
             "iterations": result.get("iteration"),
             "tools_called": result.get("tools_called", []),

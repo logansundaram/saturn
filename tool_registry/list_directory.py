@@ -3,7 +3,7 @@ from langchain.tools import tool
 from pathlib import Path
 
 
-WORKSPACE_DIR = Path(__file__).parent.parent / "database" / "workspace"
+WORKSPACE_DIR = (Path(__file__).parent.parent / "database" / "workspace").resolve()
 
 
 @tool
@@ -13,8 +13,8 @@ def list_directory(directory: str = "."):
     try:
         target_path = (WORKSPACE_DIR / directory).resolve()
 
-        if not str(target_path).startswith(str(WORKSPACE_DIR)):
-            return "Invalid directory path."
+        if not target_path.is_relative_to(WORKSPACE_DIR):
+            return "Invalid directory path: outside the workspace."
 
         if not target_path.is_dir():
             return "Path is not a directory."

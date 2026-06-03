@@ -4,7 +4,7 @@ from pathlib import Path
 
 from document_registry import register_workspace_file
 
-WORKSPACE_DIR = Path(__file__).parent.parent / "database" / "workspace"
+WORKSPACE_DIR = (Path(__file__).parent.parent / "database" / "workspace").resolve()
 WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -15,8 +15,8 @@ def write_file(file_path: str, content: str, overwrite: bool = False):
     try:
         target_path = (WORKSPACE_DIR / file_path).resolve()
 
-        if not str(target_path).startswith(str(WORKSPACE_DIR)):
-            return "Invalid file path."
+        if not target_path.is_relative_to(WORKSPACE_DIR):
+            return "Invalid file path: outside the workspace."
         if overwrite:
             with open(target_path, "w") as file:
                 file.write(content)

@@ -16,12 +16,14 @@ approval_node (Phase 2) will wrap tool_node with an interrupt for side-effecting
 """
 
 import time
+from typing import Literal
 
 from langchain.messages import SystemMessage, ToolMessage
+from langgraph.types import interrupt, Command
 
-from registry import tools_by_name
+from registry import tools_by_name, risk_of
 from llms import llm_with_tools
-from state import AgentState, PlanStep
+from state import AgentState
 from messages import agent_loop_system_msg
 
 # Hard cap on loop iterations so a confused model can't spin forever. Becomes config in Phase 3.
@@ -32,16 +34,31 @@ _RETRIEVAL_TOOLS = {"search_knowledge_base"}
 
 _STATUS_GLYPH = {"pending": "○", "active": "▶", "done": "✓", "skipped": "—"}
 
+# Cap each argument's length so a big write_file payload doesn't bloat the trace/synthesis input.
+_MAX_ARG_REPR = 200
 
-def render_plan(plan: list[PlanStep]) -> str:
+
+def _fmt_call(name: str, args: dict) -> str:
+    """Render a tool call like  calculate(expression='847 * 293 + 12450')  for the trace and
+    for synthesis, so results stay linked to the call that produced them."""
+    parts = []
+    for k, v in (args or {}).items():
+        r = repr(v)
+        if len(r) > _MAX_ARG_REPR:
+            r = r[:_MAX_ARG_REPR] + "…"
+        parts.append(f"{k}={r}")
+    return f"{name}({', '.join(parts)})"
+
+
+def render_plan(plan: list[dict]) -> str:
     """Human-readable checklist, injected into the agent's context and streamed to the UI."""
     if not plan:
         return "(no plan)"
     lines = []
     for step in plan:
-        glyph = _STATUS_GLYPH.get(step.status, "○")
-        tool = f"  [{step.intended_tool}]" if step.intended_tool else ""
-        lines.append(f"{glyph} {step.step_id}. {step.label}{tool}")
+        glyph = _STATUS_GLYPH.get(step["status"], "○")
+        tool = f"  [{step['intended_tool']}]" if step.get("intended_tool") else ""
+        lines.append(f"{glyph} {step['step_id']}. {step['label']}{tool}")
     return "\n".join(lines)
 
 
@@ -94,7 +111,9 @@ def tool_node(state: AgentState):
             ToolMessage(content=observation, tool_call_id=tool_call["id"], name=name)
         )
         tools_called.append(name)
-        tool_results.append(observation)
+        # Pair the result with its call so synthesis can't divorce the value from what it
+        # answers (this is what stops the model recomputing and contradicting the tool).
+        tool_results.append(f"{_fmt_call(name, args)} -> {observation}")
         if name in _RETRIEVAL_TOOLS:
             documents_retrieved.append(observation)
 
@@ -108,9 +127,48 @@ def tool_node(state: AgentState):
 
 
 def route_after_agent(state: AgentState) -> str:
-    """Loop back to tools if the model requested any (and we're under the cap); else finish."""
+    """Send tool requests through the approval gate (and we're under the cap); else finish."""
     last = state["messages"][-1]
     has_tool_calls = bool(getattr(last, "tool_calls", None))
     if has_tool_calls and state.get("iteration", 0) < MAX_ITERATIONS:
-        return "tools"
+        return "approval"
     return "synthesize"
+
+
+def approval_node(state: AgentState) -> Command[Literal["tools", "agent"]]:
+    """Human-in-the-loop safety gate. Read-only tool batches pass straight through. If any
+    pending tool call is side-effecting/destructive, pause via `interrupt` and let the user
+    approve or reject the whole batch.
+
+    On reject we still emit ToolMessages for every pending call (so the message history stays
+    valid — orphaned tool_calls break the next model turn) and route back to the agent to
+    respond without having performed the action."""
+    last = state["messages"][-1]
+    tool_calls = getattr(last, "tool_calls", None) or []
+    gated = [tc for tc in tool_calls if risk_of(tc["name"]) != "read_only"]
+
+    if not gated:
+        return Command(goto="tools")
+
+    approved = interrupt(
+        {
+            "type": "approval_request",
+            "tool_calls": [
+                {"name": tc["name"], "args": tc["args"], "risk": risk_of(tc["name"])}
+                for tc in gated
+            ],
+        }
+    )
+
+    if approved:
+        return Command(goto="tools")
+
+    decline = [
+        ToolMessage(
+            content="Execution declined by the user. Do not retry this action; tell the user you did not perform it.",
+            tool_call_id=tc["id"],
+            name=tc["name"],
+        )
+        for tc in tool_calls
+    ]
+    return Command(goto="agent", update={"messages": decline})

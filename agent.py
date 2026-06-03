@@ -7,7 +7,12 @@ if hasattr(sys.stdout, "reconfigure"):
 if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8")
 
+import sqlite3
+import uuid
+
 from langgraph.graph import StateGraph, START, END
+from langgraph.types import Command
+from langgraph.checkpoint.sqlite import SqliteSaver
 from langchain.messages import HumanMessage
 
 from state import AgentState
@@ -17,22 +22,36 @@ from node_registry.context_builder import context_builder_node
 from node_registry.plan import plan_node
 from node_registry.synthesize import synthesize_node
 from node_registry.reflect import update_plan_node
-from tool import agent_node, tool_node, route_after_agent
+from tool import agent_node, tool_node, approval_node, route_after_agent
 
 # RAG ingest (populates the in-memory vector store the search_knowledge_base tool reads)
 from rag import build_ingest
 
+# transparency + safety UI
+from trace import Tracer
+import ui
+
+DB_PATH = "database/db.sqlite"
+
 
 def build_agent():
-    """Assemble the living-plan ReAct loop:
+    """Assemble the living-plan ReAct loop with a human-in-the-loop approval gate:
 
-        START -> ground -> plan -> agent -> (tools -> update_plan -> agent)* -> synthesize -> END
+        START -> ground -> plan -> agent -> approval -> (tools -> update_plan -> agent)* -> synthesize -> END
+                                     │          │
+                              (no tool calls)  (reject -> back to agent)
+                                     ▼
+                                 synthesize
+
+    Compiled with a SqliteSaver checkpointer, which both persists sessions and is what lets the
+    approval `interrupt` pause and resume.
     """
     builder = StateGraph(AgentState)
 
     builder.add_node("ground", context_builder_node)
     builder.add_node("plan", plan_node)
     builder.add_node("agent", agent_node)
+    builder.add_node("approval", approval_node)
     builder.add_node("tools", tool_node)
     builder.add_node("update_plan", update_plan_node)
     builder.add_node("synthesize", synthesize_node)
@@ -40,17 +59,56 @@ def build_agent():
     builder.add_edge(START, "ground")
     builder.add_edge("ground", "plan")
     builder.add_edge("plan", "agent")
-
-    # ReAct branch: act on tools, or finish.
     builder.add_conditional_edges(
-        "agent", route_after_agent, {"tools": "tools", "synthesize": "synthesize"}
+        "agent", route_after_agent, {"approval": "approval", "synthesize": "synthesize"}
     )
+    # approval routes dynamically via Command(goto=...) to "tools" (approved) or "agent" (rejected)
     builder.add_edge("tools", "update_plan")
     builder.add_edge("update_plan", "agent")
-
     builder.add_edge("synthesize", END)
 
-    return builder.compile()
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    checkpointer = SqliteSaver(conn)
+    return builder.compile(checkpointer=checkpointer)
+
+
+def run_turn(graph, payload, config, approver, on_update=None):
+    """Drive one turn to completion, streaming node updates and pausing at the approval gate.
+
+    `approver(interrupt_value) -> bool` decides each approval. `on_update(node, delta)` is called
+    for every node update (used for the trace + live plan panel). Returns the final state."""
+    pending = payload
+    while True:
+        for chunk in graph.stream(pending, config, stream_mode="updates"):
+            if "__interrupt__" in chunk:
+                continue  # detected via get_state below
+            for node, delta in chunk.items():
+                if on_update:
+                    on_update(node, delta or {})
+
+        snapshot = graph.get_state(config)
+        if not snapshot.next:
+            return snapshot.values  # turn complete
+
+        # Paused on an interrupt — pull its payload, ask the approver, resume.
+        interrupt_value = None
+        for task in snapshot.tasks:
+            if task.interrupts:
+                interrupt_value = task.interrupts[0].value
+                break
+        decision = approver(interrupt_value)
+        pending = Command(resume=decision)
+
+
+def _make_on_update(tracer, run_id, show_ui=True):
+    def on_update(node, delta):
+        tracer.log_event(run_id, node, delta)
+        if show_ui:
+            ui.show_node(node)
+            if delta.get("plan"):
+                ui.show_plan(delta["plan"])
+
+    return on_update
 
 
 def _fresh_turn(state: AgentState, user_input: str) -> AgentState:
@@ -70,17 +128,8 @@ def _fresh_turn(state: AgentState, user_input: str) -> AgentState:
     return state
 
 
-if __name__ == "__main__":
-    # Populate the knowledge base once at startup. Non-fatal if it fails (e.g. embedding
-    # model not pulled) — the search_knowledge_base tool will just return "no documents".
-    try:
-        build_ingest().invoke({"documents": []})
-    except Exception as exc:
-        print(f"[warn] knowledge-base ingest failed, continuing without RAG: {exc}")
-
-    graph = build_agent()
-
-    state: AgentState = {
+def _initial_state() -> AgentState:
+    return {
         "messages": [],
         "current_query": "",
         "current_response": "",
@@ -94,6 +143,19 @@ if __name__ == "__main__":
         "documents_retrieved": [],
     }
 
+
+if __name__ == "__main__":
+    # Populate the knowledge base once at startup. Non-fatal if it fails (e.g. embedding
+    # model not pulled) — the search_knowledge_base tool will just return "no documents".
+    try:
+        build_ingest().invoke({"documents": []})
+    except Exception as exc:
+        print(f"[warn] knowledge-base ingest failed, continuing without RAG: {exc}")
+
+    graph = build_agent()
+    tracer = Tracer(DB_PATH)
+    state = _initial_state()
+
     while True:
         user_input = input("User: ")
 
@@ -104,6 +166,23 @@ if __name__ == "__main__":
             continue
 
         state = _fresh_turn(state, user_input)
-        state = graph.invoke(state)
+        # Fresh thread per turn: gives the approval interrupt a stable thread to pause/resume on,
+        # while cross-turn memory rides on the manually-carried `messages`.
+        thread_id = str(uuid.uuid4())
+        config = {"configurable": {"thread_id": thread_id}}
+        run_id = tracer.start_run(thread_id, user_input)
+
+        try:
+            state = run_turn(
+                graph,
+                state,
+                config,
+                approver=ui.ask_approval,
+                on_update=_make_on_update(tracer, run_id, show_ui=True),
+            )
+            tracer.end_run(run_id, "ok", state["messages"][-1].content)
+        except Exception as exc:
+            tracer.end_run(run_id, "error", str(exc))
+            raise
 
         print(f"Assistant: {state['messages'][-1].content}")

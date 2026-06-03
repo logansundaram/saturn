@@ -82,8 +82,9 @@ Neither pure ReAct (flexible but opaque) nor plan-execute (inspectable but rigid
 the **plan is a first-class, mutable object in state**, drafted up front and revised *during*
 the loop:
 
-- New `AgentState` field: `plan: list[PlanStep]`, where
-  `PlanStep = {step_id, label (human-readable), status: pending|active|done|skipped, intended_tool?}`.
+- New `AgentState` field: `plan: list[dict]`, each step
+  `{step_id, label (human-readable), status: pending|active|done|skipped, intended_tool?}`
+  (Pydantic `Plan`/`PlanStep` used only for the planner's structured output).
 - `plan_node` (repurposed from the router) **drafts** the initial plan → immediate inspectability.
 - The `agent` node runs a ReAct loop: reads plan + history + observations, picks the next
   action (tool call or finalize).
@@ -134,10 +135,11 @@ never knows whether a terminal panel or an Electron window is listening.
   streaming as the plan mutates (after draft, after each `update_plan`).
 - Same stream is persisted to the trace store — "live plan panel" and "transparency log"
   are the same data, surfaced two ways.
-- **CLI rendering (MVP):** a pinned, live-updating **Rich `Live` panel** (todo list with
-  ✓/▶/○ status) beside the chat — the unobtrusive "side window" feel in a terminal.
-  *(Textual split-pane / Electron window are the graduation path and require **no agent-code
-  change** — only a different subscriber.)*
+- **CLI rendering (MVP):** a re-printed **Rich grid table** in a "blueprint terminal" style —
+  thin cyan single-line grid, uppercase labels (`# | STATUS | STEP | TOOL`), text status
+  labels (no emoji/glyphs), calm cyan accent. See `ui.py`. *(Textual split-pane / Electron
+  window are the graduation path and require **no agent-code change** — only a different
+  subscriber.)*
 
 ### 7. Configurability — role-based modular models
 
@@ -253,19 +255,31 @@ Keep latency as a secondary axis; add a run-to-run diff view to catch regression
 
 ## Implementation roadmap
 
-**Phase 0 — Stabilize (fix what's silently broken).** Wire `build_ingest` into startup +
-**persist the vector store to disk**; verify the model id; clean single end-to-end turn; add
-the `SqliteSaver` checkpointer. *Exit: RAG returns documents; sessions resume.*
+**Phase 0 — Stabilize (fix what's silently broken). ◐ MOSTLY DONE.** `build_ingest` wired into
+startup; model id confirmed (`gemma4:e4b` is a real local tag); the `__file__` path bug fixed
+(workspace now `database/workspace/`); `SqliteSaver` checkpointer added. *Still open:* the
+vector store re-embeds every run (no on-disk persistence yet). *Exit: RAG returns documents;
+sessions resume — met.*
 
-**Phase 1 — Living-plan agentic loop.** Add `plan` to state; repurpose `plan_node` (draft),
-`reflect.py` (`update_plan`); replace static fan-out with the model↔tools ReAct loop; expose
-RAG as a tool. **Re-scope `context_builder` to a lean grounding node (§8)** — profiles +
-manifests only; stop duplicating tool inventory (bound natively) and chat history (in
-`messages`). *Exit: multi-tool chaining works (workflow #3).*
+**Phase 1 — Living-plan agentic loop. ✅ DONE.** `plan`/`PlanStep` added to state; `plan_node`
+drafts the plan; `reflect.py` is the `update_plan` step; static fan-out replaced with the
+model↔tools ReAct loop (`tool.py:agent_node`/`tool_node`/`route_after_agent`); RAG exposed as
+`search_knowledge_base`; `context_builder` re-scoped to the lean grounding node (§8). *Exit:
+multi-tool chaining works (workflow #3) — met.*
+  - *Deviations:* `update_plan` is **mechanical** (no LLM) because the local model can't emit
+    JSON for it reliably; synthesize pairs each result with its call (`name(args) -> result`)
+    so the model stops recomputing and contradicting tool output.
 
-**Phase 2 — Safety & transparency.** Tool risk tiers + `interrupt` approval gate; sandbox
-file tools; structured trace → SQLite; stream `PlanEvent`s to a Rich `Live` panel. *Exit:
-workflow #6 passes; every run is inspectable; plan visible live.*
+**Phase 2 — Safety & transparency. ✅ DONE.** Tool risk tiers (`registry.TOOL_RISK`/`risk_of`)
++ `interrupt` approval gate (`tool.py:approval_node`); file-tool sandbox hardened
+(`is_relative_to`); structured trace → SQLite (`trace.py`); live plan panel via Rich
+(`ui.py`). *Exit: workflow #6 passes; every run is inspectable; plan visible live — met.*
+  - *Deviations:* the plan panel is a **re-printed Rich panel** (not `Live`) to avoid
+    conflicting with the approval `input()` prompt — same event-stream design, swappable
+    renderer. Checkpoints + trace both live in `database/db.sqlite`.
+  - *Resolved follow-up:* the plan is now stored in state as plain dicts (Pydantic `Plan`/
+    `PlanStep` only at the planner boundary via `state.steps_to_dicts`), so the `SqliteSaver`
+    no longer warns about serializing a custom type.
 
 **Phase 3 — Memory & config.** Load/update profiles; working-memory store; `config.yaml` +
 `get_model(role)` factory + hardware-tier presets + capability descriptors. *Exit: workflow
@@ -290,8 +304,8 @@ partly overlap.
 |---|---|---|
 | MVP surface | CLI-first | Frontend post-MVP; doesn't exist in repo yet |
 | Agent architecture | Living-plan ReAct hybrid | Plan in state, revised in-loop, advisory not rigid |
-| Action + plan-update | One call (workstation) / two steps (laptop) | Bound to model tier |
-| Plan panel (CLI) | Rich `Live` | Textual/Electron = graduation path, no agent change |
+| Action + plan-update | **Mechanical update_plan** (no LLM) for now | Local model can't emit JSON for revision reliably; LLM-based reviser is a post-MVP upgrade gated on a more capable model |
+| Plan panel (CLI) | Rich **re-printed panel** (not `Live`) | Avoids conflict with the approval `input()` prompt; Textual/Electron = graduation path, no agent change |
 | Model strategy | Role-based, modular, hardware-tier presets | Native tool-calling required for MVP |
 | `context_builder` | Re-scope to lean grounding node (§8) | Profiles + manifests only; never duplicate tools (bound natively) or history (in `messages`) |
 | Data scope | Files + KB only (proposed) | Email/calendar deferred until gate+memory proven — **to confirm** |

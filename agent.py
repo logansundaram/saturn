@@ -15,6 +15,7 @@ from langgraph.types import Command
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langchain.messages import HumanMessage
 
+from config import get_config
 from state import AgentState
 
 # loop nodes
@@ -36,7 +37,7 @@ import ui
 # REPL meta-commands (lines starting with `/`)
 import commands
 
-DB_PATH = "database/db.sqlite"
+DB_PATH = str(get_config().path("db_sqlite"))
 
 
 def build_agent():
@@ -149,7 +150,8 @@ def _initial_state() -> AgentState:
     }
 
 
-if __name__ == "__main__":
+def main():
+    """CLI entry point: ingest the knowledge base, build the graph, run the REPL loop."""
     # Populate the knowledge base once at startup. Non-fatal if it fails (e.g. embedding
     # model not pulled) — the search_knowledge_base tool will just return "no documents".
     try:
@@ -161,15 +163,18 @@ if __name__ == "__main__":
     tracer = Tracer(DB_PATH)
     state = _initial_state()
 
-    # Startup header — model / tool count / corpus size, like a tool's first line.
-    from llms import llm
+    # Startup header — tier/model / tool count / corpus size, like a tool's first line.
+    from llms import model_id
     from registry import tool as _tools
     from document_registry import DOCUMENTS_DIR
 
+    cfg = get_config()
     n_docs = sum(
         1 for p in DOCUMENTS_DIR.glob("*") if p.is_file() and p.name != ".manifest.md"
     ) if DOCUMENTS_DIR.exists() else 0
-    ui.banner(getattr(llm, "model", "unknown"), len(_tools), n_docs, DB_PATH)
+    ui.banner(
+        f"{cfg.active_tier}:{model_id('tool_caller')}", len(_tools), n_docs, DB_PATH
+    )
 
     # Carries the live session into slash-command handlers. `make_initial_state` lets
     # /reset rebuild state without commands.py importing back into agent.py.
@@ -214,3 +219,7 @@ if __name__ == "__main__":
 
         cmd_ctx.state = state  # keep the command context pointed at the latest state
         ui.response(state["messages"][-1].content)
+
+
+if __name__ == "__main__":
+    main()

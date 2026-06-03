@@ -28,6 +28,8 @@ A step may use one of these tools (set `intended_tool` to the exact name; otherw
 - write_file — write content to a file in the workspace.
 - list_directory — list the files in the workspace.
 - calculate — evaluate a precise arithmetic expression.
+- remember — save a durable fact/preference about the user to persistent memory (across sessions).
+- recall — look up facts previously saved to persistent memory.
 
 ## Rules
 - Produce the fewest steps necessary. Trivial requests may need a single step.
@@ -50,12 +52,15 @@ A step may use one of these tools (set `intended_tool` to the exact name; otherw
   information (prices, news, latest versions, live data).
 - If the task involves a specific file but the path is unknown, plan a list_directory step
   before read_file.
+- When the user shares a lasting preference or fact about themselves, or asks you to remember
+  something, plan a `remember` step. Facts already saved are shown in the grounding context's
+  "Persistent memory" section — do not re-remember what is already there.
 """
 )
 
 
 # --- agent node ------------------------------------------------------------------------
-# The ReAct core. Tools are bound natively (llm_with_tools), so this prompt intentionally
+# The ReAct core. Tools are bound natively (get_tool_model), so this prompt intentionally
 # does NOT re-list them as text — duplicating the schemas degrades tool-calling on small
 # local models (see SATURDAY_MVP_PLAN.md §8). It either emits tool calls or, when done
 # gathering, emits no tool calls to signal completion.
@@ -77,6 +82,11 @@ Each turn:
   definitions, reasoning), just answer — do NOT call a tool. Only use search_knowledge_base
   for questions about the user's own ingested documents/files, and web_search for current or
   external information.
+- When the user shares a lasting preference or fact about themselves ("I prefer terse
+  answers", "I'm on PST"), or explicitly asks you to remember something, call `remember` to
+  persist it. Facts already known are in the grounding context's "Persistent memory" section;
+  honor them and do not re-save them. Use `recall` only to search a detail you don't already
+  see there.
 - Use the results of previous tool calls — they are in the conversation as tool messages.
 - When the plan is fully satisfied and you have everything needed to answer, STOP calling
   tools. Returning a message with no tool calls signals that you are done.

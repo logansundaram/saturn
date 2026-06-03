@@ -1,9 +1,10 @@
 """
 Approval node — the human-in-the-loop safety gate (Phase 2).
 
-Read-only tool batches pass straight through. If any pending tool call is side-effecting or
-destructive, pause via a LangGraph `interrupt` and let the user approve or reject the whole
-batch. Resuming with the user's decision is handled in agent.run_turn.
+Tool calls at or below the configured `runtime.auto_approve` risk tier pass straight through;
+anything riskier pauses via a LangGraph `interrupt` so the user can approve or reject the whole
+batch. The policy is read from config each call, so /config can loosen or tighten it live.
+Resuming with the user's decision is handled in agent.run_turn.
 """
 
 from typing import Literal
@@ -11,13 +12,14 @@ from typing import Literal
 from langchain.messages import ToolMessage
 from langgraph.types import interrupt, Command
 
+from config import get_config
 from registry import risk_of
 from state import AgentState
 
 
 def approval_node(state: AgentState) -> Command[Literal["tools", "agent"]]:
-    """Human-in-the-loop safety gate. Read-only tool batches pass straight through. If any
-    pending tool call is side-effecting/destructive, pause via `interrupt` and let the user
+    """Human-in-the-loop safety gate. Calls within the configured auto-approve tier pass
+    straight through. If any pending call exceeds it, pause via `interrupt` and let the user
     approve or reject the whole batch.
 
     On reject we still emit ToolMessages for every pending call (so the message history stays
@@ -25,7 +27,8 @@ def approval_node(state: AgentState) -> Command[Literal["tools", "agent"]]:
     respond without having performed the action."""
     last = state["messages"][-1]
     tool_calls = getattr(last, "tool_calls", None) or []
-    gated = [tc for tc in tool_calls if risk_of(tc["name"]) != "read_only"]
+    cfg = get_config()
+    gated = [tc for tc in tool_calls if not cfg.auto_approves(risk_of(tc["name"]))]
 
     if not gated:
         return Command(goto="tools")

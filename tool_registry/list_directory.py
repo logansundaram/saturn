@@ -1,9 +1,9 @@
 import time
 from langchain.tools import tool
-from pathlib import Path
 
+from config import get_config
 
-WORKSPACE_DIR = (Path(__file__).parent.parent / "database" / "workspace").resolve()
+WORKSPACE_DIR = get_config().path("workspace")
 
 
 @tool

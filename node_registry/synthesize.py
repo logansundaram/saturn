@@ -1,6 +1,6 @@
 import time
 from state import AgentState
-from llms import llm
+from llms import get_model
 from messages import synthesize_sys_msg
 from langchain.messages import HumanMessage
 
@@ -35,7 +35,7 @@ def synthesize_node(state: AgentState):
 
     llm_input.append(HumanMessage(content=f"Current user query:\n{query}"))
 
-    llm_response = llm.invoke(llm_input)
+    llm_response = get_model("synthesizer").invoke(llm_input)
     print(f"synthesize_node : {time.perf_counter() - start:.4f}s")
     return {
         "current_response": llm_response,

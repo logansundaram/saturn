@@ -281,9 +281,20 @@ multi-tool chaining works (workflow #3) — met.*
     `PlanStep` only at the planner boundary via `state.steps_to_dicts`), so the `SqliteSaver`
     no longer warns about serializing a custom type.
 
-**Phase 3 — Memory & config.** Load/update profiles; working-memory store; `config.yaml` +
-`get_model(role)` factory + hardware-tier presets + capability descriptors. *Exit: workflow
-#5 passes; no hard-coded models/paths; models swappable by tier.*
+**Phase 3 — Memory & config. ✅ DONE.** Persistent working-memory store (`memory_registry.py`)
++ `remember`/`recall` tools, loaded into context each turn by the grounding node; `config.yaml`
++ `config.py` accessor + `get_model(role)` factory (`llms.py`) with hardware-tier presets and
+capability descriptors. Model ids and filesystem paths are no longer hard-coded — they live in
+`config.yaml`; the agent references roles, never models. *Exit: workflow #5 passes; no
+hard-coded models/paths; models swappable by tier — met.*
+  - *Deviations:* durable memory is a dedicated append-only markdown store
+    (`database/memory/memory.md`) rather than edits to `user_profile.md` — append-only is
+    safer and the grounding node loads both. `remember` is gated like any side-effecting write
+    (configurable via `runtime.auto_approve`). `get_model(role)` caches built models and
+    exposes `reset_models()` so `/model` and `/config` can hot-swap tier/role bindings live
+    (nodes call the factory at run time rather than importing fixed handles). Profile
+    *auto-update* by the agent is left to a later pass; the `remember` tool covers the
+    learned-fact path. `/model`, `/config` slash commands are now implemented.
 
 **Phase 4 — Capability expansion.** Add gated `python_exec`/`shell`. *Exit: agent can run and
 self-correct code.*

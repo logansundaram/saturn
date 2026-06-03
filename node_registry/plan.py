@@ -1,7 +1,7 @@
 import time
 from langchain.messages import HumanMessage
 from state import AgentState, steps_to_dicts
-from llms import llm_with_plan
+from llms import get_plan_model
 from messages import planner_sys_msg
 
 
@@ -14,7 +14,7 @@ def plan_node(state: AgentState):
     start = time.perf_counter()
 
     try:
-        result = llm_with_plan.invoke(
+        result = get_plan_model().invoke(
             [
                 planner_sys_msg,
                 HumanMessage(

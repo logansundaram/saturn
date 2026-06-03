@@ -1,0 +1,98 @@
+# Saturday.ai runtime configuration (Phase 3).
+#
+# This file externalizes everything that used to be hard-coded across llms.py, rag.py,
+# document_registry.py, and agent.py: the model bindings, the filesystem paths, and the
+# loop/safety knobs. The agent references model ROLES, never concrete model ids — so
+# swapping hardware is a one-line `active_tier` change here and never touches graph logic.
+#
+# See SATURDAY_MVP_PLAN.md §7 (role-based modular models) and Phase 3 of the roadmap.
+
+# Which hardware-tier preset (under `tiers:` below) is live. Change this one line to
+# re-point every role at a different model set.
+active_tier: workstation
+
+# ---------------------------------------------------------------------------
+# Filesystem paths (relative to the repo root). Single source of truth.
+# ---------------------------------------------------------------------------
+paths:
+  database: database
+  documents: database/documents
+  workspace: database/workspace
+  memory: database/memory/memory.md   # persistent durable-facts store (remember/recall)
+  db_sqlite: database/db.sqlite        # SqliteSaver checkpoints + trace
+
+# ---------------------------------------------------------------------------
+# Loop / safety runtime knobs (were the MAX_ITERATIONS constant + the gate policy).
+# ---------------------------------------------------------------------------
+runtime:
+  max_iterations: 8
+  # Tools AT OR BELOW this risk tier run without prompting; anything riskier hits the
+  # approval gate. One of: read_only | side_effecting | destructive.
+  auto_approve: read_only
+
+# ---------------------------------------------------------------------------
+# Hardware-tier presets. Each maps the agent's roles -> concrete models.
+#
+# A role value is either:
+#   - a bare string  -> a model id served by the tier's default `provider`, or
+#   - a mapping      -> {provider: <name>, model: <id>}  (per-role provider override,
+#                        e.g. cloud-hybrid pointing `planner` at Anthropic while the rest
+#                        stay local).
+#
+# Roles: planner (drafts the plan, structured output), tool_caller (the ReAct agent,
+# native tool-calling), synthesizer (final answer), utility (cheap background tasks like
+# document summaries), judge (verifier/repair — unwired for now). `embedder` is separate.
+# ---------------------------------------------------------------------------
+tiers:
+  # All roles share one local model. Lightest footprint.
+  laptop:
+    provider: ollama
+    roles:
+      planner: gemma4:e4b
+      tool_caller: gemma4:e4b
+      synthesizer: gemma4:e4b
+      utility: gemma4:e4b
+      judge: gemma4:e4b
+    embedder: qwen3-embedding:8b
+
+  # The machine this repo runs on today. Same local model across roles for now; bump the
+  # planner/synthesizer ids here when larger local tags are pulled — no code changes needed.
+  workstation:
+    provider: ollama
+    roles:
+      planner: gemma4:e4b
+      tool_caller: gemma4:e4b
+      synthesizer: gemma4:e4b
+      utility: gemma4:e4b
+      judge: gemma4:e4b
+    embedder: qwen3-embedding:8b
+
+  # Heavy reasoning roles go to a cloud model; everything else stays local. Requires the
+  # provider's SDK + API key (e.g. ANTHROPIC_API_KEY) in the environment.
+  cloud-hybrid:
+    provider: ollama
+    roles:
+      planner:     {provider: anthropic, model: claude-sonnet-4-6}
+      synthesizer: {provider: anthropic, model: claude-sonnet-4-6}
+      tool_caller: gemma4:e4b
+      utility:     gemma4:e4b
+      judge:       gemma4:e4b
+    embedder: qwen3-embedding:8b
+
+# ---------------------------------------------------------------------------
+# Capability descriptors, keyed by model id. The MVP REQUIRES native tool-calling +
+# structured output (SATURDAY_MVP_PLAN.md §7); get_model() warns if a model bound to a
+# role that needs a capability lacks it. Unknown models fall back to the conservative
+# defaults in config.py (tools + structured output assumed true, vision false).
+# ---------------------------------------------------------------------------
+capabilities:
+  "gemma4:e4b":
+    supports_tools: true
+    supports_structured_output: true
+    context_window: 8192
+    supports_vision: false
+  "claude-sonnet-4-6":
+    supports_tools: true
+    supports_structured_output: true
+    context_window: 200000
+    supports_vision: true

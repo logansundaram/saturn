@@ -7,6 +7,8 @@ from tool_registry.write_file import write_file
 from tool_registry.list_directory import list_directory
 from tool_registry.deep_research import deep_research
 from tool_registry.search_knowledge_base import search_knowledge_base
+from tool_registry.remember import remember
+from tool_registry.recall import recall
 
 tool = [
     calculate,
@@ -16,6 +18,8 @@ tool = [
     list_directory,
     deep_research,
     search_knowledge_base,
+    remember,
+    recall,
 ]
 
 tools_by_name = {t.name: t for t in tool}
@@ -32,8 +36,10 @@ TOOL_RISK = {
     "read_file": "read_only",
     "list_directory": "read_only",
     "search_knowledge_base": "read_only",
+    "recall": "read_only",
     "deep_research": "side_effecting",  # many external calls, slow/costly
     "write_file": "side_effecting",
+    "remember": "side_effecting",  # persists across sessions; low risk but a real write
 }
 
 

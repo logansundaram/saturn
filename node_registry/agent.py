@@ -5,8 +5,8 @@ Agent node + its exit routing for the living-plan ReAct loop (Phase 1).
                       + plan + conversation, emits tool calls, or a no-tool-call message to
                       signal it is done gathering. Increments `iteration`.
   route_after_agent — conditional edge after the agent node: tool calls -> approval, otherwise
-                      -> synthesize. Also enforces the MAX_ITERATIONS guardrail so a confused
-                      model can't spin forever.
+                      -> synthesize. Also enforces the iteration guardrail
+                      (config runtime.max_iterations) so a confused model can't spin forever.
 
 render_plan formats the plan as a checklist injected into the agent's context (the text twin
 of ui.show_plan).
@@ -16,12 +16,10 @@ import time
 
 from langchain.messages import SystemMessage
 
-from llms import llm_with_tools
+from llms import get_tool_model
+from config import get_config
 from state import AgentState
 from messages import agent_sys_msg
-
-# Hard cap on loop iterations so a confused model can't spin forever. Becomes config in Phase 3.
-MAX_ITERATIONS = 8
 
 _STATUS_GLYPH = {"pending": "○", "active": "▶", "done": "✓", "skipped": "—"}
 
@@ -49,7 +47,7 @@ def agent_node(state: AgentState):
         *state["messages"],
     ]
 
-    response = llm_with_tools.invoke(messages)
+    response = get_tool_model().invoke(messages)
 
     tool_calls = getattr(response, "tool_calls", None) or []
     print(
@@ -60,9 +58,10 @@ def agent_node(state: AgentState):
 
 
 def route_after_agent(state: AgentState) -> str:
-    """Send tool requests through the approval gate (while under the cap); else finish."""
+    """Send tool requests through the approval gate (while under the cap); else finish.
+    The iteration cap is read from config each call so /config can change it live."""
     last = state["messages"][-1]
     has_tool_calls = bool(getattr(last, "tool_calls", None))
-    if has_tool_calls and state.get("iteration", 0) < MAX_ITERATIONS:
+    if has_tool_calls and state.get("iteration", 0) < get_config().max_iterations:
         return "approval"
     return "synthesize"

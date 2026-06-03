@@ -1,22 +1,22 @@
-from pathlib import Path
 from langgraph.graph import StateGraph, START, END
-from langchain_ollama import OllamaEmbeddings
 from langchain_core.vectorstores import InMemoryVectorStore
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.documents import Document
 from typing import TypedDict, List, Any
 import pypdf
 
+from config import get_config
+from llms import get_embeddings
 from state import AgentState
 from document_registry import register_rag_document
 
 
-DOCUMENTS_DIR = Path("database/documents").resolve()
+DOCUMENTS_DIR = get_config().path("documents")
 SUPPORTED_EXTENSIONS = {".txt", ".md", ".pdf"}
 
 
-# need a new embedding model
-embeddings = OllamaEmbeddings(model="qwen3-embedding:8b")
+# Embedding model comes from the active tier's `embedder` slot (config.yaml).
+embeddings = get_embeddings()
 vector_store = InMemoryVectorStore(embeddings)
 
 # consider caching as a local file so no need for embedding every time the program is run

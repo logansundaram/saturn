@@ -21,9 +21,10 @@ from pathlib import Path
 
 from langchain.messages import HumanMessage
 
-_DB_ROOT = Path(__file__).parent / "database"
-DOCUMENTS_DIR = _DB_ROOT / "documents"
-WORKSPACE_DIR = _DB_ROOT / "workspace"
+from config import get_config
+
+DOCUMENTS_DIR = get_config().path("documents")
+WORKSPACE_DIR = get_config().path("workspace")
 
 WORKSPACE_MANIFEST = WORKSPACE_DIR / ".manifest.md"
 DOCUMENTS_MANIFEST = DOCUMENTS_DIR / ".manifest.md"
@@ -72,8 +73,9 @@ def read_documents_manifest() -> str:
 def _summarize(content: str, filename: str) -> str:
     """Ask the LLM for a 1-2 sentence summary. Falls back gracefully on error."""
     try:
-        # Import here to avoid circular import at module load time.
-        from llms import llm
+        # Import here to avoid circular import at module load time. Summaries are a cheap
+        # background task -> the `utility` role.
+        from llms import get_model
 
         start = time.perf_counter()
         msg = HumanMessage(
@@ -83,7 +85,7 @@ def _summarize(content: str, filename: str) -> str:
                 f"Document name: {filename}\n\n{content[:4000]}"
             )
         )
-        response = llm.invoke([msg])
+        response = get_model("utility").invoke([msg])
         print(
             f"document_registry summary ({filename}) : {time.perf_counter() - start:.4f}s"
         )

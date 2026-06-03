@@ -1,10 +1,10 @@
 import time
 from langchain.tools import tool
-from pathlib import Path
 
+from config import get_config
 from document_registry import register_workspace_file
 
-WORKSPACE_DIR = (Path(__file__).parent.parent / "database" / "workspace").resolve()
+WORKSPACE_DIR = get_config().path("workspace")
 WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
 
 

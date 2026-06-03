@@ -213,22 +213,64 @@ def _docs(ctx: CommandContext, args: list[str]) -> None:
     _print(ws if ws else "  (empty)")
 
 
-@command("model", "Show the active model (pass a name to switch - scaffolded).", usage="/model [name]")
-def _model(ctx: CommandContext, args: list[str]) -> None:
-    # Reading the current model is safe today; the switch path is the scaffolded part.
-    from llms import llm
+_ROLES = ("planner", "tool_caller", "synthesizer", "utility", "judge")
 
-    current = getattr(llm, "model", "unknown")
+
+@command(
+    "model",
+    "Show or switch the per-role model bindings / hardware tier.",
+    usage="/model | /model tier <name> | /model <role> <model_id>",
+)
+def _model(ctx: CommandContext, args: list[str]) -> None:
+    # Phase 3: roles resolve to models through config + the get_model factory, so switching is
+    # just re-pointing config and dropping the cached models (nodes call get_model at run time).
+    from config import get_config
+    from llms import model_id, capability_of, reset_models
+
+    cfg = get_config()
+
     if not args:
-        _print(f"  active model: {current}")
-        _print("  to switch: /model <name>  (not wired yet — see TODO below)")
+        _print(f"  active tier: {cfg.active_tier}   (embedder: {cfg.embedder_model})")
+        _print("  role bindings:")
+        for role in _ROLES:
+            mid = model_id(role)
+            cap = capability_of(role)
+            flags = []
+            if cap.supports_tools:
+                flags.append("tools")
+            if cap.supports_structured_output:
+                flags.append("structured")
+            if cap.supports_vision:
+                flags.append("vision")
+            _print(f"    {role:<12} {mid:<22} [{', '.join(flags) or 'no caps'}]")
+        _print("  switch: /model tier <name>   or   /model <role> <model_id>")
         return
-    # TODO(model-switch): `llm`, `llm_with_tools`, `llm_with_plan` are module-level singletons
-    # bound at import, and every node imports them directly. Hot-swapping needs a mutable holder
-    # (e.g. a ModelManager the nodes call through) — this lands with the Phase 3 config.yaml
-    # role/tier system. Until then, edit the model string in llms.py and restart.
-    _print(f"  switching model is not wired yet (requested: {args[0]}, current: {current}).")
-    _print("  edit llms.py and restart for now; see TODO(model-switch) in commands.py.")
+
+    if args[0] == "tier":
+        if len(args) < 2:
+            _print("  usage: /model tier <name>")
+            return
+        tier = args[1]
+        if cfg.get(f"tiers.{tier}") is None:
+            _print(f"  unknown tier: {tier} (defined: {list(cfg.get('tiers', {}))})")
+            return
+        cfg.set("active_tier", tier)
+        reset_models()
+        _print(f"  active tier -> {tier}; models will rebuild on next use (session only).")
+        return
+
+    role = args[0]
+    if role not in _ROLES:
+        _print(f"  unknown role: {role} (roles: {', '.join(_ROLES)})")
+        return
+    if len(args) < 2:
+        _print(f"  usage: /model {role} <model_id>")
+        return
+    new_model = args[1]
+    cfg.set(f"tiers.{cfg.active_tier}.roles.{role}", new_model)
+    reset_models()
+    _print(f"  {role} -> {new_model} on tier '{cfg.active_tier}' (session only).")
+    _print("  edit config.yaml to make it permanent.")
 
 
 # ---------------------------------------------------------------------------
@@ -367,10 +409,41 @@ def _load(ctx: CommandContext, args: list[str]) -> None:
 
 @command(
     "config",
-    "View or edit runtime config (Phase 3 config.yaml).",
-    usage="/config [key] [value]",
-    implemented=False,
+    "View or edit runtime config (config.yaml). Edits are session-only.",
+    usage="/config | /config <dotted.key> [value] | /config reload",
 )
 def _config(ctx: CommandContext, args: list[str]) -> None:
-    # TODO: read/write the role/tier config.yaml once Phase 3 lands (see SATURDAY_MVP_PLAN.md).
-    ...
+    from config import get_config, reload
+
+    cfg = get_config()
+
+    if not args:
+        _print("  runtime config:")
+        _print(f"    active_tier           : {cfg.active_tier}")
+        _print(f"    runtime.max_iterations: {cfg.max_iterations}")
+        _print(f"    runtime.auto_approve  : {cfg.auto_approve}")
+        _print("  paths:")
+        for name in ("documents", "workspace", "memory", "db_sqlite"):
+            _print(f"    {name:<10}: {cfg.get('paths.' + name)}")
+        _print("  set a value: /config <dotted.key> <value>   (e.g. /config runtime.max_iterations 12)")
+        return
+
+    if args[0] == "reload":
+        reload()
+        _print("  config.yaml reloaded from disk (any session edits discarded).")
+        return
+
+    key = args[0]
+    if len(args) == 1:
+        _print(f"  {key} = {cfg.get(key)!r}")
+        return
+
+    value = " ".join(args[1:])
+    cfg.set(key, value)
+    _print(f"  {key} = {cfg.get(key)!r}  (session only; edit config.yaml to persist)")
+    # Model/tier keys need the cached models dropped to take effect.
+    if key.startswith("tiers.") or key == "active_tier":
+        from llms import reset_models
+
+        reset_models()
+        _print("  (models will rebuild on next use)")

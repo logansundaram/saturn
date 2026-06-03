@@ -14,6 +14,7 @@ wrappers over `add_memory` / `search_memory`; the grounding node calls `read_mem
 
 from __future__ import annotations
 
+import re
 from datetime import date
 from pathlib import Path
 
@@ -44,6 +45,15 @@ def _facts(text: str) -> list[str]:
     ]
 
 
+# The "(YYYY-MM-DD) [category] " prefix add_memory writes; stripped so dedup compares bare facts.
+_PREFIX_RE = re.compile(r"^\(\d{4}-\d{2}-\d{2}\)\s*(?:\[[^\]]*\]\s*)?")
+
+
+def _fact_text(stored: str) -> str:
+    """Strip the date/category prefix from a stored fact line, leaving the bare fact text."""
+    return _PREFIX_RE.sub("", stored).strip()
+
+
 def add_memory(fact: str, category: str = "general") -> str:
     """Append a durable fact. No-op (reported) if an identical fact is already stored."""
     fact = (fact or "").strip()
@@ -51,8 +61,10 @@ def add_memory(fact: str, category: str = "general") -> str:
         return "Nothing to remember — the fact was empty."
 
     existing = _facts(_read_raw())
-    # Dedup on the fact text, ignoring the date/category prefix we add.
-    if any(fact.lower() in line.lower() for line in existing):
+    # Dedup on the bare fact text (date/category prefix stripped), case-insensitive — and by
+    # equality, not substring: a short new fact must not be swallowed just because it appears
+    # inside a longer stored line (e.g. remembering "Python" when "I use Python at work" exists).
+    if any(fact.lower() == _fact_text(line).lower() for line in existing):
         return f"Already remembered: {fact!r}"
 
     path = _memory_path()

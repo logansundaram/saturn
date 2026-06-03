@@ -101,10 +101,13 @@ class Config:
 
         default_provider = tier.get("provider", "ollama")
         if isinstance(entry, dict):
-            return ModelSpec(
-                provider=entry.get("provider", default_provider),
-                model=entry["model"],
-            )
+            model = entry.get("model")
+            if not model:
+                raise KeyError(
+                    f"role '{role}' on tier '{self.active_tier}' is a mapping without a "
+                    f"'model' key: {entry!r}"
+                )
+            return ModelSpec(provider=entry.get("provider", default_provider), model=model)
         return ModelSpec(provider=default_provider, model=str(entry))
 
     @property

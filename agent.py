@@ -166,12 +166,10 @@ def main():
     # Startup header — tier/model / tool count / corpus size, like a tool's first line.
     from llms import model_id
     from registry import tool as _tools
-    from document_registry import DOCUMENTS_DIR
+    from rag import iter_documents
 
     cfg = get_config()
-    n_docs = sum(
-        1 for p in DOCUMENTS_DIR.glob("*") if p.is_file() and p.name != ".manifest.md"
-    ) if DOCUMENTS_DIR.exists() else 0
+    n_docs = sum(1 for _ in iter_documents())  # same definition RAG ingests by
     ui.banner(
         f"{cfg.active_tier}:{model_id('tool_caller')}", len(_tools), n_docs, DB_PATH
     )

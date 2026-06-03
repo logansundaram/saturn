@@ -318,7 +318,7 @@ def show_node(node: str, delta: dict | None = None) -> None:
     _live_refresh()  # repaint the bar with the new node/iter/tools immediately
 
 
-def _plan_line(step: dict, *, show_tool: bool, transition: bool) -> "Text | str":
+def _plan_line(step: dict, *, show_tool: bool) -> "Text | str":
     status = step.get("status", "pending")
     glyph, style = _PLAN.get(status, _PLAN["pending"])
     label = _truncate(str(step.get("label", "")), _LABEL_W)
@@ -334,7 +334,6 @@ def _plan_line(step: dict, *, show_tool: bool, transition: bool) -> "Text | str"
         if show_tool and tool:
             line.append(f"  ::{tool}", style=_DIM)
         return line
-    arrow = "  " + glyph
     tooltxt = f"  ::{tool}" if (show_tool and tool) else ""
     return f"  {_RAIL_GLYPH}   {glyph} {str(sid):>2}  {label}{tooltxt}"
 
@@ -352,10 +351,10 @@ def show_plan(plan) -> None:
         sid = step.get("step_id")
         status = step.get("status", "pending")
         if first_render:
-            _emit(_plan_line(step, show_tool=True, transition=False))
+            _emit(_plan_line(step, show_tool=True))
             _plan_seen[sid] = status
         elif _plan_seen.get(sid) != status:
-            _emit(_plan_line(step, show_tool=False, transition=True))
+            _emit(_plan_line(step, show_tool=False))
             _plan_seen[sid] = status
 
 
@@ -405,23 +404,16 @@ def response(text: str) -> None:
         rule.append("response", style=f"bold {_ACCENT}")
         rule.append(" " + "─" * 40, style=_DIM)
         _console.print(rule)
-        _console.print(text)
+        # markup=False: the answer is arbitrary model output; bracketed tokens like `list[str]`,
+        # citations `[1]`, or paths `[/etc/hosts]` must not be parsed as Rich tags (they get
+        # stripped, or raise MarkupError and kill the turn). highlight=False already on _console.
+        _console.print(text, markup=False)
     else:
         print("  ╶── response " + "─" * 36)
         print(text)
 
 
 # ── log lines (startup notices, warnings) ────────────────────────────────────────
-def info(msg: str) -> None:
-    if _RICH:
-        t = Text()
-        t.append("  · ", style=_DIM)
-        t.append(msg, style=_DIM)
-        _console.print(t)
-    else:
-        print(f"  · {msg}")
-
-
 def warn(msg: str) -> None:
     if _RICH:
         t = Text()

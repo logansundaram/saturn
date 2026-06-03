@@ -219,7 +219,7 @@ _ROLES = ("planner", "tool_caller", "synthesizer", "utility", "judge")
 @command(
     "model",
     "Show or switch the per-role model bindings / hardware tier.",
-    usage="/model | /model tier <name> | /model <role> <model_id>",
+    usage="/model | /model tier <name> | /model <role> <model_id> [provider]",
 )
 def _model(ctx: CommandContext, args: list[str]) -> None:
     # Phase 3: roles resolve to models through config + the get_model factory, so switching is
@@ -243,7 +243,7 @@ def _model(ctx: CommandContext, args: list[str]) -> None:
             if cap.supports_vision:
                 flags.append("vision")
             _print(f"    {role:<12} {mid:<22} [{', '.join(flags) or 'no caps'}]")
-        _print("  switch: /model tier <name>   or   /model <role> <model_id>")
+        _print("  switch: /model tier <name>   or   /model <role> <model_id> [provider]")
         return
 
     if args[0] == "tier":
@@ -264,12 +264,29 @@ def _model(ctx: CommandContext, args: list[str]) -> None:
         _print(f"  unknown role: {role} (roles: {', '.join(_ROLES)})")
         return
     if len(args) < 2:
-        _print(f"  usage: /model {role} <model_id>")
+        _print(f"  usage: /model {role} <model_id> [provider]")
         return
     new_model = args[1]
-    cfg.set(f"tiers.{cfg.active_tier}.roles.{role}", new_model)
+    key = f"tiers.{cfg.active_tier}.roles.{role}"
+
+    # A role can be a bare model id (served by the tier's default provider) or a
+    # {provider, model} mapping (a per-role provider override, e.g. cloud-hybrid pointing the
+    # planner at anthropic). Take an explicit provider as the 3rd arg; otherwise preserve the
+    # provider already on this role so we don't silently re-point it at the tier default.
+    if len(args) > 2:
+        provider = args[2]
+    else:
+        existing = cfg.get(key)
+        provider = existing.get("provider") if isinstance(existing, dict) else None
+
+    if provider:
+        cfg.set(key, {"provider": provider, "model": new_model})
+        bound = f"{provider}:{new_model}"
+    else:
+        cfg.set(key, new_model)
+        bound = new_model
     reset_models()
-    _print(f"  {role} -> {new_model} on tier '{cfg.active_tier}' (session only).")
+    _print(f"  {role} -> {bound} on tier '{cfg.active_tier}' (session only).")
     _print("  edit config.yaml to make it permanent.")
 
 

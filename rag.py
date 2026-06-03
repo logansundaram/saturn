@@ -15,6 +15,17 @@ DOCUMENTS_DIR = get_config().path("documents")
 SUPPORTED_EXTENSIONS = {".txt", ".md", ".pdf"}
 
 
+def iter_documents():
+    """Yield the document files RAG will ingest — supported extensions under DOCUMENTS_DIR,
+    recursively. The single source of truth for 'what counts as a document', shared by the
+    ingest pipeline and the startup banner so their counts can't drift."""
+    if not DOCUMENTS_DIR.exists():
+        return
+    for file_path in DOCUMENTS_DIR.glob("**/*"):
+        if file_path.is_file() and file_path.suffix in SUPPORTED_EXTENSIONS:
+            yield file_path
+
+
 # Embedding model comes from the active tier's `embedder` slot (config.yaml).
 embeddings = get_embeddings()
 vector_store = InMemoryVectorStore(embeddings)
@@ -29,9 +40,7 @@ class IngestState(TypedDict):
 def build_ingest():
     def load_documents(state: IngestState):
         docs = []
-        for file_path in DOCUMENTS_DIR.glob("**/*"):
-            if not file_path.is_file() or file_path.suffix not in SUPPORTED_EXTENSIONS:
-                continue
+        for file_path in iter_documents():
             source = str(file_path.relative_to(DOCUMENTS_DIR))
             if file_path.suffix == ".pdf":
                 reader = pypdf.PdfReader(str(file_path))

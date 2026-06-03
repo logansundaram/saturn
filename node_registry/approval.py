@@ -46,12 +46,24 @@ def approval_node(state: AgentState) -> Command[Literal["tools", "agent"]]:
     if approved:
         return Command(goto="tools")
 
-    decline = [
-        ToolMessage(
-            content="Execution declined by the user. Do not retry this action; tell the user you did not perform it.",
-            tool_call_id=tc["id"],
-            name=tc["name"],
+    # Every pending tool_call still needs a ToolMessage (orphaned calls break the next model
+    # turn), but only the calls the user actually rejected should be told not to retry. A
+    # read-only call merely bundled into the same batch was never gated — decline it neutrally so
+    # the agent can re-issue it on its own next iteration instead of abandoning the result.
+    gated_ids = {tc["id"] for tc in gated}
+    decline = []
+    for tc in tool_calls:
+        if tc["id"] in gated_ids:
+            content = (
+                "Execution declined by the user. Do not retry this action; tell the user you "
+                "did not perform it."
+            )
+        else:
+            content = (
+                "Not executed: this read-only call was held with a batch the user declined. "
+                "Call it again on its own if you still need its result."
+            )
+        decline.append(
+            ToolMessage(content=content, tool_call_id=tc["id"], name=tc["name"])
         )
-        for tc in tool_calls
-    ]
     return Command(goto="agent", update={"messages": decline})

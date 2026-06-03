@@ -7,8 +7,6 @@ back into `messages` (so the model sees them next iteration), and mirrors each
 from the call that produced it.
 """
 
-import time
-
 from langchain.messages import ToolMessage
 
 from registry import tools_by_name
@@ -35,8 +33,6 @@ def _fmt_call(name: str, args: dict) -> str:
 
 def tool_node(state: AgentState):
     """Execute the tool calls on the last AI message and feed results back as ToolMessages."""
-    start = time.perf_counter()
-
     last = state["messages"][-1]
     tool_messages = []
     tools_called = []
@@ -67,7 +63,6 @@ def tool_node(state: AgentState):
         if name in _RETRIEVAL_TOOLS:
             documents_retrieved.append(observation)
 
-    print(f"tool_node : {time.perf_counter() - start:.4f}s ({len(tool_messages)} executed)")
     return {
         "messages": tool_messages,
         "tools_called": tools_called,

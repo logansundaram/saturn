@@ -94,6 +94,12 @@ def is_command(line: str) -> bool:
     return line.lstrip().startswith("/")
 
 
+def command_names() -> set[str]:
+    """Every invocable command token (canonical names + aliases), lowercased, no leading slash.
+    Handed to the input prompt so it can highlight a typed `/command` live (valid vs. typo)."""
+    return {n.lower() for n in COMMANDS} | {a.lower() for a in _ALIASES}
+
+
 def _print(line: str = "") -> None:
     # Single choke point for output so a future swap to rich/Textual is one edit.
     print(line)

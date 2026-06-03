@@ -109,7 +109,7 @@ def _make_on_update(tracer, run_id, show_ui=True):
     def on_update(node, delta):
         tracer.log_event(run_id, node, delta)
         if show_ui:
-            ui.show_node(node)
+            ui.show_node(node, delta)
             if delta.get("plan"):
                 ui.show_plan(delta["plan"])
 
@@ -155,11 +155,21 @@ if __name__ == "__main__":
     try:
         build_ingest().invoke({"documents": []})
     except Exception as exc:
-        print(f"[warn] knowledge-base ingest failed, continuing without RAG: {exc}")
+        ui.warn(f"knowledge-base ingest failed, continuing without RAG: {exc}")
 
     graph = build_agent()
     tracer = Tracer(DB_PATH)
     state = _initial_state()
+
+    # Startup header — model / tool count / corpus size, like a tool's first line.
+    from llms import llm
+    from registry import tool as _tools
+    from document_registry import DOCUMENTS_DIR
+
+    n_docs = sum(
+        1 for p in DOCUMENTS_DIR.glob("*") if p.is_file() and p.name != ".manifest.md"
+    ) if DOCUMENTS_DIR.exists() else 0
+    ui.banner(getattr(llm, "model", "unknown"), len(_tools), n_docs, DB_PATH)
 
     # Carries the live session into slash-command handlers. `make_initial_state` lets
     # /reset rebuild state without commands.py importing back into agent.py.
@@ -168,7 +178,7 @@ if __name__ == "__main__":
     )
 
     while True:
-        user_input = input("User: ")
+        user_input = ui.prompt(commands.command_names())
 
         # `/`-prefixed lines are REPL meta-commands, not agent turns — intercept them here.
         if commands.is_command(user_input):
@@ -187,6 +197,7 @@ if __name__ == "__main__":
         thread_id = str(uuid.uuid4())
         config = {"configurable": {"thread_id": thread_id}}
         run_id = tracer.start_run(thread_id, user_input)
+        ui.reset_turn()  # reset node-timing + plan-diff state for this turn's trace
 
         try:
             state = run_turn(
@@ -202,4 +213,4 @@ if __name__ == "__main__":
             raise
 
         cmd_ctx.state = state  # keep the command context pointed at the latest state
-        print(f"Assistant: {state['messages'][-1].content}")
+        ui.response(state["messages"][-1].content)

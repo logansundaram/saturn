@@ -44,6 +44,7 @@ class CommandContext:
     make_initial_state: Callable[[], dict]
     db_path: str
     show_ui: bool = True
+    auto_approve: bool = False
     should_quit: bool = False
 
 
@@ -333,33 +334,89 @@ def _system(ctx: CommandContext, args: list[str]) -> None:
     "Print the conversation messages for this session.",
     aliases=("hist",),
     usage="/history [n]",
-    implemented=False,
 )
 def _history(ctx: CommandContext, args: list[str]) -> None:
-    # TODO: pretty-print ctx.state["messages"] (role + content), optionally last n.
-    ...
+    messages = ctx.state.get("messages", [])
+    if not messages:
+        _print("  (no messages yet)")
+        return
+
+    # Optional positional n -> show only the last n messages.
+    shown = messages
+    if args:
+        try:
+            n = int(args[0])
+            shown = messages[-n:] if n > 0 else messages
+        except ValueError:
+            _print(f"  ignoring non-numeric count: {args[0]!r}")
+
+    _print(f"  conversation history ({len(shown)} of {len(messages)} messages):")
+    for i, msg in enumerate(shown, start=len(messages) - len(shown) + 1):
+        role = getattr(msg, "type", type(msg).__name__)
+        content = msg.content
+        if isinstance(content, list):  # multimodal / structured content blocks
+            content = " ".join(str(p) for p in content)
+        content = " ".join(str(content).split())  # collapse whitespace to one line
+        if len(content) > 100:
+            content = content[:99] + "…"
+        line = f"    {i:>3}  {role:<6} {content}"
+        # AI turns that only call tools carry empty content — surface the calls instead.
+        tool_calls = getattr(msg, "tool_calls", None)
+        if tool_calls:
+            names = ", ".join(tc.get("name", "?") for tc in tool_calls)
+            line += f"[tool_calls: {names}]" if not content else f"  → {names}"
+        _print(line)
 
 
 @command(
     "plan",
     "Show the most recent plan and step statuses.",
     usage="/plan",
-    implemented=False,
 )
 def _plan(ctx: CommandContext, args: list[str]) -> None:
-    # TODO: render ctx.state["plan"] via ui.show_plan (the last plan persists in state).
-    ...
+    import ui
+
+    _print("  most recent plan:")
+    ui.render_plan(ctx.state.get("plan", []))
 
 
 @command(
     "trace",
     "Show recent runs/events from the trace DB.",
     usage="/trace [n]",
-    implemented=False,
 )
 def _trace(ctx: CommandContext, args: list[str]) -> None:
-    # TODO: query the `runs`/`events` tables in ctx.db_path (see trace.py) and print the last n.
-    ...
+    import sqlite3
+
+    n = 5
+    if args:
+        try:
+            n = max(1, int(args[0]))
+        except ValueError:
+            _print(f"  ignoring non-numeric count: {args[0]!r}")
+
+    conn = sqlite3.connect(ctx.db_path)
+    try:
+        rows = conn.execute(
+            "SELECT run_id, started_at, status, query, "
+            "(SELECT COUNT(*) FROM events e WHERE e.run_id = r.run_id) AS n_events "
+            "FROM runs r ORDER BY run_id DESC LIMIT ?",
+            (n,),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    if not rows:
+        _print("  (no runs recorded yet)")
+        return
+
+    _print(f"  last {len(rows)} run(s) — newest first:")
+    for run_id, started_at, status, query, n_events in rows:
+        when = (started_at or "")[:19].replace("T", " ")  # trim ISO microseconds
+        q = " ".join(str(query or "").split())
+        if len(q) > 60:
+            q = q[:59] + "…"
+        _print(f"    #{run_id:<4} {when}  {str(status):<7} {n_events:>2}ev  {q}")
 
 
 @command(
@@ -418,11 +475,28 @@ def _forget(ctx: CommandContext, args: list[str]) -> None:
     "List files in the read/write workspace sandbox.",
     aliases=("ws",),
     usage="/workspace",
-    implemented=False,
 )
 def _workspace(ctx: CommandContext, args: list[str]) -> None:
-    # TODO: list get_config().path("workspace"), skipping .manifest.md.
-    ...
+    from config import get_config
+
+    ws = get_config().path("workspace")
+    _print(f"  workspace: {ws}")
+    if not ws.exists():
+        _print("  (workspace directory does not exist yet)")
+        return
+
+    # Skip dotfiles (the .manifest.md is one) — same convention rag.iter_documents uses.
+    entries = sorted(p for p in ws.iterdir() if not p.name.startswith("."))
+    if not entries:
+        _print("  (empty)")
+        return
+
+    for p in entries:
+        if p.is_dir():
+            _print(f"    {p.name + '/':<32} <dir>")
+        else:
+            size = p.stat().st_size
+            _print(f"    {p.name:<32} {size:>9,} B")
 
 
 @command(
@@ -437,16 +511,39 @@ def _tool_toggle(ctx: CommandContext, args: list[str]) -> None:
     ...
 
 
+_RISK_TIERS = ("read_only", "side_effecting", "destructive")
+
+
 @command(
     "risk",
     "Override a tool's approval risk tier for this session.",
     usage="/risk <tool> read_only|side_effecting|destructive",
-    implemented=False,
 )
 def _risk(ctx: CommandContext, args: list[str]) -> None:
-    # TODO: mutate registry.TOOL_RISK[name] = tier after validating the tier. Cheap + safe;
-    #       good first command to implement.
-    ...
+    import registry
+
+    if not args:
+        _print("  current risk tiers:")
+        for t in TOOLS:
+            _print(f"    {risk_of(t.name):<14} {t.name}")
+        _print("  set: /risk <tool> read_only|side_effecting|destructive")
+        return
+
+    if len(args) < 2:
+        _print(f"  usage: /risk <tool> {'|'.join(_RISK_TIERS)}")
+        return
+
+    name, tier = args[0], args[1]
+    if name not in registry.tools_by_name:
+        _print(f"  unknown tool: {name} (see /tools)")
+        return
+    if tier not in _RISK_TIERS:
+        _print(f"  unknown tier: {tier} (choose one of {', '.join(_RISK_TIERS)})")
+        return
+
+    old = risk_of(name)
+    registry.TOOL_RISK[name] = tier
+    _print(f"  {name}: {old} -> {tier} (session only; the approval gate reads this live).")
 
 
 @command(
@@ -454,23 +551,48 @@ def _risk(ctx: CommandContext, args: list[str]) -> None:
     "Toggle the approval gate (auto-approve side-effecting tools).",
     aliases=("yolo",),
     usage="/autoapprove on|off",
-    implemented=False,
 )
 def _autoapprove(ctx: CommandContext, args: list[str]) -> None:
-    # TODO: thread a session flag into the approver passed to run_turn (ui.ask_approval). When on,
-    #       the approver returns True without prompting. Keep a loud banner — this disables the safety gate.
-    ...
+    new = _parse_toggle(args, ctx.auto_approve)
+    if new is None:
+        _print(f"  usage: /autoapprove on|off   (currently {'on' if ctx.auto_approve else 'off'})")
+        return
+    ctx.auto_approve = new
+    if new:
+        # Loud banner: the safety gate is off — side-effecting/destructive tools run unprompted.
+        _print("  ┏━ ⚠  AUTO-APPROVE ON ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        _print("  ┃  the approval gate is DISABLED. every tool call —")
+        _print("  ┃  including side-effecting and destructive ones —")
+        _print("  ┃  will run WITHOUT asking. /autoapprove off to restore.")
+        _print("  ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    else:
+        _print("  auto-approve off — the approval gate is back on.")
+
+
+def _parse_toggle(args: list[str], current: bool) -> Optional[bool]:
+    """Parse an on/off argument. No arg flips the current value; an unrecognized arg returns None."""
+    if not args:
+        return not current
+    val = args[0].lower()
+    if val in ("on", "true", "yes", "1"):
+        return True
+    if val in ("off", "false", "no", "0"):
+        return False
+    return None
 
 
 @command(
     "verbose",
     "Toggle live node/plan UI streaming on or off.",
     usage="/verbose on|off",
-    implemented=False,
 )
 def _verbose(ctx: CommandContext, args: list[str]) -> None:
-    # TODO: flip ctx.show_ui and thread it into _make_on_update(show_ui=...) in agent.py.
-    ...
+    new = _parse_toggle(args, ctx.show_ui)
+    if new is None:
+        _print(f"  usage: /verbose on|off   (currently {'on' if ctx.show_ui else 'off'})")
+        return
+    ctx.show_ui = new
+    _print(f"  live node/plan trace {'on' if new else 'off'}.")
 
 
 @command(

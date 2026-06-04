@@ -691,6 +691,17 @@ def _plan_line(step: dict, *, show_tool: bool) -> "Text | str":
     return f"  {_RAIL_GLYPH}   {glyph} {str(sid):>2}  {label}{tooltxt}"
 
 
+def render_plan(plan) -> None:
+    """Print the full plan unconditionally — every step, with its intended tool. Unlike
+    `show_plan` this does no diffing and touches no per-turn state, so it's the right call for the
+    `/plan` command (inspect the last plan on demand, outside the live trace)."""
+    if not plan:
+        _emit("  (no plan yet — run a turn first)")
+        return
+    for step in plan:
+        _emit(_plan_line(step, show_tool=True))
+
+
 def show_plan(plan) -> None:
     """First call this turn: print the whole plan as the intended route (with tools).
     Later calls: print only the steps whose status changed — one line each, like a trace.

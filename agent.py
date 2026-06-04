@@ -210,13 +210,15 @@ def main():
         run_id = tracer.start_run(thread_id, user_input)
         ui.reset_turn()  # reset node-timing + plan-diff state for this turn's trace
 
+        # /autoapprove disables the gate (approver always says yes); /verbose toggles the trace.
+        approver = (lambda _v: True) if cmd_ctx.auto_approve else ui.ask_approval
         try:
             state = run_turn(
                 graph,
                 state,
                 config,
-                approver=ui.ask_approval,
-                on_update=_make_on_update(tracer, run_id, show_ui=True),
+                approver=approver,
+                on_update=_make_on_update(tracer, run_id, show_ui=cmd_ctx.show_ui),
             )
             tracer.end_run(run_id, "ok", state["messages"][-1].content)
         except Exception as exc:

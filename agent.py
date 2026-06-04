@@ -152,14 +152,21 @@ def _initial_state() -> AgentState:
 
 def main():
     """CLI entry point: ingest the knowledge base, build the graph, run the REPL loop."""
-    # Populate the knowledge base once at startup. Non-fatal if it fails (e.g. embedding
-    # model not pulled) — the search_knowledge_base tool will just return "no documents".
-    try:
-        build_ingest().invoke({"documents": []})
-    except Exception as exc:
-        ui.warn(f"knowledge-base ingest failed, continuing without RAG: {exc}")
+    # The slow startup loading (knowledge-base ingest + graph build) runs while the ring art
+    # animates, so the splash keeps drawing itself out until everything is ready.
+    def _startup_load():
+        warn = None
+        # Populate the knowledge base once at startup. Non-fatal if it fails (e.g. embedding
+        # model not pulled) — the search_knowledge_base tool will just return "no documents".
+        try:
+            build_ingest().invoke({"documents": []})
+        except Exception as exc:
+            warn = f"knowledge-base ingest failed, continuing without RAG: {exc}"
+        return build_agent(), warn
 
-    graph = build_agent()
+    graph, ingest_warning = ui.splash(_startup_load)  # ring-and-planet art over the load
+    if ingest_warning:
+        ui.warn(ingest_warning)
     tracer = Tracer(DB_PATH)
     state = _initial_state()
 

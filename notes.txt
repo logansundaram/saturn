@@ -38,3 +38,10 @@ Config own tools and agent archietecture
 Vision???
 
 Need to work on rag, preprocess pdf's more effectively, append more descriptive medtadata so that the planner can make smarter choices, etc.
+
+
+Change the splash image to a better looking saturn image but keep the animation
+
+Make the TUI ui and expose system metrics 
+
+Implement a system monitor like tui element

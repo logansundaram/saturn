@@ -301,6 +301,14 @@ def _model(ctx: CommandContext, args: list[str]) -> None:
     _resync_rag_after_model_change()
 
 
+@command("system", "Show live CPU, RAM, and GPU metrics.", aliases=("sys",))
+def _system(ctx: CommandContext, args: list[str]) -> None:
+    from system_monitor import get_system_metrics
+    import ui
+
+    ui.show_system_metrics(get_system_metrics())
+
+
 # ---------------------------------------------------------------------------
 # Scaffolded commands (implemented=False) — surface exists, plumbing pending.
 # Each summary doubles as the spec for whoever implements it.

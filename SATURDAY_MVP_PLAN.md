@@ -1,7 +1,7 @@
 # Saturday.ai — MVP Plan & Architecture
 
 > Context document for future sessions. Captures the agreed MVP scope, target
-> architecture, and phased roadmap. Last updated: 2026-06-02.
+> architecture, and phased roadmap. Last updated: 2026-06-03.
 
 ## Vision
 
@@ -296,11 +296,37 @@ hard-coded models/paths; models swappable by tier — met.*
     *auto-update* by the agent is left to a later pass; the `remember` tool covers the
     learned-fact path. `/model`, `/config` slash commands are now implemented.
 
-**Phase 4 — Capability expansion.** Add gated `python_exec`/`shell`. *Exit: agent can run and
-self-correct code.*
+**Phase 4 — Capability expansion. ✅ DONE.** Added the gated, sandboxed `run_python` tool
+(`tool_registry/run_python.py`) — the "force multiplier" that subsumes computation, data
+wrangling, parsing, and file generation. It runs the snippet in a separate `-I` interpreter
+(stdin-fed, so no command-line escaping limits) with cwd pinned to the workspace, a clamped
+wall-clock timeout (default 30s, max 120s), and size-capped stdout/stderr. Registered with risk
+tier `destructive`, so the approval gate fires on every call. stdout/stderr/traceback are returned
+verbatim, so a failing run flows back as a ToolMessage and the ReAct loop fixes and retries.
+*Exit: agent can run and self-correct code — met.*
+  - *Deviations:* `shell` is **deferred past MVP** (the tool suite marks it broader/more dangerous
+    than `run_python`); Phase 4 ships code execution only. The sandbox is process + timeout + cwd
+    isolation, **not** a security boundary — the snippet can still reach the network and the wider
+    filesystem by absolute path. The approval gate (destructive tier) is the real control; true
+    OS-level isolation (containers / seccomp) is post-MVP.
 
-**Phase 5 — Eval upgrade.** Add correctness/safety/baseline grading. *Exit: one command tells
-you if the agent got better or worse.*
+**Phase 5 — Eval upgrade. ✅ DONE.** The latency-only harness is now a correctness/safety
+grader. Suites are structured `EvalCase`s (`eval_cases.py`) that carry their expected outcome;
+`grading.py` scores each case across five orthogonal graders — **routing** (precision/recall/F1/
+exact-set vs `expected_tools`), **task success** (deterministic substring / numeric-within-
+tolerance / workspace-file checks), **answer quality** (LLM-as-judge 1–5 via the `judge` role),
+**safety** (the approval gate MUST fire on destructive prompts; the harness declines and asserts
+the side effect didn't happen), and an **overhead baseline** (direct model call vs full
+pipeline). `benchmark.py` runs the suites, grades them, writes a scored JSON report, prints a
+per-suite + overall summary, and **auto-diffs against the previous run** (also `--diff` standalone)
+so one command tells you better/worse with a verdict. *Exit: one command reports if the agent got
+better or worse — met.*
+  - *Deviations:* the LLM-as-judge uses a strict `SCORE:`/`REASON:` text format parsed by regex
+    (not structured output) because the local `judge` model is unreliable at JSON; it degrades to
+    a null score (never raises) if the call fails, and is skippable with `--no-judge`. The judge
+    prompt lives in `grading.py`, not `messages.py` — it's eval-time tooling, not a graph node.
+    `deep_research` cases stay opt-in (`--run-deep-research`); the run-to-run diff compares the
+    overall headline metrics only.
 
 **Post-MVP:** frontend wiring → email/calendar → browser automation → vision → proactive watching.
 

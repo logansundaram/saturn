@@ -2,9 +2,19 @@
 .env
 *.env
 
+# Python build artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+
 # Logs
 logs/
 *.log
+
+# SQLite runtime DB (checkpoints + trace) and its WAL sidecars — runtime state, not source
+database/db.sqlite
+*.sqlite-shm
+*.sqlite-wal
 
 # Vector DBs / embeddings
 chroma/

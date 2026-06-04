@@ -1,5 +1,3 @@
-import time
-
 from state import AgentState
 from config import get_config
 from memory_registry import read_memory_block
@@ -42,8 +40,6 @@ def _read_profiles() -> str:
 
 
 def grounding_node(state: AgentState) -> dict:
-    start = time.perf_counter()
-
     sections = ["## Grounding context"]
 
     profiles = _read_profiles()
@@ -69,5 +65,4 @@ def grounding_node(state: AgentState) -> dict:
     )
 
     context = "\n\n".join(sections)
-    print(f"grounding_node : {time.perf_counter() - start:.4f}s")
     return {"context": context}

@@ -58,9 +58,8 @@ class AgentState(TypedDict):
     # action. This is the loop's working memory.
     messages: Annotated[List[Any], add_messages]
 
-    # Convenience handles for the current turn.
+    # Convenience handle for the current turn.
     current_query: str
-    current_response: str
 
     # Grounding string built by the `ground` node (document/workspace manifests
     # + persistent memory/profiles). Sole writer: grounding_node; downstream

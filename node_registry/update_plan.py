@@ -1,4 +1,3 @@
-import time
 from state import AgentState
 
 """
@@ -19,8 +18,6 @@ _TERMINAL = ("done", "skipped")
 
 
 def update_plan_node(state: AgentState):
-    start = time.perf_counter()
-
     plan = state.get("plan", [])
     if not plan:
         return {}
@@ -50,5 +47,4 @@ def update_plan_node(state: AgentState):
             step["status"] = "active"
             break
 
-    print(f"update_plan_node : {time.perf_counter() - start:.4f}s")
     return {"plan": plan}

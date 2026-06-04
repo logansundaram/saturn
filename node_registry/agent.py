@@ -12,8 +12,6 @@ render_plan formats the plan as a checklist injected into the agent's context (t
 of ui.show_plan).
 """
 
-import time
-
 from langchain.messages import SystemMessage
 
 from llms import get_tool_model, extract_tok_per_sec
@@ -38,8 +36,6 @@ def render_plan(plan: list[dict]) -> str:
 
 def agent_node(state: AgentState):
     """One ReAct decision: look at the plan + conversation, then call tools or finish."""
-    start = time.perf_counter()
-
     messages = [
         agent_sys_msg,
         SystemMessage(content=state.get("context", "")),

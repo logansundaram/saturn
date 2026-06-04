@@ -1,12 +1,6 @@
-import time
 from langchain.tools import tool
-from dotenv import load_dotenv
-import os
-from tavily import TavilyClient
 
-load_dotenv()
-
-tavily_api_key = os.getenv("TAVILY_API_KEY")
+from tool_registry._tavily import get_tavily_client
 
 # web_search finds URLs; web_extract pulls the actual page content out of them.
 # Keep ownership of planning, source selection, and synthesis; outsource the scraping.
@@ -25,36 +19,31 @@ def web_extract(urls: list[str], include_images: bool = False):
 
     Returns the extracted text per URL, plus a note for any URL that failed.
     """
-    start = time.perf_counter()
-    try:
-        if isinstance(urls, str):
-            urls = [urls]
-        if not urls:
-            return "No URLs provided to extract."
+    if isinstance(urls, str):
+        urls = [urls]
+    if not urls:
+        return "No URLs provided to extract."
 
-        tavily_client = TavilyClient(api_key=tavily_api_key)
-        response = tavily_client.extract(urls=urls, include_images=include_images)
+    response = get_tavily_client().extract(urls=urls, include_images=include_images)
 
-        results = response.get("results", [])
-        failed = response.get("failed_results", [])
+    results = response.get("results", [])
+    failed = response.get("failed_results", [])
 
-        if not results and not failed:
-            return "No content could be extracted from the provided URLs."
+    if not results and not failed:
+        return "No content could be extracted from the provided URLs."
 
-        blocks = []
-        for r in results:
-            url = r.get("url", "(unknown url)")
-            content = r.get("raw_content") or r.get("content") or ""
-            block = f"## {url}\n\n{content.strip()}"
-            if include_images and r.get("images"):
-                block += "\n\nImages:\n" + "\n".join(f"- {img}" for img in r["images"])
-            blocks.append(block)
+    blocks = []
+    for r in results:
+        url = r.get("url", "(unknown url)")
+        content = r.get("raw_content") or r.get("content") or ""
+        block = f"## {url}\n\n{content.strip()}"
+        if include_images and r.get("images"):
+            block += "\n\nImages:\n" + "\n".join(f"- {img}" for img in r["images"])
+        blocks.append(block)
 
-        for f in failed:
-            url = f.get("url", "(unknown url)")
-            error = f.get("error", "unknown error")
-            blocks.append(f"## {url}\n\n[failed to extract: {error}]")
+    for f in failed:
+        url = f.get("url", "(unknown url)")
+        error = f.get("error", "unknown error")
+        blocks.append(f"## {url}\n\n[failed to extract: {error}]")
 
-        return "\n\n---\n\n".join(blocks)
-    finally:
-        print(f"web_extract : {time.perf_counter() - start:.4f}s")
+    return "\n\n---\n\n".join(blocks)

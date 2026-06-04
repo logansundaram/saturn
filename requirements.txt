@@ -1,0 +1,25 @@
+# Saturday.ai runtime dependencies (Python 3.12+; developed on 3.14).
+# Pinned to the versions the project is developed against so a fresh clone is reproducible.
+# Install with:  python -m pip install -r requirements.txt
+
+# Agent graph + local model bindings
+langgraph==1.2.0
+langgraph-checkpoint-sqlite==3.1.0
+langchain==1.3.1
+langchain-ollama==1.1.0
+
+# Local Ollama daemon client (model discovery for /model)
+ollama==0.6.2
+
+# Tools: web (Tavily), document ingest (pypdf), config (yaml), env (.env)
+tavily-python==0.7.24
+pypdf==6.12.2
+PyYAML==6.0.3
+python-dotenv==1.2.2
+
+# Console UI
+rich==15.0.0
+prompt_toolkit==3.0.52
+
+# /system hardware metrics
+psutil==7.2.2

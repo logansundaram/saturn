@@ -1,21 +1,12 @@
-import time
 from langchain.tools import tool
-from dotenv import load_dotenv
-import os
-from tavily import TavilyClient
 
-load_dotenv()
+from tool_registry._tavily import get_tavily_client
 
-tavily_api_key = os.getenv("TAVILY_API_KEY")
-
-# Outsource the ugly web plumbing: search, crawl, scrape, extract. Keep ownership of planning, state, source selection, verification, caching, and final synthesis.
+# Outsource the ugly web plumbing: search, crawl, scrape, extract. Keep ownership of planning,
+# state, source selection, verification, caching, and final synthesis.
 
 
 @tool
 def web_search(query: str):
     """Execute a web search query using Tavily Search."""
-    start = time.perf_counter()
-    tavily_client = TavilyClient(api_key=tavily_api_key)
-    response = tavily_client.search(query)
-    print(f"web_search : {time.perf_counter() - start:.4f}s")
-    return response
+    return get_tavily_client().search(query)

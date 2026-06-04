@@ -1,5 +1,3 @@
-import time
-
 from langchain.tools import tool
 
 from memory_registry import search_memory
@@ -12,11 +10,7 @@ def recall(query: str = ""):
     everything remembered. Use this to check what you already know about the user before asking
     them to repeat something. Note: remembered facts are also loaded into your context each
     turn, so use this mainly to search a large memory or confirm a specific detail."""
-    start = time.perf_counter()
-    try:
-        facts = search_memory(query)
-        if not facts:
-            return "No matching facts in persistent memory."
-        return "\n".join(f"- {f}" for f in facts)
-    finally:
-        print(f"recall : {time.perf_counter() - start:.4f}s")
+    facts = search_memory(query)
+    if not facts:
+        return "No matching facts in persistent memory."
+    return "\n".join(f"- {f}" for f in facts)

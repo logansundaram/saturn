@@ -1,4 +1,3 @@
-import time
 from langchain.messages import HumanMessage
 from state import AgentState, steps_to_dicts
 from llms import get_plan_model
@@ -11,8 +10,6 @@ def plan_node(state: AgentState):
 
     If the local model fails to emit valid structured output, fall back to a single generic
     step rather than aborting the turn — the agent loop can still resolve the request."""
-    start = time.perf_counter()
-
     try:
         result = get_plan_model().invoke(
             [
@@ -40,5 +37,4 @@ def plan_node(state: AgentState):
             }
         ]
 
-    print(f"plan_node : {time.perf_counter() - start:.4f}s ({len(plan)} steps)")
     return {"plan": plan}

@@ -122,7 +122,6 @@ def _fresh_turn(state: AgentState, user_input: str) -> AgentState:
     `messages` persists across turns to keep in-process conversation memory."""
     state["messages"].append(HumanMessage(content=user_input))
     state["current_query"] = user_input
-    state["current_response"] = ""
     state["context"] = ""
     state["plan"] = []
     state["iteration"] = 0
@@ -139,7 +138,6 @@ def _initial_state() -> AgentState:
     return {
         "messages": [],
         "current_query": "",
-        "current_response": "",
         "context": "",
         "plan": [],
         "iteration": 0,

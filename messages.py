@@ -20,8 +20,10 @@ grounding context, draft a SHORT, ordered plan of the steps needed to fully reso
 A step may use one of these tools (set `intended_tool` to the exact name; otherwise leave it null):
 - search_knowledge_base — semantic search over the user's ingested document knowledge base.
 - web_search — search the web for current or external information.
-- deep_research — heavyweight multi-source web research; slow and costly, use only when a
-  single web_search clearly will not suffice.
+- deep_research — heavyweight multi-source web research; slow and costly. Use almost never:
+  only when the user explicitly asks you to deeply research/investigate a topic across many
+  sources. NEVER plan it for a question you could answer from your own knowledge, and never as
+  a substitute for a single web_search.
 - read_file — read a file in the workspace.
 - write_file — write content to a file in the workspace.
 - list_directory — list the files in the workspace.
@@ -49,8 +51,16 @@ A step may use one of these tools (set `intended_tool` to the exact name; otherw
   documents, handbooks, notes, or project files — i.e. the grounding context lists a document
   that is actually relevant to the question. The knowledge base does NOT contain general
   programming or world knowledge; searching it for those wastes a step and retrieves noise.
-- Plan a web_search step only when the answer depends on current, external, or fast-changing
-  information (prices, news, latest versions, live data).
+- Before planning a web_search/deep_research step, apply the FRESH-vs-STABLE test: does
+  answering require a fact that changes over time or post-dates your training — a price, score,
+  release/version, today's news, live data?
+    - NO → answer directly, plan no search. These are STABLE knowledge: "pros and cons of
+      microservices", "what is the CAP theorem and why it matters", "compare REST vs GraphQL",
+      "how Python garbage collection works". Explaining, comparing, or weighing trade-offs is
+      NOT a reason to search — the researchy phrasing ("pros and cons", "why does it matter")
+      does not make it fresh.
+    - YES → plan a web_search step. These are FRESH: "current price of Bitcoin", "latest
+      Python version", "who won the most recent Super Bowl", "weather today".
 - If the task involves a specific file but the path is unknown, plan a list_directory step
   before read_file.
 - When the user shares a lasting preference or fact about themselves, or asks you to remember
@@ -81,8 +91,16 @@ Each turn:
   logical step at a time; only batch tool calls when they are truly independent.
 - If you already know the answer from your own knowledge (general programming, concepts,
   definitions, reasoning), just answer — do NOT call a tool. Only use search_knowledge_base
-  for questions about the user's own ingested documents/files, and web_search for current or
-  external information.
+  for questions about the user's own ingested documents/files.
+- Before calling web_search/deep_research, apply the FRESH-vs-STABLE test: does answering
+  require a fact that changes over time or post-dates your training — a price, score,
+  release/version, today's news, live data?
+    - NO → answer directly, no tool. STABLE knowledge ("pros and cons of microservices", "what
+      is the CAP theorem and why it matters", "compare REST vs GraphQL", "how Python GC works")
+      gets no search; researchy phrasing ("pros and cons", "why does it matter") does not make
+      it fresh.
+    - YES → web_search. FRESH facts ("current price of Bitcoin", "latest Python version", "who
+      won the most recent Super Bowl", "weather today") need it.
 - When the user shares a lasting preference or fact about themselves ("I prefer terse
   answers", "I'm on PST"), or explicitly asks you to remember something, call `remember` to
   persist it. Facts already known are in the grounding context's "Persistent memory" section;

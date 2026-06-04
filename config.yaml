@@ -62,11 +62,11 @@ tiers:
   workstation:
     provider: ollama
     roles:
-      planner: gemma4:e4b
-      tool_caller: gemma4:e4b
-      synthesizer: gemma4:e4b
-      utility: gemma4:e4b
-      judge: gemma4:e4b
+      planner: gemma4:31b 
+      tool_caller: gemma4:31b 
+      synthesizer: gemma4:31b 
+      utility: gemma4:31b 
+      judge: gemma4:31b 
     embedder: qwen3-embedding:8b
 
   # Heavy reasoning roles go to a cloud model; everything else stays local. Requires the

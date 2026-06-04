@@ -21,7 +21,6 @@ criterion ("agent can run and self-correct code").
 """
 
 import sys
-import time
 import subprocess
 
 from langchain.tools import tool
@@ -58,46 +57,42 @@ def run_python(code: str, timeout_seconds: int = _DEFAULT_TIMEOUT) -> str:
     (default 30, max 120). If it raises, the full traceback is returned: read it, fix the code,
     and call run_python again. This tool requires user approval before each run.
     """
-    start = time.perf_counter()
+    timeout = max(_MIN_TIMEOUT, min(_MAX_TIMEOUT, int(timeout_seconds)))
+
+    workspace = get_config().path("workspace")
+    workspace.mkdir(parents=True, exist_ok=True)
+
     try:
-        timeout = max(_MIN_TIMEOUT, min(_MAX_TIMEOUT, int(timeout_seconds)))
+        # `-I` isolated mode (ignore env vars + user site); read the script from stdin so
+        # there's no command-line length/escaping limit and nothing is left on disk. cwd pins
+        # file I/O to the workspace. utf-8 + errors=replace so non-cp1252 output never crashes.
+        proc = subprocess.run(
+            [sys.executable, "-I", "-"],
+            input=code,
+            cwd=str(workspace),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        return (
+            f"Error: execution timed out after {timeout}s and was killed. "
+            "Reduce the work, add a smaller input, or avoid blocking calls (network, "
+            "sleeps, infinite loops)."
+        )
 
-        workspace = get_config().path("workspace")
-        workspace.mkdir(parents=True, exist_ok=True)
+    stdout = (proc.stdout or "").strip()
+    stderr = (proc.stderr or "").strip()
 
-        try:
-            # `-I` isolated mode (ignore env vars + user site); read the script from stdin so
-            # there's no command-line length/escaping limit and nothing is left on disk. cwd pins
-            # file I/O to the workspace. utf-8 + errors=replace so non-cp1252 output never crashes.
-            proc = subprocess.run(
-                [sys.executable, "-I", "-"],
-                input=code,
-                cwd=str(workspace),
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=timeout,
-            )
-        except subprocess.TimeoutExpired:
-            return (
-                f"Error: execution timed out after {timeout}s and was killed. "
-                "Reduce the work, add a smaller input, or avoid blocking calls (network, "
-                "sleeps, infinite loops)."
-            )
+    # Clean success path: just the output (or an explicit note when the script printed nothing,
+    # so the model doesn't assume the run failed silently).
+    if proc.returncode == 0 and not stderr:
+        return _clip(stdout) if stdout else "(ran successfully, no output — remember to print() results)"
 
-        stdout = (proc.stdout or "").strip()
-        stderr = (proc.stderr or "").strip()
-
-        # Clean success path: just the output (or an explicit note when the script printed nothing,
-        # so the model doesn't assume the run failed silently).
-        if proc.returncode == 0 and not stderr:
-            return _clip(stdout) if stdout else "(ran successfully, no output — remember to print() results)"
-
-        # Error / non-empty stderr: hand back everything, labeled, for self-correction.
-        sections = [f"exit code: {proc.returncode}"]
-        sections.append("--- stdout ---\n" + (_clip(stdout) if stdout else "(empty)"))
-        sections.append("--- stderr ---\n" + (_clip(stderr) if stderr else "(empty)"))
-        return "\n".join(sections)
-    finally:
-        print(f"run_python : {time.perf_counter() - start:.4f}s")
+    # Error / non-empty stderr: hand back everything, labeled, for self-correction.
+    sections = [f"exit code: {proc.returncode}"]
+    sections.append("--- stdout ---\n" + (_clip(stdout) if stdout else "(empty)"))
+    sections.append("--- stderr ---\n" + (_clip(stderr) if stderr else "(empty)"))
+    return "\n".join(sections)

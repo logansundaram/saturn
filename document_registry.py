@@ -17,7 +17,6 @@ vibe coded, need to review
 
 import hashlib
 import json
-import time
 from datetime import date
 from pathlib import Path
 
@@ -122,7 +121,6 @@ def _summarize(content: str, filename: str) -> str:
         # background task -> the `utility` role.
         from llms import get_model
 
-        start = time.perf_counter()
         msg = HumanMessage(
             content=(
                 f"Summarize the following document in 1-2 sentences. "
@@ -131,9 +129,6 @@ def _summarize(content: str, filename: str) -> str:
             )
         )
         response = get_model("utility").invoke([msg])
-        print(
-            f"document_registry summary ({filename}) : {time.perf_counter() - start:.4f}s"
-        )
         summary = response.content.strip()
     except Exception as exc:
         print(f"document_registry: summary failed for {filename}: {exc}")

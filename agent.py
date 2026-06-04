@@ -189,7 +189,7 @@ def main():
     )
 
     while True:
-        user_input = ui.prompt(commands.command_names())
+        user_input = ui.prompt(commands.command_completions())
 
         # `/`-prefixed lines are REPL meta-commands, not agent turns — intercept them here.
         if commands.is_command(user_input):

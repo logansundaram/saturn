@@ -18,6 +18,7 @@ To add a new one: write a handler and decorate it. Nothing else in the loop chan
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from functools import cache
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -95,10 +96,21 @@ def is_command(line: str) -> bool:
     return line.lstrip().startswith("/")
 
 
-def command_names() -> set[str]:
-    """Every invocable command token (canonical names + aliases), lowercased, no leading slash.
-    Handed to the input prompt so it can highlight a typed `/command` live (valid vs. typo)."""
-    return {n.lower() for n in COMMANDS} | {a.lower() for a in _ALIASES}
+@cache
+def command_completions() -> list[tuple[str, str]]:
+    """(token, summary) pairs for every invocable command — canonical names and aliases. Handed to
+    the input prompt, which Tab-completes the leading `/command` token and derives its live-highlight
+    set (valid vs. typo) from the same tokens. Aliases borrow their target's name as the summary;
+    scaffolds are tagged so an unimplemented command is obvious in the menu. Sorted for a stable menu
+    order. Cached — the command registry is frozen after import and callers treat the list as
+    read-only."""
+    out: list[tuple[str, str]] = []
+    for cmd in COMMANDS.values():
+        summary = cmd.summary + ("" if cmd.implemented else "  (scaffold)")
+        out.append((cmd.name.lower(), summary))
+        for alias in cmd.aliases:
+            out.append((alias.lower(), f"alias for /{cmd.name}"))
+    return sorted(out)
 
 
 def _print(line: str = "") -> None:

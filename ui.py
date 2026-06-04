@@ -49,6 +49,7 @@ except Exception:  # pragma: no cover - fallback path
 # fall back to rich's (or plain) input(), just without the live highlight.
 try:
     from prompt_toolkit import PromptSession
+    from prompt_toolkit.completion import Completer as _PTKCompleter, Completion as _PTKCompletion
     from prompt_toolkit.lexers import Lexer as _PTKLexer
     from prompt_toolkit.styles import Style as _PTKStyle
 
@@ -533,6 +534,23 @@ if _PTK:
         "cmd.args": "ansibrightblack",
     })
 
+    def _slash_token(text: str):
+        """Split a prompt line into `(lead, token, args)` around the leading `/command` word —
+        `lead` is any whitespace before the slash, `token` the command word (no slash, original
+        case), `args` the remainder (its leading space included). Returns `None` for a non-slash
+        line. The single definition of the `/token` grammar, shared by the lexer and the completer."""
+        stripped = text.lstrip()
+        if not stripped.startswith("/"):
+            return None
+        lead = text[: len(text) - len(stripped)]  # preserve leading whitespace verbatim
+        body = stripped[1:]
+        cut = len(body)
+        for i, ch in enumerate(body):
+            if ch.isspace():
+                cut = i
+                break
+        return lead, body[:cut], body[cut:]
+
     class _CommandLexer(_PTKLexer):
         """Colors the first `/token` of the line against a known-command set, live as it's typed.
         Only the command token is styled; normal (non-slash) turns render plain."""
@@ -551,17 +569,10 @@ if _PTK:
             text = document.text
 
             def get_line(_lineno):
-                stripped = text.lstrip()
-                if not stripped.startswith("/"):
+                parsed = _slash_token(text)
+                if parsed is None:
                     return [("", text)]
-                lead = text[: len(text) - len(stripped)]  # preserve leading whitespace verbatim
-                body = stripped[1:]
-                cut = len(body)
-                for i, ch in enumerate(body):
-                    if ch.isspace():
-                        cut = i
-                        break
-                token, args = body[:cut], body[cut:]
+                lead, token, args = parsed
                 frags = []
                 if lead:
                     frags.append(("", lead))
@@ -572,22 +583,53 @@ if _PTK:
 
             return get_line
 
+    class _CommandCompleter(_PTKCompleter):
+        """Tab-completes the leading `/command` token against the known command set. Fires only
+        on the first token of a slash line (a space ends the token — args are left alone), so it
+        never interferes with normal turns or command arguments. `display_meta` carries each
+        command's one-line summary into the completion menu."""
+
+        def __init__(self, meta):
+            self._meta = meta  # list of (token, summary), tokens lowercased, no leading slash
+
+        def get_completions(self, document, complete_event):
+            parsed = _slash_token(document.text_before_cursor)
+            if parsed is None:
+                return
+            _lead, token, args = parsed
+            if args:  # past the command token, into the args
+                return
+            word = token.lower()
+            for tok, summary in self._meta:
+                if tok.startswith(word):
+                    # Replace just the typed token (the leading "/" stays put).
+                    yield _PTKCompletion(
+                        tok,
+                        start_position=-len(token),
+                        display="/" + tok,
+                        display_meta=summary,
+                    )
+
     _ptk_session = None  # one PromptSession for the process -> free line history across turns
 
 
-def prompt(command_names=None) -> str:
-    """Read the `»` input line. With prompt_toolkit + a `command_names` set, a typed `/command`
-    is highlighted live (valid=cyan, typo=red); otherwise falls back to rich/plain input.
-    Returns the raw line (slash-command detection happens upstream)."""
+def prompt(command_meta=None) -> str:
+    """Read the `»` input line. With prompt_toolkit and a `command_meta` list of `(token, summary)`
+    pairs, a typed `/command` is highlighted live (valid=cyan, typo=red) and Tab completes the
+    leading `/command` token — the highlight set is derived from the same tokens. Without it, falls
+    back to rich/plain input. Returns the raw line (slash-command detection happens upstream)."""
     _live_stop()  # never read a line under an active Live (also clears a bar left by an error)
-    if _PTK and command_names is not None:
+    if _PTK and command_meta is not None:
         global _ptk_session
         if _ptk_session is None:
             _ptk_session = PromptSession()
+        names = {token for token, _ in command_meta}  # valid-command set for the live highlight
         return _ptk_session.prompt(
             [("class:prompt", "» ")],
-            lexer=_CommandLexer(set(command_names)),
+            lexer=_CommandLexer(names),
             style=_PTK_STYLE,
+            completer=_CommandCompleter(command_meta),
+            complete_while_typing=False,  # Tab-triggered, so the menu never fights live typing
         )
     if _RICH:
         return _console.input(f"[bold {_ACCENT}]»[/] ")

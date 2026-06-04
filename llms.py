@@ -34,7 +34,10 @@ _DERIVED_CACHE: dict[str, object] = {}
 
 def _build(provider: str, model: str):
     if provider == "ollama":
-        return ChatOllama(model=model)
+        # num_ctx is fixed at instantiation, so /context drops the cache (reset_models) to force a
+        # rebuild with the new window. Resolved here (override or capability) so the value the model
+        # actually runs at is the same one the TUI gauge shows.
+        return ChatOllama(model=model, num_ctx=get_config().num_ctx_for(model))
     # Any other provider: lean on LangChain's universal initializer.
     from langchain.chat_models import init_chat_model
 
@@ -200,3 +203,22 @@ def extract_tok_per_sec(response) -> float:
     if eval_duration > 0:
         return eval_count / (eval_duration / 1e9)
     return 0.0
+
+
+def extract_prompt_tokens(response) -> int:
+    """Tokens the model just ingested — i.e. how full the context window is right now. Prefers the
+    standard usage_metadata.input_tokens, falling back to Ollama's response_metadata.prompt_eval_count;
+    0 if neither is present. Drives the TUI's context-fill gauge."""
+    usage = getattr(response, "usage_metadata", None) or {}
+    n = usage.get("input_tokens")
+    if n:
+        return int(n)
+    meta = getattr(response, "response_metadata", None) or {}
+    return int(meta.get("prompt_eval_count", 0) or 0)
+
+
+def active_context_window(role: str = "tool_caller") -> int:
+    """Effective context window (`num_ctx`) of the model serving `role` — the denominator of the
+    TUI's fill gauge and the /context readout. Defaults to the agent (tool_caller) role, the one
+    the status bar's model label tracks."""
+    return get_config().num_ctx_for(model_id(role))

@@ -143,6 +143,25 @@ class Config:
         except ValueError:
             return False  # unknown risk -> fail safe (always prompt)
 
+    # --- context window (Ollama num_ctx) -----------------------------------
+    @property
+    def num_ctx_override(self) -> int | None:
+        """Session/config override for the Ollama context window (`runtime.num_ctx`), or None to
+        let each model use its capability `context_window`. Set live by the /context command."""
+        v = self.get("runtime.num_ctx")
+        try:
+            n = int(v)
+        except (TypeError, ValueError):
+            return None
+        return n if n > 0 else None
+
+    def num_ctx_for(self, model: str) -> int:
+        """Effective Ollama context window (`num_ctx`) for a model: the explicit
+        `runtime.num_ctx` override if set, else the model's capability `context_window`. This is
+        the number actually passed to ChatOllama and shown in the TUI, so the displayed fill is
+        truthful (Ollama otherwise silently defaults to 2048)."""
+        return self.num_ctx_override or self.capability_of(model).context_window
+
     # --- paths (resolved against the repo root) ----------------------------
     def path(self, name: str) -> Path:
         rel = self.get(f"paths.{name}")

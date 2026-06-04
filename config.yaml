@@ -31,6 +31,11 @@ runtime:
   # Tools AT OR BELOW this risk tier run without prompting; anything riskier hits the
   # approval gate. One of: read_only | side_effecting | destructive.
   auto_approve: read_only
+  # Ollama context window (`num_ctx`) passed to every local model. `null` = auto: each model
+  # uses its `capabilities.<model>.context_window` below. An explicit integer overrides all
+  # roles at once (the /context command sets this live). Without this, Ollama silently caps the
+  # window at 2048, so the agent would lose history the TUI's context gauge thinks it still has.
+  num_ctx: null
 
 # ---------------------------------------------------------------------------
 # Hardware-tier presets. Each maps the agent's roles -> concrete models.

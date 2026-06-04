@@ -149,6 +149,7 @@ def _initial_state() -> AgentState:
         "tool_results": [],
         "documents_retrieved": [],
         "tok_per_sec": 0.0,
+        "context_tokens": 0,
     }
 
 

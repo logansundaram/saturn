@@ -1,6 +1,6 @@
 import time
 from state import AgentState
-from llms import get_model, extract_tok_per_sec
+from llms import get_model, extract_tok_per_sec, extract_prompt_tokens
 from messages import synthesize_sys_msg
 from langchain.messages import HumanMessage
 
@@ -40,4 +40,5 @@ def synthesize_node(state: AgentState):
         "current_response": llm_response,
         "messages": [llm_response],
         "tok_per_sec": extract_tok_per_sec(llm_response),
+        "context_tokens": extract_prompt_tokens(llm_response),
     }

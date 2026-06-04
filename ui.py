@@ -96,6 +96,24 @@ _model = "unknown"
 _live = None
 
 
+def _human_tokens(n: int) -> str:
+    """Compact token count: 980 -> '980', 1842 -> '1.8k', 8192 -> '8k'."""
+    if n < 1000:
+        return str(int(n))
+    k = n / 1000
+    return f"{k:.0f}k" if k >= 10 or k == int(k) else f"{k:.1f}k"
+
+
+def _ctx_color(pct: float) -> str:
+    """Fill -> semantic color. A near-full window is a real risk (history gets truncated), so it
+    rides the same green/yellow/red the approval tiers and system meters use."""
+    if pct < 60:
+        return "green"
+    if pct < 85:
+        return "yellow"
+    return "bold red"
+
+
 class _StatusBar:
     """Renderable for the pinned bar. `__rich__` is re-evaluated on every Live refresh, so the
     elapsed clock ticks even when no node update has fired."""
@@ -833,6 +851,48 @@ def show_system_metrics(metrics) -> None:
     if metrics.vram_used_gb is not None and metrics.total_vram_gb is not None:
         vram_pct = metrics.vram_used_gb / metrics.total_vram_gb * 100
         _row("vram", vram_pct, f"{metrics.vram_used_gb:.1f} / {metrics.total_vram_gb:.1f} GB")
+
+
+# ── context window readout (the /context command) ──────────────────────────────────
+def show_context(window: int, used: int, source: str, per_role: dict[str, int]) -> None:
+    """Detailed context-window readout for /context: the active window + its source, a fill bar
+    for the last measured usage, and the per-role windows. Same trace-rail vocabulary as
+    show_system_metrics — a wider fill bar than the status-bar gauge since there's room here."""
+    pct = (used / window * 100) if window else 0.0
+    col = _ctx_color(pct)
+    width = 28
+    filled = min(width, round(pct / 100 * width)) if window else 0
+    bar = "▰" * filled + "▱" * (width - filled)
+
+    if _RICH:
+        rule = Text()
+        rule.append("  ╶── ", style=_DIM)
+        rule.append("context", style=f"bold {_ACCENT}")
+        rule.append(" " + "─" * 40, style=_DIM)
+        _console.print(rule)
+
+        win = Text("  ")
+        win.append("window ", style=_DIM)
+        win.append(f"{window:,}", style="default")
+        win.append(" tokens", style=_DIM)
+        win.append(f"   ({source})", style=_DIM)
+        _console.print(win)
+
+        usage = _rail()
+        usage.append("usage ", style=_DIM)
+        usage.append(f" {bar}", style=col)
+        usage.append(f"  {pct:>4.0f}%", style=col)
+        usage.append(f"   {used:,} / {window:,}", style=_DIM)
+        _console.print(usage)
+    else:
+        print("  ╶── context " + "─" * 42)
+        print(f"  window {window:,} tokens   ({source})")
+        print(f"  {_RAIL_GLYPH} usage  {bar}  {pct:>4.0f}%   {used:,} / {window:,}")
+
+    if per_role:
+        roles_txt = "  ·  ".join(f"{r} {w:,}" for r, w in per_role.items())
+        _emit(f"  roles: {roles_txt}")
+    _emit("  set with /context <size> (or /context auto for per-model capability)")
 
 
 # ── model picker / listing ───────────────────────────────────────────────────────

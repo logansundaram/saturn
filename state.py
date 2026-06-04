@@ -93,3 +93,8 @@ class AgentState(TypedDict):
     # models (response_metadata carries eval_count + eval_duration); other providers
     # leave it 0.0.
     tok_per_sec: float
+
+    # Prompt tokens ingested by the most recent LLM call — how full the context window is right
+    # now. Overwritten each LLM step (agent/synthesize); the TUI gauges it against the model's
+    # num_ctx. Persists across turns (the context only grows) rather than resetting per turn.
+    context_tokens: int

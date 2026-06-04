@@ -18,6 +18,7 @@ To add a new one: write a handler and decorate it. Nothing else in the loop chan
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Callable, Optional
 
 # Handlers reach into these registries directly (same pattern the nodes use).
@@ -351,14 +352,53 @@ def _trace(ctx: CommandContext, args: list[str]) -> None:
 
 @command(
     "reingest",
-    "Rebuild the RAG vector store from database/documents/.",
+    "Rebuild the RAG vector store + cache from database/documents/.",
     usage="/reingest",
-    implemented=False,
 )
 def _reingest(ctx: CommandContext, args: list[str]) -> None:
-    # TODO: re-run rag.build_ingest().invoke({"documents": []}); the store is in-memory so this
-    # is the only way to pick up newly dropped files without a restart.
-    ...
+    from rag import sync
+
+    s = sync(force=True, verbose=False)
+    n = s["added"] + s["updated"]
+    _print(f"  reingested {n} document(s) — full rebuild, disk cache refreshed.")
+
+
+@command(
+    "ingest",
+    "Add a document to the RAG corpus and embed it.",
+    usage="/ingest <path>",
+)
+def _ingest(ctx: CommandContext, args: list[str]) -> None:
+    from rag import ingest_file
+
+    if not args:
+        _print("  usage: /ingest <path-to-file>")
+        return
+    path = " ".join(args)  # tolerate unquoted paths with spaces
+    s = ingest_file(path)
+    if s["added"] or s["updated"]:
+        _print(f"  ingested {Path(path).name} — +{s['added']} ~{s['updated']} (cache updated).")
+    else:
+        _print(f"  {Path(path).name} already up to date in the corpus.")
+
+
+@command(
+    "forget",
+    "Remove a document from the RAG corpus and drop its vectors.",
+    aliases=("remove",),
+    usage="/forget <name>",
+)
+def _forget(ctx: CommandContext, args: list[str]) -> None:
+    from rag import forget_document
+
+    if not args:
+        _print("  usage: /forget <document-name>")
+        return
+    name = " ".join(args)
+    if forget_document(name):
+        _print(f"  removed {name} from the corpus — vectors + manifest entry dropped.")
+    else:
+        _print(f"  no document named {name} in the corpus (see /docs).")
 
 
 @command(

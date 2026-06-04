@@ -1,0 +1,53 @@
+{
+  "embedder": "qwen3-embedding:8b",
+  "files": {
+    "README.md": {
+      "hash": "bf59d167977053ccaf5a98a7f7387da7f32ce571fc966c82f7313798a518b967",
+      "chunk_ids": [
+        "README.md::0",
+        "README.md::1"
+      ]
+    },
+    "router_config_v0_1_deprecated.txt": {
+      "hash": "d42f0efad7fcb9dc192f2b9b591a839496d6e405a48920a292d1c050a470b6e7",
+      "chunk_ids": [
+        "router_config_v0_1_deprecated.txt::0"
+      ]
+    },
+    "sat_ai_synthetic_handbook.pdf": {
+      "hash": "60e94f3e49eec83fb427dfd91492bcb0035723d2bd8720944d18dbe73a04d0b3",
+      "chunk_ids": [
+        "sat_ai_synthetic_handbook.pdf::0",
+        "sat_ai_synthetic_handbook.pdf::1",
+        "sat_ai_synthetic_handbook.pdf::2",
+        "sat_ai_synthetic_handbook.pdf::3",
+        "sat_ai_synthetic_handbook.pdf::4",
+        "sat_ai_synthetic_handbook.pdf::5",
+        "sat_ai_synthetic_handbook.pdf::6",
+        "sat_ai_synthetic_handbook.pdf::7",
+        "sat_ai_synthetic_handbook.pdf::8",
+        "sat_ai_synthetic_handbook.pdf::9",
+        "sat_ai_synthetic_handbook.pdf::10"
+      ]
+    },
+    "sat_ai_synthetic_handbook.txt": {
+      "hash": "9f9ce51c85412a23d0e4eb5d82eb95de3dc9774ed068c38963f295b52f1c43fd",
+      "chunk_ids": [
+        "sat_ai_synthetic_handbook.txt::0",
+        "sat_ai_synthetic_handbook.txt::1",
+        "sat_ai_synthetic_handbook.txt::2",
+        "sat_ai_synthetic_handbook.txt::3",
+        "sat_ai_synthetic_handbook.txt::4",
+        "sat_ai_synthetic_handbook.txt::5",
+        "sat_ai_synthetic_handbook.txt::6",
+        "sat_ai_synthetic_handbook.txt::7"
+      ]
+    },
+    "tool_sandbox_policy.txt": {
+      "hash": "9590399e3f57cdf32534691d0c57e04f09e358e6ddd2f1addfb30853a8671fbb",
+      "chunk_ids": [
+        "tool_sandbox_policy.txt::0"
+      ]
+    }
+  }
+}

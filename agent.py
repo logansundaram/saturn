@@ -27,8 +27,8 @@ from node_registry.agent import agent_node, route_after_agent
 from node_registry.tools import tool_node
 from node_registry.approval import approval_node
 
-# RAG ingest (populates the in-memory vector store the search_knowledge_base tool reads)
-from rag import build_ingest
+# RAG ingest (reconciles the disk-cached vector store the search_knowledge_base tool reads)
+from rag import sync
 
 # transparency + safety UI
 from trace import Tracer
@@ -156,10 +156,11 @@ def main():
     # animates, so the splash keeps drawing itself out until everything is ready.
     def _startup_load():
         warn = None
-        # Populate the knowledge base once at startup. Non-fatal if it fails (e.g. embedding
-        # model not pulled) — the search_knowledge_base tool will just return "no documents".
+        # Reconcile the knowledge base against the disk cache at startup: only new/changed
+        # documents are embedded, the rest load from the persisted store. Non-fatal if it fails
+        # (e.g. embedding model not pulled) — search_knowledge_base just returns "no documents".
         try:
-            build_ingest().invoke({"documents": []})
+            sync(verbose=False)
         except Exception as exc:
             warn = f"knowledge-base ingest failed, continuing without RAG: {exc}"
         return build_agent(), warn

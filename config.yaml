@@ -18,6 +18,7 @@ paths:
   database: database
   documents: database/documents
   workspace: database/workspace
+  cache: database/cache                # persisted RAG vector store + corpus/summary caches
   memory: database/memory/memory.md   # persistent durable-facts store (remember/recall)
   db_sqlite: database/db.sqlite        # SqliteSaver checkpoints + trace
 

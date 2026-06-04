@@ -15,6 +15,8 @@ call read_file or trigger retrieval.
 vibe coded, need to review
 """
 
+import hashlib
+import json
 import time
 from datetime import date
 from pathlib import Path
@@ -48,9 +50,20 @@ def register_workspace_file(file_path: str, content: str) -> None:
 
 
 def register_rag_document(source: str, content: str) -> None:
-    """Called by rag.build_ingest for each loaded document."""
+    """Called by rag.sync for each new/changed document."""
     path = Path(source)
     _upsert(_documents_manifest(), path.name, content, path.suffix)
+
+
+def remove_rag_document(source: str) -> None:
+    """Strip a document's entry from the RAG manifest and its cached summary. Called by rag.sync
+    when a file is removed from the corpus, so the manifest never lists documents that are gone."""
+    name = Path(source).name
+    _remove_entry(_documents_manifest(), name)
+    cache = _read_summary_cache()
+    if name in cache:
+        del cache[name]
+        _write_summary_cache(cache)
 
 
 def read_workspace_manifest() -> str:
@@ -68,8 +81,42 @@ def read_documents_manifest() -> str:
 # ---------------------------------------------------------------------------
 
 
+# Summaries are an LLM call per document, so they're cached by content hash at
+# `paths.cache/summaries.json` — re-summarizing only happens when a file's content changes.
+# Keyed by basename (matching the manifest's `### <name>` entries).
+_SUMMARY_CACHE_FILE = "summaries.json"
+
+
+def _summary_cache_path() -> Path:
+    return get_config().path("cache") / _SUMMARY_CACHE_FILE
+
+
+def _read_summary_cache() -> dict:
+    p = _summary_cache_path()
+    if p.exists():
+        try:
+            return json.loads(p.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return {}
+
+
+def _write_summary_cache(cache: dict) -> None:
+    p = _summary_cache_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(cache, indent=2), encoding="utf-8")
+
+
 def _summarize(content: str, filename: str) -> str:
-    """Ask the LLM for a 1-2 sentence summary. Falls back gracefully on error."""
+    """Ask the LLM for a 1-2 sentence summary, cached by content hash. Unchanged documents reuse
+    the cached summary (no LLM call); failures fall back gracefully and are not cached, so they
+    retry next run."""
+    digest = hashlib.sha256(content.encode("utf-8", "replace")).hexdigest()
+    cache = _read_summary_cache()
+    hit = cache.get(filename)
+    if hit and hit.get("hash") == digest:
+        return hit["summary"]
+
     try:
         # Import here to avoid circular import at module load time. Summaries are a cheap
         # background task -> the `utility` role.
@@ -87,10 +134,14 @@ def _summarize(content: str, filename: str) -> str:
         print(
             f"document_registry summary ({filename}) : {time.perf_counter() - start:.4f}s"
         )
-        return response.content.strip()
+        summary = response.content.strip()
     except Exception as exc:
         print(f"document_registry: summary failed for {filename}: {exc}")
         return "No summary available."
+
+    cache[filename] = {"hash": digest, "summary": summary}
+    _write_summary_cache(cache)
+    return summary
 
 
 def _upsert(manifest_path: Path, filename: str, content: str, suffix: str) -> None:
@@ -128,3 +179,21 @@ def _upsert(manifest_path: Path, filename: str, content: str, suffix: str) -> No
         content_text = content_text.rstrip("\n") + "\n\n" + full_entry + "\n"
 
     manifest_path.write_text(content_text, encoding="utf-8")
+
+
+def _remove_entry(manifest_path: Path, filename: str) -> None:
+    """Delete the `### <filename>` block from a manifest, if present. Inverse of `_upsert`."""
+    if not manifest_path.exists():
+        return
+    text = manifest_path.read_text(encoding="utf-8")
+    marker = f"### {filename}\n"
+    if marker not in text:
+        return
+    start_idx = text.index(marker)
+    rest = text[start_idx + len(marker) :]
+    next_entry = rest.find("\n### ")
+    if next_entry == -1:
+        text = text[:start_idx].rstrip("\n") + "\n"
+    else:
+        text = text[:start_idx] + rest[next_entry + 1 :]
+    manifest_path.write_text(text, encoding="utf-8")

@@ -9,6 +9,7 @@ logs/
 # Vector DBs / embeddings
 chroma/
 vectordb/
+database/cache/   # derived RAG store cache (vectors.json/index.json/summaries.json) — rebuilt by sync()
 
 # Model cache
 models/

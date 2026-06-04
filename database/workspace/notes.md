@@ -1,1 +1,1 @@
-This document provides a definition and overview of Python lists, specifying that they are ordered, mutable collections defined using square brackets (\[\]). It details that lists can store diverse data types (such as integers and strings) and are recognized as a key, versatile data structure in Python programming.
+Python lists are ordered, mutable collections that allow duplicate elements. They are created using square brackets `[]` and can store items of different data types.

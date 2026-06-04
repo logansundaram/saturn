@@ -208,7 +208,6 @@ _ART_LIGHT = (-0.5, -0.65, 0.6)           # light direction (x, y=screen-down, z
 _ART_SHADE = ["", "grey15", "grey19", "grey23", "grey27",
               "grey30", "grey35", "grey39", "grey42", "grey46"]
 _ART_STARS = [(0, 7), (1, 49), (2, 14), (12, 43), (11, 10), (3, 53), (9, 4)]  # faint backdrop
-_ART_TAGLINE = "local-first · transparent · general-purpose"
 
 
 def _norm3(v):
@@ -414,18 +413,6 @@ class _InlinePlayer:
 
 def _saturn_text(progress: float, final: bool) -> "Text":
     return _grid_text(_saturn_cells(progress, final))
-
-
-def _wordmark() -> "Text":
-    t = Text()
-    t.append("\n")
-    t.append("  " + " " * ((_ART_C - len("saturday.ai")) // 2))
-    t.append("saturday", style=f"bold {_ACCENT}")
-    t.append(".ai", style=_DIM)
-    t.append("\n")
-    t.append("  " + " " * ((_ART_C - len(_ART_TAGLINE)) // 2))
-    t.append(_ART_TAGLINE, style=_DIM)
-    return t
 
 
 def _saturn_plain() -> str:

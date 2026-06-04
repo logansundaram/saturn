@@ -17,6 +17,7 @@ To add a new one: write a handler and decorate it. Nothing else in the loop chan
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from functools import cache
 from pathlib import Path
@@ -59,6 +60,9 @@ class SlashCommand:
     aliases: tuple[str, ...] = ()
     usage: str = ""
     implemented: bool = True
+    # Long-form, `git <cmd> --help`-style blurb shown by `/help <name>` and `/<cmd> --help`.
+    # Free-form text; leading/trailing blank lines are trimmed, embedded newlines preserved.
+    details: str = ""
 
 
 COMMANDS: dict[str, SlashCommand] = {}
@@ -72,8 +76,12 @@ def command(
     aliases: tuple[str, ...] = (),
     usage: str = "",
     implemented: bool = True,
+    details: str = "",
 ) -> Callable[[Handler], Handler]:
-    """Register a slash command. The handler keeps its bare signature so it stays unit-testable."""
+    """Register a slash command. The handler keeps its bare signature so it stays unit-testable.
+
+    `summary` is the one-liner for `/help`; `details` is the long-form blurb surfaced by
+    `/help <name>` and `/<cmd> --help` (see `_show_help`)."""
 
     def register(fn: Handler) -> Handler:
         cmd = SlashCommand(
@@ -83,6 +91,7 @@ def command(
             aliases=aliases,
             usage=usage,
             implemented=implemented,
+            details=details,
         )
         COMMANDS[name] = cmd
         for alias in aliases:
@@ -125,7 +134,32 @@ def _todo(cmd: SlashCommand, args: list[str]) -> None:
     _print(f"  intended: {cmd.summary}")
     if cmd.usage:
         _print(f"  usage:    {cmd.usage}")
-    _print("  (flip implemented=True and fill in the handler in commands.py)")
+    _print(f"  see /{cmd.name} --help for the full spec.")
+
+
+_HELP_FLAGS = {"--help", "-h"}
+
+
+def _show_help(cmd: SlashCommand) -> None:
+    """`git <cmd> --help`-style detail view for one command: signature, status, usage, and the
+    long-form `details` blurb. Shared by `/help <name>` and the `--help`/`-h` flag any command
+    accepts (intercepted in `dispatch`, so handlers never see it)."""
+    title = "/" + cmd.name
+    if cmd.aliases:
+        title += "   aliases: " + ", ".join("/" + a for a in cmd.aliases)
+    _print("")
+    _print(f"  {title}")
+    _print(f"  {'─' * min(len(title), 60)}")
+    _print(f"  {cmd.summary}")
+    if not cmd.implemented:
+        _print("  (scaffolded — prints intended behaviour only; not yet wired)")
+    _print("")
+    _print(f"  usage:  {cmd.usage or ('/' + cmd.name)}")
+    if cmd.details:
+        _print("")
+        for line in cmd.details.strip("\n").splitlines():
+            _print(f"  {line}" if line.strip() else "")
+    _print("")
 
 
 def dispatch(line: str, ctx: CommandContext) -> None:
@@ -145,6 +179,12 @@ def dispatch(line: str, ctx: CommandContext) -> None:
         _print(f"  unknown command: /{key} - try /help")
         return
 
+    # `--help`/`-h` on any command shows its detail view and short-circuits — handlers (and the
+    # scaffold notice) never run, so even unimplemented commands document themselves.
+    if args and args[0].lower() in _HELP_FLAGS:
+        _show_help(cmd)
+        return
+
     if not cmd.implemented:
         _todo(cmd, args)
         return
@@ -160,8 +200,35 @@ def dispatch(line: str, ctx: CommandContext) -> None:
 # ---------------------------------------------------------------------------
 
 
-@command("help", "List all slash commands.", aliases=("?", "h"))
+@command(
+    "help",
+    "List all slash commands, or detail one.",
+    aliases=("?", "h"),
+    usage="/help [command]",
+    details="""
+With no argument, prints the full command list (scaffolds marked `*`).
+With a command name, prints its detailed help — identical to `/<command> --help`.
+
+Every command also accepts --help / -h directly.
+
+Examples:
+  /help              list all commands
+  /help risk         detail one command
+  /risk --help       same thing, the git-style way
+""",
+)
 def _help(ctx: CommandContext, args: list[str]) -> None:
+    # `/help <command>` (or `/help /command`) -> the same detail view as `/<command> --help`.
+    if args and args[0].lower() not in _HELP_FLAGS:
+        key = args[0].lstrip("/").lower()
+        name = key if key in COMMANDS else _ALIASES.get(key)
+        cmd = COMMANDS.get(name) if name else None
+        if cmd is None:
+            _print(f"  unknown command: /{key} - try /help")
+            return
+        _show_help(cmd)
+        return
+
     _print("  slash commands:")
     for cmd in sorted(COMMANDS.values(), key=lambda c: c.name):
         mark = " " if cmd.implemented else "*"
@@ -170,21 +237,60 @@ def _help(ctx: CommandContext, args: list[str]) -> None:
             names += " (" + ", ".join("/" + a for a in cmd.aliases) + ")"
         _print(f"   {mark} {names:<22} {cmd.summary}")
     _print("   * = scaffolded, not yet implemented")
+    _print("  /help <command> or /<command> --help for details on one.")
 
 
-@command("quit", "Exit the agent.", aliases=("exit", "q"))
+@command(
+    "quit",
+    "Exit the agent.",
+    aliases=("exit", "q"),
+    details="""
+Ends the interactive session and returns you to the shell. In-process conversation
+memory is discarded; the trace DB and RAG corpus on disk are untouched.
+
+Example:
+  /quit
+""",
+)
 def _quit(ctx: CommandContext, args: list[str]) -> None:
     ctx.should_quit = True
 
 
-@command("clear", "Clear the terminal screen.", aliases=("cls",))
+@command(
+    "clear",
+    "Clear the terminal screen.",
+    aliases=("cls",),
+    details="""
+Clears the visible terminal (runs `cls` on Windows, `clear` elsewhere). Affects only the
+screen — conversation state, message history, and the trace are all left intact. Use
+/reset to actually clear the conversation.
+
+Example:
+  /clear
+""",
+)
 def _clear(ctx: CommandContext, args: list[str]) -> None:
     import os
 
     os.system("cls" if os.name == "nt" else "clear")
 
 
-@command("state", "Dump a summary of the current agent state.")
+@command(
+    "state",
+    "Dump a summary of the current agent state.",
+    usage="/state [--full]",
+    details="""
+Prints a one-line-per-field summary of the live AgentState: message count, current query,
+loop iteration, the verified flag, plan step count, the tools called this turn, and how many
+documents were retrieved.
+
+Pass --full to also dump the raw state dict (verbose — useful for debugging, noisy otherwise).
+
+Examples:
+  /state
+  /state --full
+""",
+)
 def _state(ctx: CommandContext, args: list[str]) -> None:
     s = ctx.state
     _print("  agent state:")
@@ -200,13 +306,41 @@ def _state(ctx: CommandContext, args: list[str]) -> None:
         _print(f"    {s}")
 
 
-@command("reset", "Reset the conversation (clears messages + per-turn state).", aliases=("new",))
+@command(
+    "reset",
+    "Reset the conversation (clears messages + per-turn state).",
+    aliases=("new",),
+    details="""
+Rebuilds a clean AgentState: drops the message history and every per-turn field (plan,
+iteration, accumulators). Starts a fresh conversation without restarting the process.
+
+Config, model/tier bindings, the RAG corpus, and persistent memory are all unaffected —
+only the in-process conversation is cleared.
+
+Example:
+  /reset
+""",
+)
 def _reset(ctx: CommandContext, args: list[str]) -> None:
     ctx.state = ctx.make_initial_state()
     _print("  conversation reset — fresh state, no message history.")
 
 
-@command("tools", "View the registered tools and their risk tiers.")
+@command(
+    "tools",
+    "View the registered tools and their risk tiers.",
+    details="""
+Lists every tool the agent can call, each prefixed with its approval risk tier
+([read_only], [side_effecting], [destructive]) and a one-line description.
+
+The risk tier drives the approval gate: read_only runs freely, the others prompt (unless
+auto-approve is on). Override a tier for the session with /risk; toggle the gate with
+/autoapprove.
+
+Example:
+  /tools
+""",
+)
 def _tools(ctx: CommandContext, args: list[str]) -> None:
     _print("  registered tools:")
     for t in TOOLS:
@@ -216,7 +350,20 @@ def _tools(ctx: CommandContext, args: list[str]) -> None:
         _print(f"    [{risk:<14}] {t.name:<22} {first}")
 
 
-@command("docs", "View ingested RAG documents and workspace files.", aliases=("documents",))
+@command(
+    "docs",
+    "View ingested RAG documents and workspace files.",
+    aliases=("documents",),
+    details="""
+Prints two manifests: the ingested RAG corpus (documents the agent can search through the
+search_knowledge_base tool) and the workspace sandbox files (where the file tools read/write).
+
+Manage the corpus with /ingest (add), /forget (remove), and /reingest (full rebuild).
+
+Example:
+  /docs
+""",
+)
 def _docs(ctx: CommandContext, args: list[str]) -> None:
     docs = read_documents_manifest().strip()
     ws = read_workspace_manifest().strip()
@@ -243,6 +390,23 @@ def _resync_rag_after_model_change() -> None:
     "model",
     "Show or switch the per-role model bindings / hardware tier.",
     usage="/model | /model tier <name> | /model <role> <model_id> [provider]",
+    details="""
+With no args, shows the active hardware tier, the embedder, and the model bound to each role
+(with its capability flags: tools / structured / vision).
+
+Roles: planner, tool_caller, synthesizer, utility, judge.
+
+Switch the whole tier, or re-point a single role. A bare model id uses the tier's default
+provider; pass a provider as a third arg (or keep the role's existing one) for cross-provider
+bindings like cloud-hybrid. All switches are session-only — edit config.yaml to persist — and
+rebuild the cached models on next use. A switch that changes the embedder re-embeds the corpus.
+
+Examples:
+  /model                                 show current bindings
+  /model tier cloud-hybrid               switch the whole tier
+  /model planner llama3.1:70b            re-point one role (tier default provider)
+  /model planner claude-... anthropic    role + explicit provider
+""",
 )
 def _model(ctx: CommandContext, args: list[str]) -> None:
     # Phase 3: roles resolve to models through config + the get_model factory, so switching is
@@ -315,7 +479,19 @@ def _model(ctx: CommandContext, args: list[str]) -> None:
     _resync_rag_after_model_change()
 
 
-@command("system", "Show live CPU, RAM, and GPU metrics.", aliases=("sys",))
+@command(
+    "system",
+    "Show live CPU, RAM, and GPU metrics.",
+    aliases=("sys",),
+    details="""
+Renders a point-in-time readout of CPU, RAM, and (when available) GPU/VRAM usage as colored
+bars in the trace-rail style — green/yellow/red by load. A snapshot, not a live monitor; run
+it again for a fresh reading.
+
+Example:
+  /system
+""",
+)
 def _system(ctx: CommandContext, args: list[str]) -> None:
     from system_monitor import get_system_metrics
     import ui
@@ -324,8 +500,8 @@ def _system(ctx: CommandContext, args: list[str]) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Scaffolded commands (implemented=False) — surface exists, plumbing pending.
-# Each summary doubles as the spec for whoever implements it.
+# Session / inspection / safety commands. Most are live; the few remaining scaffolds
+# (implemented=False) print their intended behaviour and document the blocker in `details`.
 # ---------------------------------------------------------------------------
 
 
@@ -334,6 +510,18 @@ def _system(ctx: CommandContext, args: list[str]) -> None:
     "Print the conversation messages for this session.",
     aliases=("hist",),
     usage="/history [n]",
+    details="""
+Prints the conversation messages held in memory this session — one line each: index, role
+(human / ai / tool / system), and content with whitespace collapsed to a single line. AI turns
+that only call tools (empty content) surface the tool names instead.
+
+Pass n to show just the most recent n messages. This is the in-process scratchpad, not the
+durable trace — see /trace for the on-disk run record, /reset to clear it.
+
+Examples:
+  /history
+  /history 10
+""",
 )
 def _history(ctx: CommandContext, args: list[str]) -> None:
     messages = ctx.state.get("messages", [])
@@ -372,6 +560,16 @@ def _history(ctx: CommandContext, args: list[str]) -> None:
     "plan",
     "Show the most recent plan and step statuses.",
     usage="/plan",
+    details="""
+Renders the last plan the planner produced — every step with its status glyph and intended
+tool. The plan persists in state between turns, so this shows the most recent one (empty until
+you've run at least one turn).
+
+Status glyphs:  · pending   ▸ active   ✓ done   ⨯ skipped
+
+Example:
+  /plan
+""",
 )
 def _plan(ctx: CommandContext, args: list[str]) -> None:
     import ui
@@ -384,6 +582,17 @@ def _plan(ctx: CommandContext, args: list[str]) -> None:
     "trace",
     "Show recent runs/events from the trace DB.",
     usage="/trace [n]",
+    details="""
+Lists the most recent runs recorded in the trace database (database/db.sqlite): run id, start
+time, status (running / ok / error), event count, and the query. Defaults to the last 5.
+
+Every turn is one run; the node updates streamed within it are its events. Unlike /history
+(in-memory, cleared by /reset) this is the durable, queryable record that survives restarts.
+
+Examples:
+  /trace
+  /trace 20
+""",
 )
 def _trace(ctx: CommandContext, args: list[str]) -> None:
     import sqlite3
@@ -423,6 +632,17 @@ def _trace(ctx: CommandContext, args: list[str]) -> None:
     "reingest",
     "Rebuild the RAG vector store + cache from database/documents/.",
     usage="/reingest",
+    details="""
+Forces a full rebuild of the RAG vector store from database/documents/: re-embeds every
+document and refreshes the on-disk cache (vectors.json + index.json).
+
+Slower than the startup sync, which only embeds new/changed files. Reach for this after
+editing a document in place (same filename, new content the hash already covers) or to recover
+from a corrupted/stale cache. To add or drop a single file, prefer /ingest or /forget.
+
+Example:
+  /reingest
+""",
 )
 def _reingest(ctx: CommandContext, args: list[str]) -> None:
     from rag import sync
@@ -436,6 +656,17 @@ def _reingest(ctx: CommandContext, args: list[str]) -> None:
     "ingest",
     "Add a document to the RAG corpus and embed it.",
     usage="/ingest <path>",
+    details="""
+Copies a file into the RAG corpus and embeds it so the search_knowledge_base tool can retrieve
+from it. Supported types: pdf, txt, md, json, jsonl. Paths with spaces don't need quoting.
+
+A no-op if the file is already present and unchanged (matched by content hash). See the corpus
+with /docs; remove an entry with /forget.
+
+Examples:
+  /ingest C:\\notes\\spec.pdf
+  /ingest database/documents/handbook.md
+""",
 )
 def _ingest(ctx: CommandContext, args: list[str]) -> None:
     from rag import ingest_file
@@ -456,6 +687,16 @@ def _ingest(ctx: CommandContext, args: list[str]) -> None:
     "Remove a document from the RAG corpus and drop its vectors.",
     aliases=("remove",),
     usage="/forget <name>",
+    details="""
+Removes a document from the RAG corpus: drops its vectors from the store and its entry from the
+manifest, then re-syncs. Use the document name as shown by /docs.
+
+This affects only the RAG corpus (database/documents/), not the workspace sandbox. To remove
+everything and start clean, delete database/documents/ and run /reingest.
+
+Example:
+  /forget spec.pdf
+""",
 )
 def _forget(ctx: CommandContext, args: list[str]) -> None:
     from rag import forget_document
@@ -475,6 +716,17 @@ def _forget(ctx: CommandContext, args: list[str]) -> None:
     "List files in the read/write workspace sandbox.",
     aliases=("ws",),
     usage="/workspace",
+    details="""
+Lists files in the read/write workspace sandbox — the directory the read_file, write_file, and
+list_directory tools are confined to — with sizes (directories marked <dir>). Dotfiles,
+including the internal .manifest.md, are hidden.
+
+This is distinct from the RAG corpus (see /docs): the workspace is scratch space the agent
+writes to, the corpus is the knowledge base it searches.
+
+Example:
+  /workspace
+""",
 )
 def _workspace(ctx: CommandContext, args: list[str]) -> None:
     from config import get_config
@@ -504,6 +756,20 @@ def _workspace(ctx: CommandContext, args: list[str]) -> None:
     "Enable or disable a tool for this session.",
     usage="/tool <name> on|off",
     implemented=False,
+    details="""
+SCAFFOLD — not yet implemented.
+
+Intended: enable or disable a single tool for the session by filtering the bound tool list, so
+the agent can't call a disabled tool at all (distinct from /risk, which only changes whether a
+call needs approval).
+
+Blocked on the model-rebind path: get_tool_model() binds the full registry once and caches it,
+so wiring this means threading a session disabled-set into that builder and keying / invalidating
+the cache on it.
+
+Example (planned):
+  /tool web_search off
+""",
 )
 def _tool_toggle(ctx: CommandContext, args: list[str]) -> None:
     # TODO: maintain a session set of disabled tools and filter the bound tool list. Needs the
@@ -518,6 +784,24 @@ _RISK_TIERS = ("read_only", "side_effecting", "destructive")
     "risk",
     "Override a tool's approval risk tier for this session.",
     usage="/risk <tool> read_only|side_effecting|destructive",
+    details="""
+Changes the approval risk tier of a single tool for this session. The approval gate reads the
+tier live, so the change takes effect on the next turn. With no args, lists every tool's current
+tier.
+
+Tiers:
+  read_only       no side effects; runs freely, never prompts
+  side_effecting  writes / external actions; prompts for approval
+  destructive     irreversible / dangerous; prompts for approval
+
+Session-only — edit registry.py (TOOL_RISK) to persist. To skip prompting entirely, see
+/autoapprove (disables the gate for all tools at once).
+
+Examples:
+  /risk                            list current tiers
+  /risk write_file destructive     tighten one tool
+  /risk web_search side_effecting  require approval for a normally-free tool
+""",
 )
 def _risk(ctx: CommandContext, args: list[str]) -> None:
     import registry
@@ -551,6 +835,20 @@ def _risk(ctx: CommandContext, args: list[str]) -> None:
     "Toggle the approval gate (auto-approve side-effecting tools).",
     aliases=("yolo",),
     usage="/autoapprove on|off",
+    details="""
+Disables (or re-enables) the human-in-the-loop approval gate for the session. When ON, every
+tool call — including side-effecting and destructive ones — runs WITHOUT prompting, and a loud
+banner is printed on enable.
+
+⚠  This removes the main safety check. Use it only when you trust the task and the tools.
+Prefer /risk to relax a single tool while keeping the gate on. With no argument, flips the
+current state.
+
+Examples:
+  /autoapprove on
+  /autoapprove off
+  /yolo            alias — same thing
+""",
 )
 def _autoapprove(ctx: CommandContext, args: list[str]) -> None:
     new = _parse_toggle(args, ctx.auto_approve)
@@ -585,6 +883,18 @@ def _parse_toggle(args: list[str], current: bool) -> Optional[bool]:
     "verbose",
     "Toggle live node/plan UI streaming on or off.",
     usage="/verbose on|off",
+    details="""
+Turns the live execution trace — the dim node/plan rail streamed during a turn — on or off.
+When off, turns run quietly and only the final response prints.
+
+The trace is still written to the trace DB either way (see /trace), so this only affects what
+scrolls live, not what's recorded. With no argument, flips the current state.
+
+Examples:
+  /verbose off
+  /verbose on
+  /verbose       toggle
+""",
 )
 def _verbose(ctx: CommandContext, args: list[str]) -> None:
     new = _parse_toggle(args, ctx.show_ui)
@@ -595,32 +905,145 @@ def _verbose(ctx: CommandContext, args: list[str]) -> None:
     _print(f"  live node/plan trace {'on' if new else 'off'}.")
 
 
+_SESSION_VERSION = 1
+_SAFE_NAME = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def _sessions_dir() -> Path:
+    """The saved-sessions directory (config `paths.sessions`), created on first use."""
+    from config import get_config
+
+    d = get_config().path("sessions")
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _session_file(name: str) -> Path:
+    """Resolve a user-supplied session name to a `<dir>/<safe-stem>.json` path. Strips any
+    directory components and a trailing `.json`, then sanitizes to a safe filename so a name
+    can never escape the sessions directory."""
+    stem = Path(name).name  # drop any path components a user might type
+    if stem.lower().endswith(".json"):
+        stem = stem[:-5]
+    stem = _SAFE_NAME.sub("-", stem).strip("-") or "session"
+    return _sessions_dir() / f"{stem}.json"
+
+
 @command(
     "save",
-    "Save the current session (messages + state) to disk.",
+    "Save the current session's messages to disk.",
     usage="/save [name]",
-    implemented=False,
+    details="""
+Serializes this session's conversation (the message history) to a JSON file under the sessions
+directory (database/sessions/ by default; configurable via paths.sessions). Reload it later with
+/load to continue where you left off.
+
+With no name, a timestamped one is generated. Names are sanitized to a safe filename, and a
+matching name overwrites the existing save. Only messages are persisted — per-turn scratch
+(plan, iteration, tool results) is rebuilt fresh on the next turn anyway.
+
+Examples:
+  /save                 timestamped autosave
+  /save research-thread named save
+""",
 )
 def _save(ctx: CommandContext, args: list[str]) -> None:
-    # TODO: serialize ctx.state["messages"] (langchain has message (de)serializers) to a named file.
-    ...
+    import json
+    from datetime import datetime
+    from langchain_core.messages import messages_to_dict
+
+    messages = ctx.state.get("messages", [])
+    if not messages:
+        _print("  nothing to save — no messages in this session yet.")
+        return
+
+    name = " ".join(args) if args else "session-" + datetime.now().strftime("%Y%m%d-%H%M%S")
+    path = _session_file(name)
+    existed = path.exists()
+    payload = {
+        "version": _SESSION_VERSION,
+        "saved_at": datetime.now().isoformat(timespec="seconds"),
+        "messages": messages_to_dict(messages),
+    }
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    note = " (overwrote existing)" if existed else ""
+    _print(f"  saved {len(messages)} message(s) -> {path.name}{note}")
+    _print(f"  restore it with /load {path.stem}")
 
 
 @command(
     "load",
     "Load a previously saved session.",
-    usage="/load <name>",
-    implemented=False,
+    usage="/load [name]",
+    details="""
+Restores a session written by /save: rebuilds a clean state and injects the saved message
+history, so the conversation continues where it left off (like /reset, but seeded with the saved
+messages instead of empty).
+
+With no name, lists the available saves. Config, model bindings, and the RAG corpus are
+unaffected — only the conversation is replaced.
+
+Examples:
+  /load                 list saved sessions
+  /load research-thread restore one
+""",
 )
 def _load(ctx: CommandContext, args: list[str]) -> None:
-    # TODO: deserialize a saved session into ctx.state. Pairs with /save.
-    ...
+    import json
+    from langchain_core.messages import messages_from_dict
+
+    if not args:
+        files = sorted(_sessions_dir().glob("*.json"))
+        if not files:
+            _print("  no saved sessions yet — use /save [name] first.")
+            return
+        _print("  saved sessions:")
+        for f in files:
+            _print(f"    {f.stem}")
+        _print("  restore one with /load <name>")
+        return
+
+    path = _session_file(" ".join(args))
+    if not path.exists():
+        _print(f"  no saved session named {path.stem!r} (run /load with no args to list).")
+        return
+
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if payload.get("version") != _SESSION_VERSION:
+        _print(f"  warning: session format v{payload.get('version')} != v{_SESSION_VERSION}; "
+               "attempting to load anyway.")
+    messages = messages_from_dict(payload.get("messages", []))
+
+    # Fresh state seeded with the restored history — mirrors /reset, which is the only other
+    # command that swaps state wholesale. agent.py picks up ctx.state after dispatch.
+    state = ctx.make_initial_state()
+    state["messages"] = messages
+    ctx.state = state
+    saved_at = payload.get("saved_at", "?")
+    _print(f"  loaded {len(messages)} message(s) from {path.name} (saved {saved_at}).")
+    _print("  fresh state — conversation history restored.")
 
 
 @command(
     "config",
     "View or edit runtime config (config.yaml). Edits are session-only.",
     usage="/config | /config <dotted.key> [value] | /config reload",
+    details="""
+With no args, prints the key runtime settings (active_tier, runtime.max_iterations,
+runtime.auto_approve) and the resolved paths.
+
+With a dotted key, reads that value; with a key and a value, sets it for this session only.
+`/config reload` re-reads config.yaml from disk, discarding any session edits.
+
+Model/tier keys rebuild the cached models on next use; an embedder change re-embeds the corpus.
+To change model bindings specifically, /model is the friendlier front end.
+
+Examples:
+  /config                              show the summary
+  /config runtime.max_iterations       read one key
+  /config runtime.max_iterations 12    set it (session only)
+  /config reload                       re-read config.yaml from disk
+""",
 )
 def _config(ctx: CommandContext, args: list[str]) -> None:
     from config import get_config, reload

@@ -105,3 +105,15 @@ def reset_models() -> None:
     after a live model/tier change (e.g. the /model slash command)."""
     _MODEL_CACHE.clear()
     _DERIVED_CACHE.clear()
+
+
+def extract_tok_per_sec(response) -> float:
+    """Return tokens/second from an AIMessage's response_metadata, or 0.0 if unavailable.
+    Ollama populates eval_count (tokens generated) and eval_duration (nanoseconds); other
+    providers leave these absent so we gracefully return 0."""
+    meta = getattr(response, "response_metadata", None) or {}
+    eval_count = meta.get("eval_count", 0) or 0
+    eval_duration = meta.get("eval_duration", 0) or 0
+    if eval_duration > 0:
+        return eval_count / (eval_duration / 1e9)
+    return 0.0

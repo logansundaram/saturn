@@ -91,7 +91,7 @@ _plan_seen: dict = {}
 # clock; `_live` holds the active rich.live.Live (None when torn down for input).
 # `_model` is captured once in banner() so the bar needs no model passed per turn.
 _turn_start = None
-_status = {"node": "", "iteration": 0, "tools": 0}
+_status = {"node": "", "iteration": 0, "tools": 0, "tok_per_sec": 0.0}
 _model = "unknown"
 _live = None
 
@@ -103,11 +103,15 @@ class _StatusBar:
     def __rich__(self) -> "Text":
         elapsed = time.perf_counter() - _turn_start if _turn_start else 0.0
         n = _status["tools"]
+        tps = _status["tok_per_sec"]
         bar = Text()
         bar.append("  ╶ ", style=_DIM)
         bar.append("saturday", style=f"bold {_ACCENT}")
-        for label in (_model, f"iter {_status['iteration']}", _fmt_dur(elapsed).strip(),
-                      f"{n} tool{'' if n == 1 else 's'}"):
+        labels = [_model, f"iter {_status['iteration']}", _fmt_dur(elapsed).strip(),
+                  f"{n} tool{'' if n == 1 else 's'}"]
+        if tps > 0:
+            labels.append(f"{tps:.0f} tok/s")
+        for label in labels:
             bar.append("  ·  ", style=_DIM)
             bar.append(label, style="default")
         if _status["node"]:
@@ -148,7 +152,7 @@ def reset_turn() -> None:
     _t_last = time.perf_counter()
     _turn_start = _t_last
     _plan_seen = {}
-    _status = {"node": "", "iteration": 0, "tools": 0}
+    _status = {"node": "", "iteration": 0, "tools": 0, "tok_per_sec": 0.0}
     _live_start()
 
 
@@ -657,6 +661,10 @@ def show_node(node: str, delta: dict | None = None) -> None:
         _status["tools"] += len(called)
         if "iteration" in delta:
             _status["iteration"] = delta["iteration"]
+        tps = delta.get("tok_per_sec") or 0.0
+        if tps > 0:
+            _status["tok_per_sec"] = tps
+            extra = (extra + "  " if extra else "") + f"{tps:.0f} tok/s"
     _status["node"] = node
 
     if _RICH:

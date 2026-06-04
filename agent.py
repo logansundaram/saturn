@@ -131,6 +131,7 @@ def _fresh_turn(state: AgentState, user_input: str) -> AgentState:
     state["tools_called"] = []
     state["tool_results"] = []
     state["documents_retrieved"] = []
+    state["tok_per_sec"] = 0.0
     return state
 
 
@@ -147,6 +148,7 @@ def _initial_state() -> AgentState:
         "tools_called": [],
         "tool_results": [],
         "documents_retrieved": [],
+        "tok_per_sec": 0.0,
     }
 
 

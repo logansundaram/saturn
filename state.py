@@ -87,3 +87,9 @@ class AgentState(TypedDict):
     tools_called: Annotated[List[str], operator.add]
     tool_results: Annotated[List[Any], operator.add]
     documents_retrieved: Annotated[List[Any], operator.add]
+
+    # Tokens/second from the most recent LLM call (agent or synthesizer). Overwritten
+    # each LLM step; reset to 0.0 at the start of each turn. Only populated for Ollama
+    # models (response_metadata carries eval_count + eval_duration); other providers
+    # leave it 0.0.
+    tok_per_sec: float

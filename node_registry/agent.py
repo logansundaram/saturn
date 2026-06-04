@@ -16,7 +16,7 @@ import time
 
 from langchain.messages import SystemMessage
 
-from llms import get_tool_model
+from llms import get_tool_model, extract_tok_per_sec
 from config import get_config
 from state import AgentState
 from messages import agent_sys_msg
@@ -49,12 +49,11 @@ def agent_node(state: AgentState):
 
     response = get_tool_model().invoke(messages)
 
-    tool_calls = getattr(response, "tool_calls", None) or []
-    print(
-        f"agent_node : {time.perf_counter() - start:.4f}s "
-        f"(iter {state.get('iteration', 0)}, {len(tool_calls)} tool call(s))"
-    )
-    return {"messages": [response], "iteration": state.get("iteration", 0) + 1}
+    return {
+        "messages": [response],
+        "iteration": state.get("iteration", 0) + 1,
+        "tok_per_sec": extract_tok_per_sec(response),
+    }
 
 
 def route_after_agent(state: AgentState) -> str:

@@ -18,6 +18,8 @@ output for the loop-driving roles, and we warn (not crash) if a bound model lack
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from langchain_ollama import ChatOllama, OllamaEmbeddings
 
 from config import get_config
@@ -102,9 +104,90 @@ def get_embeddings():
 
 def reset_models() -> None:
     """Drop all cached models so the next get_* call rebuilds from current config. Called
-    after a live model/tier change (e.g. the /model slash command)."""
+    after a live model/tier change (e.g. the /models slash command)."""
     _MODEL_CACHE.clear()
     _DERIVED_CACHE.clear()
+
+
+# ── local (Ollama) model discovery ────────────────────────────────────────────
+# `/models` pings the Ollama daemon for what's actually pulled on this machine so the picker
+# lists real, runnable tags (not just whatever config.yaml names). Kept here in the factory
+# module — it's the one place that already owns "which models exist / can we build them".
+
+
+@dataclass(frozen=True)
+class LocalModel:
+    """A model pulled into the local Ollama daemon, as surfaced by `ollama list`."""
+
+    name: str            # the tag you bind (e.g. "gemma4:e4b")
+    size_bytes: int      # on-disk size
+    parameter_size: str  # e.g. "4B", "29.9B" ("" if Ollama didn't report it)
+    quantization: str    # e.g. "Q4_K_M" ("" if absent)
+    family: str          # e.g. "gemma", "glm4moelite" ("" if absent)
+    is_embedding: bool   # heuristic: an embed-only model (can't serve a chat role)
+
+    @property
+    def size_h(self) -> str:
+        """Human-readable on-disk size (GiB/MiB)."""
+        gib = self.size_bytes / 1024**3
+        if gib >= 1:
+            return f"{gib:.1f}G"
+        return f"{self.size_bytes / 1024**2:.0f}M"
+
+
+def _looks_like_embedder(name: str, family: str, families) -> bool:
+    """Best-effort: Ollama's tag list doesn't flag embed-only models, so sniff the name/family.
+    Used only to group the picker (embedders bind the `embedder` slot, not a chat role)."""
+    hay = " ".join([name, family or "", " ".join(families or [])]).lower()
+    return any(tok in hay for tok in ("embed", "bert", "e5", "bge", "gte"))
+
+
+def list_local_models() -> list[LocalModel]:
+    """Return the models pulled into the local Ollama daemon (sorted by name).
+
+    Best-effort: returns [] if the `ollama` package is missing or the daemon is unreachable —
+    callers degrade to config-only behaviour rather than crashing. Reads the typed
+    `ollama.list()` response, tolerating both attribute and mapping shapes across versions."""
+    try:
+        import ollama
+
+        resp = ollama.list()
+    except Exception:
+        return []
+
+    raw = getattr(resp, "models", None)
+    if raw is None and isinstance(resp, dict):
+        raw = resp.get("models", [])
+    out: list[LocalModel] = []
+    for m in raw or []:
+        def field(obj, *names, default=None):
+            for n in names:
+                v = getattr(obj, n, None)
+                if v is None and isinstance(obj, dict):
+                    v = obj.get(n)
+                if v is not None:
+                    return v
+            return default
+
+        name = field(m, "model", "name", default="") or ""
+        if not name:
+            continue
+        details = field(m, "details", default=None)
+        family = field(details, "family", default="") or "" if details is not None else ""
+        families = field(details, "families", default=[]) if details is not None else []
+        out.append(
+            LocalModel(
+                name=name,
+                size_bytes=int(field(m, "size", default=0) or 0),
+                parameter_size=(field(details, "parameter_size", default="") or "")
+                if details is not None else "",
+                quantization=(field(details, "quantization_level", default="") or "")
+                if details is not None else "",
+                family=family,
+                is_embedding=_looks_like_embedder(name, family, families),
+            )
+        )
+    return sorted(out, key=lambda lm: lm.name.lower())
 
 
 def extract_tok_per_sec(response) -> float:

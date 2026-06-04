@@ -835,6 +835,99 @@ def show_system_metrics(metrics) -> None:
         _row("vram", vram_pct, f"{metrics.vram_used_gb:.1f} / {metrics.total_vram_gb:.1f} GB")
 
 
+# ── model picker / listing ───────────────────────────────────────────────────────
+def show_models(models, bindings: dict, active_tier: str, embedder: str,
+                *, numbered: bool = False) -> None:
+    """Render the locally-installed (Ollama) models plus the live role bindings, in the
+    trace-rail style. `models` is a list of `llms.LocalModel`; `bindings` maps role -> model id;
+    `embedder` is the active embedder tag. With `numbered=True` each installed row gets a 1-based
+    index (the selector the interactive picker reads). A `◂ <roles>` tail marks what each model
+    currently drives, so the bindings are visible inline."""
+    # role(s) / embedder each installed tag currently serves -> shown as a tail marker.
+    serves: dict[str, list[str]] = {}
+    for role, mid in (bindings or {}).items():
+        serves.setdefault(mid, []).append(role)
+    if embedder:
+        serves.setdefault(embedder, []).append("embedder")
+
+    all_roles = set(bindings or {})
+
+    def _tail_for(name: str) -> str:
+        """Compact 'what this tag drives' marker. Collapses every-role bindings to 'all roles'
+        so a model serving the whole loop doesn't spill five role names across the line."""
+        entries = serves.get(name, [])
+        roles = [e for e in entries if e != "embedder"]
+        parts = []
+        if roles:
+            parts.append("all roles" if all_roles and set(roles) == all_roles
+                         else " ".join(roles))
+        if "embedder" in entries:
+            parts.append("embedder")
+        return "  ".join(parts)
+
+    if _RICH:
+        rule = Text()
+        rule.append("  ╶── ", style=_DIM)
+        rule.append("models", style=f"bold {_ACCENT}")
+        rule.append(" " + "─" * 40, style=_DIM)
+        _console.print(rule)
+        sub = Text("  ")
+        sub.append("tier ", style=_DIM)
+        sub.append(active_tier, style="default")
+        sub.append("  ·  embedder ", style=_DIM)
+        sub.append(embedder or "—", style="default")
+        _console.print(sub)
+    else:
+        print("  ╶── models " + "─" * 44)
+        print(f"  tier {active_tier}  ·  embedder {embedder or '—'}")
+
+    if not models:
+        _emit("  (no local models — is the Ollama daemon running? `ollama list`)")
+    else:
+        for i, m in enumerate(models, start=1):
+            meta = " ".join(p for p in (m.parameter_size, m.quantization) if p) or "·"
+            tail = _tail_for(m.name)
+            idx = f"{i:>2}  " if numbered else ""
+            if _RICH:
+                line = _rail()
+                if numbered:
+                    line.append(f"{i:>2}  ", style=_ACCENT)
+                line.append(f"{m.name:<26}", style="default")
+                line.append(f"{m.size_h:>7}  ", style=_DIM)
+                line.append(f"{meta:<14}", style=_DIM)
+                if m.is_embedding:
+                    line.append("[embed] ", style="yellow")
+                if tail:
+                    line.append("◂ " + tail, style="green")
+                _console.print(line)
+            else:
+                emb = "[embed] " if m.is_embedding else ""
+                bound = ("◂ " + tail) if tail else ""
+                print(f"  {_RAIL_GLYPH} {idx}{m.name:<26}{m.size_h:>7}  {meta:<14}{emb}{bound}")
+
+    # Role bindings summary — the full role list, even for roles whose model isn't pulled locally
+    # (e.g. a cloud-hybrid anthropic binding won't appear in the installed list above).
+    if bindings:
+        _emit("  bindings:")
+        for role, mid in bindings.items():
+            _emit(f"    {role:<12} {mid}")
+
+
+def ask(prompt_text: str) -> str:
+    """Read a single line for an interactive command prompt (e.g. the /models picker). Tears down
+    any live status bar first — input() can't run under an active Live — and returns the raw,
+    stripped reply. Degrades to plain input() without rich."""
+    _live_stop()
+    try:
+        if _RICH:
+            # markup=False: prompts carry literal brackets (e.g. "[all|planner|…]") that Rich
+            # would otherwise eat as style tags.
+            return _console.input(f"  {prompt_text}", markup=False).strip()
+        return input(f"  {prompt_text}").strip()
+    except (EOFError, KeyboardInterrupt):
+        return ""
+
+
 # ── log lines (startup notices, warnings) ────────────────────────────────────────
 def warn(msg: str) -> None:
     if _RICH:

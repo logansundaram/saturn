@@ -386,56 +386,128 @@ def _resync_rag_after_model_change() -> None:
         _print("  embedder changed -> re-embedded the document corpus.")
 
 
+def _set_role_binding(cfg, role: str, model: str, provider: Optional[str]) -> None:
+    """Re-point one role's config entry. A bare model id rides the tier's default provider; an
+    explicit provider writes the {provider, model} mapping form (cross-provider bindings)."""
+    key = f"tiers.{cfg.active_tier}.roles.{role}"
+    if provider:
+        cfg.set(key, {"provider": provider, "model": model})
+    else:
+        cfg.set(key, model)
+
+
+def _bind(cfg, target: str, model: str, provider: Optional[str] = None) -> None:
+    """Apply a model binding for `target` (a role name, "all", or "embedder"), drop the cached
+    models, and re-embed the corpus if the embedder moved. Centralizes what the picker and the
+    argument paths both do, so they can't drift. Session-only — edit config.yaml to persist."""
+    from llms import reset_models
+
+    if target == "embedder":
+        cfg.set(f"tiers.{cfg.active_tier}.embedder", model)
+        reset_models()
+        _print(f"  embedder -> {model} on tier '{cfg.active_tier}' (session only).")
+        _resync_rag_after_model_change()
+        return
+
+    if target == "all":
+        for role in _ROLES:
+            _set_role_binding(cfg, role, model, provider)
+        reset_models()
+        _print(f"  all roles -> {model} on tier '{cfg.active_tier}' (session only).")
+    else:  # a single role
+        _set_role_binding(cfg, target, model, provider)
+        reset_models()
+        bound = f"{provider}:{model}" if provider else model
+        _print(f"  {target} -> {bound} on tier '{cfg.active_tier}' (session only).")
+    _print("  edit config.yaml to make it permanent.")
+    _resync_rag_after_model_change()
+
+
+# Picker targets: every chat role, plus the two convenience aggregates.
+_BIND_TARGETS = ("all", *_ROLES, "embedder")
+
+
+def _models_picker(ctx: CommandContext, cfg, local) -> None:
+    """Interactive selector behind a bare `/models`: pick a pulled model by number, then pick what
+    it should drive (default 'all' roles for a chat model, 'embedder' for an embed-only one).
+    Cancellable at either prompt with an empty line."""
+    import ui
+
+    if not local:
+        return  # nothing pulled locally to pick from; the table already said so
+    sel = ui.ask("bind a model — enter # (or blank to cancel) » ")
+    if not sel:
+        _print("  (cancelled)")
+        return
+    try:
+        choice = local[int(sel) - 1]
+        if int(sel) < 1:
+            raise IndexError
+    except (ValueError, IndexError):
+        _print(f"  not a valid selection: {sel!r}")
+        return
+
+    default = "embedder" if choice.is_embedding else "all"
+    tgt = ui.ask(
+        f"drive what with {choice.name}? [{'|'.join(_BIND_TARGETS)}] (default {default}) » "
+    ).lower()
+    target = tgt or default
+    if target not in _BIND_TARGETS:
+        _print(f"  unknown target: {target} (choose one of {', '.join(_BIND_TARGETS)})")
+        return
+    # Picker only ever binds local Ollama tags -> ride the tier's default provider (no override).
+    _bind(cfg, target, choice.name)
+
+
 @command(
-    "model",
-    "Show or switch the per-role model bindings / hardware tier.",
-    usage="/model | /model tier <name> | /model <role> <model_id> [provider]",
+    "models",
+    "List installed models; pick or switch what drives each role / the embedder.",
+    aliases=("model",),
+    usage="/models | /models <role|all|embedder> <id> | /models tier <name>",
     details="""
-With no args, shows the active hardware tier, the embedder, and the model bound to each role
-(with its capability flags: tools / structured / vision).
+With no args, pings the local Ollama daemon, renders every installed model (size, params,
+quantization, and what each currently drives) as a numbered table, then drops into an interactive
+picker: choose a model by number, then choose what it should drive. Picking a chat model defaults
+to 'all' roles (the common 'run everything locally on this model' case); picking an embed-only
+model defaults to the embedder. Blank input cancels at either step.
+
+You can also bind directly, without the picker:
+  /models                      list + interactive picker
+  /models all <id>             point every role at one model
+  /models <role> <id> [prov]   re-point one role (bare id = tier default provider)
+  /models embedder <id>        switch the embedding model (re-embeds the corpus)
+  /models tier <name>          switch the whole hardware tier
 
 Roles: planner, tool_caller, synthesizer, utility, judge.
 
-Switch the whole tier, or re-point a single role. A bare model id uses the tier's default
-provider; pass a provider as a third arg (or keep the role's existing one) for cross-provider
-bindings like cloud-hybrid. All switches are session-only — edit config.yaml to persist — and
-rebuild the cached models on next use. A switch that changes the embedder re-embeds the corpus.
-
-Examples:
-  /model                                 show current bindings
-  /model tier cloud-hybrid               switch the whole tier
-  /model planner llama3.1:70b            re-point one role (tier default provider)
-  /model planner claude-... anthropic    role + explicit provider
+All switches are session-only — edit config.yaml to persist — and rebuild the cached models on
+next use. Any change that moves the embedder re-embeds the document corpus. An explicit provider
+(3rd arg on a single role) writes the cross-provider {provider, model} form, e.g.:
+  /models planner claude-sonnet-4-6 anthropic
 """,
 )
-def _model(ctx: CommandContext, args: list[str]) -> None:
+def _models(ctx: CommandContext, args: list[str]) -> None:
     # Phase 3: roles resolve to models through config + the get_model factory, so switching is
     # just re-pointing config and dropping the cached models (nodes call get_model at run time).
     from config import get_config
-    from llms import model_id, capability_of, reset_models
+    from llms import model_id, reset_models, list_local_models
+    import ui
 
     cfg = get_config()
+    bindings = {role: model_id(role) for role in _ROLES}
 
+    # No args -> render the installed-model table + bindings, then drop into the picker.
     if not args:
-        _print(f"  active tier: {cfg.active_tier}   (embedder: {cfg.embedder_model})")
-        _print("  role bindings:")
-        for role in _ROLES:
-            mid = model_id(role)
-            cap = capability_of(role)
-            flags = []
-            if cap.supports_tools:
-                flags.append("tools")
-            if cap.supports_structured_output:
-                flags.append("structured")
-            if cap.supports_vision:
-                flags.append("vision")
-            _print(f"    {role:<12} {mid:<22} [{', '.join(flags) or 'no caps'}]")
-        _print("  switch: /model tier <name>   or   /model <role> <model_id> [provider]")
+        local = list_local_models()
+        ui.show_models(local, bindings, cfg.active_tier, cfg.embedder_model, numbered=True)
+        _models_picker(ctx, cfg, local)
         return
 
-    if args[0] == "tier":
+    sub = args[0].lower()
+
+    if sub == "tier":
         if len(args) < 2:
-            _print("  usage: /model tier <name>")
+            _print("  usage: /models tier <name>")
             return
         tier = args[1]
         if cfg.get(f"tiers.{tier}") is None:
@@ -447,15 +519,28 @@ def _model(ctx: CommandContext, args: list[str]) -> None:
         _resync_rag_after_model_change()
         return
 
-    role = args[0]
+    if sub == "embedder":
+        if len(args) < 2:
+            _print("  usage: /models embedder <model_id>")
+            return
+        _bind(cfg, "embedder", args[1])
+        return
+
+    if sub == "all":
+        if len(args) < 2:
+            _print("  usage: /models all <model_id>")
+            return
+        _bind(cfg, "all", args[1])
+        return
+
+    role = sub
     if role not in _ROLES:
-        _print(f"  unknown role: {role} (roles: {', '.join(_ROLES)})")
+        _print(f"  unknown target: {role} (roles: {', '.join(_ROLES)}; or 'all'/'embedder'/'tier')")
         return
     if len(args) < 2:
-        _print(f"  usage: /model {role} <model_id> [provider]")
+        _print(f"  usage: /models {role} <model_id> [provider]")
         return
     new_model = args[1]
-    key = f"tiers.{cfg.active_tier}.roles.{role}"
 
     # A role can be a bare model id (served by the tier's default provider) or a
     # {provider, model} mapping (a per-role provider override, e.g. cloud-hybrid pointing the
@@ -464,19 +549,10 @@ def _model(ctx: CommandContext, args: list[str]) -> None:
     if len(args) > 2:
         provider = args[2]
     else:
-        existing = cfg.get(key)
+        existing = cfg.get(f"tiers.{cfg.active_tier}.roles.{role}")
         provider = existing.get("provider") if isinstance(existing, dict) else None
 
-    if provider:
-        cfg.set(key, {"provider": provider, "model": new_model})
-        bound = f"{provider}:{new_model}"
-    else:
-        cfg.set(key, new_model)
-        bound = new_model
-    reset_models()
-    _print(f"  {role} -> {bound} on tier '{cfg.active_tier}' (session only).")
-    _print("  edit config.yaml to make it permanent.")
-    _resync_rag_after_model_change()
+    _bind(cfg, role, new_model, provider)
 
 
 @command(
@@ -773,7 +849,7 @@ Example (planned):
 )
 def _tool_toggle(ctx: CommandContext, args: list[str]) -> None:
     # TODO: maintain a session set of disabled tools and filter the bound tool list. Needs the
-    #       model-rebind path (same blocker as /model) since tools are bound at import in llms.py.
+    #       model-rebind path (same blocker as /models) since tools are bound at import in llms.py.
     ...
 
 
@@ -1036,7 +1112,7 @@ With a dotted key, reads that value; with a key and a value, sets it for this se
 `/config reload` re-reads config.yaml from disk, discarding any session edits.
 
 Model/tier keys rebuild the cached models on next use; an embedder change re-embeds the corpus.
-To change model bindings specifically, /model is the friendlier front end.
+To change model bindings specifically, /models is the friendlier front end.
 
 Examples:
   /config                              show the summary

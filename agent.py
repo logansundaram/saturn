@@ -131,7 +131,9 @@ def _fresh_turn(state: AgentState, user_input: str) -> AgentState:
     state["tools_called"] = []
     state["tool_results"] = []
     state["documents_retrieved"] = []
+    state["tool_events"] = []
     state["tok_per_sec"] = 0.0
+    # context_tokens persists across turns (the context only grows; overwritten on next LLM call).
     return state
 
 
@@ -148,7 +150,9 @@ def _initial_state() -> AgentState:
         "tools_called": [],
         "tool_results": [],
         "documents_retrieved": [],
+        "tool_events": [],
         "tok_per_sec": 0.0,
+        "context_tokens": 0,
     }
 
 

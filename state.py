@@ -88,8 +88,19 @@ class AgentState(TypedDict):
     tool_results: Annotated[List[Any], operator.add]
     documents_retrieved: Annotated[List[Any], operator.add]
 
+    # Per-call structured trace records emitted by tool_node, one dict per executed call:
+    # {name, args, result (one-line preview), dur (seconds), ok}. Drives the UI's tool-I/O
+    # tree (args + result preview + per-tool timing). Same append-reducer as the accumulators
+    # above; reset to [] per turn.
+    tool_events: Annotated[List[dict], operator.add]
+
     # Tokens/second from the most recent LLM call (agent or synthesizer). Overwritten
     # each LLM step; reset to 0.0 at the start of each turn. Only populated for Ollama
     # models (response_metadata carries eval_count + eval_duration); other providers
     # leave it 0.0.
     tok_per_sec: float
+
+    # Prompt tokens ingested by the most recent LLM call — how full the context window is right
+    # now. Overwritten each LLM step (agent/synthesize); the UI gauges it against the model's
+    # context window. Persists across turns (the context only grows) rather than resetting.
+    context_tokens: int

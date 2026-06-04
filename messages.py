@@ -92,6 +92,12 @@ Each turn:
   tools. Returning a message with no tool calls signals that you are done.
 
 Rules:
+- A failed or empty search is NOT a final answer. If search_knowledge_base returns nothing
+  relevant and the plan still has a gathering step pending (e.g. a web_search), DO that step
+  before concluding. Never reply that "no information exists" while a web_search — or any other
+  information-gathering step — is still pending in the plan.
+- A "who/what is X" question about a person, company, product, or current event is external
+  information: use web_search. The knowledge base holds only the user's own ingested documents.
 - Do not call a tool whose result you already have.
 - Do NOT call the same tool with the same (or a trivially reworded) query twice. If a search
   did not return what you wanted, either answer with what you have or try a clearly different

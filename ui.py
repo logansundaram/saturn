@@ -12,11 +12,22 @@ not a chatbot. Dense, fast, keyboard-first, low-noise, inspectable. The aestheti
   - The plan prints **once** as the intended route, then emits a single line per status change
     as steps advance — a log/trace, not a re-rendered panel. This is the transparency surface
     and the main noise source, so it's diffed.
+  - The `tools` node renders a **tool-I/O sub-tree** under its header: one `├─ name(args)` branch
+    per call with its duration and a one-line result preview (failed calls in red). Surfacing the
+    agent's actual inputs/outputs/cost is the point — the workflow other tools hide.
+  - LLM nodes annotate their trace line with the live **metrics for that step**: iteration,
+    context tokens ingested, tok/s.
   - The approval gate deliberately breaks out of the rail with a heavy rule. It's a blocking
-    safety decision and *should* draw the eye; everything else recedes.
-  - A single-line **status bar** is pinned at the bottom of the screen for the duration of a
-    turn (`rich.live.Live`): `model · iter · elapsed · tools · ▸node`. The trace lines above it
-    keep scrolling normally (rich routes `console.print` and captured `stdout` above the live
+    safety decision and *should* draw the eye; everything else recedes. Each gated call shows its
+    risk tier, every argument on its own line, and a one-line "what allowing this means" hint.
+  - The final **response** renders as real markdown (headings, bold, lists, fenced code with
+    syntax highlighting), so the answer reads as finished output, not a log line.
+  - A single-line **status bar** is pinned at the bottom of the screen for the duration of a turn
+    (`rich.live.Live`): identity (`saturday · model`) · run progress (`iter · elapsed · tools ·
+    tok/s`) · token/context fill (`ctx ▰▱ NN%`) · live hardware load (`cpu/ram/gpu` %, sampled
+    off-thread by a daemon so nvidia-smi never stalls the render) · `▸node`. It's no-wrap +
+    ellipsis so a narrow terminal trims the right edge rather than wrapping. The trace lines above
+    it keep scrolling normally (rich routes `console.print` and captured `stdout` above the live
     region). It's `transient`, so it vanishes when the turn ends — the scrolling trace is the
     permanent record, the bar is just a live "where are we now" readout. Because `input()` can't
     run inside an active `Live`, the bar is torn down around the `»` prompt, the approval gate,
@@ -37,6 +48,9 @@ try:
     from rich.console import Console
     from rich.text import Text
     from rich.live import Live
+    from rich.markdown import Markdown
+    from rich.panel import Panel
+    from rich.box import ROUNDED
 
     _console = Console(highlight=False)
     _RICH = True
@@ -77,10 +91,105 @@ _RISK = {
     "side_effecting": "yellow",
     "destructive": "bold red",
 }
+# one-line "what allowing this means" hint per tier, shown under each gated call.
+_RISK_HINT = {
+    "read_only": "no side effects",
+    "side_effecting": "writes or calls out — review before allowing",
+    "destructive": "irreversible — review carefully",
+}
 
 _RAIL_GLYPH = "│"
 _NODE_W = 12  # node-name column width, keeps timings aligned
 _LABEL_W = 46  # plan-label truncation (keeps step lines on one row at 80 cols)
+
+# Tree glyphs for the tool-I/O sub-trace (one branch per executed call).
+_TREE_MID, _TREE_END, _TREE_PIPE, _TREE_LEAF = "├─", "└─", "│", "└"
+
+
+# ── metric formatting (shared by the status bar and the readout commands) ─────
+def _human_tokens(n: int) -> str:
+    """Compact token count: 980 -> '980', 1842 -> '1.8k', 8192 -> '8k'."""
+    if n < 1000:
+        return str(int(n))
+    k = n / 1000
+    return f"{k:.0f}k" if k >= 10 or k == int(k) else f"{k:.1f}k"
+
+
+def _meter_color(pct: float) -> str:
+    """Load -> semantic color. Used for every gauge (context fill, cpu/ram/gpu) so a hot meter
+    reads the same way everywhere: green ok, yellow warm, red hot."""
+    if pct < 60:
+        return "green"
+    if pct < 85:
+        return "yellow"
+    return "bold red"
+
+
+def _mini_bar(pct: float, width: int = 6) -> str:
+    """A compact ▰▱ fill bar, `width` cells, clamped to [0, width]."""
+    filled = max(0, min(width, round(pct / 100 * width)))
+    return "▰" * filled + "▱" * (width - filled)
+
+
+def _active_ctx_window() -> int:
+    """The agent model's context window — the fill gauge's denominator. Lazily imports llms so
+    ui stays a leaf module; best-effort (0 if the factory/config is unavailable)."""
+    try:
+        from llms import active_context_window
+
+        return active_context_window()
+    except Exception:
+        return 0
+
+
+def _active_model() -> str:
+    """The current `tier:model` label for the status bar, resolved live each render — `/model`
+    re-points config + drops the model caches but can't reach back into ui, so a value captured
+    once at banner() goes stale. Lazily imports config/llms (ui stays a leaf); falls back to the
+    banner-captured `_model` if the factory/config is unavailable."""
+    try:
+        from config import get_config
+        from llms import model_id
+
+        return f"{get_config().active_tier}:{model_id('tool_caller')}"
+    except Exception:
+        return _model
+
+
+# ── live system-metrics sampler ───────────────────────────────────────────────
+# cpu/ram/gpu/vram are sampled off the render path: nvidia-smi can block up to 2s, which must
+# never stall the trace or the 4 Hz bar refresh. A lone daemon thread refreshes `_metrics` on a
+# slow cadence; the bar just reads the latest cached snapshot (None until the first sample lands).
+_METRICS_INTERVAL = 1.5  # seconds between samples
+_metrics = None          # latest system_monitor.SystemMetrics (or None)
+_metrics_thread = None
+
+
+def _metrics_loop(interval: float) -> None:
+    from system_monitor import get_system_metrics
+
+    global _metrics
+    while True:
+        try:
+            _metrics = get_system_metrics()
+        except Exception:
+            pass
+        time.sleep(interval)
+
+
+def _metrics_start() -> None:
+    """Lazily spin up the sampler (once per process). Daemon, so it dies with the interpreter;
+    cheap enough at 1 sample / 1.5s to just run for the session's lifetime."""
+    global _metrics_thread
+    if _metrics_thread is not None:
+        return
+    import threading
+
+    _metrics_thread = threading.Thread(
+        target=_metrics_loop, args=(_METRICS_INTERVAL,), daemon=True
+    )
+    _metrics_thread.start()
+
 
 # ── per-turn state (timing + plan diff). Reset via reset_turn() each turn. ─────
 _t_last = None
@@ -91,33 +200,72 @@ _plan_seen: dict = {}
 # clock; `_live` holds the active rich.live.Live (None when torn down for input).
 # `_model` is captured once in banner() so the bar needs no model passed per turn.
 _turn_start = None
-_status = {"node": "", "iteration": 0, "tools": 0, "tok_per_sec": 0.0}
+_status = {"node": "", "iteration": 0, "tools": 0, "tok_per_sec": 0.0,
+           "ctx_used": 0, "ctx_window": 0}
 _model = "unknown"
 _live = None
 
 
 class _StatusBar:
     """Renderable for the pinned bar. `__rich__` is re-evaluated on every Live refresh, so the
-    elapsed clock ticks even when no node update has fired."""
+    elapsed clock and the sampled system gauges tick even when no node update has fired. One
+    high-signal line: identity · run progress · token/context · live hardware load · active node.
+    Set no-wrap + ellipsis so a narrow terminal trims the right edge instead of wrapping to two
+    rows (the bar must stay exactly one line for the Live region)."""
 
     def __rich__(self) -> "Text":
         elapsed = time.perf_counter() - _turn_start if _turn_start else 0.0
         n = _status["tools"]
         tps = _status["tok_per_sec"]
-        bar = Text()
+        bar = Text(no_wrap=True, overflow="ellipsis")
         bar.append("  ╶ ", style=_DIM)
         bar.append("saturday", style=f"bold {_ACCENT}")
-        labels = [_model, f"iter {_status['iteration']}", _fmt_dur(elapsed).strip(),
-                  f"{n} tool{'' if n == 1 else 's'}"]
-        if tps > 0:
-            labels.append(f"{tps:.0f} tok/s")
-        for label in labels:
+
+        def sep():
             bar.append("  ·  ", style=_DIM)
+
+        # identity + run progress
+        for label in (_active_model(), f"iter {_status['iteration']}", _fmt_dur(elapsed).strip(),
+                      f"{n} tool{'' if n == 1 else 's'}"):
+            sep()
             bar.append(label, style="default")
+        if tps > 0:
+            sep()
+            bar.append(f"{tps:.0f} tok/s", style="default")
+
+        # token / context accounting: a small fill bar + % over the model's window
+        window = _status["ctx_window"]
+        if window:
+            used = _status["ctx_used"]
+            pct = used / window * 100
+            col = _meter_color(pct)
+            sep()
+            bar.append("ctx ", style=_DIM)
+            bar.append(_mini_bar(pct), style=col)
+            bar.append(f" {pct:.0f}%", style=col)
+
+        # live hardware load (sampled off-thread; absent until the first sample lands)
+        m = _metrics
+        if m is not None:
+            sep()
+            _append_meter(bar, "cpu", m.cpu_usage_percent)
+            ram_pct = m.ram_used_gb / m.total_ram_gb * 100 if m.total_ram_gb else 0.0
+            bar.append("  ", style=_DIM)
+            _append_meter(bar, "ram", ram_pct)
+            if m.gpu_usage_percent is not None:
+                bar.append("  ", style=_DIM)
+                _append_meter(bar, "gpu", m.gpu_usage_percent)
+
         if _status["node"]:
-            bar.append("  ·  ", style=_DIM)
+            sep()
             bar.append(f"▸ {_status['node']}", style=f"bold {_ACCENT}")
         return bar
+
+
+def _append_meter(bar: "Text", label: str, pct: float) -> None:
+    """`label NN%` with the percentage colored by load — the compact gauge form used in the bar."""
+    bar.append(f"{label} ", style=_DIM)
+    bar.append(f"{pct:.0f}%", style=_meter_color(pct))
 
 
 def _live_start() -> None:
@@ -127,6 +275,7 @@ def _live_start() -> None:
     global _live
     if not _RICH or _live is not None:
         return
+    _metrics_start()  # ensure the off-thread cpu/ram/gpu sampler is running
     _live = Live(_StatusBar(), console=_console, transient=True,
                  auto_refresh=True, refresh_per_second=4)
     _live.start()
@@ -152,7 +301,10 @@ def reset_turn() -> None:
     _t_last = time.perf_counter()
     _turn_start = _t_last
     _plan_seen = {}
-    _status = {"node": "", "iteration": 0, "tools": 0, "tok_per_sec": 0.0}
+    # Carry the last measured context fill across turns (it only grows; refreshed once the agent
+    # runs) but re-read the window in case the model/tier changed since the last turn.
+    _status = {"node": "", "iteration": 0, "tools": 0, "tok_per_sec": 0.0,
+               "ctx_used": _status.get("ctx_used", 0), "ctx_window": _active_ctx_window()}
     _live_start()
 
 
@@ -190,6 +342,30 @@ def _fmt_args(args: dict, cap: int = 48) -> str:
 
 def _truncate(s: str, n: int) -> str:
     return s if len(s) <= n else s[: n - 1] + "…"
+
+
+def _git_branch() -> str:
+    """Current git branch for the banner, or "" if not a repo / git missing. Best-effort, short
+    timeout — never blocks startup."""
+    import subprocess
+
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True, text=True, timeout=0.5, check=True,
+        )
+        return out.stdout.strip()
+    except Exception:
+        return ""
+
+
+def _short_cwd() -> str:
+    """Current working dir with $HOME collapsed to ~, for a compact banner line."""
+    cwd = os.getcwd()
+    home = os.path.expanduser("~")
+    if cwd.startswith(home):
+        cwd = "~" + cwd[len(home):]
+    return cwd
 
 
 # ── startup splash (the one ornamental moment) ───────────────────────────────────
@@ -504,26 +680,43 @@ def splash(work=None):
 
 # ── startup banner ─────────────────────────────────────────────────────────────
 def banner(model: str, n_tools: int, n_docs: int, db_path: str) -> None:
-    """Compact two-line header. Reads like a tool's startup line, not a splash screen."""
+    """Session header: a subtle rounded box of the run's identity — model/tier, context window,
+    tool + doc counts, working dir, git branch, and the trace DB. Reads like a deliberate startup
+    card (à la Claude Code), not a splash screen, while staying in the dim/accent palette."""
     global _model
     _model = model  # captured here so the live status bar needs no model passed per turn
+    win = _active_ctx_window()
+    ctx = _human_tokens(win) if win else "?"
+    branch = _git_branch()
+    cwd = _short_cwd()
+
     if _RICH:
-        head = Text()
-        head.append("saturday", style=f"bold {_ACCENT}")
-        head.append(".ai", style=_DIM)
-        for label in (model, f"{n_tools} tools", f"{n_docs} docs"):
-            head.append("  ·  ", style=_DIM)
-            head.append(label, style="default")
-        _console.print(head)
-        sub = Text()
-        sub.append(f"sqlite:{db_path}", style=_DIM)
-        sub.append("   ", style=_DIM)
-        sub.append("/help", style=_ACCENT)
-        sub.append(" for commands", style=_DIM)
-        _console.print(sub)
+        body = Text()
+        body.append("model ", style=_DIM); body.append(model, style="default")
+        body.append("   ctx ", style=_DIM); body.append(ctx, style="default")
+        body.append("\n")
+        body.append("tools ", style=_DIM); body.append(str(n_tools), style="default")
+        body.append("   docs ", style=_DIM); body.append(str(n_docs), style="default")
+        if branch:
+            body.append("   git ", style=_DIM); body.append(branch, style="default")
+        body.append("\n")
+        body.append("cwd   ", style=_DIM); body.append(cwd, style=_DIM)
+        body.append("\n")
+        body.append(f"trace {db_path}", style=_DIM)
+        panel = Panel(
+            body, box=ROUNDED, border_style=_RAIL, padding=(0, 1), expand=False,
+            title=Text("saturday.ai", style=f"bold {_ACCENT}"), title_align="left",
+        )
+        _console.print(panel)
+        hint = Text("  ")
+        hint.append("/help", style=_ACCENT)
+        hint.append(" for commands", style=_DIM)
+        _console.print(hint)
     else:
-        print(f"saturday.ai  ·  {model}  ·  {n_tools} tools  ·  {n_docs} docs")
-        print(f"sqlite:{db_path}   /help for commands")
+        git = f"  ·  git {branch}" if branch else ""
+        print(f"saturday.ai  ·  {model}  ·  ctx {ctx}  ·  {n_tools} tools  ·  {n_docs} docs{git}")
+        print(f"cwd {cwd}   trace {db_path}")
+        print("/help for commands")
 
 
 # ── input prompt ───────────────────────────────────────────────────────────────
@@ -644,28 +837,38 @@ def prompt(command_meta=None) -> str:
 
 # ── execution trace ─────────────────────────────────────────────────────────────
 def show_node(node: str, delta: dict | None = None) -> None:
-    """One trace line per node execution: `│ <node>   <elapsed>`, with the elapsed time
-    measured since the previous node emitted (htop-style). The `tools` node also surfaces the
-    tool names it ran, so the trace shows *what* happened, not just that something did."""
+    """One trace line per node execution — `│ <node>  <elapsed>  <annotation>` — with the elapsed
+    measured since the previous node emitted (htop-style). LLM nodes annotate with iter / context
+    tokens / tok-per-sec; the `tools` node renders a sub-tree of its calls (args · timing · result
+    preview) beneath the header, so the agent's actual actions are fully visible, not hidden."""
     global _t_last
     now = time.perf_counter()
     dur = now - _t_last if _t_last is not None else 0.0
     _t_last = now
 
-    extra = ""
-    if delta:
-        called = delta.get("tools_called") or []
-        if called:
-            extra = ", ".join(called)
-        # Feed the pinned status bar: latest node, running tool count, agent iteration.
-        _status["tools"] += len(called)
-        if "iteration" in delta:
-            _status["iteration"] = delta["iteration"]
-        tps = delta.get("tok_per_sec") or 0.0
-        if tps > 0:
-            _status["tok_per_sec"] = tps
-            extra = (extra + "  " if extra else "") + f"{tps:.0f} tok/s"
+    delta = delta or {}
+    # Feed the pinned status bar from whatever this delta carried.
+    called = delta.get("tools_called") or []
+    _status["tools"] += len(called)
+    if "iteration" in delta:
+        _status["iteration"] = delta["iteration"]
+    tps = delta.get("tok_per_sec") or 0.0
+    if tps > 0:
+        _status["tok_per_sec"] = tps
+    used = delta.get("context_tokens") or 0
+    if used > 0:
+        _status["ctx_used"] = used
     _status["node"] = node
+
+    # Per-node annotation: the live metrics for this step (LLM nodes only carry these).
+    parts = []
+    if "iteration" in delta:
+        parts.append(f"iter {delta['iteration']}")
+    if used > 0:
+        parts.append(f"{_human_tokens(used)} ctx")
+    if tps > 0:
+        parts.append(f"{tps:.0f} tok/s")
+    extra = "  ·  ".join(parts)
 
     if _RICH:
         line = _rail()
@@ -678,7 +881,44 @@ def show_node(node: str, delta: dict | None = None) -> None:
         tail = f"  {extra}" if extra else ""
         print(f"  {_RAIL_GLYPH} {node:<{_NODE_W}}{_fmt_dur(dur):>7}{tail}")
 
+    if delta.get("tool_events"):
+        _render_tool_events(delta["tool_events"])
+
     _live_refresh()  # repaint the bar with the new node/iter/tools immediately
+
+
+def _render_tool_events(events: list[dict]) -> None:
+    """Draw the tool-I/O sub-tree under the `tools` node header: one `├─ name(args)  <dur>` branch
+    per call, with a `└ <result preview>` leaf. Failed calls render red. This is the core
+    workflow-visibility surface — what the agent did, with inputs, outputs, and cost."""
+    n = len(events)
+    for i, ev in enumerate(events):
+        last = i == n - 1
+        branch = _TREE_END if last else _TREE_MID
+        cont = " " if last else _TREE_PIPE  # gutter under the branch for its result leaf
+        name = ev.get("name", "?")
+        call = _truncate(f"{name}({_fmt_args(ev.get('args', {}))})", 70)
+        dur = _fmt_dur(ev.get("dur", 0.0))
+        ok = ev.get("ok", True)
+        result = ev.get("result", "")
+
+        if _RICH:
+            line = _rail()
+            line.append("  ", style=_RAIL)            # nest under the node column
+            line.append(f"{branch} ", style=_RAIL)
+            line.append(call, style="default" if ok else "red")
+            line.append(f"   {dur}", style=_DIM)
+            _console.print(line)
+            if result:
+                leaf = _rail()
+                leaf.append("  ", style=_RAIL)
+                leaf.append(f"{cont}  {_TREE_LEAF} ", style=_RAIL)
+                leaf.append(result, style=_DIM if ok else "red")
+                _console.print(leaf)
+        else:
+            print(f"  {_RAIL_GLYPH}   {branch} {call}   {dur}")
+            if result:
+                print(f"  {_RAIL_GLYPH}   {cont}  {_TREE_LEAF} {result}")
 
 
 def _plan_line(step: dict, *, show_tool: bool) -> "Text | str":
@@ -741,6 +981,10 @@ def ask_approval(value: dict) -> bool:
 
     _live_stop()  # the gate blocks on input(); the bar can't be live while it does
 
+    def arg_repr(v) -> str:
+        r = repr(v)
+        return r if len(r) <= 80 else r[:79] + "…"
+
     if _RICH:
         top = Text()
         top.append("  ┏━ ", style="bold")
@@ -749,17 +993,34 @@ def ask_approval(value: dict) -> bool:
         _console.print(top)
         for tc in tool_calls:
             risk = str(tc.get("risk", "destructive"))
-            row = Text()
-            row.append("  ┃ ", style="bold")
-            row.append(f"{risk:<14} ", style=_RISK.get(risk, "bold red"))
-            row.append(f"{tc.get('name')}", style="default")
-            row.append(f"({_fmt_args(tc.get('args', {}))})", style=_DIM)
-            _console.print(row)
+            risk_style = _RISK.get(risk, "bold red")
+            head = Text()
+            head.append("  ┃ ", style="bold")
+            head.append(f"{risk:<14} ", style=risk_style)  # tier chip, risk-colored
+            head.append(f"{tc.get('name')}", style="default")
+            _console.print(head)
+            for k, v in (tc.get("args") or {}).items():  # one line per argument — full clarity
+                arow = Text()
+                arow.append("  ┃ ", style="bold")
+                arow.append(f"    {k} = ", style=_DIM)
+                arow.append(arg_repr(v), style="default")
+                _console.print(arow)
+            hint = _RISK_HINT.get(risk)
+            if hint:
+                hrow = Text()
+                hrow.append("  ┃ ", style="bold")
+                hrow.append(f"    ↳ {hint}", style=risk_style)
+                _console.print(hrow)
         resp = _console.input("  [bold]┗━[/] approve? [bold]y/N[/] » ").strip().lower()
     else:
         print("  ┏━ approval required " + "━" * 30)
         for tc in tool_calls:
-            print(f"  ┃ [{tc.get('risk')}] {tc.get('name')}({_fmt_args(tc.get('args', {}))})")
+            print(f"  ┃ [{tc.get('risk')}] {tc.get('name')}")
+            for k, v in (tc.get("args") or {}).items():
+                print(f"  ┃     {k} = {arg_repr(v)}")
+            hint = _RISK_HINT.get(str(tc.get("risk")))
+            if hint:
+                print(f"  ┃     -> {hint}")
         resp = input("  ┗━ approve? y/N » ").strip().lower()
 
     _t_last = time.perf_counter()  # don't bill the human's decision time to the next node
@@ -769,8 +1030,10 @@ def ask_approval(value: dict) -> bool:
 
 # ── final answer ─────────────────────────────────────────────────────────────────
 def response(text: str) -> None:
-    """The payload. Leaves the trace rail (un-indented, copy-pasteable) behind a short labeled
-    rule, so the answer is visually distinct from the trace above it."""
+    """The payload. Leaves the trace rail behind a short labeled rule and renders the answer as
+    real markdown — headings, bold, lists, and fenced code with syntax highlighting — so it reads
+    like a finished answer, not a log line. Falls back to plain text if markdown rendering raises
+    (arbitrary model output), and to plain print without rich."""
     _live_stop()  # turn's over: drop the status bar before printing the answer
     if _RICH:
         rule = Text()
@@ -778,10 +1041,14 @@ def response(text: str) -> None:
         rule.append("response", style=f"bold {_ACCENT}")
         rule.append(" " + "─" * 40, style=_DIM)
         _console.print(rule)
-        # markup=False: the answer is arbitrary model output; bracketed tokens like `list[str]`,
-        # citations `[1]`, or paths `[/etc/hosts]` must not be parsed as Rich tags (they get
-        # stripped, or raise MarkupError and kill the turn). highlight=False already on _console.
-        _console.print(text, markup=False)
+        try:
+            # Markdown parses markdown, not Rich console markup, so bracketed tokens like
+            # `list[str]` or citations `[1]` are safe literal text here.
+            _console.print(Markdown(text))
+        except Exception:
+            # Arbitrary model output can occasionally trip the markdown parser; never lose the
+            # answer over formatting. markup=False so brackets aren't eaten as Rich tags.
+            _console.print(text, markup=False)
     else:
         print("  ╶── response " + "─" * 36)
         print(text)
@@ -833,6 +1100,47 @@ def show_system_metrics(metrics) -> None:
     if metrics.vram_used_gb is not None and metrics.total_vram_gb is not None:
         vram_pct = metrics.vram_used_gb / metrics.total_vram_gb * 100
         _row("vram", vram_pct, f"{metrics.vram_used_gb:.1f} / {metrics.total_vram_gb:.1f} GB")
+
+
+# ── context-window readout (the /context command) ──────────────────────────────────
+def show_context(window: int, used: int, source: str, per_role: dict[str, int]) -> None:
+    """Detailed context-window readout for /context: the active window + where it comes from, a
+    wide fill bar for the last measured usage, and the per-role windows. Same trace-rail
+    vocabulary as show_system_metrics; the compact form of this fill gauge also rides the live
+    status bar during a turn."""
+    pct = (used / window * 100) if window else 0.0
+    col = _meter_color(pct)
+    bar = _mini_bar(pct, width=28)
+
+    if _RICH:
+        rule = Text()
+        rule.append("  ╶── ", style=_DIM)
+        rule.append("context", style=f"bold {_ACCENT}")
+        rule.append(" " + "─" * 40, style=_DIM)
+        _console.print(rule)
+
+        win = Text("  ")
+        win.append("window ", style=_DIM)
+        win.append(f"{window:,}", style="default")
+        win.append(" tokens", style=_DIM)
+        win.append(f"   ({source})", style=_DIM)
+        _console.print(win)
+
+        usage = _rail()
+        usage.append("usage ", style=_DIM)
+        usage.append(f" {bar}", style=col)
+        usage.append(f"  {pct:>4.0f}%", style=col)
+        usage.append(f"   {used:,} / {window:,}", style=_DIM)
+        _console.print(usage)
+    else:
+        print("  ╶── context " + "─" * 42)
+        print(f"  window {window:,} tokens   ({source})")
+        print(f"  {_RAIL_GLYPH} usage  {bar}  {pct:>4.0f}%   {used:,} / {window:,}")
+
+    if per_role:
+        roles_txt = "  ·  ".join(f"{r} {w:,}" for r, w in per_role.items())
+        _emit(f"  roles: {roles_txt}")
+    _emit("  set with /context <size> (or /context auto for per-model capability)")
 
 
 # ── model picker / listing ───────────────────────────────────────────────────────

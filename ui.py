@@ -198,7 +198,7 @@ def _truncate(s: str, n: int) -> str:
 # resting frame; it also auto-skips when stdout isn't a terminal or is too narrow.
 _ART_R, _ART_C = 15, 56                   # canvas rows, cols
 _ART_PCY, _ART_PCX = 7.0, 28.0            # planet centre
-_ART_PRR, _ART_PRC = 4.0, 9.0             # planet radii (rows, cols) — cols ~2× for char aspect
+_ART_PRR, _ART_PRC = 4.5, 9.0             # planet radii (rows, cols) — cols ~2× for char aspect
 _ART_RING_A, _ART_RING_B = 24.0, 5.7      # main ring semi-axes; B sets how open the tilt reads
 _ART_GUIDE_A, _ART_GUIDE_B = 27.5, 6.5    # outer dashed guide ring, echoing the reference art
 _ART_RING_SKEW = 0.12                     # slight rotation of the projected ring plane (radians)
@@ -234,6 +234,8 @@ def _sphere_cell(r: int, c: int):
     b = 0.12 + diff * band * 0.78
     if rad > 0.80 and ny < 0.15:                    # faint lit rim along the upper silhouette
         b = max(b, 0.6)
+    if rad > 0.90:                                   # soft edge fade — dims the outer rim
+        b *= (1.0 - rad) / 0.10
     b = max(0.0, min(1.0, b))
     idx = int(b * (len(_ART_RAMP) - 1) + 0.5) or 1  # never blank inside the silhouette
     return _ART_RAMP[idx], _ART_SHADE[idx]

@@ -8,8 +8,6 @@ load_dotenv()
 
 tavily_api_key = os.getenv("TAVILY_API_KEY")
 
-# Outsource the ugly web plumbing: search, crawl, scrape, extract. Keep ownership of planning, state, source selection, verification, caching, and final synthesis.
-
 
 @tool
 def web_search(query: str):

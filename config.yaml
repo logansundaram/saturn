@@ -28,6 +28,10 @@ paths:
 # ---------------------------------------------------------------------------
 runtime:
   max_iterations: 8
+  # Lockstep execution: when true the agent works the plan one step at a time (strongly directed
+  # to the current step) so the plan is followed closely; when false it free-runs with only a soft
+  # next-step pointer. Toggle live with `/plan lockstep on|off`.
+  lockstep: true
   # Tools AT OR BELOW this risk tier run without prompting; anything riskier hits the
   # approval gate. One of: read_only | side_effecting | destructive.
   auto_approve: read_only

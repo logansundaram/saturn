@@ -26,6 +26,7 @@ from node_registry.update_plan import update_plan_node
 from node_registry.agent import agent_node, route_after_agent
 from node_registry.tools import tool_node
 from node_registry.approval import approval_node
+from node_registry.plan_gate import plan_gate_node, route_after_gate
 
 # RAG ingest (reconciles the disk-cached vector store the search_knowledge_base tool reads)
 from rag import sync
@@ -37,25 +38,35 @@ import ui
 # REPL meta-commands (lines starting with `/`)
 import commands
 
+# Human-in-the-loop plan-review pause: the shared controller + the keyboard trigger.
+from interrupts import get_pause_controller, KeyWatcher
+
 DB_PATH = str(get_config().path("db_sqlite"))
+
+from utilities.print_graph import print_graph
 
 
 def build_agent():
-    """Assemble the living-plan ReAct loop with a human-in-the-loop approval gate:
+    """Assemble the living-plan ReAct loop with a human-in-the-loop approval gate AND a
+    plan-review gate:
 
-        START -> ground -> plan -> agent -> approval -> (tools -> update_plan -> agent)* -> synthesize -> END
-                                     │          │
-                              (no tool calls)  (reject -> back to agent)
-                                     ▼
-                                 synthesize
+        START -> ground -> plan -> plan_gate -> agent -> approval -> (tools -> update_plan -> plan_gate -> agent)* -> synthesize -> END
+                                       │ │         │          │
+                          (pause? edit │ │  (no tool calls)  (reject -> back to agent)
+                           the plan) ──┘ │         ▼
+                          (abort) ───────┘     synthesize
+                          → synthesize
 
-    Compiled with a SqliteSaver checkpointer, which both persists sessions and is what lets the
-    approval `interrupt` pause and resume.
+    `plan_gate` runs at every step boundary: a pass-through unless a pause has been requested, in
+    which case it `interrupt()`s so the user can inspect/edit the plan and resume (see
+    node_registry/plan_gate.py). Compiled with a SqliteSaver checkpointer, which both persists
+    sessions and is what lets the approval / plan-review `interrupt`s pause and resume.
     """
     builder = StateGraph(AgentState)
 
     builder.add_node("ground", grounding_node)
     builder.add_node("plan", plan_node)
+    builder.add_node("plan_gate", plan_gate_node)
     builder.add_node("agent", agent_node)
     builder.add_node("approval", approval_node)
     builder.add_node("tools", tool_node)
@@ -64,7 +75,14 @@ def build_agent():
 
     builder.add_edge(START, "ground")
     builder.add_edge("ground", "plan")
-    builder.add_edge("plan", "agent")
+    # Every step boundary flows through plan_gate (the plan-review checkpoint) before the agent acts.
+    builder.add_edge("plan", "plan_gate")
+    builder.add_conditional_edges(
+        "plan_gate",
+        route_after_gate,
+        # Normally -> agent; if the user aborted at the review prompt -> wrap up at synthesize.
+        {"agent": "agent", "synthesize": "synthesize"},
+    )
     builder.add_conditional_edges(
         "agent",
         route_after_agent,
@@ -74,7 +92,7 @@ def build_agent():
     )
     # approval routes dynamically via Command(goto=...) to "tools" (approved) or "agent" (rejected)
     builder.add_edge("tools", "update_plan")
-    builder.add_edge("update_plan", "agent")
+    builder.add_edge("update_plan", "plan_gate")
     builder.add_edge("synthesize", END)
 
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
@@ -82,25 +100,35 @@ def build_agent():
     return builder.compile(checkpointer=checkpointer)
 
 
-def run_turn(graph, payload, config, approver, on_update=None):
-    """Drive one turn to completion, streaming node updates and pausing at the approval gate.
+def run_turn(graph, payload, config, approver, on_update=None, pause=None):
+    """Drive one turn to completion, streaming node updates and pausing at an interrupt.
 
-    `approver(interrupt_value) -> bool` decides each approval. `on_update(node, delta)` is called
-    for every node update (used for the trace + live plan panel). Returns the final state."""
+    `approver(interrupt_value) -> decision` resolves each interrupt — for the approval gate a bool,
+    for the plan-review gate the editor's `{action, plan}` dict — and the result is fed back as the
+    `Command(resume=...)` value. `on_update(node, delta)` is called for every node update (the trace
+    + live plan panel). `pause`, if given, is an `interrupts.KeyWatcher`: it's started only while
+    the graph is executing and stopped before any blocking input(), so a keypress can request a
+    mid-turn plan review without ever stealing the prompt's keystrokes. Returns the final state."""
     pending = payload
     while True:
-        for chunk in graph.stream(pending, config, stream_mode="updates"):
-            if "__interrupt__" in chunk:
-                continue  # detected via get_state below
-            for node, delta in chunk.items():
-                if on_update:
-                    on_update(node, delta or {})
+        if pause is not None:
+            pause.start()
+        try:
+            for chunk in graph.stream(pending, config, stream_mode="updates"):
+                if "__interrupt__" in chunk:
+                    continue  # detected via get_state below
+                for node, delta in chunk.items():
+                    if on_update:
+                        on_update(node, delta or {})
+        finally:
+            if pause is not None:
+                pause.stop()  # never leave the watcher live across the input() below
 
         snapshot = graph.get_state(config)
         if not snapshot.next:
             return snapshot.values  # turn complete
 
-        # Paused on an interrupt — pull its payload, ask the approver, resume.
+        # Paused on an interrupt — pull its payload, ask the approver/reviewer, resume.
         interrupt_value = None
         for task in snapshot.tasks:
             if task.interrupts:
@@ -156,9 +184,11 @@ def _compact_history(messages: list, keep_recent_turns: int = 1) -> list:
     for m in messages[:boundary]:
         if isinstance(m, HumanMessage):
             kept.append(m)
-        elif isinstance(m, AIMessage) and not getattr(m, "tool_calls", None) and str(
-            m.content
-        ).strip():
+        elif (
+            isinstance(m, AIMessage)
+            and not getattr(m, "tool_calls", None)
+            and str(m.content).strip()
+        ):
             kept.append(m)
         # else: ToolMessage or tool-call/empty AIMessage from an OLD turn — drop it.
     return kept + messages[boundary:]
@@ -179,6 +209,9 @@ def _fresh_turn(state: AgentState, user_input: str) -> AgentState:
     state["agent_nudges"] = 0
     state["verified"] = False
     state["verifier_feedback"] = ""
+    state["pause_requested"] = False
+    state["pause_reason"] = ""
+    state["aborted"] = False
     state["tools_called"] = []
     state["tool_results"] = []
     state["documents_retrieved"] = []
@@ -199,6 +232,9 @@ def _initial_state() -> AgentState:
         "agent_nudges": 0,
         "verified": False,
         "verifier_feedback": "",
+        "pause_requested": False,
+        "pause_reason": "",
+        "aborted": False,
         "tools_called": [],
         "tool_results": [],
         "documents_retrieved": [],
@@ -210,6 +246,7 @@ def _initial_state() -> AgentState:
 
 def main():
     """CLI entry point: ingest the knowledge base, build the graph, run the REPL loop."""
+
     # The slow startup loading (knowledge-base ingest + graph build) runs while the ring art
     # animates, so the splash keeps drawing itself out until everything is ready.
     def _startup_load():
@@ -223,7 +260,9 @@ def main():
             warn = f"knowledge-base ingest failed, continuing without RAG: {exc}"
         return build_agent(), warn
 
-    graph, ingest_warning = ui.splash(_startup_load)  # ring-and-planet art over the load
+    graph, ingest_warning = ui.splash(
+        _startup_load
+    )  # ring-and-planet art over the load
     if ingest_warning:
         ui.warn(ingest_warning)
     tracer = Tracer(DB_PATH)
@@ -246,6 +285,14 @@ def main():
         state=state, make_initial_state=_initial_state, db_path=DB_PATH
     )
 
+    # One keyboard watcher for the session: while a turn runs, pressing the pause key (default 'p')
+    # asks the plan_gate to pause at the next step boundary so the plan can be reviewed/edited.
+    # No-ops cleanly when the console can't be polled (see interrupts.KeyWatcher).
+    pause_watcher = KeyWatcher()
+    pause_controller = get_pause_controller()
+
+    # print_graph(graph=graph)
+
     while True:
         user_input = ui.prompt(commands.command_completions())
 
@@ -261,22 +308,37 @@ def main():
             continue
 
         state = _fresh_turn(state, user_input)
-        # Fresh thread per turn: gives the approval interrupt a stable thread to pause/resume on,
+        # Persistent review mode (/plan review on) arms a pause at the FIRST gate every turn, so the
+        # plan is vetted before any execution. A one-shot /plan pause set the controller directly.
+        if cmd_ctx.review_plan:
+            pause_controller.request(
+                "review", "review mode: vet the plan before executing"
+            )
+        # Fresh thread per turn: gives the interrupts a stable thread to pause/resume on,
         # while cross-turn memory rides on the manually-carried `messages`.
         thread_id = str(uuid.uuid4())
         config = {"configurable": {"thread_id": thread_id}}
         run_id = tracer.start_run(thread_id, user_input)
         ui.reset_turn()  # reset node-timing + plan-diff state for this turn's trace
 
-        # /autoapprove disables the gate (approver always says yes); /verbose toggles the trace.
-        approver = (lambda _v: True) if cmd_ctx.auto_approve else ui.ask_approval
+        # Resolve each interrupt by type: the plan-review gate -> the plan editor; the approval
+        # gate -> /autoapprove (always yes) or the approval prompt. Keeping this dispatch here lets
+        # run_turn stay interrupt-type-agnostic (it just feeds the result back as the resume value).
+        base_approver = (lambda _v: True) if cmd_ctx.auto_approve else ui.ask_approval
+
+        def on_interrupt(value, _approve=base_approver):
+            if isinstance(value, dict) and value.get("type") == "plan_review":
+                return ui.review_plan(value)
+            return _approve(value)
+
         try:
             state = run_turn(
                 graph,
                 state,
                 config,
-                approver=approver,
+                approver=on_interrupt,
                 on_update=_make_on_update(tracer, run_id, show_ui=cmd_ctx.show_ui),
+                pause=pause_watcher,
             )
             tracer.end_run(run_id, "ok", state["messages"][-1].content)
         except Exception as exc:

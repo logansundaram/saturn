@@ -18,8 +18,13 @@ from langchain.messages import SystemMessage, AIMessage
 
 from llms import get_tool_model, extract_tok_per_sec, extract_prompt_tokens
 from config import get_config
-from state import AgentState, unrun_planned_tools
-from messages import agent_sys_msg, agent_next_step_directive, agent_nudge_directive
+from state import AgentState, unrun_planned_tools, active_step
+from messages import (
+    agent_sys_msg,
+    agent_next_step_directive,
+    agent_nudge_directive,
+    agent_lockstep_directive,
+)
 
 _STATUS_GLYPH = {"pending": "○", "active": "▶", "done": "✓", "skipped": "—"}
 
@@ -56,8 +61,15 @@ def agent_node(state: AgentState):
     plan = state.get("plan", [])
     pending = unrun_planned_tools(plan, state.get("tools_called", []))
 
+    # Plan-aware focus. In LOCKSTEP mode (config runtime.lockstep, default on) the model is told to
+    # execute exactly the current step — the plan is followed step-by-step. Otherwise fall back to
+    # the soft "next planned action" pointer at the first un-run gathering step (advisory).
     extras = []
-    if pending:
+    lockstep = get_config().lockstep
+    current = active_step(plan)
+    if lockstep and current:
+        extras.append(agent_lockstep_directive(current))
+    elif pending:
         extras.append(agent_next_step_directive(pending[0]))
 
     # Detect a route_after_agent nudge: we only re-enter `agent` directly after our own AIMessage

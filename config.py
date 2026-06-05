@@ -132,6 +132,13 @@ class Config:
         return int(self.get("runtime.max_iterations", 8))
 
     @property
+    def lockstep(self) -> bool:
+        """Whether the agent executes the plan one step at a time (the strong lockstep directive in
+        agent_node) vs. free-running with only a soft pointer. Default on — the plan is followed
+        closely, which is what makes the human-in-the-loop plan review worth doing."""
+        return bool(self.get("runtime.lockstep", True))
+
+    @property
     def auto_approve(self) -> str:
         tier = self.get("runtime.auto_approve", "read_only")
         return tier if tier in RISK_ORDER else "read_only"

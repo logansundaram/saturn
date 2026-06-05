@@ -41,6 +41,20 @@ runtime:
   num_ctx: null
 
 # ---------------------------------------------------------------------------
+# Web tools (tool_registry/web.py). Key-optional, local-first.
+#   provider: which search backend to use.
+#     auto       -> prefer Tavily when TAVILY_API_KEY is present, else keyless DuckDuckGo;
+#                   also falls back to DuckDuckGo automatically on a Tavily quota/key error.
+#     tavily     -> always use Tavily (search + extract). Requires a key.
+#     duckduckgo -> always keyless: DuckDuckGo search + local trafilatura extract. No key.
+#   web_extract is local (trafilatura) under auto/duckduckgo regardless — no API call.
+# ---------------------------------------------------------------------------
+web:
+  provider: auto
+  max_results: 5            # results returned per web_search
+  deep_research_sources: 4  # pages read + synthesized by the keyless deep_research fallback
+
+# ---------------------------------------------------------------------------
 # Hardware-tier presets. Each maps the agent's roles -> concrete models.
 #
 # A role value is either:

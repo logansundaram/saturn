@@ -344,6 +344,13 @@ def main():
         except Exception as exc:
             tracer.end_run(run_id, "error", str(exc))
             raise
+        finally:
+            # Discard any pause request still pending at turn end. A keypress that lands AFTER the
+            # turn's last plan_gate (e.g. during the final agent message or synthesize) is never
+            # consumed by the gate's clear(), and would otherwise leak into the next, unrelated turn
+            # and pause it. A `/plan pause` issued at the prompt is set after this point, so it
+            # survives; review mode re-arms each turn — neither is affected.
+            pause_controller.clear()
 
         cmd_ctx.state = state  # keep the command context pointed at the latest state
         ui.response(state["messages"][-1].content)

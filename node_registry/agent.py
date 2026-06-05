@@ -59,24 +59,49 @@ def agent_node(state: AgentState):
     start = time.perf_counter()
 
     plan = state.get("plan", [])
+    lockstep = get_config().lockstep
+
+    # We re-enter `agent` directly after our own AIMessage with no tool calls only via the
+    # route_after_agent nudge edge (planned work still open). Detect that once here — it drives both
+    # the lockstep no-tool advance just below and the nudge escalation further down.
+    last = state["messages"][-1] if state.get("messages") else None
+    finished_no_tool = isinstance(last, AIMessage) and not getattr(last, "tool_calls", None)
+
+    # Lockstep advance for no-tool steps. Mechanical update_plan only advances on a tool round, so a
+    # no-tool reasoning step in the MIDDLE of the plan would otherwise pin `active_step` to itself
+    # forever: the lockstep directive keeps telling the model to redo it while the nudge points past
+    # it (contradictory), and it never gets marked done (livelock). When we re-enter after producing
+    # that step's no-tool message, mark it done so the active pointer moves on — then the lockstep
+    # directive and the nudge both target the next (tool) step and agree.
+    plan_advanced = False
+    if lockstep and finished_no_tool:
+        current = active_step(plan)
+        if current and not current.get("intended_tool"):
+            plan = [dict(s) for s in plan]
+            for step in plan:
+                if step.get("step_id") == current.get("step_id"):
+                    step["status"] = "done"
+                    break
+            plan_advanced = True
+
     pending = unrun_planned_tools(plan, state.get("tools_called", []))
 
     # Plan-aware focus. In LOCKSTEP mode (config runtime.lockstep, default on) the model is told to
     # execute exactly the current step — the plan is followed step-by-step. Otherwise fall back to
     # the soft "next planned action" pointer at the first un-run gathering step (advisory).
     extras = []
-    lockstep = get_config().lockstep
     current = active_step(plan)
     if lockstep and current:
         extras.append(agent_lockstep_directive(current))
     elif pending:
         extras.append(agent_next_step_directive(pending[0]))
 
-    # Detect a route_after_agent nudge: we only re-enter `agent` directly after our own AIMessage
-    # with no tool calls. If planned gathering work is still open at that point, escalate.
-    last = state["messages"][-1] if state.get("messages") else None
+    # If the model finished with no tool calls while planned gathering work is still open, escalate
+    # with the pointed nudge (bounded by NUDGE_BUDGET in route_after_agent). After the lockstep
+    # advance above the directive already targets that same work, so the two reinforce rather than
+    # fight.
     nudges = state.get("agent_nudges", 0)
-    if isinstance(last, AIMessage) and not getattr(last, "tool_calls", None) and bool(pending):
+    if finished_no_tool and bool(pending):
         extras.append(agent_nudge_directive(pending))
         nudges += 1
 
@@ -90,13 +115,18 @@ def agent_node(state: AgentState):
 
     response = get_tool_model().invoke(messages)
 
-    return {
+    updates = {
         "messages": [response],
         "iteration": state.get("iteration", 0) + 1,
         "agent_nudges": nudges,
         "tok_per_sec": extract_tok_per_sec(response),
         "context_tokens": extract_prompt_tokens(response),
     }
+    # Only emit the plan delta when we actually advanced — keeps the trace's plan diff quiet on the
+    # common path (update_plan remains the usual advancer after tool rounds).
+    if plan_advanced:
+        updates["plan"] = plan
+    return updates
 
 
 def route_after_agent(state: AgentState) -> str:

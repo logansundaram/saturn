@@ -133,6 +133,39 @@ def agent_next_step_directive(step: dict) -> SystemMessage:
     return SystemMessage(content=content)
 
 
+def agent_lockstep_directive(step: dict) -> SystemMessage:
+    """The strong, plan-driven focus directive for LOCKSTEP execution (config `runtime.lockstep`).
+
+    Unlike the soft `agent_next_step_directive` pointer, this tells the model to execute exactly
+    the current step and nothing past it — so the plan is followed step-by-step rather than the
+    model free-running the whole task in one pass. This is what makes plan quality (and the
+    human-in-the-loop plan review that can correct it) actually matter: a corrected plan is
+    followed faithfully. The model may still finish a no-tool reasoning step directly, and the
+    plan/execution-gap nudge still backstops a premature finish."""
+    sid = step.get("step_id")
+    label = step.get("label", "")
+    tool = step.get("intended_tool")
+    if tool:
+        action = (
+            f"This step is meant to call `{tool}`. Make that native tool call now, with arguments "
+            f"appropriate to the step."
+        )
+    else:
+        action = (
+            "This step needs no tool — produce its result directly from your own knowledge and the "
+            "results already gathered in the conversation."
+        )
+    return SystemMessage(content=(
+        "LOCKSTEP EXECUTION — work the plan one step at a time.\n"
+        f"CURRENT STEP {sid}: {label}\n"
+        f"{action}\n"
+        "Do exactly this step now. Do NOT skip ahead to later steps or perform their work yet — "
+        "once this step's result is in, you will be advanced to the next step automatically. If "
+        "this step is already satisfied by results already present in the conversation, say so "
+        "briefly with no tool call so the plan can advance."
+    ))
+
+
 def agent_nudge_directive(steps: list[dict]) -> SystemMessage:
     """A pointed correction when the agent returned with no tool calls while planned gathering
     steps are still un-run — the exact `gemma4:e4b` failure where it answers 'no information'

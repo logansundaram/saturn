@@ -7,19 +7,26 @@ graph TD;
 	__start__([<p>__start__</p>]):::first
 	ground(ground)
 	plan(plan)
+	plan_gate(plan_gate)
 	agent(agent)
+	approval(approval)
 	tools(tools)
 	update_plan(update_plan)
 	synthesize(synthesize)
 	__end__([<p>__end__</p>]):::last
 	__start__ --> ground;
+	agent -.-> approval;
 	agent -.-> synthesize;
-	agent -.-> tools;
+	approval -.-> agent;
+	approval -.-> tools;
 	ground --> plan;
-	plan --> agent;
+	plan --> plan_gate;
+	plan_gate -.-> agent;
+	plan_gate -.-> synthesize;
 	tools --> update_plan;
-	update_plan --> agent;
+	update_plan --> plan_gate;
 	synthesize --> __end__;
+	agent -.-> agent;
 	classDef default fill:#f2f0ff,line-height:1.2
 	classDef first fill-opacity:0
 	classDef last fill:#bfb6fc

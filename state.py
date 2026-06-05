@@ -54,6 +54,16 @@ def unrun_planned_tools(plan: List[dict], called) -> List[dict]:
     return pending
 
 
+def active_step(plan: List[dict]) -> Optional[dict]:
+    """The current step to work: the first non-terminal step (not done/skipped). Drives lockstep
+    execution (`agent_node` focuses the model on this one) and is surfaced in the plan-review
+    interrupt so the user can see where execution is. None when the plan is complete/empty."""
+    for step in plan or []:
+        if step.get("status") not in ("done", "skipped"):
+            return step
+    return None
+
+
 def steps_to_dicts(steps: List[PlanStep]) -> List[dict]:
     """Convert planner structured-output PlanSteps into the plain dicts stored in state.
 
@@ -105,6 +115,17 @@ class AgentState(TypedDict):
     # Outer verify/repair loop.
     verified: bool            # verifier's verdict on the synthesized response
     verifier_feedback: str    # actionable critique fed back to the agent on repair
+
+    # Plan-review interrupt (see node_registry/plan_gate.py). `pause_requested` is the IN-GRAPH
+    # trigger seam: any node/tool (today none; later an LLM-initiated "review the plan" step) can
+    # set it True to make the next plan_gate pause. External/async pauses (keyboard, /plan
+    # pause|review) come through the interrupts.PauseController instead — the gate checks both.
+    # `pause_reason` is the human-readable why shown at the prompt. `aborted` is set by the gate
+    # when the user abandons the turn at the review prompt, routing the loop to synthesize. All
+    # three reset per turn.
+    pause_requested: bool
+    pause_reason: str
+    aborted: bool
 
     # Trace / transparency accumulators. The model consumes observations via
     # ToolMessages in `messages`; these mirror them as a flat, append-only record

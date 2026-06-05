@@ -1,4 +1,13 @@
+"""
+Knowledge-base tool — semantic search over the local RAG store (the ingested document corpus).
+
+`search_knowledge_base` is the agent's read interface to the vector store built in `rag.py`. It
+is kept separate from the live-web tools (`web.py`): this searches the user's OWN ingested
+documents, not the internet.
+"""
+
 import time
+
 from langchain.tools import tool
 
 
@@ -8,7 +17,7 @@ def search_knowledge_base(query: str):
     start = time.perf_counter()
     try:
         # Lazy import so merely importing the registry doesn't load the embedding model.
-        from rag import get_vector_store
+        from stores.rag import get_vector_store
 
         # k=6: at k=3 recall was too low and the agent compensated by re-searching and
         # falling back to read_file (see benchmark thrashing on RAG queries).

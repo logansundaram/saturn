@@ -166,7 +166,7 @@ _metrics_thread = None
 
 
 def _metrics_loop(interval: float) -> None:
-    from system_monitor import get_system_metrics
+    from tui.system_monitor import get_system_metrics
 
     global _metrics
     while True:

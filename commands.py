@@ -25,7 +25,7 @@ from typing import Callable, Optional
 
 # Handlers reach into these registries directly (same pattern the nodes use).
 from registry import tool as TOOLS, TOOL_RISK, risk_of
-from document_registry import read_documents_manifest, read_workspace_manifest
+from stores.document_registry import read_documents_manifest, read_workspace_manifest
 
 
 # ---------------------------------------------------------------------------
@@ -284,8 +284,8 @@ def _clear(ctx: CommandContext, args: list[str]) -> None:
     usage="/state [--full]",
     details="""
 Prints a one-line-per-field summary of the live AgentState: message count, current query,
-loop iteration, the verified flag, plan step count, the tools called this turn, and how many
-documents were retrieved.
+loop iteration, plan step count, the tools called this turn, and how many documents were
+retrieved.
 
 Pass --full to also dump the raw state dict (verbose — useful for debugging, noisy otherwise).
 
@@ -300,7 +300,6 @@ def _state(ctx: CommandContext, args: list[str]) -> None:
     _print(f"    messages      : {len(s.get('messages', []))}")
     _print(f"    current_query : {s.get('current_query', '')!r}")
     _print(f"    iteration     : {s.get('iteration', 0)}")
-    _print(f"    verified      : {s.get('verified', False)}")
     _print(f"    plan steps    : {len(s.get('plan', []))}")
     _print(f"    tools_called  : {s.get('tools_called', [])}")
     _print(f"    docs_retrieved: {len(s.get('documents_retrieved', []))}")
@@ -383,7 +382,7 @@ _ROLES = ("planner", "tool_caller", "synthesizer", "utility", "judge")
 def _resync_rag_after_model_change() -> None:
     """A model/tier change may have swapped the active tier's embedder. reset_models() only
     drops the chat-model caches, so re-embed the corpus here if the embedder actually changed."""
-    from rag import sync_to_config
+    from stores.rag import sync_to_config
 
     if sync_to_config():
         _print("  embedder changed -> re-embedded the document corpus.")
@@ -434,7 +433,7 @@ def _models_picker(ctx: CommandContext, cfg, local) -> None:
     """Interactive selector behind a bare `/models`: pick a pulled model by number, then pick what
     it should drive (default 'all' roles for a chat model, 'embedder' for an embed-only one).
     Cancellable at either prompt with an empty line."""
-    import ui
+    from tui import ui
 
     if not local:
         return  # nothing pulled locally to pick from; the table already said so
@@ -494,7 +493,7 @@ def _models(ctx: CommandContext, args: list[str]) -> None:
     # just re-pointing config and dropping the cached models (nodes call get_model at run time).
     from config import get_config
     from llms import model_id, reset_models, list_local_models
-    import ui
+    from tui import ui
 
     cfg = get_config()
     bindings = {role: model_id(role) for role in _ROLES}
@@ -572,8 +571,8 @@ Example:
 """,
 )
 def _system(ctx: CommandContext, args: list[str]) -> None:
-    from system_monitor import get_system_metrics
-    import ui
+    from tui.system_monitor import get_system_metrics
+    from tui import ui
 
     ui.show_system_metrics(get_system_metrics())
 
@@ -608,7 +607,7 @@ Examples:
 def _context(ctx: CommandContext, args: list[str]) -> None:
     from config import get_config
     from llms import reset_models, active_context_window, model_id
-    import ui
+    from tui import ui
 
     cfg = get_config()
 
@@ -741,7 +740,7 @@ Examples:
 """,
 )
 def _plan(ctx: CommandContext, args: list[str]) -> None:
-    import ui
+    from tui import ui
 
     if not args:
         _print("  current plan:")
@@ -860,7 +859,7 @@ Example:
 """,
 )
 def _reingest(ctx: CommandContext, args: list[str]) -> None:
-    from rag import sync
+    from stores.rag import sync
 
     s = sync(force=True, verbose=False)
     n = s["added"] + s["updated"]
@@ -884,7 +883,7 @@ Examples:
 """,
 )
 def _ingest(ctx: CommandContext, args: list[str]) -> None:
-    from rag import ingest_file
+    from stores.rag import ingest_file
 
     if not args:
         _print("  usage: /ingest <path-to-file>")
@@ -914,7 +913,7 @@ Example:
 """,
 )
 def _forget(ctx: CommandContext, args: list[str]) -> None:
-    from rag import forget_document
+    from stores.rag import forget_document
 
     if not args:
         _print("  usage: /forget <document-name>")
@@ -1385,6 +1384,6 @@ Example:
 """,
 )
 def _animation(ctx: CommandContext, args: list[str]) -> None:
-    import ui
+    from tui import ui
 
     ui.play_animation()

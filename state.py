@@ -112,10 +112,6 @@ class AgentState(TypedDict):
     # 0 per turn. See state.unrun_planned_tools + node_registry/agent.py.
     agent_nudges: int
 
-    # Outer verify/repair loop.
-    verified: bool            # verifier's verdict on the synthesized response
-    verifier_feedback: str    # actionable critique fed back to the agent on repair
-
     # Plan-review interrupt (see node_registry/plan_gate.py). `pause_requested` is the IN-GRAPH
     # trigger seam: any node/tool (today none; later an LLM-initiated "review the plan" step) can
     # set it True to make the next plan_gate pause. External/async pauses (keyboard, /plan

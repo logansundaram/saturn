@@ -198,8 +198,6 @@ def _fresh_state() -> AgentState:
         "plan": [],
         "iteration": 0,
         "agent_nudges": 0,
-        "verified": False,
-        "verifier_feedback": "",
         "tools_called": [],
         "tool_results": [],
         "documents_retrieved": [],

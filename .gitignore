@@ -19,6 +19,10 @@ ollama/
 dist/
 build/
 
+# Python bytecode cache (never track — caused binary merge conflicts pre-consolidation)
+__pycache__/
+*.pyc
+
 # IDE
 .vscode/
 .idea/
@@ -32,3 +36,5 @@ Thumbs.db
 CLAUDE.md
 
 USER.md
+
+CONSOLIDATION.md

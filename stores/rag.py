@@ -12,7 +12,7 @@ import pypdf
 from config import get_config
 from llms import get_embeddings
 from state import AgentState
-from document_registry import register_rag_document, remove_rag_document
+from stores.document_registry import register_rag_document, remove_rag_document
 
 
 SUPPORTED_EXTENSIONS = {".txt", ".md", ".pdf"}

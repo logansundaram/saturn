@@ -1,1 +1,0 @@
-Python lists are ordered, mutable collections that allow duplicate elements. They are created using square brackets `[]` and can store items of different data types.

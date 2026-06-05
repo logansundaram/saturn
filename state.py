@@ -34,6 +34,34 @@ class Plan(BaseModel):
     steps: List[PlanStep] = Field(default_factory=list)
 
 
+class ReplanVerdict(BaseModel):
+    """Structured verdict from the in-loop replan/judge node (node_registry/replan.py).
+
+    When the agent finishes with no tool calls and the mechanical nudge has nothing left to
+    escalate to, the judge inspects the draft answer: is it adequately grounded in what was
+    actually gathered (or a legitimate general-knowledge answer), or does it assert
+    current/external/specific facts that were never looked up? If the latter, it proposes a web
+    search to gather the missing information so the loop can insert that step and try again."""
+
+    grounded: bool = Field(
+        description=(
+            "True if the draft answer is adequately supported by the gathered tool results, or "
+            "is a legitimate general-knowledge/conceptual answer that needs no external lookup. "
+            "False only if it asserts current, external, or specific verifiable facts (rankings, "
+            "prices, news, versions, people/products, 'best X' claims) that were stated WITHOUT "
+            "being looked up this turn."
+        )
+    )
+    search_query: Optional[str] = Field(
+        default=None,
+        description=(
+            "When grounded is False, the web search query that would gather the missing "
+            "information. Null when grounded is True."
+        ),
+    )
+    reason: str = Field(default="", description="One short sentence explaining the verdict.")
+
+
 def unrun_planned_tools(plan: List[dict], called) -> List[dict]:
     """Planned gathering steps the agent has NOT yet executed: non-terminal steps
     (not done/skipped) carrying an `intended_tool` that isn't in `called`.
@@ -111,6 +139,12 @@ class AgentState(TypedDict):
     # small budget in route_after_agent so a model that stubbornly refuses can't loop. Reset to
     # 0 per turn. See state.unrun_planned_tools + node_registry/agent.py.
     agent_nudges: int
+
+    # In-loop replan counter: how many times this turn the judge/replan node inserted a gathering
+    # step because the agent's draft answer was ungrounded (asserted external facts it never looked
+    # up). Bounded by REPLAN_BUDGET in route_after_agent so a stubborn model can't loop. Reset to 0
+    # per turn. See node_registry/replan.py.
+    replans: int
 
     # Plan-review interrupt (see node_registry/plan_gate.py). `pause_requested` is the IN-GRAPH
     # trigger seam: any node/tool (today none; later an LLM-initiated "review the plan" step) can

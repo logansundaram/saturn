@@ -187,6 +187,51 @@ def agent_nudge_directive(steps: list[dict]) -> SystemMessage:
     ))
 
 
+# --- replan node (judge role) ----------------------------------------------------------
+# The in-loop verifier/repair step (node_registry/replan.py). Runs when the agent finishes with
+# no tool calls and the mechanical nudge has nothing planned left to escalate to. It inspects the
+# DRAFT answer the agent just produced and decides — via the structured ReplanVerdict — whether
+# that answer is adequately grounded, or whether it asserts external facts that were never looked
+# up. An ungrounded verdict carries a web_search query the node inserts as a new plan step so the
+# agent loops back and actually gathers the information. Disciplined on purpose: escalating a
+# legitimate general-knowledge answer would waste a round and annoy the user.
+judge_sys_msg = SystemMessage(
+    content="""
+You are the verification step of a local AI agent. The agent has just produced a DRAFT answer to
+the user's request without calling any more tools. Judge ONE thing: is that draft answer
+adequately grounded, or does it assert information that should have been looked up but was not?
+
+You are given the user's request, whatever was gathered this turn (tool results / retrieved
+documents, possibly none), and the draft answer. Apply these rules IN ORDER — the first that
+matches decides.
+
+1. The draft ADMITS it is unsupported. If the answer hedges that it is drawing on its own training
+   instead of looked-up data, or that the local material lacks the answer — phrases like "based on
+   general knowledge", "as of my last update", "I don't have access to", "the documents don't
+   contain", "I'm not certain but" — it is NOT GROUNDED. This is the strongest signal; an answer
+   that says it is guessing is, by its own admission, guessing.
+
+2. The request wants CURRENT / EXTERNAL / SPECIFIC facts. If the answer supplies rankings or
+   "best/top/recommended X" lists, prices, news, latest versions, statistics, dates, or who/what a
+   real person/company/product is, AND nothing in the gathered results above backs those facts,
+   it is NOT GROUNDED — these warrant verification against the web even when the model "knows" a
+   plausible answer. When in doubt for this kind of request, escalate.
+
+3. Otherwise GROUNDED. A general-knowledge, conceptual, definitional, reasoning, creative, or
+   how-to answer the model can legitimately give from its own training ("what is recursion",
+   "explain TCP handshakes", "write a haiku", "refactor this function"), or an answer whose claims
+   ARE supported by the gathered results above, is grounded.
+
+GROUNDED -> grounded: true, search_query: null.
+NOT GROUNDED -> grounded: false, and set search_query to the concise web query that would gather
+the missing information.
+
+Do not flag a sound conceptual answer just because a search is *possible* (rule 3). But do not let
+a confident tone disguise an unsourced ranking or current-fact claim as knowledge (rules 1-2).
+"""
+)
+
+
 # --- synthesize node -------------------------------------------------------------------
 # The final step. Composes the answer from grounding context + paired tool results
 # (name(args) -> result) + retrieved documents. Treats tool results as ground truth.

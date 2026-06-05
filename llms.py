@@ -24,7 +24,7 @@ from langchain_ollama import ChatOllama, OllamaEmbeddings
 
 from config import get_config
 from registry import tool
-from state import Plan
+from state import Plan, ReplanVerdict
 
 # (provider, model) -> BaseChatModel.  Cleared by reset_models().
 _MODEL_CACHE: dict[tuple[str, str], object] = {}
@@ -98,6 +98,39 @@ def get_plan_model():
         else:
             _DERIVED_CACHE["planner"] = base.with_structured_output(Plan)
     return _DERIVED_CACHE["planner"]
+
+
+def get_judge_model():
+    """The judge role's model constrained to emit a structured ReplanVerdict (cached).
+
+    Powers the in-loop replan node (node_registry/replan.py): the verifier/repair step that
+    decides whether the agent's draft answer is grounded or needs an inserted web-search step.
+    Mirrors get_plan_model — Ollama uses method="json_schema" for server-constrained generation."""
+    if "judge" not in _DERIVED_CACHE:
+        spec = get_config().model_for_role("judge")
+        cap = get_config().capability_of(spec.model)
+        if not cap.supports_structured_output:
+            print(
+                f"[llms] WARNING: model '{spec.model}' for role 'judge' does not advertise "
+                f"structured output; the replan node will skip escalation rather than misfire."
+            )
+        if spec.provider == "ollama":
+            # A dedicated temperature-0 instance: groundedness is a classification, so we want a
+            # stable verdict, not sampled variety (at the default temperature the same draft flips
+            # grounded/ungrounded run to run). Built separately from the shared get_model base —
+            # on single-model tiers every role shares one ChatOllama, so lowering temperature there
+            # would change planner/agent/synthesizer sampling too.
+            base = ChatOllama(
+                model=spec.model,
+                num_ctx=get_config().num_ctx_for(spec.model),
+                temperature=0,
+            )
+            _DERIVED_CACHE["judge"] = base.with_structured_output(
+                ReplanVerdict, method="json_schema"
+            )
+        else:
+            _DERIVED_CACHE["judge"] = get_model("judge").with_structured_output(ReplanVerdict)
+    return _DERIVED_CACHE["judge"]
 
 
 def get_embeddings():

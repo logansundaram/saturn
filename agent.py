@@ -26,6 +26,7 @@ from node_registry.update_plan import update_plan_node
 from node_registry.agent import agent_node, route_after_agent
 from node_registry.tools import tool_node
 from node_registry.approval import approval_node
+from node_registry.replan import replan_node
 from node_registry.plan_gate import plan_gate_node, route_after_gate
 
 # RAG ingest (reconciles the disk-cached vector store the search_knowledge_base tool reads)
@@ -54,8 +55,13 @@ def build_agent():
                                        │ │         │          │
                           (pause? edit │ │  (no tool calls)  (reject -> back to agent)
                            the plan) ──┘ │         ▼
-                          (abort) ───────┘     synthesize
-                          → synthesize
+                          (abort) ───────┘      replan ──(grounded)──> synthesize
+                          → synthesize             └──(ungrounded: insert web_search)──> agent
+
+    When the agent finishes with no tool calls and no planned gathering step is left to nudge
+    toward, `replan` (the `judge` role) verifies the draft answer is grounded; if it leans on
+    facts that were never looked up it inserts a web_search step and loops back to `agent`
+    (bounded by REPLAN_BUDGET). See node_registry/replan.py.
 
     `plan_gate` runs at every step boundary: a pass-through unless a pause has been requested, in
     which case it `interrupt()`s so the user can inspect/edit the plan and resume (see
@@ -71,6 +77,7 @@ def build_agent():
     builder.add_node("approval", approval_node)
     builder.add_node("tools", tool_node)
     builder.add_node("update_plan", update_plan_node)
+    builder.add_node("replan", replan_node)
     builder.add_node("synthesize", synthesize_node)
 
     builder.add_edge(START, "ground")
@@ -88,9 +95,12 @@ def build_agent():
         route_after_agent,
         # "agent" self-loop: the plan-aware nudge — when the model finishes with an un-run
         # planned tool still pending, route back to act on it (bounded; see route_after_agent).
-        {"approval": "approval", "synthesize": "synthesize", "agent": "agent"},
+        # "replan": an apparently-complete finish goes to the judge, which may insert a web_search
+        # step and loop back if the draft answer leans on facts that were never looked up.
+        {"approval": "approval", "synthesize": "synthesize", "agent": "agent", "replan": "replan"},
     )
-    # approval routes dynamically via Command(goto=...) to "tools" (approved) or "agent" (rejected)
+    # approval + replan route dynamically via Command(goto=...): approval -> "tools"/"agent",
+    # replan -> "agent" (escalate with an inserted web_search) / "synthesize" (answer is grounded).
     builder.add_edge("tools", "update_plan")
     builder.add_edge("update_plan", "plan_gate")
     builder.add_edge("synthesize", END)
@@ -207,6 +217,7 @@ def _fresh_turn(state: AgentState, user_input: str) -> AgentState:
     state["plan"] = []
     state["iteration"] = 0
     state["agent_nudges"] = 0
+    state["replans"] = 0
     state["pause_requested"] = False
     state["pause_reason"] = ""
     state["aborted"] = False
@@ -228,6 +239,7 @@ def _initial_state() -> AgentState:
         "plan": [],
         "iteration": 0,
         "agent_nudges": 0,
+        "replans": 0,
         "pause_requested": False,
         "pause_reason": "",
         "aborted": False,

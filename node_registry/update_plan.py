@@ -11,8 +11,12 @@ Phase 2).
 This is intentionally MECHANICAL, not LLM-driven: the local model (gemma4:e4b) cannot reliably
 emit structured JSON for plan revision — it leaks prose/markdown and fails to parse on nearly
 every call, adding latency and errors for no benefit. Deterministic status advancement from the
-tools actually called is both reliable and free. (An LLM-based reviser that can also INSERT
-steps mid-loop is a post-MVP upgrade gated on a more capable model — see SATURDAY_MVP_PLAN.md §1.)
+tools actually called is both reliable and free.
+
+The LLM-driven counterpart that can also INSERT a step mid-loop lives in `node_registry/replan.py`
+(the `judge` role): it runs only at the agent's apparently-complete finish to escalate an
+ungrounded answer to a web_search. Keeping the per-tool-round status bookkeeping here mechanical
+and the (rarer, more expensive) judgment call there keeps the common path fast and reliable.
 """
 
 _TERMINAL = ("done", "skipped")

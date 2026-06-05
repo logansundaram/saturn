@@ -36,10 +36,25 @@ CREATE TABLE IF NOT EXISTS events (
 """
 
 
+# How much of each message / delta the trace retains. These bound the durable execution log the
+# /trace replay reads, so they're generous: the replay is the full-fidelity record (reasoning +
+# tool decisions), not the abbreviated live rail. Bumped from 300/4000 — at the old caps a turn's
+# reasoning was clipped to a sentence and a busy delta lost its tail.
+_CONTENT_CAP = 1500
+_DATA_CAP = 16000
+
+
 def _json_default(o):
-    # Messages -> "AIMessage: <content>"; PlanStep/pydantic -> dict; everything else -> str.
+    # Messages -> "AIMessage: <content> [tool_calls: ...]"; PlanStep/pydantic -> dict; else -> str.
+    # We fold the tool-call decision into the string so a content-less tool-calling turn still
+    # records WHAT the agent decided to do (the live tool tree shows it; the replay needs it too).
     if hasattr(o, "content"):
-        return f"{type(o).__name__}: {str(o.content)[:300]}"
+        text = str(o.content)[:_CONTENT_CAP]
+        calls = getattr(o, "tool_calls", None)
+        if calls:
+            names = ", ".join(c.get("name", "?") for c in calls)
+            text = (text + " " if text else "") + f"[tool_calls: {names}]"
+        return f"{type(o).__name__}: {text}"
     if hasattr(o, "model_dump"):
         return o.model_dump()
     return str(o)
@@ -56,7 +71,7 @@ def _summarize(delta: dict) -> tuple[str, str]:
     if "messages" in delta:
         parts.append(f"+{len(delta['messages'])}msg")
     summary = " | ".join(parts) or "(update)"
-    data = json.dumps(delta, default=_json_default)[:4000]
+    data = json.dumps(delta, default=_json_default)[:_DATA_CAP]
     return summary, data
 
 

@@ -6,26 +6,39 @@ not a chatbot. Dense, fast, keyboard-first, low-noise, inspectable. The aestheti
 *structure*, not decoration:
 
   - A dim vertical rail (`│`) carries the execution trace. Consecutive node lines form one
-    continuous gutter, so a turn reads as a single inspectable block (the htop/tree feel).
+    continuous gutter, so a turn reads as a single inspectable block (the htop/tree feel). Each
+    node line leads with a green `✓` (the node has finished by the time it prints) then a dim
+    `name  elapsed`. At normal verbosity the plumbing nodes (`ground`, `update_plan`, `plan_gate`)
+    fold out of the rail — their *output* still prints and the trace DB keeps every node — so a
+    turn reads as the user's mental model, `plan → agent → tools → … → synthesize`;
+    `set_verbosity("verbose")` (via `/verbose full`) restores every node line and full timings.
   - Color is **semantic only**: green = done, cyan = active, yellow/red = risk tier. Structure
     is dim. Nothing is colored just to look nice — if it has color, it means something.
   - The plan prints **once** as the intended route, then emits a single line per status change
     as steps advance — a log/trace, not a re-rendered panel. This is the transparency surface
     and the main noise source, so it's diffed.
-  - The `tools` node renders a **tool-I/O sub-tree** under its header: one `├─ name(args)` branch
-    per call with its duration and a one-line result preview (failed calls in red). Surfacing the
-    agent's actual inputs/outputs/cost is the point — the workflow other tools hide.
-  - LLM nodes annotate their trace line with the live **metrics for that step**: iteration,
-    context tokens ingested, tok/s.
+  - The `tools` node renders a **tool-I/O sub-tree** under its header: one `├─ name(args)  dur`
+    branch per call, the call repr sized to the terminal width and durations column-aligned. Raw
+    result previews are **hidden** by default (noisy JSON) — a failed call still shows its error
+    inline (wrapped under the rail with a hanging indent), and `/calls` or `/verbose full` surfaces
+    full outputs on demand. What the agent *did* (inputs · cost · ok/fail) stays visible; the
+    workflow other tools hide.
+  - LLM nodes annotate their trace line with the live **metrics for that step** (iteration,
+    context tokens ingested, tok/s) — rendered **dim**: metrics are tertiary and must never
+    out-shout the trace they ride on, let alone the response. The eye flows response → trace →
+    metrics without having to parse the screen.
   - The approval gate deliberately breaks out of the rail with a heavy rule. It's a blocking
     safety decision and *should* draw the eye; everything else recedes. Each gated call shows its
     risk tier, every argument on its own line, and a one-line "what allowing this means" hint.
   - The final **response** renders as real markdown (headings, bold, lists, fenced code with
     syntax highlighting), so the answer reads as finished output, not a log line.
   - A single-line **status bar** is pinned at the bottom of the screen for the duration of a turn
-    (`rich.live.Live`): identity (`saturday · model`) · run progress (`iter · elapsed · tools ·
-    tok/s`) · token/context fill (`ctx ▰▱ NN%`) · live hardware load (`cpu/ram/gpu` %, sampled
-    off-thread by a daemon so nvidia-smi never stalls the render) · `▸node`. It's no-wrap +
+    (`rich.live.Live`), grouped into three zones parted by a quiet `│` rule so it reads as
+    deliberate groups, not a value stream: **identity** (`saturday · model`) │ **progress**
+    (`▸node · iter · elapsed · tools · tok/s` — the active stage leads, kept left so it survives a
+    narrow terminal) │ **resources** (`ctx NN% ▰▱` with a meter — it's what drives the agent — then
+    bare `cpu/ram/gpu/vram NN%` load-colored percentages; gpu/vram sampled off-thread by a daemon so
+    nvidia-smi never stalls the render). It's no-wrap +
     ellipsis so a narrow terminal trims the right edge rather than wrapping. The trace lines above
     it keep scrolling normally (rich routes `console.print` and captured `stdout` above the live
     region). It's `transient`, so it vanishes when the turn ends — the scrolling trace is the
@@ -42,6 +55,7 @@ agent.py, so box-drawing glyphs are safe even on the no-color path).
 import io
 import math
 import os
+import shutil
 import time
 
 try:
@@ -49,8 +63,6 @@ try:
     from rich.text import Text
     from rich.live import Live
     from rich.markdown import Markdown
-    from rich.panel import Panel
-    from rich.box import ROUNDED
 
     _console = Console(highlight=False)
     _RICH = True
@@ -77,6 +89,7 @@ except Exception:  # pragma: no cover - fallback path
 _ACCENT = "cyan"
 _RAIL = "grey39"  # the trace gutter; quiet but visible
 _DIM = "grey46"
+_FAINT = "grey30"  # fainter than the rail — for the most incidental annotations (plan ::tool tags)
 
 # status -> (glyph, style). Markers carry the state; color reinforces it.
 _PLAN = {
@@ -100,7 +113,6 @@ _RISK_HINT = {
 
 _RAIL_GLYPH = "│"
 _NODE_W = 12  # node-name column width, keeps timings aligned
-_LABEL_W = 46  # plan-label truncation (keeps step lines on one row at 80 cols)
 
 # Tree glyphs for the tool-I/O sub-trace (one branch per executed call).
 _TREE_MID, _TREE_END, _TREE_PIPE, _TREE_LEAF = "├─", "└─", "│", "└"
@@ -156,6 +168,14 @@ def _active_model() -> str:
         return _model
 
 
+def _active_model_short() -> str:
+    """The status-bar model label: the model id without the `tier:` prefix `_active_model` adds.
+    The tier already rides the banner, and the bar trims from the right on a narrow terminal, so
+    the prefix is pure cost here."""
+    full = _active_model()
+    return full.split(":", 1)[-1] if ":" in full else full
+
+
 # ── live system-metrics sampler ───────────────────────────────────────────────
 # cpu/ram/gpu/vram are sampled off the render path: nvidia-smi can block up to 2s, which must
 # never stall the trace or the 4 Hz bar refresh. A lone daemon thread refreshes `_metrics` on a
@@ -191,9 +211,34 @@ def _metrics_start() -> None:
     _metrics_thread.start()
 
 
+# ── trace verbosity ───────────────────────────────────────────────────────────
+# How much of the execution trace scrolls live. The trace DB keeps everything regardless, so
+# /trace and /calls stay full-fidelity no matter what this is set to:
+#   "normal"  (default) — plumbing nodes (ground, update_plan) are folded out of the live rail;
+#                         their *output* still prints (update_plan's plan diff is driven by
+#                         show_plan), and their timing rolls into the next visible node.
+#   "verbose"           — every node line, including the folded plumbing ones and full timings.
+# Whether the trace renders at all is a separate switch (commands' show_ui / `/verbose off`).
+_VERBOSITY = "normal"
+_FOLD_NODES = ("ground", "update_plan")  # hidden from the live rail unless verbosity == "verbose"
+
+
+def set_verbosity(level: str) -> str:
+    """Set live-trace verbosity (\"normal\" | \"verbose\"); returns the level now in effect."""
+    global _VERBOSITY
+    if level in ("normal", "verbose"):
+        _VERBOSITY = level
+    return _VERBOSITY
+
+
+def verbosity() -> str:
+    return _VERBOSITY
+
+
 # ── per-turn state (timing + plan diff). Reset via reset_turn() each turn. ─────
 _t_last = None
 _plan_seen: dict = {}
+_trace_started = False  # False until the turn's first node line prints (gates one lead-in blank)
 
 # ── live status bar (bottom-pinned) ───────────────────────────────────────────
 # `_status` is the live readout the bar renders; `_turn_start` anchors the elapsed
@@ -218,36 +263,44 @@ class _StatusBar:
         n = _status["tools"]
         tps = _status["tok_per_sec"]
         bar = Text(no_wrap=True, overflow="ellipsis")
-        bar.append("  ╶ ", style=_DIM)
+
+        def dot():   # within-zone separator (tight)
+            bar.append(" · ", style=_DIM)
+
+        def zone():  # between-zone separator: a quiet rule so the groups read as groups
+            bar.append("   │   ", style=_RAIL)
+
+        # ── identity ──
+        bar.append("  ", style=_DIM)
         bar.append("saturday", style=f"bold {_ACCENT}")
+        dot()
+        bar.append(_active_model_short(), style="default")
 
-        def sep():
-            bar.append("  ·  ", style=_DIM)
-
-        # identity + run progress
-        for label in (_active_model(), f"iter {_status['iteration']}", _fmt_dur(elapsed).strip(),
-                      f"{n} tool{'' if n == 1 else 's'}"):
-            sep()
+        # ── progress ── the active stage leads: it's the highest-value live datum, and keeping it
+        # left means a narrow terminal trims resources off the right rather than "where am I".
+        zone()
+        if _status["node"]:
+            bar.append(f"▸ {_status['node']}", style=f"bold {_ACCENT}")
+            dot()
+        for i, label in enumerate((f"iter {_status['iteration']}", _fmt_dur(elapsed).strip(),
+                                   f"{n} tool{'' if n == 1 else 's'}")):
+            if i:
+                dot()
             bar.append(label, style="default")
         if tps > 0:
-            sep()
+            dot()
             bar.append(f"{tps:.0f} tok/s", style="default")
 
-        # token / context accounting: a small fill bar + % over the model's window
+        # ── resources ── tertiary; ctx keeps its meter (it drives the agent), hardware is bare %.
         window = _status["ctx_window"]
-        if window:
-            used = _status["ctx_used"]
-            pct = used / window * 100
-            col = _meter_color(pct)
-            sep()
-            bar.append("ctx ", style=_DIM)
-            bar.append(_mini_bar(pct), style=col)
-            bar.append(f" {pct:.0f}%", style=col)
-
-        # live hardware load (sampled off-thread; absent until the first sample lands)
         m = _metrics
+        if window or m is not None:
+            zone()
+        if window:
+            _append_meter(bar, "ctx", _status["ctx_used"] / window * 100, cells=4)
         if m is not None:
-            sep()
+            if window:
+                bar.append("  ", style=_DIM)
             _append_meter(bar, "cpu", m.cpu_usage_percent)
             ram_pct = m.ram_used_gb / m.total_ram_gb * 100 if m.total_ram_gb else 0.0
             bar.append("  ", style=_DIM)
@@ -255,17 +308,22 @@ class _StatusBar:
             if m.gpu_usage_percent is not None:
                 bar.append("  ", style=_DIM)
                 _append_meter(bar, "gpu", m.gpu_usage_percent)
-
-        if _status["node"]:
-            sep()
-            bar.append(f"▸ {_status['node']}", style=f"bold {_ACCENT}")
+            if m.vram_used_gb is not None and m.total_vram_gb:
+                bar.append("  ", style=_DIM)
+                _append_meter(bar, "vram", m.vram_used_gb / m.total_vram_gb * 100)
         return bar
 
 
-def _append_meter(bar: "Text", label: str, pct: float) -> None:
-    """`label NN%` with the percentage colored by load — the compact gauge form used in the bar."""
+def _append_meter(bar: "Text", label: str, pct: float, cells: int = 0) -> None:
+    """`label NN%` (load-colored), optionally trailed by a tiny `▰▱` fill bar when `cells > 0` —
+    the compact gauge form used in the bar. Meters are opt-in: only the context gauge carries one
+    (it's what drives the agent); the hardware readouts stay bare percentages so the resources zone
+    reads calm rather than like a dashboard."""
+    col = _meter_color(pct)
     bar.append(f"{label} ", style=_DIM)
-    bar.append(f"{pct:.0f}%", style=_meter_color(pct))
+    bar.append(f"{pct:.0f}%", style=col)
+    if cells:
+        bar.append(f" {_mini_bar(pct, cells)}", style=col)
 
 
 def _live_start() -> None:
@@ -297,10 +355,11 @@ def _live_refresh() -> None:
 def reset_turn() -> None:
     """Call once at the start of each user turn: resets node timing + plan-diff state and
     starts the bottom-pinned status bar for the turn."""
-    global _t_last, _plan_seen, _turn_start, _status
+    global _t_last, _plan_seen, _turn_start, _status, _trace_started
     _t_last = time.perf_counter()
     _turn_start = _t_last
     _plan_seen = {}
+    _trace_started = False  # next node line leads with a blank to part it from the prompt
     # Carry the last measured context fill across turns (it only grows; refreshed once the agent
     # runs) but re-read the window in case the model/tier changed since the last turn.
     _status = {"node": "", "iteration": 0, "tools": 0, "tok_per_sec": 0.0,
@@ -323,10 +382,14 @@ def _rail(style: str = _RAIL) -> "Text":
 
 
 def _fmt_dur(seconds: float) -> str:
+    """Human-scale duration, fixed 6-char field. Humans don't benefit from sub-second precision
+    on a trace, so seconds carry one decimal and sub-millisecond steps collapse to `<1ms`."""
+    if seconds < 0.001:
+        return "  <1ms"
     if seconds < 1:
         return f"{seconds * 1000:>4.0f}ms"
     if seconds < 60:
-        return f"{seconds:>5.2f}s"
+        return f"{seconds:>5.1f}s"
     return f"{seconds / 60:>5.1f}m"
 
 
@@ -342,6 +405,18 @@ def _fmt_args(args: dict, cap: int = 48) -> str:
 
 def _truncate(s: str, n: int) -> str:
     return s if len(s) <= n else s[: n - 1] + "…"
+
+
+def _term_width(default: int = 80) -> int:
+    """Current console width, for width-responsive truncation/wrapping in the trace. Falls back
+    safely so a detached or odd stdout never throws."""
+    try:
+        if _RICH:
+            w = _console.width
+            return w if w and w >= 20 else default
+        return shutil.get_terminal_size((default, 24)).columns
+    except Exception:
+        return default
 
 
 def _git_branch() -> str:
@@ -716,9 +791,11 @@ def play_animation() -> None:
 
 # ── startup banner ─────────────────────────────────────────────────────────────
 def banner(model: str, n_tools: int, n_docs: int, db_path: str) -> None:
-    """Session header: a subtle rounded box of the run's identity — model/tier, context window,
-    tool + doc counts, working dir, git branch, and the trace DB. Reads like a deliberate startup
-    card (à la Claude Code), not a splash screen, while staying in the dim/accent palette."""
+    """Session header: a light two-line identity block — model/tier · context window, then tool +
+    doc counts · git branch · working dir, with the `/help` hint folded onto the second line. No
+    box and no absolute trace-DB path (it widened the old card for a value that's a `/config` away);
+    just alignment and whitespace, in the dim/accent palette. `db_path` is accepted for callers /
+    future relocation but isn't rendered here."""
     global _model
     _model = model  # captured here so the live status bar needs no model passed per turn
     win = _active_ctx_window()
@@ -727,32 +804,31 @@ def banner(model: str, n_tools: int, n_docs: int, db_path: str) -> None:
     cwd = _short_cwd()
 
     if _RICH:
-        body = Text()
-        body.append("model ", style=_DIM); body.append(model, style="default")
-        body.append("   ctx ", style=_DIM); body.append(ctx, style="default")
-        body.append("\n")
-        body.append("tools ", style=_DIM); body.append(str(n_tools), style="default")
-        body.append("   docs ", style=_DIM); body.append(str(n_docs), style="default")
+        head = Text("  ")
+        head.append("saturday.ai", style=f"bold {_ACCENT}")
+        head.append("   ", style=_DIM)
+        head.append(model, style="default")
+        head.append("  ·  ctx ", style=_DIM)
+        head.append(ctx, style="default")
+        _console.print(head)
+
+        info = Text("  ")
+        info.append(f"{n_tools} tools", style="default")
+        info.append("  ·  ", style=_DIM)
+        info.append(f"{n_docs} docs", style="default")
         if branch:
-            body.append("   git ", style=_DIM); body.append(branch, style="default")
-        body.append("\n")
-        body.append("cwd   ", style=_DIM); body.append(cwd, style=_DIM)
-        body.append("\n")
-        body.append(f"trace {db_path}", style=_DIM)
-        panel = Panel(
-            body, box=ROUNDED, border_style=_RAIL, padding=(0, 1), expand=False,
-            title=Text("saturday.ai", style=f"bold {_ACCENT}"), title_align="left",
-        )
-        _console.print(panel)
-        hint = Text("  ")
-        hint.append("/help", style=_ACCENT)
-        hint.append(" for commands", style=_DIM)
-        _console.print(hint)
+            info.append("  ·  ", style=_DIM)
+            info.append(f"git {branch}", style="default")
+        info.append("  ·  ", style=_DIM)
+        info.append(cwd, style=_DIM)
+        info.append("      ", style=_DIM)
+        info.append("/help", style=_ACCENT)
+        info.append(" for commands", style=_DIM)
+        _console.print(info)
     else:
         git = f"  ·  git {branch}" if branch else ""
-        print(f"saturday.ai  ·  {model}  ·  ctx {ctx}  ·  {n_tools} tools  ·  {n_docs} docs{git}")
-        print(f"cwd {cwd}   trace {db_path}")
-        print("/help for commands")
+        print(f"saturday.ai  {model}  ·  ctx {ctx}")
+        print(f"{n_tools} tools  ·  {n_docs} docs{git}  ·  {cwd}      /help for commands")
 
 
 # ── input prompt ───────────────────────────────────────────────────────────────
@@ -872,12 +948,43 @@ def prompt(command_meta=None) -> str:
 
 
 # ── execution trace ─────────────────────────────────────────────────────────────
+def _metric_parts(delta: dict) -> list[str]:
+    """Per-node metric annotations (iteration · context tokens · tok/s) pulled from a node delta —
+    shared by the live trace (show_node) and the recorded replay (show_run)."""
+    parts = []
+    if "iteration" in delta:
+        parts.append(f"iter {delta['iteration']}")
+    used = delta.get("context_tokens") or 0
+    if used > 0:
+        parts.append(f"{_human_tokens(used)} ctx")
+    tps = delta.get("tok_per_sec") or 0.0
+    if tps > 0:
+        parts.append(f"{tps:.0f} tok/s")
+    return parts
+
+
+def _node_line(node: str, dur: float, delta: dict) -> "Text | str":
+    """Build one `│ ✓ node  elapsed  metrics` trace row (metrics dim) — the shared format for the
+    live trace and the /trace replay. Returns a rich Text, or a plain string without rich."""
+    extra = " · ".join(_metric_parts(delta))
+    if _RICH:
+        line = _rail()
+        line.append("✓ ", style="green")  # the node has finished by the time its line prints
+        line.append(f"{node:<{_NODE_W}}", style="default")
+        line.append(f"{_fmt_dur(dur):>7}", style=_DIM)
+        if extra:
+            line.append(f"   {extra}", style=_DIM)  # metrics are tertiary — dim, never the accent
+        return line
+    tail = f"   {extra}" if extra else ""
+    return f"  {_RAIL_GLYPH} ✓ {node:<{_NODE_W}}{_fmt_dur(dur):>7}{tail}"
+
+
 def show_node(node: str, delta: dict | None = None) -> None:
     """One trace line per node execution — `│ <node>  <elapsed>  <annotation>` — with the elapsed
     measured since the previous node emitted (htop-style). LLM nodes annotate with iter / context
     tokens / tok-per-sec; the `tools` node renders a sub-tree of its calls (args · timing · result
     preview) beneath the header, so the agent's actual actions are fully visible, not hidden."""
-    global _t_last
+    global _t_last, _trace_started
     now = time.perf_counter()
     dur = now - _t_last if _t_last is not None else 0.0
     _t_last = now
@@ -886,7 +993,12 @@ def show_node(node: str, delta: dict | None = None) -> None:
     # per-step pass-throughs don't double the trace. Its effects still surface elsewhere: a plan
     # edit via show_plan (the on_update subscriber calls it on a `plan` delta), a pause via the
     # plan-review prompt. _t_last is already advanced, so the next node's timing excludes the gate.
+    # The plumbing nodes (ground, update_plan) fold the same way at normal verbosity: their timing
+    # rolls into the next visible node, and update_plan's plan diff still prints (show_plan is
+    # driven separately by on_update). Everything stays in the trace DB for /trace and /calls.
     if node == "plan_gate":
+        return
+    if node in _FOLD_NODES and _VERBOSITY != "verbose":
         return
 
     delta = delta or {}
@@ -903,26 +1015,13 @@ def show_node(node: str, delta: dict | None = None) -> None:
         _status["ctx_used"] = used
     _status["node"] = node
 
-    # Per-node annotation: the live metrics for this step (LLM nodes only carry these).
-    parts = []
-    if "iteration" in delta:
-        parts.append(f"iter {delta['iteration']}")
-    if used > 0:
-        parts.append(f"{_human_tokens(used)} ctx")
-    if tps > 0:
-        parts.append(f"{tps:.0f} tok/s")
-    extra = "  ·  ".join(parts)
-
-    if _RICH:
-        line = _rail()
-        line.append(f"{node:<{_NODE_W}}", style="default")
-        line.append(f"{_fmt_dur(dur):>7}", style=_DIM)
-        if extra:
-            line.append(f"  {extra}", style=_ACCENT)
-        _console.print(line)
-    else:
-        tail = f"  {extra}" if extra else ""
-        print(f"  {_RAIL_GLYPH} {node:<{_NODE_W}}{_fmt_dur(dur):>7}{tail}")
+    # Per-node trace row: `│ ✓ node  elapsed  metrics` (metrics dim). The metric annotations are
+    # built from the delta by the shared _node_line helper (the live trace + the /trace replay
+    # render identical rows).
+    if not _trace_started:
+        _emit("")  # one blank line parting the turn's trace from the prompt above it
+        _trace_started = True
+    _emit(_node_line(node, dur, delta))
 
     if delta.get("tool_events"):
         _render_tool_events(delta["tool_events"])
@@ -930,46 +1029,120 @@ def show_node(node: str, delta: dict | None = None) -> None:
     _live_refresh()  # repaint the bar with the new node/iter/tools immediately
 
 
-def _render_tool_events(events: list[dict]) -> None:
-    """Draw the tool-I/O sub-tree under the `tools` node header: one `├─ name(args)  <dur>` branch
-    per call, with a `└ <result preview>` leaf. Failed calls render red. This is the core
-    workflow-visibility surface — what the agent did, with inputs, outputs, and cost."""
+def _emit_result_leaf(cont: str, text: str, style: str) -> None:
+    """Emit a tool result/error leaf under its call branch, word-wrapped to the terminal with a
+    HANGING INDENT: the first line carries the `└` leaf glyph, continuation lines indent to sit
+    under the text (keeping the `cont` rail gutter), so a long output stays inside the trace rail
+    instead of spilling to column 0."""
+    import textwrap
+
+    first = f"{cont}  {_TREE_LEAF} "   # "│  └ " / "   └ " — leaf glyph, under the call text
+    rest = f"{cont}    "               # "│    " / "     " — aligns continuation under the text
+    avail = max(20, _term_width() - (4 + 2 + len(first)))  # minus rail(4) + nest(2) + leaf prefix
+    for i, ln in enumerate(textwrap.wrap(text, width=avail) or [text]):
+        prefix = first if i == 0 else rest
+        if _RICH:
+            row = _rail()
+            row.append("  ", style=_RAIL)
+            row.append(prefix, style=_RAIL)
+            row.append(ln, style=style)
+            _console.print(row)
+        else:
+            print(f"  {_RAIL_GLYPH}   {prefix}{ln}")
+
+
+def _render_tool_events(events: list[dict], *, always_show_results: bool = False) -> None:
+    """Draw the tool-I/O sub-tree under the `tools` node header: one `├─ name(args)  dur` branch
+    per call, the call repr sized to the terminal and durations column-aligned within the round so
+    they read as a column. The raw result preview is **hidden** by default — it's noisy JSON, and
+    `/calls` (or `/verbose full`) surfaces full outputs on demand — but a FAILED call still shows
+    its error leaf inline (signal, not noise). What the agent *did* (name · args · cost · ok/fail)
+    always stays visible. `always_show_results=True` (the /trace replay) shows every output, word-
+    wrapped under the rail with a hanging indent."""
     n = len(events)
+    # Width-responsive: size the call repr to the room left after the tree prefix (~9) and the right
+    # `   dur` column (~9), then align durations to the widest call in this round.
+    call_cap = max(24, _term_width() - 18)
+    calls = [_truncate(f"{ev.get('name', '?')}({_fmt_args(ev.get('args', {}))})", call_cap)
+             for ev in events]
+    col_w = max((len(c) for c in calls), default=0)
     for i, ev in enumerate(events):
         last = i == n - 1
         branch = _TREE_END if last else _TREE_MID
-        cont = " " if last else _TREE_PIPE  # gutter under the branch for its result leaf
-        name = ev.get("name", "?")
-        call = _truncate(f"{name}({_fmt_args(ev.get('args', {}))})", 70)
+        cont = " " if last else _TREE_PIPE  # gutter under the branch for the result/error leaf
+        call = calls[i]
         dur = _fmt_dur(ev.get("dur", 0.0))
         ok = ev.get("ok", True)
         result = ev.get("result", "")
+        # Outputs are hidden by default; show only errors, or everything under /verbose full or in
+        # the /trace replay (always_show_results).
+        show_result = bool(result) and (always_show_results or not ok or _VERBOSITY == "verbose")
 
         if _RICH:
             line = _rail()
             line.append("  ", style=_RAIL)            # nest under the node column
             line.append(f"{branch} ", style=_RAIL)
-            line.append(call, style="default" if ok else "red")
+            line.append(f"{call:<{col_w}}", style="default" if ok else "red")
             line.append(f"   {dur}", style=_DIM)
             _console.print(line)
-            if result:
-                leaf = _rail()
-                leaf.append("  ", style=_RAIL)
-                leaf.append(f"{cont}  {_TREE_LEAF} ", style=_RAIL)
-                leaf.append(result, style=_DIM if ok else "red")
-                _console.print(leaf)
         else:
-            print(f"  {_RAIL_GLYPH}   {branch} {call}   {dur}")
-            if result:
-                print(f"  {_RAIL_GLYPH}   {cont}  {_TREE_LEAF} {result}")
+            print(f"  {_RAIL_GLYPH}   {branch} {call:<{col_w}}   {dur}")
+        if show_result:
+            _emit_result_leaf(cont, result, _DIM if ok else "red")
+
+
+_MSG_ROLE = {"AIMessage": "ai", "HumanMessage": "in", "SystemMessage": "sys"}
+
+
+def _emit_message_leaf(label: str, text: str) -> None:
+    """One message/reasoning leaf under a node row: `└ <role>  <wrapped text>`, hanging-indented
+    under the rail so a long thought stays inside the trace gutter. Dim — it's narrative, not the
+    accent. Used by the /trace replay to surface the agent's actual thinking between tool calls."""
+    import textwrap
+
+    head = f"  {_TREE_END} {label:<3} "   # nest(2) + leaf glyph + fixed-width role tag
+    rest = " " * len(head)               # continuation lines align under the text
+    avail = max(20, _term_width() - (4 + len(head)))
+    for i, ln in enumerate(textwrap.wrap(text, width=avail) or [text]):
+        if _RICH:
+            row = _rail()
+            row.append(head if i == 0 else rest, style=_RAIL)
+            row.append(ln, style=_DIM)
+            _console.print(row)
+        else:
+            print(f"  {_RAIL_GLYPH} {head if i == 0 else rest}{ln}")
+
+
+def _render_trace_messages(node: str, delta: dict) -> None:
+    """Render the messages a node ADDED — chiefly the agent's reasoning text and its tool-call
+    decisions — as dim leaves under its trace row. This is the piece the live trace and the
+    default tool tree never surface, and what turns the /trace replay from a reprint of the answer
+    into a real execution log. ToolMessages are skipped (the tool sub-tree already carries their
+    output) and the synthesize node's message is skipped (it's the final answer, shown once in the
+    response section below)."""
+    if node == "synthesize":
+        return
+    for m in (delta.get("messages") or []):
+        kind, _, content = str(m).partition(": ")
+        if "ToolMessage" in kind:
+            continue
+        content = " ".join(content.split())  # collapse to a compact one-block preview
+        if not content:
+            continue
+        _emit_message_leaf(_MSG_ROLE.get(kind.strip(), kind.strip().lower() or "msg"), content)
 
 
 def _plan_line(step: dict, *, show_tool: bool) -> "Text | str":
     status = step.get("status", "pending")
     glyph, style = _PLAN.get(status, _PLAN["pending"])
-    label = _truncate(str(step.get("label", "")), _LABEL_W)
     sid = step.get("step_id", "?")
     tool = step.get("intended_tool")
+
+    # Width-responsive: drop the ::tool tag on a very narrow terminal, then size the label to what's
+    # left after the prefix (rail+nest+glyph+id ≈ 12) and the tag, so a step stays on one row.
+    tw = _term_width()
+    tag = f"  ::{tool}" if (show_tool and tool and tw >= 56) else ""
+    label = _truncate(str(step.get("label", "")), max(20, tw - 14 - len(tag)))
 
     if _RICH:
         line = _rail()
@@ -977,11 +1150,10 @@ def _plan_line(step: dict, *, show_tool: bool) -> "Text | str":
         line.append(f"{glyph} ", style=style)
         line.append(f"{str(sid):>2}  ", style=_DIM)
         line.append(label, style=style if status in ("active", "skipped") else "default")
-        if show_tool and tool:
-            line.append(f"  ::{tool}", style=_DIM)
+        if tag:
+            line.append(tag, style=_FAINT)  # the most incidental annotation — faintest
         return line
-    tooltxt = f"  ::{tool}" if (show_tool and tool) else ""
-    return f"  {_RAIL_GLYPH}   {glyph} {str(sid):>2}  {label}{tooltxt}"
+    return f"  {_RAIL_GLYPH}   {glyph} {str(sid):>2}  {label}{tag}"
 
 
 def render_plan(plan) -> None:
@@ -1206,6 +1378,21 @@ def review_plan(value: dict) -> dict:
 
 
 # ── final answer ─────────────────────────────────────────────────────────────────
+def _turn_summary_parts() -> list[str]:
+    """The post-response receipt: a permanent one-line echo of the (transient) status bar's run
+    stats — the bar vanishes when the turn ends, so this is what survives in the scrollback."""
+    elapsed = time.perf_counter() - _turn_start if _turn_start else 0.0
+    n = _status["tools"]
+    parts = [f"{_status['iteration']} iter", f"{n} tool{'' if n == 1 else 's'}",
+             _fmt_dur(elapsed).strip()]
+    if _status["tok_per_sec"] > 0:
+        parts.append(f"{_status['tok_per_sec']:.0f} tok/s")
+    window = _status["ctx_window"]
+    if window and _status["ctx_used"]:
+        parts.append(f"ctx {_status['ctx_used'] / window * 100:.0f}%")
+    return parts
+
+
 def response(text: str) -> None:
     """The payload. Leaves the trace rail behind a short labeled rule and renders the answer as
     real markdown — headings, bold, lists, and fenced code with syntax highlighting — so it reads
@@ -1213,11 +1400,13 @@ def response(text: str) -> None:
     (arbitrary model output), and to plain print without rich."""
     _live_stop()  # turn's over: drop the status bar before printing the answer
     if _RICH:
+        _console.print()  # part the answer from the trace rail above it
         rule = Text()
-        rule.append("  ╶── ", style=_DIM)
+        rule.append("  ── ", style=_DIM)
         rule.append("response", style=f"bold {_ACCENT}")
         rule.append(" " + "─" * 40, style=_DIM)
         _console.print(rule)
+        _console.print()  # let the answer breathe beneath its rule
         try:
             # Markdown parses markdown, not Rich console markup, so bracketed tokens like
             # `list[str]` or citations `[1]` are safe literal text here.
@@ -1226,39 +1415,38 @@ def response(text: str) -> None:
             # Arbitrary model output can occasionally trip the markdown parser; never lose the
             # answer over formatting. markup=False so brackets aren't eaten as Rich tags.
             _console.print(text, markup=False)
+        _console.print()  # let the answer breathe before the receipt
+        _console.print(Text("  ╶ " + " · ".join(_turn_summary_parts()), style=_DIM))
+        _console.print()  # trailing whitespace before the next prompt
     else:
-        print("  ╶── response " + "─" * 36)
+        print()
+        print("  ── response " + "─" * 36)
+        print()
         print(text)
+        print()
+        print("  ╶ " + " · ".join(_turn_summary_parts()))
+        print()
 
 
 # ── system metrics display ───────────────────────────────────────────────────────
 def show_system_metrics(metrics) -> None:
-    """Display a compact system-resource readout in the trace-rail style."""
-
-    def _pct_color(pct: float) -> str:
-        if pct < 50:
-            return "green"
-        if pct < 80:
-            return "yellow"
-        return "bold red"
-
-    def _bar(pct: float, width: int = 20) -> str:
-        filled = round(pct / 100 * width)
-        return "█" * filled + "░" * (width - filled)
+    """Display a compact system-resource readout in the trace-rail style. Shares the one meter
+    glyph + threshold vocabulary (`_mini_bar` / `_meter_color`) with the status bar and /context,
+    so a hot gauge reads identically everywhere; percentages are whole numbers (no false precision)."""
 
     def _row(label: str, pct: float, detail: str = "") -> None:
-        bar = _bar(pct)
-        col = _pct_color(pct)
+        bar = _mini_bar(pct, 20)
+        col = _meter_color(pct)
         if _RICH:
             line = _rail()
             line.append(f"{label:<6}", style=_DIM)
             line.append(f"  {bar}", style=col)
-            line.append(f"  {pct:>5.1f}%", style=col)
+            line.append(f"  {pct:>3.0f}%", style=col)
             if detail:
                 line.append(f"   {detail}", style=_DIM)
             _console.print(line)
         else:
-            print(f"  {_RAIL_GLYPH} {label:<6}  {bar}  {pct:>5.1f}%{'   ' + detail if detail else ''}")
+            print(f"  {_RAIL_GLYPH} {label:<6}  {bar}  {pct:>3.0f}%{'   ' + detail if detail else ''}")
 
     if _RICH:
         rule = Text()
@@ -1318,6 +1506,130 @@ def show_context(window: int, used: int, source: str, per_role: dict[str, int]) 
         roles_txt = "  ·  ".join(f"{r} {w:,}" for r, w in per_role.items())
         _emit(f"  roles: {roles_txt}")
     _emit("  set with /context <size> (or /context auto for per-model capability)")
+
+
+# ── run drill-down (the /trace expanded view) ─────────────────────────────────────
+def _enrich_results(events: list[dict], results: list, cap: int = 1200) -> list[dict]:
+    """Pair each recorded tool event with the fuller `call -> observation` from tool_results
+    (collapsed to one line, capped), so the /trace replay shows real output where the live tree
+    deliberately showed nothing. Falls back to the event's own preview when no pair exists."""
+    out = []
+    for i, ev in enumerate(events):
+        ev = dict(ev)
+        if i < len(results):
+            _, _, obs = str(results[i]).partition(" -> ")
+            obs = " ".join(obs.split())
+            if obs:
+                ev["result"] = (obs[: cap - 1] + "…") if len(obs) > cap else obs
+        out.append(ev)
+    return out
+
+
+def show_run(run, events) -> None:
+    """Replay one recorded run from the trace DB as an expanded drill-down (the default /trace view):
+    the query, every node with its wall-clock step time + metrics, the plan as it advanced, the
+    agent's reasoning + tool-call decisions per step (the `ai`/`in` leaves — the execution-log detail
+    the live trace omits), each tool call WITH its output (the live trace hides these too), and last,
+    de-emphasized, the recorded final answer. The full-fidelity counterpart to the live trace; same
+    rail/glyph/tree vocabulary, but here the EXECUTION LOG is the subject, not the response.
+
+    `run` is the row `(run_id, query, started_at, ended_at, status, response)`; `events` are its
+    `(seq, ts, node, summary, data)` rows in order. Step times are wall-clock deltas between event
+    timestamps, so a tool step that waited on the approval gate honestly includes that pause."""
+    import json
+    from datetime import datetime
+
+    global _plan_seen
+    run_id, query, started_at, ended_at, status, response_text = run
+
+    def _parse(ts):
+        try:
+            return datetime.fromisoformat(ts) if ts else None
+        except (TypeError, ValueError):
+            return None
+
+    # header: run id · query · when / status / total wall time
+    if _RICH:
+        rule = Text()
+        rule.append("  ╶── ", style=_DIM)
+        rule.append(f"run #{run_id}", style=f"bold {_ACCENT}")
+        rule.append(" " + "─" * 40, style=_DIM)
+        _console.print(rule)
+    else:
+        print(f"  ╶── run #{run_id} " + "─" * 40)
+
+    q = " ".join(str(query or "").split()) or "(empty)"
+    start_dt, end_dt = _parse(started_at), _parse(ended_at)
+    when = (started_at or "")[:19].replace("T", " ")
+    total = _fmt_dur((end_dt - start_dt).total_seconds()).strip() if (start_dt and end_dt) else ""
+    status_style = {"ok": "green", "error": "bold red", "running": "yellow"}.get(str(status), _DIM)
+    if _RICH:
+        qline = Text("  ")
+        qline.append("query  ", style=_DIM)
+        qline.append(q, style="default")
+        _console.print(qline)
+        meta = Text("  ")
+        meta.append(when or "—", style=_DIM)
+        meta.append("  ·  ", style=_DIM)
+        meta.append(str(status), style=status_style)
+        if total:
+            meta.append("  ·  ", style=_DIM)
+            meta.append(total, style=_DIM)
+        _console.print(meta)
+    else:
+        print(f"  query  {q}")
+        print(f"  {when}  ·  {status}" + (f"  ·  {total}" if total else ""))
+    _emit("")
+
+    # node-by-node replay. plan_gate is a control checkpoint with no info (folded in the live trace
+    # too); everything else shows — this IS the full drill-down, plumbing and tool outputs included.
+    saved_seen = _plan_seen
+    _plan_seen = {}  # let show_plan diff afresh over this run's plan events
+    prev = start_dt
+    try:
+        for _seq, ts, node, _summary, data in events:
+            if node == "plan_gate":
+                continue
+            try:
+                delta = json.loads(data or "{}")
+            except (json.JSONDecodeError, TypeError):
+                delta = {}
+            cur = _parse(ts)
+            dur = (cur - prev).total_seconds() if (cur and prev) else 0.0
+            if cur:
+                prev = cur
+            _emit(_node_line(node, dur, delta))
+            if delta.get("plan"):
+                show_plan(delta["plan"])
+            # the agent's reasoning / tool-call decisions for this step — the execution-log detail
+            # the live trace omits; this is the point of the drill-down
+            _render_trace_messages(node, delta)
+            tev = delta.get("tool_events") or []
+            if tev:
+                _render_tool_events(_enrich_results(tev, delta.get("tool_results") or []),
+                                    always_show_results=True)
+    finally:
+        _plan_seen = saved_seen
+
+    # the run's final answer — subordinate in the replay. The execution log above is the subject of
+    # /trace; the answer is just the recorded outcome, so it's rendered quietly (dim plaintext under
+    # a faint label) rather than as the bold-accent markdown the LIVE turn already showed.
+    if response_text:
+        _emit("")
+        if _RICH:
+            rule = Text()
+            rule.append("  ╶ ", style=_FAINT)
+            rule.append("final answer", style=_DIM)
+            rule.append(" (recorded)", style=_FAINT)
+            _console.print(rule)
+            for ln in response_text.splitlines() or [""]:
+                row = Text("  ")
+                row.append(ln, style=_DIM)
+                _console.print(row)
+        else:
+            print("  ╶ final answer (recorded)")
+            for ln in response_text.splitlines() or [""]:
+                print(f"  {ln}")
 
 
 # ── model picker / listing ───────────────────────────────────────────────────────

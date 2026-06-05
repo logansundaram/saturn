@@ -33,6 +33,12 @@ _STATUS_GLYPH = {"pending": "○", "active": "▶", "done": "✓", "skipped": "�
 # searching" miss without letting a model that truly won't call the tool spin to max_iterations.
 NUDGE_BUDGET = 2
 
+# How many times in one turn the judge/replan node may insert a gathering step because the agent's
+# draft answer was ungrounded. One escalation is enough for the common "answered a 'best X'/current-
+# facts question from parametric knowledge instead of searching" miss; more would risk loops (and is
+# bounded by the iteration cap regardless). See node_registry/replan.py.
+REPLAN_BUDGET = 1
+
 
 def render_plan(plan: list[dict]) -> str:
     """Human-readable checklist, injected into the agent's context and streamed to the UI."""
@@ -131,11 +137,13 @@ def agent_node(state: AgentState):
 
 def route_after_agent(state: AgentState) -> str:
     """Route the agent's output: tool calls -> approval; an early finish with planned work still
-    pending -> back to `agent` (the plan-aware nudge); otherwise -> synthesize.
+    pending -> back to `agent` (the plan-aware nudge); an apparently-complete finish -> `replan`
+    (the judge verifies it's grounded, possibly inserting a web_search); otherwise -> synthesize.
 
     The iteration cap (read live from config so /config can change it) bounds every loop edge.
-    The nudge is additionally bounded by NUDGE_BUDGET so a model that simply won't call the tool
-    falls through to an honest synthesize instead of spinning to the iteration cap."""
+    The nudge is additionally bounded by NUDGE_BUDGET and the judge escalation by REPLAN_BUDGET, so
+    a model that simply won't act falls through to an honest synthesize instead of spinning to the
+    iteration cap."""
     last = state["messages"][-1]
     has_tool_calls = bool(getattr(last, "tool_calls", None))
     iteration = state.get("iteration", 0)
@@ -146,10 +154,15 @@ def route_after_agent(state: AgentState) -> str:
     if has_tool_calls:
         return "approval"
 
-    # No tool calls: the model thinks it's done. If the plan still has an un-run gathering step
-    # and we have nudge budget left, send it back to act (agent_node injects the correction).
-    if state.get("agent_nudges", 0) < NUDGE_BUDGET and unrun_planned_tools(
-        state.get("plan", []), state.get("tools_called", [])
-    ):
+    # No tool calls: the model thinks it's done. Two separate guards, in priority order:
+    unrun = unrun_planned_tools(state.get("plan", []), state.get("tools_called", []))
+    # 1) A PLANNED gathering step is still un-run — the agent skipped it. Nudge it back to act
+    #    (agent_node injects the pointed correction), bounded by NUDGE_BUDGET.
+    if unrun and state.get("agent_nudges", 0) < NUDGE_BUDGET:
         return "agent"
+    # 2) Nothing planned is left to run (the agent did everything the plan asked, or the plan never
+    #    planned a lookup at all). Before accepting the answer, let the judge verify it's grounded —
+    #    it may insert a web_search step if the draft leans on facts that were never looked up.
+    if not unrun and state.get("replans", 0) < REPLAN_BUDGET:
+        return "replan"
     return "synthesize"

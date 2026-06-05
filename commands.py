@@ -792,54 +792,113 @@ def _plan(ctx: CommandContext, args: list[str]) -> None:
     _print(f"  unknown /plan subcommand: {sub!r} — try: review, pause, lockstep (or /plan --help)")
 
 
+def _to_int(s) -> Optional[int]:
+    """Parse a run selector token to an int, tolerating a leading '#'. None if not a number."""
+    try:
+        return int(str(s).strip().lstrip("#"))
+    except (TypeError, ValueError):
+        return None
+
+
 @command(
     "trace",
-    "Show recent runs/events from the trace DB.",
-    usage="/trace [n]",
+    "Expanded drill-down of a recorded run (default: the last run).",
+    usage="/trace [#id | -r id] | -l [n]",
     details="""
-Lists the most recent runs recorded in the trace database (database/db.sqlite): run id, start
-time, status (running / ok / error), event count, and the query. Defaults to the last 5.
+Expands one recorded run from the trace database (database/db.sqlite) into the full replay the
+live trace abbreviates: the query, every node with its step time and metrics, the plan as it
+advanced, the agent's reasoning and tool-call decisions at each step (the execution detail the
+live trace omits), each tool call WITH its output (the live trace hides that too), and — last and
+de-emphasized — the recorded final answer. This is the execution log, not a reprint of the
+response.
 
-Every turn is one run; the node updates streamed within it are its events. Unlike /history
-(in-memory, cleared by /reset) this is the durable, queryable record that survives restarts.
+With no argument it expands the MOST RECENT run. Select another run by id, or list runs to find
+one:
 
-Examples:
-  /trace
-  /trace 20
+  /trace            expand the last run
+  /trace #7         expand run 7   (also: -r 7, --run 7, or just: /trace 7)
+  /trace -l         list recent runs at a glance — the run ids live here
+  /trace -l 20      list the last 20
+
+Every turn is one run. Unlike /history (in-memory, cleared by /reset) this is the durable record
+that survives restarts; /calls is the cross-run tool-call/output view.
 """,
 )
 def _trace(ctx: CommandContext, args: list[str]) -> None:
     import sqlite3
+    from tui import ui
 
-    n = 5
-    if args:
-        try:
-            n = max(1, int(args[0]))
-        except ValueError:
-            _print(f"  ignoring non-numeric count: {args[0]!r}")
+    # Parse: -l/--list -> glance list; -r/--run N, #N, or a bare N -> expand that run; else last.
+    list_mode = False
+    run_id: Optional[int] = None
+    bare: Optional[int] = None  # a bare number; meaning depends on list_mode, decided after the loop
+    it = iter(args)
+    for a in it:
+        low = a.lower()
+        if low in ("-l", "--list", "list"):
+            list_mode = True
+        elif low in ("-r", "--run"):
+            rid = _to_int(next(it, ""))
+            if rid is not None:
+                run_id = rid
+        elif a.startswith("#"):
+            rid = _to_int(a)
+            if rid is not None:
+                run_id = rid
+        elif a.lstrip("+-").isdigit():
+            bare = int(a)
+        else:
+            _print(f"  ignoring unrecognized argument: {a!r}")
+
+    # A bare number is a list count in list mode, otherwise the run id to expand — resolved here so
+    # the flag and the number are order-independent (`/trace 20 -l` == `/trace -l 20`).
+    n: Optional[int] = bare if list_mode else None
+    if bare is not None and not list_mode and run_id is None:
+        run_id = bare
 
     conn = sqlite3.connect(ctx.db_path)
     try:
-        rows = conn.execute(
-            "SELECT run_id, started_at, status, query, "
-            "(SELECT COUNT(*) FROM events e WHERE e.run_id = r.run_id) AS n_events "
-            "FROM runs r ORDER BY run_id DESC LIMIT ?",
-            (n,),
+        if list_mode:
+            rows = conn.execute(
+                "SELECT run_id, started_at, status, query, "
+                "(SELECT COUNT(*) FROM events e WHERE e.run_id = r.run_id) AS n_events "
+                "FROM runs r ORDER BY run_id DESC LIMIT ?",
+                (max(1, n or 10),),
+            ).fetchall()
+            if not rows:
+                _print("  (no runs recorded yet)")
+                return
+            _print(f"  last {len(rows)} run(s) — newest first  (/trace #<id> to expand one):")
+            for rid, started_at, status, query, n_events in rows:
+                when = (started_at or "")[:19].replace("T", " ")
+                q = " ".join(str(query or "").split())
+                if len(q) > 56:
+                    q = q[:55] + "…"
+                _print(f"    #{rid:<4} {when}  {str(status):<7} {n_events:>2}ev  {q}")
+            return
+
+        # Expanded view: the named run, or the most recent.
+        if run_id is None:
+            row = conn.execute("SELECT MAX(run_id) FROM runs").fetchone()
+            run_id = row[0] if row else None
+            if run_id is None:
+                _print("  (no runs recorded yet)")
+                return
+        run = conn.execute(
+            "SELECT run_id, query, started_at, ended_at, status, response FROM runs WHERE run_id = ?",
+            (run_id,),
+        ).fetchone()
+        if not run:
+            _print(f"  no run #{run_id} — try /trace -l to list recorded runs.")
+            return
+        events = conn.execute(
+            "SELECT seq, ts, node, summary, data FROM events WHERE run_id = ? ORDER BY seq, id",
+            (run_id,),
         ).fetchall()
     finally:
         conn.close()
 
-    if not rows:
-        _print("  (no runs recorded yet)")
-        return
-
-    _print(f"  last {len(rows)} run(s) — newest first:")
-    for run_id, started_at, status, query, n_events in rows:
-        when = (started_at or "")[:19].replace("T", " ")  # trim ISO microseconds
-        q = " ".join(str(query or "").split())
-        if len(q) > 60:
-            q = q[:59] + "…"
-        _print(f"    #{run_id:<4} {when}  {str(status):<7} {n_events:>2}ev  {q}")
+    ui.show_run(run, events)
 
 
 @command(
@@ -1155,28 +1214,53 @@ def _parse_toggle(args: list[str], current: bool) -> Optional[bool]:
 
 @command(
     "verbose",
-    "Toggle live node/plan UI streaming on or off.",
-    usage="/verbose on|off",
+    "Control the live trace: off / on (normal) / full (verbose).",
+    usage="/verbose off|on|full",
     details="""
-Turns the live execution trace — the dim node/plan rail streamed during a turn — on or off.
-When off, turns run quietly and only the final response prints.
+Controls the live execution trace — the dim node/plan rail streamed during a turn. Three levels:
 
-The trace is still written to the trace DB either way (see /trace), so this only affects what
-scrolls live, not what's recorded. With no argument, flips the current state.
+  off     only the final response prints (turns run quietly)
+  on      normal: plan · agent · tools · synthesize, with the plumbing nodes (ground, update_plan)
+          folded out and metrics dimmed — the default
+  full    verbose: every node line, including the folded plumbing, plus full-precision timings
+
+The trace is always written to the trace DB regardless (see /trace and /calls), so this only
+affects what scrolls live, not what's recorded. With no argument, flips the trace on/off and
+leaves the detail level untouched.
 
 Examples:
   /verbose off
   /verbose on
-  /verbose       toggle
+  /verbose full
+  /verbose        toggle on/off
 """,
 )
 def _verbose(ctx: CommandContext, args: list[str]) -> None:
-    new = _parse_toggle(args, ctx.show_ui)
-    if new is None:
-        _print(f"  usage: /verbose on|off   (currently {'on' if ctx.show_ui else 'off'})")
+    from tui import ui
+
+    arg = args[0].lower() if args else ""
+    if not arg:  # bare: flip the trace on/off, leave the detail level alone
+        ctx.show_ui = not ctx.show_ui
+    elif arg in ("off", "quiet", "compact", "false", "no", "0"):
+        ctx.show_ui = False
+    elif arg in ("on", "normal", "true", "yes", "1"):
+        ctx.show_ui = True
+        ui.set_verbosity("normal")
+    elif arg in ("full", "verbose", "detailed", "all", "debug"):
+        ctx.show_ui = True
+        ui.set_verbosity("verbose")
+    else:
+        _print(f"  usage: /verbose off|on|full   (trace {'on' if ctx.show_ui else 'off'}, "
+               f"detail {ui.verbosity()})")
         return
-    ctx.show_ui = new
-    _print(f"  live node/plan trace {'on' if new else 'off'}.")
+
+    if not ctx.show_ui:
+        _print("  live trace off — only the final response prints.")
+    else:
+        level = ui.verbosity()
+        detail = ("every node + full timings" if level == "verbose"
+                  else "plan · agent · tools · synthesize (plumbing folded)")
+        _print(f"  live trace on — {level}: {detail}.")
 
 
 _SESSION_VERSION = 1

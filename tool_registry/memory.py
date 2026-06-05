@@ -9,6 +9,7 @@ for searching a large memory or confirming a specific detail.
 """
 
 import time
+import diag
 
 from langchain.tools import tool
 
@@ -27,7 +28,7 @@ def remember(fact: str, category: str = "general"):
     try:
         return add_memory(fact, category)
     finally:
-        print(f"remember : {time.perf_counter() - start:.4f}s")
+        diag.log(f"remember : {time.perf_counter() - start:.4f}s")
 
 
 @tool
@@ -44,4 +45,4 @@ def recall(query: str = ""):
             return "No matching facts in persistent memory."
         return "\n".join(f"- {f}" for f in facts)
     finally:
-        print(f"recall : {time.perf_counter() - start:.4f}s")
+        diag.log(f"recall : {time.perf_counter() - start:.4f}s")

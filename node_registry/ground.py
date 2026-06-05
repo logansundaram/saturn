@@ -1,4 +1,5 @@
 import time
+import diag
 
 from langchain.messages import HumanMessage, AIMessage
 
@@ -113,5 +114,5 @@ def grounding_node(state: AgentState) -> dict:
     )
 
     context = "\n\n".join(sections)
-    print(f"grounding_node : {time.perf_counter() - start:.4f}s")
+    diag.log(f"grounding_node : {time.perf_counter() - start:.4f}s")
     return {"context": context}

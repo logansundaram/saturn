@@ -1,4 +1,5 @@
 import time
+import diag
 from langchain.tools import tool
 
 
@@ -31,4 +32,4 @@ def calculate(expression: str) -> str:
     except Exception as e:
         return f"Error: {e}"
     finally:
-        print(f"calculate : {time.perf_counter() - start:.4f}s")
+        diag.log(f"calculate : {time.perf_counter() - start:.4f}s")

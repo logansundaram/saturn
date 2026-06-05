@@ -1,4 +1,5 @@
 import operator
+from collections import Counter
 from typing import List, Any, Optional, Literal
 from langgraph.graph.message import add_messages
 from typing_extensions import TypedDict, Annotated
@@ -64,20 +65,34 @@ class ReplanVerdict(BaseModel):
 
 def unrun_planned_tools(plan: List[dict], called) -> List[dict]:
     """Planned gathering steps the agent has NOT yet executed: non-terminal steps
-    (not done/skipped) carrying an `intended_tool` that isn't in `called`.
+    (not done/skipped) carrying an `intended_tool` for which no un-credited call exists.
 
     This is the plan/execution gap — work the planner expected but the agent skipped (the
     `gemma4:e4b` "answers without firing the planned tool" failure). Read by
     `route_after_agent` (nudge the agent back to act on it) and `synthesize_node` (when we give
     up with such a step still open, be honest that it wasn't completed rather than claiming the
-    information doesn't exist)."""
-    done = set(called or [])
+    information doesn't exist).
+
+    Matching is POSITIONAL, not set-membership: `called` is consumed as a multiset, in plan order,
+    so two steps that share a tool (e.g. two web_search steps) each require their OWN call. With
+    set membership a single web_search would mark both "run", silently collapsing a multi-search
+    plan — this is the bug that fix keys off the *count* of calls, not just their presence.
+    Already-done steps consume their tool first so a later same-tool step lines up against the
+    correct remaining call (mirrors the consumption order in update_plan_node)."""
+    remaining = Counter(called or [])
     pending = []
     for step in plan or []:
-        if step.get("status") in ("done", "skipped"):
-            continue
         tool = step.get("intended_tool")
-        if tool and tool not in done:
+        if step.get("status") in ("done", "skipped"):
+            # Already ran — account for its call so it doesn't mask a later same-tool step.
+            if tool and remaining.get(tool, 0) > 0:
+                remaining[tool] -= 1
+            continue
+        if not tool:
+            continue
+        if remaining.get(tool, 0) > 0:
+            remaining[tool] -= 1  # an un-credited call covers this step; it effectively ran
+        else:
             pending.append(step)
     return pending
 

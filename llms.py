@@ -20,11 +20,23 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import httpx
 from langchain_ollama import ChatOllama, OllamaEmbeddings
 
 from config import get_config
 from registry import tool
 from state import Plan, ReplanVerdict
+
+
+def _ollama_client_kwargs() -> dict:
+    """client_kwargs for ChatOllama carrying the request timeout (forwarded to the underlying
+    httpx client). A short connect timeout fails fast when the daemon is DOWN; a generous read
+    timeout (runtime.llm_timeout) bounds a WEDGED daemon without false-tripping slow-but-healthy
+    generation. Empty dict when the timeout is disabled — no behavioural change from before."""
+    t = get_config().llm_timeout
+    if not t:
+        return {}
+    return {"client_kwargs": {"timeout": httpx.Timeout(t, connect=min(10.0, t))}}
 
 # (provider, model) -> BaseChatModel.  Cleared by reset_models().
 _MODEL_CACHE: dict[tuple[str, str], object] = {}
@@ -37,7 +49,12 @@ def _build(provider: str, model: str):
         # Bind num_ctx to the effective window (runtime.num_ctx override, else the model's declared
         # window) so it actually runs at the size the UI gauges against — Ollama otherwise silently
         # caps at 2048, making the context-fill % lie. /context drops the cache to rebind live.
-        return ChatOllama(model=model, num_ctx=get_config().num_ctx_for(model))
+        # client_kwargs carries the request timeout (guards a wedged daemon; see _ollama_client_kwargs).
+        return ChatOllama(
+            model=model,
+            num_ctx=get_config().num_ctx_for(model),
+            **_ollama_client_kwargs(),
+        )
     # Any other provider: lean on LangChain's universal initializer.
     from langchain.chat_models import init_chat_model
 
@@ -124,6 +141,7 @@ def get_judge_model():
                 model=spec.model,
                 num_ctx=get_config().num_ctx_for(spec.model),
                 temperature=0,
+                **_ollama_client_kwargs(),
             )
             _DERIVED_CACHE["judge"] = base.with_structured_output(
                 ReplanVerdict, method="json_schema"

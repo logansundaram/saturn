@@ -3,14 +3,51 @@
 # none. Keep prompts here, not inline in the node files.
 #
 # Pipeline order: plan -> agent <-> tools -> ... -> synthesize.
+import registry
 from langchain.messages import SystemMessage
+
+
+# Curated planner-facing hints for the known tools — richer/more planning-oriented than the raw
+# tool `.description`. The catalog the planner actually sees (`_tool_catalog`) is built from the
+# LIVE registry, falling back to a tool's own `.description` for any tool without a hint here. So
+# registering a new tool surfaces it to the planner automatically — no silent capability gap — and
+# removing one drops it; the list can never drift out of sync with registry.tool the way a
+# hand-maintained prompt does.
+_PLANNER_TOOL_HINTS = {
+    "search_knowledge_base": "semantic search over the user's ingested document knowledge base.",
+    "web_search": "search the web for current or external information.",
+    "web_extract": "fetch and extract the readable content behind a specific URL (e.g. one that "
+    "web_search surfaced).",
+    "deep_research": "heavyweight multi-source web research; slow and costly, use only when a "
+    "single web_search clearly will not suffice.",
+    "read_file": "read a file in the workspace.",
+    "write_file": "write content to a file in the workspace.",
+    "list_directory": "list the files in the workspace.",
+    "calculate": "evaluate a precise arithmetic expression.",
+    "remember": "save a durable fact/preference about the user to persistent memory (across sessions).",
+    "recall": "look up facts previously saved to persistent memory.",
+}
+
+
+def _tool_catalog() -> str:
+    """The `- name — description` tool list injected into the planner prompt, built from the live
+    registry so it always reflects the tools that actually exist."""
+    lines = []
+    for t in registry.tool:
+        hint = _PLANNER_TOOL_HINTS.get(t.name)
+        if not hint:
+            # Fall back to the first line of the tool's own docstring-derived description.
+            desc = (getattr(t, "description", "") or "").strip()
+            hint = desc.splitlines()[0] if desc else "(no description)"
+        lines.append(f"- {t.name} — {hint}")
+    return "\n".join(lines)
 
 
 # --- plan node -------------------------------------------------------------------------
 # Drafts the initial living plan via structured output (a Plan of PlanSteps). The labels it
 # produces are shown live to the user, and `intended_tool` is matched against the tools
-# actually called to advance step statuses (see node_registry/update_plan.py), so the tool names
-# below must match the real registered tools.
+# actually called to advance step statuses (see node_registry/update_plan.py). The available-tools
+# section is generated from the registry (see _tool_catalog) so the names always match reality.
 planner_sys_msg = SystemMessage(
     content="""
 You are the planning step of a local AI agent. Given the user's request and the available
@@ -18,18 +55,9 @@ grounding context, draft a SHORT, ordered plan of the steps needed to fully reso
 
 ## Available tools
 A step may use one of these tools (set `intended_tool` to the exact name; otherwise leave it null):
-- search_knowledge_base — semantic search over the user's ingested document knowledge base.
-- web_search — search the web for current or external information.
-- web_extract — fetch and extract the readable content behind a specific URL (e.g. one that
-  web_search surfaced).
-- deep_research — heavyweight multi-source web research; slow and costly, use only when a
-  single web_search clearly will not suffice.
-- read_file — read a file in the workspace.
-- write_file — write content to a file in the workspace.
-- list_directory — list the files in the workspace.
-- calculate — evaluate a precise arithmetic expression.
-- remember — save a durable fact/preference about the user to persistent memory (across sessions).
-- recall — look up facts previously saved to persistent memory.
+"""
+    + _tool_catalog()
+    + """
 
 ## Rules
 - Produce the fewest steps necessary. Trivial requests may need a single step.

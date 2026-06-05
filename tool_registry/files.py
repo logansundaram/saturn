@@ -8,6 +8,7 @@ one side-effecting tool here (it goes through the approval gate via registry.TOO
 """
 
 import time
+import diag
 
 from langchain.tools import tool
 
@@ -25,11 +26,15 @@ def read_file(file_path: str):
 
         if not target_path.is_relative_to(workspace):
             return "Invalid file path: outside the workspace."
-        with open(target_path, "r") as file:
+        # Always UTF-8: the workspace holds user docs/notes that routinely carry non-cp1252
+        # characters, and the default Windows encoding (cp1252) would raise UnicodeDecodeError on
+        # them. errors="replace" degrades an undecodable byte to a marker rather than failing the
+        # whole read (e.g. when pointed at a binary file by mistake).
+        with open(target_path, "r", encoding="utf-8", errors="replace") as file:
             content = file.read()
         return content
     finally:
-        print(f"read_file : {time.perf_counter() - start:.4f}s")
+        diag.log(f"read_file : {time.perf_counter() - start:.4f}s")
 
 
 @tool
@@ -44,19 +49,19 @@ def write_file(file_path: str, content: str, overwrite: bool = True):
         if not target_path.is_relative_to(workspace):
             return "Invalid file path: outside the workspace."
         if overwrite:
-            with open(target_path, "w") as file:
+            with open(target_path, "w", encoding="utf-8") as file:
                 file.write(content)
             register_workspace_file(file_path, content)
             return "File overwritten successfully"
         else:
-            with open(target_path, "a") as file:
+            with open(target_path, "a", encoding="utf-8") as file:
                 file.write(content)
             # Read back the full file content so the manifest reflects the complete document.
             full_content = target_path.read_text(encoding="utf-8")
             register_workspace_file(file_path, full_content)
             return "Content appended to file successfully"
     finally:
-        print(f"write_file : {time.perf_counter() - start:.4f}s")
+        diag.log(f"write_file : {time.perf_counter() - start:.4f}s")
 
 
 @tool
@@ -75,4 +80,4 @@ def list_directory(directory: str = "."):
 
         return [item.name for item in target_path.iterdir()]
     finally:
-        print(f"list_directory : {time.perf_counter() - start:.4f}s")
+        diag.log(f"list_directory : {time.perf_counter() - start:.4f}s")

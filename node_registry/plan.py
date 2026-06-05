@@ -1,4 +1,5 @@
 import time
+import diag
 from langchain.messages import HumanMessage
 from state import AgentState, steps_to_dicts
 from llms import get_plan_model
@@ -27,7 +28,7 @@ def plan_node(state: AgentState):
         )
         plan = steps_to_dicts(result.steps)
     except Exception as exc:
-        print(f"plan_node : structured-output failed ({exc}); using fallback plan")
+        diag.log(f"plan_node : structured-output failed ({exc}); using fallback plan")
         plan = []
 
     if not plan:
@@ -40,5 +41,5 @@ def plan_node(state: AgentState):
             }
         ]
 
-    print(f"plan_node : {time.perf_counter() - start:.4f}s ({len(plan)} steps)")
+    diag.log(f"plan_node : {time.perf_counter() - start:.4f}s ({len(plan)} steps)")
     return {"plan": plan}

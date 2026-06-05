@@ -22,6 +22,7 @@ degrades safely to synthesize rather than aborting the turn.
 """
 
 import time
+import diag
 from typing import Literal
 
 from langchain.messages import AIMessage, HumanMessage
@@ -51,7 +52,7 @@ def replan_node(state: AgentState) -> Command[Literal["agent", "synthesize"]]:
     # Re-searching within the same turn won't rescue an answer the model already deemed thin after
     # a web round — let synthesize handle it honestly instead of escalating in circles.
     if "web_search" in set(state.get("tools_called", [])) or not draft.strip():
-        print(f"replan_node : {time.perf_counter() - start:.4f}s (skipped)")
+        diag.log(f"replan_node : {time.perf_counter() - start:.4f}s (skipped)")
         return Command(goto="synthesize")
 
     gathered = state.get("tool_results", []) + state.get("documents_retrieved", [])
@@ -71,21 +72,25 @@ def replan_node(state: AgentState) -> Command[Literal["agent", "synthesize"]]:
         verdict = get_judge_model().invoke(judge_input)
     except Exception as exc:
         # A structured-output failure must never strand the turn — accept the draft.
-        print(f"replan_node : judge failed ({exc}); accepting draft -> synthesize")
+        diag.log(f"replan_node : judge failed ({exc}); accepting draft -> synthesize")
         return Command(goto="synthesize")
 
     if verdict.grounded or not (verdict.search_query or "").strip():
-        print(f"replan_node : {time.perf_counter() - start:.4f}s (grounded)")
+        diag.log(f"replan_node : {time.perf_counter() - start:.4f}s (grounded)")
         return Command(goto="synthesize")
 
     # Ungrounded: insert the web_search at the current step's position so it becomes the active
     # step the agent works next (after it runs, update_plan advances past it to the remaining work).
+    # NOTE: web_search is the ONLY repair this node knows. That's deliberate for the MVP (the
+    # ungrounded case is almost always "asserted a current/external fact without looking it up"),
+    # but it's a coupling to revisit if you add tools: an answer that really needs the knowledge
+    # base or a URL extract can't be repaired here — extend ReplanVerdict to carry a tool choice.
     query = verdict.search_query.strip()
     cur = active_step(plan)
     at = cur.get("step_id") if cur else None
     new_plan = add_step(plan, f"Search the web: {query}", "web_search", at=at)
 
-    print(f"replan_node : {time.perf_counter() - start:.4f}s (escalate -> web_search)")
+    diag.log(f"replan_node : {time.perf_counter() - start:.4f}s (escalate -> web_search)")
     return Command(
         goto="agent",
         update={"plan": new_plan, "replans": state.get("replans", 0) + 1},

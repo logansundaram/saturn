@@ -24,6 +24,30 @@ _MAX_ARG_REPR = 200
 # rides messages/tool_results untouched.
 _MAX_RESULT_PREVIEW = 160
 
+# Hard cap on the observation length we feed BACK INTO the model (the ToolMessage + the paired
+# tool_results record). Unbounded tool output — a big read_file, a full web_extract page, a fat
+# web_search payload — silently overflows the Ollama context window: it truncates from the front,
+# dropping the system prompt and plan, and the agent starts misbehaving with no error. We keep the
+# head and tail (the start usually has the answer; the tail often has a summary/conclusion) and
+# mark the elision so the model knows it isn't seeing everything. ~12k chars ≈ 3-4k tokens, which
+# leaves room for the system prompts, plan, and conversation inside an 8k+ window.
+_MAX_OBSERVATION = 12000
+
+
+def _clamp_observation(observation: str) -> str:
+    """Bound an observation fed back to the model so one large tool result can't blow the context
+    window. Keeps a head + tail with a marker noting how much was dropped."""
+    if len(observation) <= _MAX_OBSERVATION:
+        return observation
+    head = _MAX_OBSERVATION * 2 // 3
+    tail = _MAX_OBSERVATION - head
+    dropped = len(observation) - _MAX_OBSERVATION
+    return (
+        observation[:head]
+        + f"\n\n... [truncated {dropped} characters of tool output] ...\n\n"
+        + observation[-tail:]
+    )
+
 
 def _preview(observation: str) -> str:
     """Collapse a tool observation to a single capped line for the UI's tool-I/O tree."""
@@ -73,13 +97,17 @@ def tool_node(state: AgentState):
         dur = time.perf_counter() - start
 
         observation = str(observation)
+        # Clamp what flows back into the model (ToolMessage + paired tool_results) so one large
+        # result can't overflow the context window; the UI preview is derived from the same
+        # clamped text. The _preview cap above is just for the one-line tool-I/O tree.
+        clamped = _clamp_observation(observation)
         tool_messages.append(
-            ToolMessage(content=observation, tool_call_id=tool_call["id"], name=name)
+            ToolMessage(content=clamped, tool_call_id=tool_call["id"], name=name)
         )
         tools_called.append(name)
         # Pair the result with its call so synthesis can't divorce the value from what it
         # answers (this is what stops the model recomputing and contradicting the tool).
-        tool_results.append(f"{_fmt_call(name, args)} -> {observation}")
+        tool_results.append(f"{_fmt_call(name, args)} -> {clamped}")
         # Structured per-call record for the UI's tool-I/O tree (args + result preview + timing).
         tool_events.append(
             {
@@ -91,7 +119,7 @@ def tool_node(state: AgentState):
             }
         )
         if name in _RETRIEVAL_TOOLS:
-            documents_retrieved.append(observation)
+            documents_retrieved.append(clamped)
 
     return {
         "messages": tool_messages,

@@ -349,9 +349,23 @@ def main():
                 pause=pause_watcher,
             )
             tracer.end_run(run_id, "ok", state["messages"][-1].content)
+        except KeyboardInterrupt:
+            # Ctrl-C abandons the in-flight turn but not the session — record it and return to
+            # the prompt. (KeyboardInterrupt is not an Exception, so it bypasses the catch below.)
+            tracer.end_run(run_id, "interrupted", "turn cancelled by user (Ctrl-C)")
+            ui.warn("Turn cancelled.")
+            cmd_ctx.state = state
+            continue
         except Exception as exc:
+            # A node/tool failure must never kill the REPL — the whole point of an in-memory
+            # conversation is that one bad turn (Ollama timeout, decode error, tool bug) doesn't
+            # lose the session. Record it, tell the user, and drop back to the prompt with the
+            # conversation intact (the unanswered query stays in `messages`; the next turn's
+            # _compact_history tolerates it).
             tracer.end_run(run_id, "error", str(exc))
-            raise
+            ui.warn(f"Turn failed: {exc}")
+            cmd_ctx.state = state
+            continue
         finally:
             # Discard any pause request still pending at turn end. A keypress that lands AFTER the
             # turn's last plan_gate (e.g. during the final agent message or synthesize) is never

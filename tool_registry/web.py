@@ -28,6 +28,7 @@ Provider selection lives in `config.yaml` under `web:` (`provider`, `max_results
 
 import os
 import time
+import diag
 
 import httpx
 import trafilatura
@@ -47,6 +48,19 @@ load_dotenv()
 
 # Seconds between status checks while a (Tavily) deep_research job runs.
 _POLL_INTERVAL = 3
+
+# Hard ceiling (seconds) on how long we wait for a Tavily research job before giving up and
+# falling back to the local research loop. Without it the poll below is an unbounded `while True`
+# that hangs the whole turn forever if the job never reaches "completed" (stuck or failed job).
+_RESEARCH_TIMEOUT_DEFAULT = 180
+
+
+def _research_timeout() -> float:
+    """Max seconds to wait on a Tavily research job (config `web.deep_research_timeout`)."""
+    try:
+        return float(get_config().get("web.deep_research_timeout", _RESEARCH_TIMEOUT_DEFAULT))
+    except (TypeError, ValueError):
+        return float(_RESEARCH_TIMEOUT_DEFAULT)
 
 # Tavily errors that mean "this key is unusable" — they trigger the keyless fallback and
 # disable Tavily for the rest of the session.
@@ -100,7 +114,7 @@ def _disable_tavily(err: Exception) -> None:
     """Mark Tavily unusable for the rest of the session and explain why (once)."""
     global _TAVILY_DISABLED
     if not _TAVILY_DISABLED:
-        print(f"[web] Tavily unavailable ({type(err).__name__}); falling back to keyless DuckDuckGo.")
+        diag.log(f"[web] Tavily unavailable ({type(err).__name__}); falling back to keyless DuckDuckGo.")
     _TAVILY_DISABLED = True
 
 
@@ -150,7 +164,7 @@ def web_search(query: str):
                 _disable_tavily(err)  # fall through to the keyless backend below
         return _ddg_search(query, _max_results())
     finally:
-        print(f"web_search : {time.perf_counter() - start:.4f}s")
+        diag.log(f"web_search : {time.perf_counter() - start:.4f}s")
 
 
 @tool
@@ -170,7 +184,7 @@ def web_extract(url: str):
         results = {u: _local_extract(u) for u in urls}
         return results if len(results) > 1 else next(iter(results.values()))
     finally:
-        print(f"web_extract : {time.perf_counter() - start:.4f}s")
+        diag.log(f"web_extract : {time.perf_counter() - start:.4f}s")
 
 
 def _local_deep_research(query: str) -> str:
@@ -212,13 +226,26 @@ def deep_research(query: str):
                 client = _client()
                 job = client.research(input=query, model="pro")
                 request_id = job["request_id"]
-                while True:
+                # Bounded poll: give up at the deadline or on a terminal failure status, then fall
+                # through to the keyless local loop — never spin forever on a stuck/failed job.
+                deadline = time.perf_counter() + _research_timeout()
+                while time.perf_counter() < deadline:
                     status_response = client.research_get(request_id)
-                    if status_response["status"] == "completed":
+                    status = status_response.get("status")
+                    if status == "completed":
                         return status_response["response"]
+                    if status in ("failed", "error", "cancelled"):
+                        diag.log(f"deep_research : Tavily job {status}; falling back to local")
+                        break
                     time.sleep(_POLL_INTERVAL)
+                else:
+                    diag.log("deep_research : Tavily research timed out; falling back to local")
             except _TAVILY_FALLBACK_ERRORS as err:
-                _disable_tavily(err)  # fall through to the local loop below
+                _disable_tavily(err)  # key/quota dead — fall through to the local loop below
+            except Exception as err:
+                # Any other Tavily failure (unexpected response shape, network drop) must not strand
+                # the turn — log and fall through to the keyless local research loop.
+                diag.log(f"deep_research : Tavily research failed ({type(err).__name__}); local fallback")
         return _local_deep_research(query)
     finally:
-        print(f"deep_research : {time.perf_counter() - start:.4f}s")
+        diag.log(f"deep_research : {time.perf_counter() - start:.4f}s")

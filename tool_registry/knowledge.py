@@ -7,6 +7,7 @@ documents, not the internet.
 """
 
 import time
+import diag
 
 from langchain.tools import tool
 
@@ -31,4 +32,4 @@ def search_knowledge_base(query: str):
             for d in docs
         )
     finally:
-        print(f"search_knowledge_base : {time.perf_counter() - start:.4f}s")
+        diag.log(f"search_knowledge_base : {time.perf_counter() - start:.4f}s")

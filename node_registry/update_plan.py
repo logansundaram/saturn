@@ -1,4 +1,6 @@
 import time
+import diag
+from collections import Counter
 from state import AgentState
 
 """
@@ -29,20 +31,38 @@ def update_plan_node(state: AgentState):
     if not plan:
         return {}
 
-    called = set(state.get("tools_called", []))
+    # Work on a copy — never mutate the state object in place. Returning a fresh list keeps the
+    # checkpointer's snapshot diffs honest and matches agent_node, which also copies before it
+    # advances a step.
+    plan = [dict(s) for s in plan]
+    called = state.get("tools_called", [])
 
-    # 1) Mark any not-yet-finished step whose intended tool has been called as done.
-    marked = False
+    # 1) Positional credit: consume each called tool against the steps that expect it, IN ORDER,
+    #    as a multiset — so two steps sharing a tool (e.g. two web_search steps) each need their
+    #    own call rather than both completing off the first one. (Set membership would mark both
+    #    done on the first call and collapse the plan; this mirrors state.unrun_planned_tools so
+    #    the two views of "what's run" never disagree.) Already-done steps consume their tool first
+    #    so a later same-tool step lines up against the correct remaining call.
+    remaining = Counter(called)
+    newly_marked = False
     for step in plan:
-        if step["status"] in _TERMINAL:
+        if step["status"] == "skipped":
             continue
-        if step.get("intended_tool") and step["intended_tool"] in called:
+        tool = step.get("intended_tool")
+        if step["status"] == "done":
+            if tool and remaining.get(tool, 0) > 0:
+                remaining[tool] -= 1
+            continue
+        if tool and remaining.get(tool, 0) > 0:
+            remaining[tool] -= 1
             step["status"] = "done"
-            marked = True
+            newly_marked = True
 
-    # 2) If a tool round happened but matched no intended_tool (null/mismatched), still show
-    #    progress by completing the earliest unfinished step.
-    if called and not marked:
+    # 2) Progress fallback: a tool round happened but credited no planned step (the planner's
+    #    intended_tool guess didn't match the tool the agent actually used). Advance the current
+    #    step so the plan still reflects movement. In lockstep the earliest non-terminal step is
+    #    exactly the one being worked, so this completes the right step.
+    if called and not newly_marked:
         for step in plan:
             if step["status"] not in _TERMINAL:
                 step["status"] = "done"
@@ -54,5 +74,5 @@ def update_plan_node(state: AgentState):
             step["status"] = "active"
             break
 
-    print(f"update_plan_node : {time.perf_counter() - start:.4f}s")
+    diag.log(f"update_plan_node : {time.perf_counter() - start:.4f}s")
     return {"plan": plan}

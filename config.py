@@ -169,6 +169,19 @@ class Config:
         is truthful (Ollama otherwise silently defaults to 2048)."""
         return self.num_ctx_override or self.capability_of(model).context_window
 
+    @property
+    def llm_timeout(self) -> "float | None":
+        """Read timeout (seconds) for a single local-model call (`runtime.llm_timeout`), or None to
+        disable. Bounds a wedged Ollama daemon so a turn fails cleanly instead of hanging forever;
+        set high enough not to false-trip a slow-but-healthy generation (connect is capped
+        separately in llms._build)."""
+        v = self.get("runtime.llm_timeout", 600)
+        try:
+            n = float(v)
+        except (TypeError, ValueError):
+            return None
+        return n if n > 0 else None
+
     # --- paths (resolved against the repo root) ----------------------------
     def path(self, name: str) -> Path:
         rel = self.get(f"paths.{name}")

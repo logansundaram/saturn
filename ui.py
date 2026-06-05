@@ -678,6 +678,42 @@ def splash(work=None):
     return _finish()
 
 
+def play_animation() -> None:
+    """Loop the Saturn ring animation until the user presses Ctrl+C, then settle the resting frame."""
+    import sys
+
+    _live_stop()
+
+    if not _RICH or not _console.is_terminal or _console.size.width < _ART_C + 2:
+        if _RICH:
+            _console.print(_saturn_text(1.0, final=True))
+        else:
+            print(_saturn_plain())
+        return
+
+    hint = Text("  ")
+    hint.append("Ctrl+C", style=f"bold {_ACCENT}")
+    hint.append(" to stop", style=_DIM)
+    _console.print(hint)
+
+    out = sys.stdout
+    player = _InlinePlayer(out)
+    phase, step = 0.0, 2 * math.pi / 80
+    try:
+        while True:
+            player.draw(_saturn_anim_cells(phase))
+            time.sleep(0.022)
+            phase += step
+    except KeyboardInterrupt:
+        pass
+    finally:
+        try:
+            player.clear()
+        except Exception:
+            pass
+    _console.print(_saturn_text(1.0, final=True))
+
+
 # ── startup banner ─────────────────────────────────────────────────────────────
 def banner(model: str, n_tools: int, n_docs: int, db_path: str) -> None:
     """Session header: a subtle rounded box of the run's identity — model/tier, context window,

@@ -13,7 +13,7 @@ import uuid
 from langgraph.graph import StateGraph, START, END
 from langgraph.types import Command
 from langgraph.checkpoint.sqlite import SqliteSaver
-from langchain.messages import HumanMessage
+from langchain.messages import HumanMessage, AIMessage
 
 from config import get_config
 from state import AgentState
@@ -66,7 +66,11 @@ def build_agent():
     builder.add_edge("ground", "plan")
     builder.add_edge("plan", "agent")
     builder.add_conditional_edges(
-        "agent", route_after_agent, {"approval": "approval", "synthesize": "synthesize"}
+        "agent",
+        route_after_agent,
+        # "agent" self-loop: the plan-aware nudge — when the model finishes with an un-run
+        # planned tool still pending, route back to act on it (bounded; see route_after_agent).
+        {"approval": "approval", "synthesize": "synthesize", "agent": "agent"},
     )
     # approval routes dynamically via Command(goto=...) to "tools" (approved) or "agent" (rejected)
     builder.add_edge("tools", "update_plan")
@@ -117,15 +121,62 @@ def _make_on_update(tracer, run_id, show_ui=True):
     return on_update
 
 
+def _compact_history(messages: list, keep_recent_turns: int = 1) -> list:
+    """Collapse OLDER completed turns to their conversational essence (user questions + final
+    answers), but keep the ReAct scratchpad — tool-call AIMessages and their ToolMessages — of
+    the most recent `keep_recent_turns` turns verbatim.
+
+    Why a window instead of stripping everything: the scratchpad of the turn that just finished
+    is exactly what the user's *next* message refers back to — "open the second result", "what
+    did that file say", "multiply that by two". Dropping it on every boundary (the old
+    behaviour) is what made real multi-turn use brittle: the follow-up's referent had silently
+    vanished, so the model re-ran a search (getting different results) or fabricated. One turn
+    of live scratchpad covers the overwhelming majority of those references.
+
+    The original concerns still hold for OLD turns, which is why they're still compacted:
+    carrying many turns of scratchpad makes the model treat a long-finished tool call as "already
+    done" (reusing stale results instead of re-running a planned gather), bloats context with
+    heavy tool outputs, and desyncs the model's view (`messages`) from the plan machinery's
+    (per-turn `tools_called`, reset each turn — so the nudge still correctly sees this turn's
+    planned tools as un-run regardless of what's in the retained window).
+
+    A turn starts at a HumanMessage. Everything from the boundary onward is kept as-is (the
+    scratchpad is intact, so no orphaned tool calls); everything before it is reduced to
+    Human + non-empty final-AI messages (also orphan-free). Run only at the turn boundary.
+
+    `keep_recent_turns=0` reproduces the old strip-everything behaviour."""
+    human_idxs = [i for i, m in enumerate(messages) if isinstance(m, HumanMessage)]
+    if keep_recent_turns > 0 and human_idxs:
+        # Boundary = start of the Nth-from-last turn (clamped to the first turn).
+        boundary = human_idxs[-min(keep_recent_turns, len(human_idxs))]
+    else:
+        boundary = len(messages)
+
+    kept = []
+    for m in messages[:boundary]:
+        if isinstance(m, HumanMessage):
+            kept.append(m)
+        elif isinstance(m, AIMessage) and not getattr(m, "tool_calls", None) and str(
+            m.content
+        ).strip():
+            kept.append(m)
+        # else: ToolMessage or tool-call/empty AIMessage from an OLD turn — drop it.
+    return kept + messages[boundary:]
+
+
 def _fresh_turn(state: AgentState, user_input: str) -> AgentState:
     """Append the new query and reset per-turn fields (accumulators + loop counter).
-    `messages` persists across turns to keep in-process conversation memory."""
+    `messages` persists across turns to keep in-process conversation memory, but is first
+    compacted (see _compact_history): older turns collapse to a clean Q&A transcript while the
+    most recent turn's tool scratchpad is retained so a follow-up can refer back to it."""
+    state["messages"] = _compact_history(state["messages"])
     state["messages"].append(HumanMessage(content=user_input))
     state["current_query"] = user_input
     state["current_response"] = ""
     state["context"] = ""
     state["plan"] = []
     state["iteration"] = 0
+    state["agent_nudges"] = 0
     state["verified"] = False
     state["verifier_feedback"] = ""
     state["tools_called"] = []
@@ -145,6 +196,7 @@ def _initial_state() -> AgentState:
         "context": "",
         "plan": [],
         "iteration": 0,
+        "agent_nudges": 0,
         "verified": False,
         "verifier_feedback": "",
         "tools_called": [],

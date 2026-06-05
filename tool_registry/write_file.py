@@ -6,8 +6,8 @@ from document_registry import register_workspace_file
 
 
 @tool
-def write_file(file_path: str, content: str, overwrite: bool = False):
-    """Writes content to a file in the workspace. file_path is relative to the workspace root. content is the text to write. overwrite=True replaces the file; overwrite=False (default) appends to it."""
+def write_file(file_path: str, content: str, overwrite: bool = True):
+    """Writes content to a file in the workspace. file_path is relative to the workspace root. content is the text to write. overwrite=True (default) replaces the file's contents; pass overwrite=False to append to the existing file instead."""
     start = time.perf_counter()
     try:
         # Resolve the workspace from config per call (honors a live `/config paths.workspace`

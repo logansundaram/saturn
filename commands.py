@@ -895,30 +895,90 @@ def _workspace(ctx: CommandContext, args: list[str]) -> None:
             _print(f"    {p.name:<32} {size:>9,} B")
 
 
+# Cap each rendered tool observation so a big read_file/web_search result doesn't flood the view.
+_MAX_CALL_OUTPUT = 600
+
+
 @command(
-    "tool",
-    "Enable or disable a tool for this session.",
-    usage="/tool <name> on|off",
-    implemented=False,
+    "calls",
+    "Show recent tool calls and their outputs.",
+    aliases=("io",),
+    usage="/calls [n]",
     details="""
-SCAFFOLD — not yet implemented.
+Shows the most recent tool calls the agent made — each with its arguments, the result the tool
+returned, how long it took, and whether it succeeded (✓) or errored (⨯). Defaults to the last 10.
 
-Intended: enable or disable a single tool for the session by filtering the bound tool list, so
-the agent can't call a disabled tool at all (distinct from /risk, which only changes whether a
-call needs approval).
+The data comes from the trace database (database/db.sqlite), so it survives /reset and restarts
+and spans every run — unlike /history (in-memory conversation only). This is the I/O complement
+to /tools (which lists the tools that *exist*) and /trace (which lists runs at a glance).
 
-Blocked on the model-rebind path: get_tool_model() binds the full registry once and caches it,
-so wiring this means threading a session disabled-set into that builder and keying / invalidating
-the cache on it.
+Long outputs are truncated for readability; the full observation rides the message history the
+model sees. For the per-run event breakdown, see /trace.
 
-Example (planned):
-  /tool web_search off
+Examples:
+  /calls       last 10 calls
+  /calls 25    last 25 calls
 """,
 )
-def _tool_toggle(ctx: CommandContext, args: list[str]) -> None:
-    # TODO: maintain a session set of disabled tools and filter the bound tool list. Needs the
-    #       model-rebind path (same blocker as /models) since tools are bound at import in llms.py.
-    ...
+def _calls(ctx: CommandContext, args: list[str]) -> None:
+    import json
+    import sqlite3
+
+    n = 10
+    if args:
+        try:
+            n = max(1, int(args[0]))
+        except ValueError:
+            _print(f"  ignoring non-numeric count: {args[0]!r}")
+
+    # Pull tool-node events newest-first and flatten their per-call records until we have n.
+    # LIMIT n*5: each row yields 1+ calls; this bound avoids loading the full history while
+    # still providing enough rows for the early-break to find n individual calls.
+    conn = sqlite3.connect(ctx.db_path)
+    try:
+        rows = conn.execute(
+            "SELECT run_id, data FROM events WHERE node = 'tools' ORDER BY id DESC LIMIT ?",
+            (n * 5,),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    calls: list[tuple[int, dict, str]] = []  # (run_id, tool_event, full "call -> observation")
+    for run_id, data in rows:
+        try:
+            delta = json.loads(data or "{}")
+        except (json.JSONDecodeError, TypeError):
+            continue
+        events = delta.get("tool_events") or []
+        results = delta.get("tool_results") or []
+        # Events and results are emitted in the same order within a delta; pair them so we can
+        # show the fuller observation (tool_results) alongside the structured metadata (events).
+        for i, ev in enumerate(events):
+            full = results[i] if i < len(results) else ""
+            calls.append((run_id, ev, full))
+        if len(calls) >= n:
+            break
+
+    if not calls:
+        _print("  (no tool calls recorded yet)")
+        return
+
+    calls = calls[:n]
+    _print(f"  last {len(calls)} tool call(s) — newest first:")
+    for run_id, ev, full in calls:
+        glyph = "✓" if ev.get("ok", True) else "⨯"
+        dur = ev.get("dur")
+        dur_s = f"{dur:.2f}s" if isinstance(dur, (int, float)) else "  -  "
+        # Prefer the fuller "call -> observation" string; fall back to the event's name+preview.
+        call_repr, _, observation = (full or "").partition(" -> ")
+        if not call_repr:
+            call_repr = ev.get("name", "?")
+            observation = ev.get("result", "")
+        _print(f"    #{run_id:<4} {glyph} {dur_s:>6}  {call_repr}")
+        out = " ".join(str(observation).split())
+        if len(out) > _MAX_CALL_OUTPUT:
+            out = out[: _MAX_CALL_OUTPUT - 1] + "…"
+        _print(f"             -> {out}" if out else "             -> (no output)")
 
 
 _RISK_TIERS = ("read_only", "side_effecting", "destructive")
@@ -1237,3 +1297,23 @@ def _config(ctx: CommandContext, args: list[str]) -> None:
 
         reset_models()
         _print("  (models will rebuild with the new context window on next use)")
+
+
+@command(
+    "animation",
+    "Play the Saturn ring animation in a loop until interrupted (Ctrl+C).",
+    aliases=("anim",),
+    details="""
+Plays the Saturn ring animation in a seamless continuous loop. Press Ctrl+C to stop;
+it then settles on the resting frame in place.
+
+Skipped automatically on non-terminal stdout or when the terminal is too narrow.
+
+Example:
+  /animation
+""",
+)
+def _animation(ctx: CommandContext, args: list[str]) -> None:
+    import ui
+
+    ui.play_animation()

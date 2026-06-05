@@ -1,5 +1,7 @@
 import time
 
+from langchain.messages import HumanMessage, AIMessage
+
 from state import AgentState
 from config import get_config
 from memory_registry import read_memory_block
@@ -28,6 +30,41 @@ tool results — flows through `messages`, never this frozen grounding string.
 # Persistent profiles live alongside the workspace. Optional — missing files are fine.
 _PROFILE_FILES = ("user_profile.md", "agent_profile.md")
 
+# How many prior Q&A exchanges to recap into context, and how much of each to keep. Small on
+# purpose: enough for the planner/synthesizer to resolve a follow-up ("do that for the other
+# file") without re-bloating context — the full prior turn already rides `messages`.
+_RECAP_EXCHANGES = 2
+_RECAP_CHARS = 240
+
+
+def _recent_exchanges(messages: list) -> str:
+    """A compact recap of the last few completed Q&A exchanges, for the planner/synthesizer —
+    which read `context` but are NOT given the raw `messages` the agent sees. Without this they
+    are blind to the conversation, so a follow-up turn gets planned/synthesized as if it arrived
+    cold. Pairs each user question with the assistant's final (non-tool-call) answer; skips the
+    current in-flight query (the trailing HumanMessage with no answer yet)."""
+    pairs = []
+    pending_q = None
+    for m in messages:
+        if isinstance(m, HumanMessage):
+            pending_q = str(m.content).strip()
+        elif isinstance(m, AIMessage) and not getattr(m, "tool_calls", None):
+            answer = str(m.content).strip()
+            if pending_q and answer:
+                pairs.append((pending_q, answer))
+                pending_q = None
+    if not pairs:
+        return ""
+
+    def _clip(s: str) -> str:
+        s = " ".join(s.split())
+        return s if len(s) <= _RECAP_CHARS else s[: _RECAP_CHARS - 1] + "…"
+
+    lines = []
+    for q, a in pairs[-_RECAP_EXCHANGES:]:
+        lines.append(f"- User: {_clip(q)}\n  You: {_clip(a)}")
+    return "\n".join(lines)
+
 
 def _read_profiles() -> str:
     workspace = get_config().path("workspace")
@@ -54,6 +91,13 @@ def grounding_node(state: AgentState) -> dict:
     if memory:
         sections.append(
             "### Persistent memory (facts the user asked me to remember)\n" + memory
+        )
+
+    recap = _recent_exchanges(state.get("messages", []))
+    if recap:
+        sections.append(
+            "### Recent conversation (this session — for resolving follow-up references)\n"
+            + recap
         )
 
     docs_manifest = read_documents_manifest().strip()

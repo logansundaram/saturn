@@ -61,16 +61,18 @@ tiers:
       judge: gemma4:e4b
     embedder: qwen3-embedding:8b
 
-  # The machine this repo runs on today. Same local model across roles for now; bump the
-  # planner/synthesizer ids here when larger local tags are pulled — no code changes needed.
+  # The machine this repo runs on today. All roles share qwen3.5:9b — a capable ~9B local
+  # model with reliable native tool-calling + structured output, which the living-plan loop
+  # leans on hard (the planner's structured Plan and the agent's native tool calls). Bump the
+  # ids here when larger local tags are pulled — no code changes needed.
   workstation:
     provider: ollama
     roles:
-      planner: gemma4:e4b
-      tool_caller: gemma4:e4b
-      synthesizer: gemma4:e4b
-      utility: gemma4:e4b
-      judge: gemma4:e4b
+      planner: qwen3.5:9b
+      tool_caller: qwen3.5:9b
+      synthesizer: qwen3.5:9b
+      utility: qwen3.5:9b
+      judge: qwen3.5:9b
     embedder: qwen3-embedding:8b
 
   # Heavy reasoning roles go to a cloud model; everything else stays local. Requires the
@@ -96,6 +98,11 @@ capabilities:
     supports_tools: true
     supports_structured_output: true
     context_window: 8192
+    supports_vision: false
+  "qwen3.5:9b":
+    supports_tools: true
+    supports_structured_output: true
+    context_window: 32768
     supports_vision: false
   "claude-sonnet-4-6":
     supports_tools: true

@@ -110,6 +110,50 @@ Rules:
 )
 
 
+# Dynamic agent directives (built per-call from the live plan, so they can't be static
+# SystemMessages like the prompts above). They keep the plan's `intended_tool` annotations in
+# front of the model: a soft pointer at the next planned action every pass, and a pointed
+# correction when the model finished while a planned gathering step is still un-run.
+def agent_next_step_directive(step: dict) -> SystemMessage:
+    """A one-line pointer at the next planned action, injected each agent pass so the model
+    keeps the plan's intended tool in view (it's advisory — the model may still deviate)."""
+    tool = step.get("intended_tool")
+    label = step.get("label", "")
+    if tool:
+        content = (
+            f"NEXT PLANNED ACTION — step {step.get('step_id')}: {label}\n"
+            f"The plan expects this step to call `{tool}`. If that is the right next move, "
+            f"make the native tool call now."
+        )
+    else:
+        content = (
+            f"NEXT PLANNED ACTION — step {step.get('step_id')}: {label}\n"
+            f"This step needs no tool; complete it directly."
+        )
+    return SystemMessage(content=content)
+
+
+def agent_nudge_directive(steps: list[dict]) -> SystemMessage:
+    """A pointed correction when the agent returned with no tool calls while planned gathering
+    steps are still un-run — the exact `gemma4:e4b` failure where it answers 'no information'
+    instead of firing the planned search. Names the skipped step(s) and demands action."""
+    lines = [
+        f"  - step {s.get('step_id')}: {s.get('label')}  (expects `{s.get('intended_tool')}`)"
+        for s in steps
+    ]
+    listing = "\n".join(lines)
+    return SystemMessage(content=(
+        "You returned without calling a tool, but the PLAN still has un-run "
+        "information-gathering step(s):\n"
+        f"{listing}\n"
+        "You do NOT yet have the information these steps would gather, so you cannot answer "
+        "fully. Call the indicated tool now. Do NOT claim that information is unavailable or "
+        "does not exist while a search/gathering step is still pending — run the step first. "
+        "If a step is genuinely unnecessary, proceed by addressing the request directly, but do "
+        "not assert a lack of information you never actually looked for."
+    ))
+
+
 # --- synthesize node -------------------------------------------------------------------
 # The final step. Composes the answer from grounding context + paired tool results
 # (name(args) -> result) + retrieved documents. Treats tool results as ground truth.

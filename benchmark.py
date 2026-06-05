@@ -7,7 +7,7 @@ from pathlib import Path
 
 from langchain.messages import HumanMessage
 
-from agent import build_agent, run_turn
+from agent import build_agent, run_turn, _fresh_turn, _initial_state
 from registry import risk_of
 from state import AgentState
 
@@ -95,6 +95,100 @@ DEEP_RESEARCH_SKIP_REASON = (
 )
 
 
+# ---------------------------------------------------------------------------
+# Multi-turn conversations — the gap the single-turn SUITES above cannot see.
+#
+# Each SUITE query above runs in isolation (fresh state, one HumanMessage), so the harness
+# never exercises what real use is made of: a SECOND turn that refers back to the first
+# ("that result", "the file you just made", "the first one you found"). That cross-turn path
+# goes through agent._fresh_turn -> _compact_history, which is exactly where real-world
+# brittleness lives. run_conversation below carries state across turns through that real path,
+# so a regression in history handling shows up here instead of in production.
+#
+# A conversation is {name, turns:[{query, expect?}]}. `expect` (optional, case-insensitive
+# substring) is a light correctness check on that turn's final answer; turns without one are
+# recorded for manual inspection (matching the rest of this ungraded harness).
+# ---------------------------------------------------------------------------
+CONVERSATIONS: list[dict] = [
+    # Deterministic: turn 2 needs the value turn 1 produced. The cleanest regression signal.
+    {
+        "name": "calc_chain",
+        "turns": [
+            {"query": "Calculate 847 multiplied by 293.", "expect": "248171"},
+            {"query": "Now add 1000 to that result.", "expect": "249171"},
+        ],
+    },
+    # Write then refer back: turn 2 asks about content only established in turn 1.
+    {
+        "name": "file_followup",
+        "turns": [
+            {
+                "query": "Create a file called mt_notes.txt in the workspace containing exactly "
+                "this text: apple banana cherry",
+                "expect": None,
+            },
+            {
+                "query": "What is the middle word in the file you just created?",
+                "expect": "banana",
+            },
+        ],
+    },
+    # The strongest isolator of the compaction bug: the list of results lives ONLY in turn 1's
+    # tool scratchpad, never the prose answer — so if compaction drops it, turn 2 has nothing to
+    # refer to and must re-search or fabricate. Non-deterministic (live web), so recorded, not
+    # asserted; read the two responses to confirm turn 2 actually builds on turn 1.
+    {
+        "name": "web_followup",
+        "turns": [
+            {"query": "Search the web for recent news about the Python programming language.", "expect": None},
+            {"query": "Briefly summarize the first result you found.", "expect": None},
+        ],
+    },
+]
+
+
+def run_conversation(graph, convo: dict) -> dict:
+    """Run one multi-turn conversation, carrying state across turns through the SAME path the
+    interactive loop uses (agent._fresh_turn, which compacts history between turns). This is what
+    makes the suite exercise cross-turn reference handling rather than isolated queries."""
+    state = _initial_state()
+    turn_results = []
+    for turn in convo["turns"]:
+        query = turn["query"]
+        expect = turn.get("expect")
+        state = _fresh_turn(state, query)
+        start = time.perf_counter()
+        config = {"configurable": {"thread_id": str(uuid.uuid4())}}
+        try:
+            state = run_turn(graph, state, config, approver=lambda _v: True)
+            elapsed = round(time.perf_counter() - start, 3)
+            response = str(state["messages"][-1].content)
+            entry = {
+                "status": "ok",
+                "query": query,
+                "response": response,
+                "latency_s": elapsed,
+                "tools_called": state.get("tools_called", []),
+            }
+            if expect is not None:
+                entry["expect"] = expect
+                # Separator-insensitive substring match: the model renders numbers with
+                # thousands separators ("248,171") that a bare check would miss.
+                norm = lambda s: s.lower().replace(",", "")
+                entry["passed"] = norm(expect) in norm(response)
+        except Exception as exc:
+            entry = {
+                "status": "error",
+                "query": query,
+                "error": str(exc),
+                "latency_s": round(time.perf_counter() - start, 3),
+            }
+            turn_results.append(entry)
+            break  # a broken turn poisons the rest of the conversation; stop here
+        turn_results.append(entry)
+    return {"name": convo["name"], "turns": turn_results}
+
+
 def _fresh_state() -> AgentState:
     return {
         "messages": [],
@@ -103,6 +197,7 @@ def _fresh_state() -> AgentState:
         "context": "",
         "plan": [],
         "iteration": 0,
+        "agent_nudges": 0,
         "verified": False,
         "verifier_feedback": "",
         "tools_called": [],
@@ -155,6 +250,7 @@ def run_suites(
     selected: list[str],
     output_path: Path | None = None,
     run_deep_research: bool = False,
+    run_conversations: bool = True,
 ) -> Path:
     print("Building agent...")
     graph = build_agent()
@@ -169,8 +265,11 @@ def run_suites(
     total = sum(len(SUITES[s]) for s in selected)
     if run_deep_research:
         total += len(DEEP_RESEARCH_QUERIES)
+    if run_conversations:
+        total += sum(len(c["turns"]) for c in CONVERSATIONS)
     print(f"Running {total} queries across suite(s): {', '.join(selected)}"
-          + (", deep_research" if run_deep_research else "") + "\n")
+          + (", deep_research" if run_deep_research else "")
+          + (f", {len(CONVERSATIONS)} conversations" if run_conversations else "") + "\n")
 
     results: dict[str, list[dict]] = {}
 
@@ -209,6 +308,34 @@ def run_suites(
         print(f"[deep_research] SKIPPED ({len(DEEP_RESEARCH_QUERIES)} queries defined) — "
               "pass --run-deep-research to execute.\n")
 
+    # Multi-turn conversations: carried-state runs that exercise cross-turn reference handling.
+    conversations: list[dict] = []
+    convo_summary: dict | None = None
+    if run_conversations:
+        print(f"[conversations] ({len(CONVERSATIONS)} conversations, "
+              f"{sum(len(c['turns']) for c in CONVERSATIONS)} turns)")
+        for convo in CONVERSATIONS:
+            print(f"  {convo['name']}:")
+            result = run_conversation(graph, convo)
+            conversations.append(result)
+            for t in result["turns"]:
+                preview = t["query"][:64] + "..." if len(t["query"]) > 64 else t["query"]
+                check = ""
+                if "passed" in t:
+                    check = "  ✓" if t["passed"] else "  ✗ EXPECTED " + repr(t["expect"])
+                print(f"    → {t['status']}  ({t['latency_s']}s)  {preview}{check}")
+        # Roll up only the turns that carry an explicit `expect` check into a pass/fail headline.
+        checked = [t for c in conversations for t in c["turns"] if "passed" in t]
+        convo_summary = {
+            "conversations": len(conversations),
+            "turns": sum(len(c["turns"]) for c in conversations),
+            "errors": sum(1 for c in conversations for t in c["turns"] if t["status"] == "error"),
+            "checked": len(checked),
+            "passed": sum(1 for t in checked if t["passed"]),
+        }
+        print(f"  conversation checks: {convo_summary['passed']}/{convo_summary['checked']} passed"
+              f"  ({convo_summary['errors']} turn errors)\n")
+
     log_dir = Path(__file__).parent / "logging" / "benchmarks"
     log_dir.mkdir(parents=True, exist_ok=True)
 
@@ -230,8 +357,10 @@ def run_suites(
             }
             for suite, r in results.items()
         },
+        "conversation_summary": convo_summary,
         "skipped": skipped,
         "results": results,
+        "conversations": conversations,
     }
 
     output_path.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
@@ -261,6 +390,11 @@ def main():
         help="Also run the deep_research queries (slow + costly; off by default).",
     )
     parser.add_argument(
+        "--no-conversations",
+        action="store_true",
+        help="Skip the multi-turn conversation suite (cross-turn reference handling; on by default).",
+    )
+    parser.add_argument(
         "--output",
         default=None,
         metavar="FILE",
@@ -271,7 +405,12 @@ def main():
     selected = SUITE_NAMES if "all" in args.suites else args.suites
     output_path = Path(args.output) if args.output else None
 
-    run_suites(selected, output_path, run_deep_research=args.run_deep_research)
+    run_suites(
+        selected,
+        output_path,
+        run_deep_research=args.run_deep_research,
+        run_conversations=not args.no_conversations,
+    )
 
 
 if __name__ == "__main__":

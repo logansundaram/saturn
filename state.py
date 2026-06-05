@@ -34,6 +34,26 @@ class Plan(BaseModel):
     steps: List[PlanStep] = Field(default_factory=list)
 
 
+def unrun_planned_tools(plan: List[dict], called) -> List[dict]:
+    """Planned gathering steps the agent has NOT yet executed: non-terminal steps
+    (not done/skipped) carrying an `intended_tool` that isn't in `called`.
+
+    This is the plan/execution gap — work the planner expected but the agent skipped (the
+    `gemma4:e4b` "answers without firing the planned tool" failure). Read by
+    `route_after_agent` (nudge the agent back to act on it) and `synthesize_node` (when we give
+    up with such a step still open, be honest that it wasn't completed rather than claiming the
+    information doesn't exist)."""
+    done = set(called or [])
+    pending = []
+    for step in plan or []:
+        if step.get("status") in ("done", "skipped"):
+            continue
+        tool = step.get("intended_tool")
+        if tool and tool not in done:
+            pending.append(step)
+    return pending
+
+
 def steps_to_dicts(steps: List[PlanStep]) -> List[dict]:
     """Convert planner structured-output PlanSteps into the plain dicts stored in state.
 
@@ -75,6 +95,12 @@ class AgentState(TypedDict):
     # Loop control / guardrails for the ReAct loop. Incremented each agent pass;
     # bounded by a max-iteration cap in config to prevent runaway loops.
     iteration: int
+
+    # Plan-aware nudge counter: how many times this turn the agent finished (no tool calls)
+    # while the plan still had an un-run gathering step, so we sent it back to act. Bounded by a
+    # small budget in route_after_agent so a model that stubbornly refuses can't loop. Reset to
+    # 0 per turn. See state.unrun_planned_tools + node_registry/agent.py.
+    agent_nudges: int
 
     # Outer verify/repair loop.
     verified: bool            # verifier's verdict on the synthesized response

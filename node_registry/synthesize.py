@@ -1,5 +1,5 @@
 import time
-from state import AgentState
+from state import AgentState, unrun_planned_tools
 from llms import get_model, extract_tok_per_sec, extract_prompt_tokens
 from messages import synthesize_sys_msg
 from langchain.messages import HumanMessage
@@ -30,6 +30,24 @@ def synthesize_node(state: AgentState):
             HumanMessage(
                 content="Retrieved documents:\n"
                 + "\n\n".join(str(doc) for doc in documents_retrieved)
+            )
+        )
+
+    # If we arrive here with a planned gathering step still un-run (the agent gave up and the
+    # nudge budget was exhausted), be honest about the gap instead of asserting the information
+    # doesn't exist — the failure mode this whole guard exists to avoid.
+    incomplete = unrun_planned_tools(state.get("plan", []), state.get("tools_called", []))
+    if incomplete:
+        labels = "; ".join(f"{s.get('label')} (needed `{s.get('intended_tool')}`)" for s in incomplete)
+        llm_input.append(
+            HumanMessage(
+                content=(
+                    "NOTE: the plan included information-gathering step(s) that were not "
+                    f"completed this turn: {labels}. If the gathered results above are not "
+                    "sufficient to answer, say plainly that you were unable to complete that "
+                    "lookup — do NOT state that the information does not exist or that nothing "
+                    "is available, since the lookup was not actually carried out."
+                )
             )
         )
 

@@ -102,10 +102,6 @@ class AgentState(TypedDict):
     # 0 per turn. See state.unrun_planned_tools + node_registry/agent.py.
     agent_nudges: int
 
-    # Outer verify/repair loop.
-    verified: bool            # verifier's verdict on the synthesized response
-    verifier_feedback: str    # actionable critique fed back to the agent on repair
-
     # Trace / transparency accumulators. The model consumes observations via
     # ToolMessages in `messages`; these mirror them as a flat, append-only record
     # for the trace store, citations, and the benchmark harness. The `operator.add`

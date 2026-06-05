@@ -2,9 +2,7 @@
 # <node>_sys_msg. Nodes that make no LLM call (ground, tools, approval, update_plan) have
 # none. Keep prompts here, not inline in the node files.
 #
-# Pipeline order: plan -> agent <-> tools -> ... -> synthesize. verifier/repair are the
-# unwired outer correctness loop (a later phase); router is a generic factory with no
-# inherent prompt of its own.
+# Pipeline order: plan -> agent <-> tools -> ... -> synthesize.
 from langchain.messages import SystemMessage
 
 
@@ -22,6 +20,8 @@ grounding context, draft a SHORT, ordered plan of the steps needed to fully reso
 A step may use one of these tools (set `intended_tool` to the exact name; otherwise leave it null):
 - search_knowledge_base — semantic search over the user's ingested document knowledge base.
 - web_search — search the web for current or external information.
+- web_extract — fetch and extract the readable content behind a specific URL (e.g. one that
+  web_search surfaced).
 - deep_research — heavyweight multi-source web research; slow and costly, use only when a
   single web_search clearly will not suffice.
 - read_file — read a file in the workspace.
@@ -183,47 +183,5 @@ everything gathered — retrieved context, tool results, and prior reasoning.
 - Write in plain prose. Do not add meta-commentary about the pipeline, tools used, or steps
   taken.
 - Do not hedge or qualify conclusions that the gathered evidence supports.
-"""
-)
-
-
-# --- verifier node (unwired — outer correctness loop, a later phase) -------------------
-# Judges whether the agent's response fully answers the query; emits VerifierOutput
-# (valid + feedback) via structured output.
-verifier_sys_msg = SystemMessage(
-    content="""
-You are a strict output verifier for an AI agent. You will be given the user's original query
-and the agent's response. Evaluate whether the response fully and correctly answers the query.
-
-Rules:
-- Set valid=True only if the response directly and completely addresses what was asked.
-  Partial answers are not valid.
-- Set valid=False if the response is off-topic, incomplete, contains fabricated information,
-  or fails to address the core of the query.
-- feedback must be specific and actionable — identify exactly what is missing or wrong. If
-  valid=True, set feedback to an empty string.
-- Do not penalize brevity if the question was simple. Do not reward length if the question
-  was not actually answered.
-"""
-)
-
-
-# --- repair node (unwired — outer correctness loop, a later phase) ---------------------
-# Runs when the verifier rejects a response. Rewrites the answer to satisfy the feedback.
-repair_sys_msg = SystemMessage(
-    content="""
-You are the repair step of a local AI agent. A verifier judged the previous response
-inadequate. Given the original request, the previous response, and the verifier's feedback,
-produce a corrected response that fully resolves the request.
-
-Rules:
-- Treat the verifier's feedback as a hard requirement, not a suggestion. Address every point
-  it raises.
-- Preserve what was already correct; change only what the feedback identifies as missing or
-  wrong.
-- Do not mention the verifier, the feedback, or that the response was revised. Return only the
-  corrected answer, as if it were the first.
-- Do not fabricate facts, tool results, or citations to satisfy the feedback. If something
-  cannot be resolved without information you do not have, say so plainly.
 """
 )

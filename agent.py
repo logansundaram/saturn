@@ -28,11 +28,11 @@ from node_registry.tools import tool_node
 from node_registry.approval import approval_node
 
 # RAG ingest (reconciles the disk-cached vector store the search_knowledge_base tool reads)
-from rag import sync
+from stores.rag import sync
 
 # transparency + safety UI
-from trace import Tracer
-import ui
+from stores.trace import Tracer
+from tui import ui
 
 # REPL meta-commands (lines starting with `/`)
 import commands
@@ -177,8 +177,6 @@ def _fresh_turn(state: AgentState, user_input: str) -> AgentState:
     state["plan"] = []
     state["iteration"] = 0
     state["agent_nudges"] = 0
-    state["verified"] = False
-    state["verifier_feedback"] = ""
     state["tools_called"] = []
     state["tool_results"] = []
     state["documents_retrieved"] = []
@@ -197,8 +195,6 @@ def _initial_state() -> AgentState:
         "plan": [],
         "iteration": 0,
         "agent_nudges": 0,
-        "verified": False,
-        "verifier_feedback": "",
         "tools_called": [],
         "tool_results": [],
         "documents_retrieved": [],
@@ -232,7 +228,7 @@ def main():
     # Startup header — tier/model / tool count / corpus size, like a tool's first line.
     from llms import model_id
     from registry import tool as _tools
-    from rag import iter_documents
+    from stores.rag import iter_documents
 
     cfg = get_config()
     n_docs = sum(1 for _ in iter_documents())  # same definition RAG ingests by

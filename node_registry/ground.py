@@ -4,8 +4,8 @@ from langchain.messages import HumanMessage, AIMessage
 
 from state import AgentState
 from config import get_config
-from memory_registry import read_memory_block
-from document_registry import (
+from stores.memory_registry import read_memory_block
+from stores.document_registry import (
     read_workspace_manifest,
     read_documents_manifest,
 )

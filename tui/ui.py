@@ -1750,14 +1750,35 @@ class ResponseStream:
             print()
 
     def _tail(self) -> "Text":
-        """The last screenful of the answer-so-far as plain Text. Bounded by a character budget
-        (rows × width) rather than a line count, so even one long unwrapped paragraph can't push the
-        live region past the screen height (which would break the transient erase)."""
+        """The last screenful of the answer-so-far as plain Text, bounded to at most `rows` VISUAL
+        lines so the transient live region always fits on screen — which is what lets `stop()` erase
+        it cleanly before the full answer is re-rendered. The bound must count visual rows, which
+        means accounting for BOTH hard newlines AND soft wrapping: a raw character budget undercounts
+        badly when the answer is many short lines (lists, headings, code, blanks), because each
+        newline ends a line early, so the same budget spans far more rows than the screen has. The
+        region then scrolls off the top and the transient erase corrupts the final render — eating
+        the first lines of the answer (the data is fine; only the on-screen handoff breaks)."""
         rows = max(4, (_console.size.height or 24) - 6)
-        width = max(20, (_console.size.width or 80) - 4)
-        tail = "".join(self._chars)[-(rows * width):]
+        cols = max(20, _console.size.width or 80)
+        avail = max(1, cols - 2)  # room for text after the 2-space indent below
+        lines = "".join(self._chars).split("\n")
+        # Walk from the bottom up, accumulating physical lines until their WRAPPED height fills the
+        # row budget, so the rendered region can't exceed the screen no matter the line lengths.
+        chosen: list[str] = []
+        used = 0
+        for ln in reversed(lines):
+            h = max(1, -(-len(ln) // avail))  # ceil(len / avail); a blank line is still one row
+            if used + h > rows:
+                if chosen:
+                    break
+                ln = ln[-(rows * avail):]  # a lone line taller than the screen: keep its tail only
+            chosen.append(ln)
+            used += h
+            if used >= rows:
+                break
+        chosen.reverse()
         t = Text()
-        for i, ln in enumerate(tail.split("\n")):
+        for i, ln in enumerate(chosen):
             if i:
                 t.append("\n")
             t.append("  ")

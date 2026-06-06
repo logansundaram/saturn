@@ -73,6 +73,45 @@ def test_update_plan_fallback_advances_active_when_no_match():
     assert out[0]["status"] == "done" and out[1]["status"] == "active"
 
 
+# --- reject -> skip the rejected step so the plan can't re-demand it (no re-approve loop) --------
+def test_rejected_step_is_skipped_so_plan_advances():
+    from node_registry.approval import _skip_rejected_steps
+
+    plan = [_step(1, "active", "write_file"), _step(2, "pending", "web_search")]
+    out = _skip_rejected_steps(plan, ["write_file"])
+    assert out[0]["status"] == "skipped", "the rejected tool's step retires"
+    assert out[1]["status"] == "pending", "later, un-rejected work is untouched"
+    # The skipped step is no longer un-run work, so route_after_agent won't nudge for it.
+    assert [s["step_id"] for s in unrun_planned_tools(out, [])] == [2]
+
+
+def test_rejected_step_skip_is_positional_for_same_tool():
+    from node_registry.approval import _skip_rejected_steps
+
+    # Two same-tool steps, one rejection -> only the first non-terminal one retires.
+    plan = [_step(1, "active", "write_file"), _step(2, "pending", "write_file")]
+    out = _skip_rejected_steps(plan, ["write_file"])
+    assert [(s["step_id"], s["status"]) for s in out] == [(1, "skipped"), (2, "pending")]
+
+
+def test_rejected_step_skip_falls_back_to_active_when_no_tool_match():
+    from node_registry.approval import _skip_rejected_steps
+
+    # The agent called a tool the planner didn't anticipate; skip the active step it was driving.
+    plan = [_step(1, "active", "write_file"), _step(2, "pending", None)]
+    out = _skip_rejected_steps(plan, ["some_other_tool"])
+    assert out[0]["status"] == "skipped" and out[1]["status"] == "pending"
+
+
+def test_rejected_step_skip_does_not_mutate_input():
+    from node_registry.approval import _skip_rejected_steps
+
+    plan = [_step(1, "active", "write_file")]
+    before = [dict(s) for s in plan]
+    _skip_rejected_steps(plan, ["write_file"])
+    assert plan == before, "must work on a copy, not mutate state in place"
+
+
 # --- _compact_history: keep the most recent scratchpad, collapse older turns ----------------
 def test_compact_history_keeps_recent_scratchpad_drops_old():
     from agent import _compact_history

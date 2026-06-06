@@ -7,6 +7,7 @@ batch. The policy is read from config each call, so /config can loosen or tighte
 Resuming with the user's decision is handled in agent.run_turn.
 """
 
+from collections import Counter
 from typing import Literal
 
 from langchain.messages import ToolMessage
@@ -15,6 +16,42 @@ from langgraph.types import interrupt, Command
 from config import get_config
 from registry import risk_of
 from state import AgentState
+
+
+def _skip_rejected_steps(plan: list[dict], rejected_tools: list[str]) -> list[dict]:
+    """Mark the planned step(s) a rejected tool call was fulfilling as `skipped`.
+
+    Without this, a rejected call leaves its planned step non-terminal: `active_step` keeps the
+    lockstep directive pinned to it and `unrun_planned_tools` keeps `route_after_agent` nudging,
+    so the agent re-issues the very call the user just declined and the approval prompt fires again
+    and again (bounded only by max_iterations — the reject -> infinite re-approve loop). Skipping
+    the step retires that planned work so the plan advances past it.
+
+    Matching mirrors `update_plan`/`unrun_planned_tools`: each rejected tool name is consumed,
+    positionally as a multiset, against the first non-terminal step that expects it (so two
+    same-tool steps don't both get skipped off one rejection). A rejected call whose tool matched no
+    planned step falls back to skipping the current active step — the planner's `intended_tool`
+    guess didn't match what the agent actually called, but that active step is still what lockstep
+    was driving, so it must advance too. Returns a fresh list; never mutates the input."""
+    if not plan:
+        return plan
+    plan = [dict(s) for s in plan]
+    remaining = Counter(rejected_tools)
+    for step in plan:
+        if step.get("status") in ("done", "skipped"):
+            continue
+        tool = step.get("intended_tool")
+        if tool and remaining.get(tool, 0) > 0:
+            remaining[tool] -= 1
+            step["status"] = "skipped"
+    # Fallback: a rejection didn't line up with any planned tool. Skip the current active step so
+    # the lockstep directive stops re-pointing the agent at the work it was just told not to do.
+    if sum(remaining.values()) > 0:
+        for step in plan:
+            if step.get("status") not in ("done", "skipped"):
+                step["status"] = "skipped"
+                break
+    return plan
 
 
 def approval_node(state: AgentState) -> Command[Literal["tools", "agent"]]:
@@ -66,4 +103,11 @@ def approval_node(state: AgentState) -> Command[Literal["tools", "agent"]]:
         decline.append(
             ToolMessage(content=content, tool_call_id=tc["id"], name=tc["name"])
         )
-    return Command(goto="agent", update={"messages": decline})
+
+    # Retire the planned step(s) the rejected calls were fulfilling, so the plan stops demanding
+    # work the user declined (otherwise lockstep + the nudge re-issue the same call indefinitely).
+    update = {"messages": decline}
+    plan = state.get("plan", [])
+    if plan:
+        update["plan"] = _skip_rejected_steps(plan, [tc["name"] for tc in gated])
+    return Command(goto="agent", update=update)

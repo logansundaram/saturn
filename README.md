@@ -1,8 +1,8 @@
-# 🪐 Saturday.ai
+# Saturn
 
 > A **local-first, transparent, general-purpose** AI agent that runs on your own machine.
 
-Saturday.ai is a personal copilot you run in your terminal. It can search the web, read and
+Saturn is a personal copilot you run in your terminal. It can search the web, read and
 write your files, retrieve from your own document library, do math, and remember things across
 sessions — and it shows you **every step it takes** while doing it. Nothing is a black box: you
 watch the plan it draws up, the tools it calls, and you approve anything that touches the outside
@@ -13,18 +13,18 @@ your machine by default, with optional cloud models when you want more horsepowe
 
 ---
 
-## Why Saturday.ai?
+## Why Saturn?
 
 Most AI assistants are a chat box in front of a remote model. Saturday.ai is built around four
 priorities, in order:
 
-- **🔍 Transparency** — A live execution trace shows each node, the evolving plan, every tool
+- **Transparency** — A live execution trace shows each node, the evolving plan, every tool
   call and its result. You're never guessing what it did.
-- **⚙️ Configurability** — One `config.yaml` controls which models run, the safety policy, the
+- **Configurability** — One `config.yaml` controls which models run, the safety policy, the
   context window, and paths. Most of it is also tweakable live with slash commands.
-- **🛡️ Safety** — An approval gate stops before any side-effecting or destructive action (writing
+- **Safety** — An approval gate stops before any side-effecting or destructive action (writing
   a file, hitting the web) and asks you first. You decide the policy.
-- **🧩 Extensibility** — Tools, commands, nodes, and models are small, registry-based modules.
+- **Extensibility** — Tools, commands, nodes, and models are small, registry-based modules.
   Adding a capability is adding a file, not rewiring the app.
 
 ---

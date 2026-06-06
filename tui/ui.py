@@ -11,7 +11,7 @@ not a chatbot. Dense, fast, keyboard-first, low-noise, inspectable. The aestheti
     `name  elapsed`. At normal verbosity the plumbing nodes (`ground`, `update_plan`, `plan_gate`)
     fold out of the rail — their *output* still prints and the trace DB keeps every node — so a
     turn reads as the user's mental model, `plan → agent → tools → … → synthesize`;
-    `set_verbosity("verbose")` (via `/verbose full`) restores every node line and full timings.
+    `set_verbosity("verbose")` (via `/trace full`) restores every node line and full timings.
   - Color is **semantic only**: green = done, cyan = active, yellow/red = risk tier. Structure
     is dim. Nothing is colored just to look nice — if it has color, it means something.
   - The plan prints **once** as the intended route, then emits a single line per status change
@@ -20,7 +20,7 @@ not a chatbot. Dense, fast, keyboard-first, low-noise, inspectable. The aestheti
   - The `tools` node renders a **tool-I/O sub-tree** under its header: one `├─ name(args)  dur`
     branch per call, the call repr sized to the terminal width and durations column-aligned. Raw
     result previews are **hidden** by default (noisy JSON) — a failed call still shows its error
-    inline (wrapped under the rail with a hanging indent), and `/calls` or `/verbose full` surfaces
+    inline (wrapped under the rail with a hanging indent), and `/calls` or `/trace full` surfaces
     full outputs on demand. What the agent *did* (inputs · cost · ok/fail) stays visible; the
     workflow other tools hide.
   - LLM nodes annotate their trace line with the live **metrics for that step** (iteration,
@@ -226,7 +226,7 @@ def _metrics_start() -> None:
 #                         their *output* still prints (update_plan's plan diff is driven by
 #                         show_plan), and their timing rolls into the next visible node.
 #   "verbose"           — every node line, including the folded plumbing ones and full timings.
-# Whether the trace renders at all is a separate switch (commands' show_ui / `/verbose off`).
+# Whether the trace renders at all is a separate switch (commands' show_ui / `/trace off`).
 _VERBOSITY = "normal"
 _FOLD_NODES = ("ground", "update_plan")  # hidden from the live rail unless verbosity == "verbose"
 
@@ -1194,7 +1194,7 @@ def _render_tool_events(events: list[dict], *, always_show_results: bool = False
     """Draw the tool-I/O sub-tree under the `tools` node header: one `├─ name(args)  dur` branch
     per call, the call repr sized to the terminal and durations column-aligned within the round so
     they read as a column. The raw result preview is **hidden** by default — it's noisy JSON, and
-    `/calls` (or `/verbose full`) surfaces full outputs on demand — but a FAILED call still shows
+    `/calls` (or `/trace full`) surfaces full outputs on demand — but a FAILED call still shows
     its error leaf inline (signal, not noise). What the agent *did* (name · args · cost · ok/fail)
     always stays visible. `always_show_results=True` (the /trace replay) shows every output, word-
     wrapped under the rail with a hanging indent."""
@@ -1213,7 +1213,7 @@ def _render_tool_events(events: list[dict], *, always_show_results: bool = False
         dur = _fmt_dur(ev.get("dur", 0.0))
         ok = ev.get("ok", True)
         result = ev.get("result", "")
-        # Outputs are hidden by default; show only errors, or everything under /verbose full or in
+        # Outputs are hidden by default; show only errors, or everything under /trace full or in
         # the /trace replay (always_show_results).
         show_result = bool(result) and (always_show_results or not ok or _VERBOSITY == "verbose")
 
@@ -1310,7 +1310,7 @@ def show_reasoning(node: str, delta: dict | None = None) -> None:
     normal verbosity as a bounded preview (_LIVE_REASONING_CAP) and in full at "verbose"; skipped
     for nodes that print no rail row (synthesize, plan_gate, and the folded plumbing nodes) so a
     leaf never dangles under a row that isn't there. The caller only invokes this when show_ui is
-    on, so `/verbose off` (trace hidden) suppresses it for free."""
+    on, so `/trace off` (trace hidden) suppresses it for free."""
     if node in ("synthesize", "plan_gate"):
         return
     if node in _FOLD_NODES and _VERBOSITY != "verbose":
@@ -2083,6 +2083,114 @@ def show_run(run, events) -> None:
             print("  ╶ final answer (recorded)")
             for ln in response_text.splitlines() or [""]:
                 print(f"  {ln}")
+
+
+# ── LLM-call replay (/trace invoke) ──────────────────────────────────────────────
+_LLM_PREVIEW_CHARS = 240  # per-message clip in the default (non --full) view
+_LLM_ROLE = {"system": "sys", "human": "usr", "ai": "ai", "tool": "tool", "function": "fn"}
+
+
+def _llm_leaf(tag: str, text: str, style: str, clip: int | None) -> None:
+    """One input/output message under an LLM-call header: `tag  <wrapped text>`, hanging-indented to
+    align continuation lines, in the trace palette. `clip` bounds the preview (None = full)."""
+    import textwrap
+
+    text = " ".join(str(text).split())
+    if clip and len(text) > clip:
+        text = text[: clip - 1] + "…"
+    head = f"    {tag:<4} "
+    rest = " " * len(head)
+    avail = max(20, _term_width() - (4 + len(head)))
+    for i, ln in enumerate(textwrap.wrap(text, width=avail) or [""]):
+        if _RICH:
+            row = Text()
+            row.append(head if i == 0 else rest, style=_RAIL)
+            row.append(ln, style=style)
+            _console.print(row)
+        else:
+            print(f"{head if i == 0 else rest}{ln}")
+
+
+def show_llm_calls(run, calls, full: bool = False) -> None:
+    """Replay every LLM call recorded for one run: per call its node + model + timing + token counts,
+    the input messages sent, and the output produced. The `/trace invoke` view — the model-level
+    companion to show_run's node-level replay, and the answer to "what did each model call actually
+    see and say". `run` is (run_id, query, started_at, ended_at, status, response); `calls` are the
+    (seq, ts, node, model, dur, prompt_tokens, output_tokens, input, output, status) rows in order.
+    `full` lifts the per-message preview clip so the entire stored message text shows."""
+    import json
+
+    run_id, query, *_rest = run
+    clip = None if full else _LLM_PREVIEW_CHARS
+
+    if _RICH:
+        rule = Text()
+        rule.append("  ╶── ", style=_DIM)
+        rule.append(f"run #{run_id}", style=f"bold {_ACCENT}")
+        rule.append("  llm calls", style=_DIM)
+        rule.append(" " + "─" * 32, style=_DIM)
+        _console.print(rule)
+    else:
+        print(f"  ╶── run #{run_id}  llm calls " + "─" * 32)
+    q = " ".join(str(query or "").split()) or "(empty)"
+    _emit(("  query  " + q) if not _RICH else Text("  query  ", style=_DIM) + Text(q))
+
+    if not calls:
+        _emit("  (no LLM calls recorded for this run)")
+        return
+
+    # one-line roll-up: count · total time · total tokens in/out. Column order matches the query in
+    # commands.trace._show_llm_calls: (seq, ts, node, model, dur, prompt_tokens, output_tokens, …).
+    total_dur = sum((c[4] or 0) for c in calls)
+    total_in = sum((c[5] or 0) for c in calls)
+    total_out = sum((c[6] or 0) for c in calls)
+    roll = (f"  {len(calls)} call(s)  ·  {_fmt_dur(total_dur).strip()}"
+            f"  ·  {_human_tokens(total_in)}→{_human_tokens(total_out)} tok")
+    _emit(roll if not _RICH else Text(roll, style=_DIM))
+    _emit("")
+
+    for idx, (_seq, _ts, node, model, dur, ptok, otok, inp, outp, status) in enumerate(calls, 1):
+        toks = f"  ·  {_human_tokens(ptok or 0)}→{_human_tokens(otok or 0)} tok" if (ptok or otok) else ""
+        if _RICH:
+            h = Text("  ")
+            h.append(f"{idx}. ", style=f"bold {_ACCENT}")
+            h.append(str(node), style="default")
+            h.append(f"  ·  {model}", style=_DIM)
+            h.append(f"  ·  {_fmt_dur(dur or 0).strip()}{toks}", style=_DIM)
+            if status != "ok":
+                h.append(f"  ·  {status}", style="bold red")
+            _console.print(h)
+        else:
+            err = f"  ·  {status}" if status != "ok" else ""
+            print(f"  {idx}. {node}  ·  {model}  ·  {_fmt_dur(dur or 0).strip()}{toks}{err}")
+
+        try:
+            messages = json.loads(inp or "[]")
+        except (json.JSONDecodeError, TypeError):
+            messages = []
+        for m in messages:
+            tag = _LLM_ROLE.get(m.get("role", ""), (m.get("role") or "msg")[:4])
+            body = m.get("content", "")
+            tc = m.get("tool_calls")
+            if tc:
+                names = ", ".join(str(c.get("name")) for c in tc)
+                body = (body + " " if body else "") + f"[tool_calls: {names}]"
+            if m.get("truncated"):
+                body += f"  (+{m['truncated'] - _LLM_PREVIEW_CHARS} chars)" if not full else ""
+            _llm_leaf(tag, body or "(empty)", _DIM, clip)
+
+        try:
+            out = json.loads(outp or "{}")
+        except (json.JSONDecodeError, TypeError):
+            out = {}
+        out_body = out.get("content", "")
+        if out.get("tool_calls"):
+            names = ", ".join(str(c.get("name")) for c in out["tool_calls"])
+            out_body = (out_body + " " if out_body else "") + f"[tool_calls: {names}]"
+        if out.get("error"):
+            out_body = f"ERROR: {out['error']}"
+        _llm_leaf("out", out_body or "(no output)", "default" if status == "ok" else "red", clip)
+        _emit("")
 
 
 # ── model picker / listing ───────────────────────────────────────────────────────

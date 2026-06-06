@@ -22,10 +22,14 @@ context_window from config.yaml.
 Note: without an explicit window Ollama silently caps at 2048 tokens; this binds the full
 window so the gauge is truthful. Edit runtime.num_ctx in config.yaml to persist.
 
+/context compact runs the LLM summary (same as /compact) — the other half of managing the
+window: this command resizes it, that frees it up.
+
 Examples:
   /context              show the window + current fill
   /context 16384        resize every local role to 16k tokens
   /context auto         back to per-model capability windows
+  /context compact      summarize older turns to free up the window
 """,
 )
 def _context(ctx, args):
@@ -34,6 +38,11 @@ def _context(ctx, args):
     from tui import ui
 
     cfg = get_config()
+
+    # Subview: freeing the window (LLM compaction) sits next to resizing it.
+    if args and args[0].lower() in ("compact", "summarize"):
+        from commands.compact import _compact
+        return _compact(ctx, args[1:])
 
     if not args:
         window = active_context_window()

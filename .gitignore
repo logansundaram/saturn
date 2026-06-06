@@ -11,6 +11,12 @@ chroma/
 vectordb/
 database/cache/   # derived RAG store cache (vectors.json/index.json/summaries.json) — rebuilt by sync()
 
+# Runtime SQLite store (checkpoints + trace runs/events/llm_calls) — churns every turn, recreated
+# on first run; tracking it produced constant binary diffs in git status. Sidecars appear in WAL mode.
+database/db.sqlite
+database/db.sqlite-wal
+database/db.sqlite-shm
+
 # Model cache
 models/
 ollama/

@@ -56,16 +56,25 @@ def _config_keys(ctx, args):
 
 @command(
     "config",
-    "View or edit runtime config (config.yaml) and API keys (.env). Edits are session-only.",
-    usage="/config | /config <dotted.key> [value] | /config key … | /config reload",
+    "View or edit runtime config (config.yaml) and API keys (.env); --save persists to disk.",
+    usage="/config | /config <dotted.key> [value [--save]] | /config persist <key> | /config doctor | /config key … | /config reload",
     details="""
 With no args, prints the key runtime settings (active_tier, runtime.max_iterations,
 runtime.auto_approve), the resolved paths, and which API keys are set.
 
-With a dotted key, reads that value; with a key and a value, sets it for this session only.
-`/config reload` re-reads config.yaml from disk, discarding any session edits.
+With a dotted key, reads that value; with a key and a value, sets it for THIS SESSION. Append
+--save to also write it back to config.yaml in place (comments and layout preserved) so it
+survives a restart:
+  /config runtime.max_iterations 12          set for this session
+  /config runtime.max_iterations 12 --save   set AND persist to config.yaml
+  /config persist runtime.max_iterations     persist whatever the current value is
+`/config reload` re-reads config.yaml from disk, discarding any unsaved session edits.
 
-API keys live in .env, not config.yaml, so they have their own subcommand:
+/config doctor (setup, check) — first-run / health check: is the Ollama daemon up, are the
+active tier's models pulled, and are the needed API keys set, with the exact command to fix each
+gap. Run this right after installing.
+
+API keys live in .env, not config.yaml, so they have their own subcommand (already persistent):
   /config key                       list known keys and whether each is set (masked)
   /config key set <NAME> <value>    save a key to .env, apply it live, reset any cached client
   /config key unset <NAME>          remove a key from .env and the environment
@@ -79,8 +88,9 @@ To change model bindings specifically, /models is the friendlier front end.
 
 Examples:
   /config                              show the summary
+  /config doctor                       check the install (Ollama, models, keys)
   /config runtime.max_iterations       read one key
-  /config runtime.max_iterations 12    set it (session only)
+  /config runtime.max_iterations 12 --save  set it and persist to config.yaml
   /config key set TAVILY_API_KEY tvly-... add an API key
   /config reload                       re-read config.yaml from disk
 """,
@@ -92,6 +102,17 @@ def _config(ctx, args):
 
     if args and args[0].lower() in ("key", "keys", "secret", "secrets"):
         _config_keys(ctx, args[1:])
+        return
+
+    if args and args[0].lower() in ("doctor", "setup", "check", "health"):
+        _config_doctor(ctx)
+        return
+
+    if args and args[0].lower() == "persist":
+        if len(args) < 2:
+            _print("  usage: /config persist <dotted.key>   (writes the current value to config.yaml)")
+            return
+        _persist_key(cfg, args[1])
         return
 
     if not args:
@@ -126,9 +147,23 @@ def _config(ctx, args):
         _print(f"  {key} = {cfg.get(key)!r}")
         return
 
-    value = " ".join(args[1:])
+    # A trailing --save / save / persist also writes the change back to config.yaml.
+    rest = args[1:]
+    save = rest[-1].lower() in ("--save", "-s", "save", "persist", "--persist")
+    if save:
+        rest = rest[:-1]
+    if not rest:
+        _print("  usage: /config <dotted.key> <value> [--save]")
+        return
+
+    value = " ".join(rest)
     cfg.set(key, value)
-    _print(f"  {key} = {cfg.get(key)!r}  (session only; edit config.yaml to persist)")
+    if save:
+        _persist_key(cfg, key)
+    else:
+        _print(
+            f"  {key} = {cfg.get(key)!r}  (session only; add --save or run /config persist {key})"
+        )
     if key.startswith("tiers.") or key == "active_tier":
         from llms import reset_models
         reset_models()
@@ -138,3 +173,69 @@ def _config(ctx, args):
         from llms import reset_models
         reset_models()
         _print("  (models will rebuild with the new context window on next use)")
+
+
+def _persist_key(cfg, key: str) -> None:
+    """Write the current in-memory value of `key` back to config.yaml, reporting the outcome."""
+    from config import persist
+
+    try:
+        path = persist(key)
+        _print(f"  {key} = {cfg.get(key)!r}  (saved to {path.name})")
+    except (KeyError, ValueError) as exc:
+        _print(f"  set for this session, but not persisted: {exc}")
+    except Exception as exc:
+        _print(f"  set for this session, but persist failed: {exc}")
+
+
+def _config_doctor(ctx) -> None:
+    """First-run / health view: Ollama up? active-tier models pulled? required API keys set? — each
+    gap paired with the exact fix. A read-only diagnostic; it changes nothing."""
+    from config import get_config
+    from llms import check_models, list_local_models, model_id, ollama_reachable
+    from commands._utils import _ROLES
+    import env_keys
+
+    cfg = get_config()
+    # ASCII-only output on purpose: this is the FIRST command a fresh install runs, possibly in a
+    # legacy console where the fancy glyphs the other commands use would raise an encoding error.
+    _print("")
+    _print(f"  saturday.ai setup check - tier '{cfg.active_tier}'")
+
+    # Ollama daemon.
+    up = ollama_reachable()
+    _print(f"    ollama daemon   {'ok (reachable)' if up else 'DOWN (not reachable)'}")
+    if not up:
+        _print("        -> install from https://ollama.com, then run `ollama serve`")
+
+    # Models bound by the active tier (+ embedder), and whether each is pulled.
+    have = {m.name for m in list_local_models()} if up else set()
+    bound = {model_id(r) for r in _ROLES}
+    bound.add(cfg.embedder_model)
+    _print("    models")
+    from llms import _model_present
+    for m in sorted(bound):
+        if not up:
+            _print(f"        ?        {m}")
+        elif _model_present(m, have):
+            _print(f"        ok       {m}")
+        else:
+            _print(f"        MISSING  {m}   -> run `ollama pull {m}`")
+
+    # API keys.
+    _print("    api keys (.env)")
+    for k in env_keys.KNOWN_KEYS:
+        if env_keys.is_set(k.name):
+            _print(f"        ok       {k.name:<18} set")
+        else:
+            _print(f"        not set  {k.name:<18} -> /config key set {k.name} <value>")
+
+    problems = check_models()
+    _print("")
+    if problems:
+        _print(f"  {len(problems)} thing(s) to fix before this tier runs cleanly:")
+        for p in problems:
+            _print(f"    - {p}")
+    else:
+        _print("  all set - the active tier is ready to run.")
+    _print("")

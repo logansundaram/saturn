@@ -444,8 +444,15 @@ def main():
         # Fresh thread per turn: gives the interrupts a stable thread to pause/resume on,
         # while cross-turn memory rides on the manually-carried `messages`.
         thread_id = str(uuid.uuid4())
-        config = {"configurable": {"thread_id": thread_id}}
         run_id = tracer.start_run(thread_id, user_input)
+        # Attach the LLM-call tracer as a run-scoped callback: it captures every model call's input
+        # messages + output (across all nodes) into the trace DB, surfaced by `/trace invoke`.
+        # Callbacks in the config propagate into the nested model.invoke()/stream() calls via
+        # LangChain's contextvars — the same propagation the token stream above already relies on.
+        config = {
+            "configurable": {"thread_id": thread_id},
+            "callbacks": [tracer.llm_handler(run_id)],
+        }
         ui.reset_turn()  # reset node-timing + plan-diff state for this turn's trace
         # Renders the synthesize node's answer token-by-token as it streams (on_token below). It
         # opens the response section on the first token and is finished (or aborted) after the turn.

@@ -1,134 +1,79 @@
 {
   "version": 1,
-  "saved_at": "2026-06-06T12:30:56",
+  "saved_at": "2026-06-06T15:06:44",
   "messages": [
     {
       "type": "human",
       "data": {
-        "content": "do some research on the new IPOs this year",
+        "content": "hello",
         "additional_kwargs": {},
         "response_metadata": {},
         "type": "human",
         "name": null,
-        "id": "670ddbef-54fe-405a-a958-e00efb7bedfc"
+        "id": "d9f24c3e-db6a-4db1-87a9-9bd04ea16439"
       }
     },
     {
       "type": "ai",
       "data": {
-        "content": "",
+        "content": "Hello! How can I assist you today?",
         "additional_kwargs": {},
         "response_metadata": {
           "model": "qwen3.5:9b",
-          "created_at": "2026-06-06T19:29:15.9693988Z",
+          "created_at": "2026-06-06T22:03:48.9927271Z",
           "done": true,
           "done_reason": "stop",
-          "total_duration": 1488739400,
-          "load_duration": 77087000,
-          "prompt_eval_count": 3546,
-          "prompt_eval_duration": 802644000,
-          "eval_count": 94,
-          "eval_duration": 585500300,
+          "total_duration": 1270917700,
+          "load_duration": 85366400,
+          "prompt_eval_count": 3521,
+          "prompt_eval_duration": 828839300,
+          "eval_count": 55,
+          "eval_duration": 337642500,
           "logprobs": null,
           "model_name": "qwen3.5:9b",
           "model_provider": "ollama"
         },
         "type": "ai",
         "name": null,
-        "id": "lc_run--019e9e69-30ef-7a13-9728-8742f9b7314f",
-        "tool_calls": [
-          {
-            "name": "web_search",
-            "args": {
-              "query": "new IPO listings 2026 this year"
-            },
-            "id": "8602e7a9-a7a1-48ad-9185-298d8956656f",
-            "type": "tool_call"
-          }
-        ],
-        "invalid_tool_calls": [],
-        "usage_metadata": {
-          "input_tokens": 3546,
-          "output_tokens": 94,
-          "total_tokens": 3640
-        }
-      }
-    },
-    {
-      "type": "tool",
-      "data": {
-        "content": "{'query': 'new IPO listings 2026 this year', 'follow_up_questions': None, 'answer': None, 'images': [], 'results': [{'url': 'https://www.iposcoop.com/current-year-pricings', 'title': '2026 Pricings - IPOScoop', 'content': '(2026)](https://www.iposcoop.com/ipo/cerebras/) | [CBRS](http://finance.yahoo.com/q?s=CBRS) | [Technology](https://www.iposcoop.com/specific-industry/?industry=Technology&justPriced=1) | 5/14/2026 | 30.0 | $185.00 | $311.07 | $279.72 | 51.20% | [S/O](https://www.iposcoop.com/how-to-subscribe) |. | [HawkEye 360, Inc.](https://www.iposcoop.com/ipo/hawkeye-360/) | [HAWK](http://finance.yahoo.com/q?s=HAWK) | [Technology](https://www.iposcoop.com/specific-industry/?industry=Technology&justPriced=1) | 5/7/2026 | 16.0 | $26.00 | $34.00 | $34.00 | 30.77% | [S/O](https://www.iposcoop.com/how-to-subscribe) |. (Closed-End Fund)](https://www.iposcoop.com/ipo/pershing-square-usa/) | [PSUS/PS](http://finance.yahoo.com/q?s=PSUS/PS) | [Financials](https://www.iposcoop.com/specific-industry/?industry=Financials&justPriced=1) | 4/29/2026 | 100.0 | $50.00 | $42.71 | $42.80 | -14.40% | [S/O](https://www.iposcoop.com/how-to-subscribe) |. | [Aevex Corp.](https://www.iposcoop.com/ipo/aerex/) | [AVEX](http://finance.yahoo.com/q?s=AVEX) | [Other](https://www.iposcoop.com/specific-industry/?industry=Other&justPriced=1) | 4/17/2026 | 16.0 | $20.00 | $26.93 | $26.93 | 34.25% | [S/O](https://www.iposcoop.com/how-to-subscribe) |. | [Arxis, Inc.](https://www.iposcoop.com/ipo/arxis/) | [ARXS](http://finance.yahoo.com/q?s=ARXS) | [Other](https://www.iposcoop.com/specific-industry/?industry=Other&justPriced=1) | 4/16/2026 | 40.5 | $28.00 | $38.75 | $38.75 | 38.39% | [S/O](https://www.iposcoop.com/how-to-subscribe) |. | [Swarmer, Inc.](https://www.iposcoop.com/ipo/swarmer-inc/) | [SWMR](http://finance.yahoo.com/q?s=SWMR) | [Technology](https://www.iposcoop.com/specific-industry/?industry=Technology&justPriced=1) | 3/17/2026 | 3.0 | $5.00 | $31.00 | $47.20 | 844.00% | [S/O](https://www.iposcoop.com/how-to-subscribe) |. | [MiniMed Group, Inc.](https://www.iposcoop.com/ipo/minimed/) | [MMED](http://finance.yahoo.com/q?s=MMED) | [Health Care](https://www.iposcoop.com/specific-industry/?industry=Health_Care&justPriced=1) | 3/6/2026 | 28.0 | $20.00 | $18.49 | $14.92 | -25.20% | [S/O](https://www.iposcoop.com/how-to-subscribe) |.', 'score': 0.86954874, 'raw_content': None}, {'url': 'https://www.renaissancecapital.com/IPO-Center/Calendar', 'title': 'Upcoming IPO Calendar 2026 - Renaissance Capital', 'content': '# Upcoming IPO Calendar 2026. ## IPOs This Week - 6/1/2026. Get the calendar of new stocks in your inbox each week. | SPCX | SpaceX | SPCX | 00/00/00 | 555.6 | $135.00 - $135.00 | $75,000 | Goldman  Morgan Stanley |. | EROC | ERock | EROC | 00/00/00 | 27.9 | $20.00 - $23.00 | $600 | Morgan Stanley  JP Morgan |. | PBLS | Parabilis Medicines | PBLS | 00/00/00 | 25.0 | $17.00 - $19.00 | $450 | Leerink Partners  BofA |. | WHK | WhiteHawk Minerals | WHK | 00/00/00 | 6.9 | $25.00 - $27.00 | $180 | Raymond James  Stifel |. | FRBT | Forbright | FRBT | 00/00/00 | 7.9 | $18.00 - $20.00 | $150 | Goldman  JP Morgan |. ## Upcoming IPOs After This Week. | FISN | Deep Fission | FISN | 00/00/00 | 6.0 | $24.00 - $26.00 | $150 | William Blair  Stifel |. ## NYSE IPO Calendar. ## Nasdaq IPO Calendar. ### IPO Pro.', 'score': 0.8588255, 'raw_content': None}, {'url': 'https://money.usnews.com/investing/articles/new-and-upcoming-ipos-in-2026', 'title': '8 Best Upcoming IPOs in 2026 | Investing - U.S. News - Money', 'content': 'UPCOMING IPO, IPO VALUATION ESTIMATE ; SpaceX, $1.75 trillion to $2 trillion ; Databricks, $134 billion ; OpenAI, $852 billion to $1 trillion.', 'score': 0.826278, 'raw_content': None}, {'url': 'https://www.bursamalaysia.com/listing/listing_resources/ipo/ipo_summary?year=2026', 'title': 'IPO Summary - Listing - Bursa Malaysia', 'content': 'IPO Summary ; INSPACE CREATION BERHAD, 13 Apr 2026, 22 Apr 2026, RM 0.25, 68,500,000', 'score': 0.8080827, 'raw_content': None}, {'url': 'https://blog.equityzen.com/equityzens-2026-ipo-outlook', 'title': 'What Companies Will IPO in 2026? - EquityZen Blog', 'content': '*   [Animoca Brands](https://blog.equityzen.com/equityzens-2026-ipo-outlook#section-1). *   [BitGo](https://blog.equityzen.com/equityzens-2026-ipo-outlook#section-2). *   [Cerebras Systems](https://blog.equityzen.com/equityzens-2026-ipo-outlook#section-3). *   [Cohesity](https://blog.equityzen.com/equityzens-2026-ipo-outlook#section-4). *   [Consensys Systems](https://blog.equityzen.com/equityzens-2026-ipo-outlook#section-5). *   [Databricks](https://blog.equityzen.com/equityzens-2026-ipo-outlook#section-6). *   [Kraken](https://blog.equityzen.com/equityzens-2026-ipo-outlook#section-7). *   [Lambda Labs](https://blog.equityzen.com/equityzens-2026-ipo-outlook#section-8). *   [Motive Technologies](https://blog.equityzen.com/equityzens-2026-ipo-outlook#section-9). *   [Strava](https://blog.equityzen.com/equityzens-2026-ipo-outlook#section-10). *   [Upgrade](https://blog.equityzen.com/equityzens-2026-ipo-outlook#section-11). *   [Wealthfront](https://blog.equityzen.com/equityzens-2026-ipo-outlook#section-12). Following a multi-year lull, we saw the initial public offering window creak back open, led by several high-profile tech and [AI-driven companies](https://blog.equityzen.com/leading-private-ai-companies). While top-tier companies exhibited both strong growth and profitability, [companies that went public this year](https://blog.equityzen.com/what-if-the-ipo-is-too-late) proved that investors were willing to accept short-term lack of profitability in the pursuit of durable growth. Of [EquityZen\u2019s 2025 IPO Outlook](https://blog.equityzen.com/equityzens-2025-ipo-outlook-0) list, seven companies - Chime, Coreweave, eToro, Klarna, MNTN, Netskope, and Stubhub - went public. *   **What they do:** Founded in 2013, [Cohesity](https://equityzen.com/company/cohesity/) markets itself as an AI-powered data security and management solutions provider. *   **IPO news:** In October 2025, CEO Renaud Laplanche stated that the company\\'s latest funding round was \"[likely the last ahead of an IPO](https://www.youtube.com/watch?v=uEILZW_1MJU),\" signaling strong intent to go public soon.', 'score': 0.8025714, 'raw_content': None}], 'response_time': 0.67, 'request_id': '4cdd9679-fc54-4203-9615-61cf46263c33'}",
-        "additional_kwargs": {},
-        "response_metadata": {},
-        "type": "tool",
-        "name": "web_search",
-        "id": "9a272737-d92e-4e52-904e-9c72b8721674",
-        "tool_call_id": "8602e7a9-a7a1-48ad-9185-298d8956656f",
-        "artifact": null,
-        "status": "success"
-      }
-    },
-    {
-      "type": "ai",
-      "data": {
-        "content": "Here's a summary of the new IPO listings this year (2026):\n\n**Confirmed IPOs in 2026:**\n1. **Swarmer, Inc. (SWMR)** - Technology, priced March 17, 2026 at $5.00/share\n2. **MiniMed Group, Inc. (MMED)** - Health Care, priced March 6, 2026 at $20.00/share\n3. **Arxis, Inc. (ARXS)** - Other, priced April 16, 2026 at $28.00/share\n4. **Aevex Corp. (AVEX)** - Other, priced April 17, 2026 at $20.00/share\n5. **PSUS/PS** - Financials, priced April 29, 2026 at $50.00/share\n6. **HawkEye 360, Inc. (HAWK)** - Technology, priced May 7, 2026 at $26.00/share\n7. **Cerebras Systems (CBRS)** - Technology, priced May 14, 2026 at $30.00/share\n\n**Major companies expected to IPO in 2026:**\n- SpaceX (valuation: $1.75 trillion - $2 trillion)\n- Databricks (valuation: $134 billion)\n- OpenAI (valuation: $852 billion - $1 trillion)\n- Animoca Brands\n- BitGo\n- Cohesity\n- Consensys Systems\n- Kraken\n- Lambda Labs\n- Motive Technologies\n- Strava\n- Upgrade\n- Wealthfront\n\n**Other notable listings:**\n- INSPACE CREATION BERHAD (Bursa Malaysia, April 2026)\n- Various upcoming IPOs listed by Renaissance Capital including Deep Fission, ERock, Parabilis Medicines, WhiteHawk Minerals, Forbright\n\nThe market has seen a resurgence after a multi-year lull, with both tech and AI-driven companies leading the IPO market, while investors appear willing to accept short-term unprofitability in pursuit of durable growth.",
-        "additional_kwargs": {},
-        "response_metadata": {
-          "model": "qwen3.5:9b",
-          "created_at": "2026-06-06T19:29:21.2281168Z",
-          "done": true,
-          "done_reason": "stop",
-          "total_duration": 4056061600,
-          "load_duration": 77834900,
-          "prompt_eval_count": 5955,
-          "prompt_eval_duration": 810026200,
-          "eval_count": 485,
-          "eval_duration": 3088723000,
-          "logprobs": null,
-          "model_name": "qwen3.5:9b",
-          "model_provider": "ollama"
-        },
-        "type": "ai",
-        "name": null,
-        "id": "lc_run--019e9e69-3b73-7743-973c-1d55c8df6a37",
+        "id": "lc_run--019e9ef6-b089-7603-a894-10e3fc9ffa7a",
         "tool_calls": [],
         "invalid_tool_calls": [],
         "usage_metadata": {
-          "input_tokens": 5955,
-          "output_tokens": 485,
-          "total_tokens": 6440
+          "input_tokens": 3521,
+          "output_tokens": 55,
+          "total_tokens": 3576
         }
       }
     },
     {
       "type": "ai",
       "data": {
-        "content": "# New IPOs in 2026 \u2014 Research Summary\n\n## Already Priced IPOs (Through April/May 2026)\n\nThe following IPOs have recently priced according to market data:\n\n| Company | Ticker | Date | Price | Industry |\n|---------|--------|------|-------|----------|\n| **MiniMed Group, Inc.** | MMED | 3/6/2026 | $20.00 | Health Care |\n| **Swarmer, Inc.** | SWMR | 3/17/2026 | $5.00 | Technology |\n| **Arxis, Inc.** | ARXS | 4/16/2026 | $28.00 | Other |\n| **Aevex Corp.** | AVEX | 4/17/2026 | $20.00 | Other |\n| **Pershing Square USA** | PSUS/PS | 4/29/2026 | $50.00 | Financials |\n| **HawkEye 360, Inc.** | HAWK | 5/7/2026 | $16.00 | Technology |\n| **Cerebras** | CBRS | 5/14/2026 | 30.0 | Technology |\n\nSource: [IPOScoop 2026 Pricings](https://www.iposcoop.com/current-year-pricings)\n\n---\n\n## Upcoming IPOs This Week (6/1/2026)\n\nAccording to Renaissance Capital's IPO calendar, these stocks are scheduled to trade beginning 6/1/2026:\n\n| Company | Ticker | Estimated Raise | Lead Underwriters |\n|---------|--------|----------------|-------------------|\n| **SpaceX** | SPCX | $75,000 | Goldman, Morgan Stanley |\n| **ERock** | EROC | $600 | Morgan Stanley, JP Morgan |\n| **Parabilis Medicines** | PBLS | $450 | Leerink Partners, BofA |\n| **WhiteHawk Minerals** | WHK | $180 | Raymond James, Stifel |\n| **Forbright** | FRBT | $150 | Goldman, JP Morgan |\n\nSource: [Renaissance Capital IPO Calendar 2026](https://www.renaissancecapital.com/IPO-Center/Calendar)\n\n---\n\n## Major Tech & AI IPOs Expected in 2026\n\nSeveral high-profile companies have signaled plans to go public in 2026:\n\n| Company | Sector | Notes |\n|---------|--------|-------|\n| **SpaceX** | Aerospace | Valuation estimated at $1.75T\u2013$2T (U.S. News); launching 6/1/2026 |\n| **Databricks** | Cloud/AI | Estimated valuation $134 billion |\n| **OpenAI** | AI | Estimated valuation $852B\u2013$1T |\n| **Cohesity** | AI Security | CEO stated October 2025 round \"likely last ahead of IPO\" |\n| **Consensys Systems** | Blockchain |\n| **Kraken** | Crypto Exchange |\n| **Motive Technologies** | Automotive Tech |\n| **Upgrade** | Fintech |\n| **Wealthfront** | Fintech |\n| **Strava** | Social/Health Tech |\n\nSource: [EquityZen 2026 IPO Outlook](https://blog.equityzen.com/equityzens-2026-ipo-outlook) | [U.S. News Money](https://money.usnews.com/investing/articles/new-and-upcoming-ipos-in-2026)\n\n---\n\n## Key Observations\n\n1. **Technology and AI dominate** \u2014 Most anticipated IPOs are in technology, AI, and fintech sectors.\n2. **Record valuations expected** \u2014 SpaceX's estimated $1.75T\u2013$2T valuation would make it the most valuable IPO of 2026 by a significant margin.\n3. **IPO market reopening** \u2014 After a multi-year lull, the IPO window re-opened in 2026 with high-profile tech and AI-driven companies leading the wave.\n4. **Seven major IPOs from 2025's list** \u2014 Chime, Coreweave, eToro, Klarna, MNTN, Netskope, and Stubhub went public in 2025.\n\n---\n\n## Cautionary Note\n\nInvestors should note that some of the \"expected\" IPOs (like SpaceX, Databricks, OpenAI) are currently listed as estimates rather than confirmed listings. Always verify with official prospectus filings before investing. The valuation figures shown are market estimates and should not be treated as guaranteed values.",
+        "content": "Hello! How can I assist you today?\n\nI'm ready to help with various tasks, including:\n- Answering questions about the synthetic RAG test pack documentation and configuration files\n- Retrieving information about student profiles and academic backgrounds\n- Analyzing the NBA Draft prospect comparison report\n- Discussing tool sandbox policies and system settings\n- Working through technical questions related to RAG pipelines, indexing, and retrieval strategies\n\nIs there something specific you'd like to explore or discuss?",
         "additional_kwargs": {},
         "response_metadata": {
           "model": "qwen3.5:9b",
-          "created_at": "2026-06-06T19:29:33.244611Z",
+          "created_at": "2026-06-06T22:03:53.7815473Z",
           "done": true,
           "done_reason": "stop",
-          "total_duration": 11981070600,
-          "load_duration": 79922800,
-          "prompt_eval_count": 4186,
-          "prompt_eval_duration": 975475100,
-          "eval_count": 1691,
-          "eval_duration": 10678042300,
+          "total_duration": 2375231100,
+          "load_duration": 79171700,
+          "prompt_eval_count": 1671,
+          "prompt_eval_duration": 415338400,
+          "eval_count": 293,
+          "eval_duration": 1818249000,
           "logprobs": null,
           "model_name": "qwen3.5:9b",
           "model_provider": "ollama"
         },
         "type": "ai",
         "name": null,
-        "id": "da17b25e-4faf-4f05-b71c-d649ba0c8965",
+        "id": "d438059d-b8a2-4cef-bc57-a67099d98857",
         "tool_calls": [],
         "invalid_tool_calls": [],
         "usage_metadata": {
-          "input_tokens": 4186,
-          "output_tokens": 1691,
-          "total_tokens": 5877
+          "input_tokens": 1671,
+          "output_tokens": 293,
+          "total_tokens": 1964
         }
       }
     }

@@ -25,33 +25,26 @@ from commands._session import write_autosave
 import importlib as _importlib
 
 _COMMAND_MODULES = [
-    "animation",
     "autoapprove",
-    "calls",
     "clear",
     "compact",
     "config",
     "context",
-    "cost",
     "docs",
     "forget",
     "help",
-    "history",
     "ingest",
     "load",
     "models",
     "plan",
     "quit",
     "reingest",
-    "reset",
     "resume",
     "risk",
     "save",
-    "state",
     "system",
     "tools",
     "trace",
-    "verbose",
     "workspace",
 ]
 

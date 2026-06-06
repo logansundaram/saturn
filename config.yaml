@@ -44,7 +44,7 @@ runtime:
   # fails cleanly and returns to the prompt. Set generously: it must exceed your slowest single
   # generation so a healthy-but-slow model is never false-tripped (connect is capped separately at
   # ~10s, so a daemon that is simply DOWN still fails fast). null disables the timeout.
-  llm_timeout: 600
+  llm_timeout: 120
   # Auto-compaction: when a turn leaves the context window filled past `compact_threshold` (a
   # fraction, 0–1), the older turns are folded into one LLM-written summary before the next turn so
   # the conversation stops re-sending — and overflowing — the window. The mechanical per-turn

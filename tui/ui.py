@@ -76,6 +76,7 @@ except Exception:  # pragma: no cover - fallback path
 # fall back to rich's (or plain) input(), just without the live highlight.
 try:
     from prompt_toolkit import PromptSession
+    from prompt_toolkit.application import run_in_terminal as _ptk_run_in_terminal
     from prompt_toolkit.completion import (
         Completer as _PTKCompleter,
         Completion as _PTKCompletion,
@@ -296,6 +297,13 @@ class _StatusBar:
         bar.append("saturday", style=f"bold {_ACCENT}")
         dot()
         bar.append(_active_model_short(), style="default")
+        dot()
+        try:
+            from config import get_config
+            _perm = get_config().auto_approve
+        except Exception:
+            _perm = "read_only"
+        bar.append(_perm, style=_RISK.get(_perm, _DIM))
 
         # ── type-ahead ── only present while the user is queuing input mid-turn. Placed right after
         # identity (ahead of progress) so the line being typed is never the part trimmed by the
@@ -1017,6 +1025,29 @@ if _PTK:
     @_PTK_KB.add("escape", "enter")  # Alt/Option+Enter (and Esc then Enter) -> hard newline
     def _ptk_newline(event):
         event.current_buffer.insert_text("\n")
+
+    @_PTK_KB.add("s-tab")  # Shift+Tab: cycle runtime.auto_approve tier
+    def _ptk_cycle_permission(event):
+        from config import get_config, RISK_ORDER
+        cfg = get_config()
+        current = cfg.auto_approve
+        idx = RISK_ORDER.index(current) if current in RISK_ORDER else 0
+        next_tier = RISK_ORDER[(idx + 1) % len(RISK_ORDER)]
+        cfg.set("runtime.auto_approve", next_tier)
+
+        def _notify():
+            style = _RISK.get(next_tier, "default")
+            if _RICH:
+                from rich.text import Text as _Text
+                msg = _Text()
+                msg.append("  permission: ", style=_DIM)
+                msg.append(next_tier, style=style)
+                msg.append("  (Shift+Tab to cycle)", style=_DIM)
+                _console.print(msg)
+            else:
+                print(f"  permission: {next_tier}")
+
+        _ptk_run_in_terminal(_notify)
 
     def _ptk_continuation(width, line_number, is_soft_wrap):
         """Gutter for continuation lines of a multiline entry — a dim `·` aligned under the `»`."""

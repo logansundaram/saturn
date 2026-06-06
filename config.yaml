@@ -45,6 +45,12 @@ runtime:
   # generation so a healthy-but-slow model is never false-tripped (connect is capped separately at
   # ~10s, so a daemon that is simply DOWN still fails fast). null disables the timeout.
   llm_timeout: 600
+  # Auto-compaction: when a turn leaves the context window filled past `compact_threshold` (a
+  # fraction, 0–1), the older turns are folded into one LLM-written summary before the next turn so
+  # the conversation stops re-sending — and overflowing — the window. The mechanical per-turn
+  # compaction always runs; this is the heavier LLM summary. `/compact` triggers it on demand.
+  auto_compact: true
+  compact_threshold: 0.85
 
 # ---------------------------------------------------------------------------
 # Web tools (tool_registry/web.py). Key-optional, local-first.

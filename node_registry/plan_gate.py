@@ -13,10 +13,15 @@ current step with the corrected plan — or, if the user aborted, routing falls 
 to a bad conclusion (see SATURDAY_MVP_PLAN.md and the brittleness notes in CLAUDE.md).
 
 Two independent trigger seams feed it, by design, so the *source* of a pause is modular:
-  - external / async / between-turns: the shared `interrupts.PauseController` (the keyboard
-    KeyWatcher, and the `/plan pause` + `/plan review` commands), and
+  - external / async / between-turns: the shared `interrupts.PauseController` (the mid-turn Esc key,
+    handled by `typeahead.InputQueue`, and the `/plan pause` + `/plan review` commands), and
   - in-graph: the `state["pause_requested"]` flag — the seam a future LLM-initiated
     "request a plan review" node/tool would set. The gate handles both identically.
+
+The same controller carries a *third*, non-pausing action: **mid-turn steering** (`source="steer"`,
+the typed correction in `reason`). When the user types a correction during execution and hits Esc
+(`typeahead.InputQueue`), the gate injects it as a HumanMessage so the agent's next pass heeds it,
+then clears the request and passes straight through — the running turn is adjusted, not interrupted.
 
 Determinism across the interrupt: a resumed `interrupt()` re-executes its node from the top, so the
 path to the `interrupt()` call must be the same on the re-run. The controller is read
@@ -24,6 +29,7 @@ non-destructively (`pending()`/`peek()`) and only `clear()`ed *after* the interr
 the state flag doesn't change mid-node — so `should_pause` evaluates the same both times.
 """
 
+from langchain.messages import HumanMessage
 from langgraph.types import interrupt
 
 from state import AgentState, active_step
@@ -32,6 +38,26 @@ from interrupts import get_pause_controller
 
 def plan_gate_node(state: AgentState):
     controller = get_pause_controller()
+
+    # Mid-turn steering: a correction the user typed during execution (Esc with text). Inject it as
+    # a HumanMessage so the agent's next pass adjusts course, then clear the request and pass through
+    # — steering edits the running turn WITHOUT interrupting it (unlike the review pause below). No
+    # interrupt() here, so the determinism caveat below doesn't apply to this branch.
+    req = controller.peek()
+    if req is not None and req.source == "steer" and req.reason:
+        controller.clear()
+        note = (
+            "\n[Steering correction from the user, mid-task — adjust your approach "
+            f"accordingly]: {req.reason}"
+        )
+        # Carry the correction on the LAST message rather than appending a fresh HumanMessage: after
+        # a tool round (and at the first boundary) the trailing message is already user-role, and a
+        # second consecutive user turn is rejected by providers that require role alternation (e.g.
+        # Anthropic on the cloud tier). add_messages overwrites by id, so the edited copy replaces it.
+        last = state["messages"][-1] if state.get("messages") else None
+        if isinstance(last, HumanMessage) and getattr(last, "id", None):
+            return {"messages": [HumanMessage(content=str(last.content) + note, id=last.id)]}
+        return {"messages": [HumanMessage(content=note.lstrip())]}
 
     # Decide whether to pause from the two seams. Kept side-effect-free so it's identical on a
     # post-interrupt re-execution (see module docstring).

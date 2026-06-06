@@ -654,6 +654,51 @@ def _context(ctx: CommandContext, args: list[str]) -> None:
     _print("  models rebuild on next use; edit runtime.num_ctx in config.yaml to persist.")
 
 
+@command(
+    "compact",
+    "Summarize older turns into one brief to free up the context window.",
+    aliases=("summarize",),
+    usage="/compact",
+    details="""
+Folds the older turns of this conversation into a single dense, LLM-written summary (via the
+`utility` model), keeping the most recent turn verbatim so follow-ups still resolve. Use it when a
+long session is filling the context window and you'd rather keep going than /reset.
+
+This is the heavier sibling of the automatic per-turn compaction: every turn already collapses old
+turns to their Q&A mechanically (no LLM), and the agent ALSO auto-compacts on its own when the
+context fills past runtime.compact_threshold (default 85%). /compact triggers the LLM summary on
+demand, now.
+
+Lossy by nature — it trades transcript detail for space. Facts, decisions, your stated
+preferences, and open threads are preserved; verbatim phrasing and tool-output detail are not. The
+durable trace (/trace, /calls) is untouched. To clear the conversation entirely instead, use /reset.
+
+Example:
+  /compact
+""",
+)
+def _compact(ctx: CommandContext, args: list[str]) -> None:
+    from compaction import summarize_messages
+
+    msgs = ctx.state.get("messages", [])
+    if len(msgs) < 2:
+        _print("  nothing to compact yet — have a few turns first.")
+        return
+    _print("  compacting older turns (one LLM summary call)…")
+    new_msgs, stats = summarize_messages(msgs)
+    if stats["summarized_turns"] <= 0:
+        _print("  only the most recent turn is present — nothing older to summarize.")
+        return
+    if stats["after"] >= stats["before"]:
+        _print("  summary did not shrink the history — left it unchanged (see logging/diag.log).")
+        return
+    ctx.state["messages"] = new_msgs
+    _print(
+        f"  compacted {stats['summarized_turns']} earlier turn(s): "
+        f"{stats['before']} → {stats['after']} messages. Most recent turn kept verbatim."
+    )
+
+
 # ---------------------------------------------------------------------------
 # Session / inspection / safety commands. Most are live; the few remaining scaffolds
 # (implemented=False) print their intended behaviour and document the blocker in `details`.
@@ -728,8 +773,11 @@ This command also controls the human-in-the-loop plan-review architecture:
                           no on/off, toggles. Off by default.
 
   /plan pause             Arm a ONE-SHOT pause: the next turn pauses at its first step boundary for
-                          review, then runs normally afterwards. (You can also pause any running
-                          turn by pressing 'p' — it pauses at the next step boundary.)
+                          review, then runs normally afterwards. While a turn is running, Esc on an
+                          empty line pauses for review at the next step; type a correction first and
+                          THEN press Esc to STEER the running turn — the text is injected at the next
+                          step boundary so the agent adjusts course without losing the turn. (Plain
+                          typing + Enter still queues a follow-up to run after the turn finishes.)
 
   /plan lockstep [on|off] Lockstep execution. When on (the default), the agent works the plan one
                           step at a time, strongly directed to the current step, so the plan is
@@ -780,7 +828,8 @@ def _plan(ctx: CommandContext, args: list[str]) -> None:
 
         get_pause_controller().request("user", "one-shot: review the plan before it runs")
         _print("  armed — the next turn will pause at its first step boundary for plan review.")
-        _print("  (during a running turn, press 'p' to pause at the next step boundary.)")
+        _print("  (during a running turn: Esc on an empty line pauses for review at the next step;")
+        _print("   type a correction first, then Esc, to steer the running turn instead.)")
         return
 
     if sub == "lockstep":

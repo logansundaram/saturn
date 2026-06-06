@@ -157,6 +157,140 @@ def test_calculate_tames_epsilon_keeps_precision():
     assert call("1/3") == "0.333333333333"               # real precision preserved (not 0.3333)
 
 
+# --- Tier 2 #7: LLM compaction folds old turns, keeps the recent one, and fails safe -----------
+def test_compaction_folds_old_keeps_recent_turn():
+    import compaction
+
+    orig = compaction._llm_summary
+    compaction._llm_summary = lambda older: f"SUMMARY({len(older)})"  # stub: offline + deterministic
+    try:
+        msgs = [
+            HumanMessage("q1"), AIMessage("a1"),
+            HumanMessage("q2"), AIMessage("a2"),
+            HumanMessage("q3"), AIMessage("a3"),
+        ]
+        new, stats = compaction.summarize_messages(msgs)  # keep_recent_turns=1
+        assert stats["summarized_turns"] == 2, "the two older turns fold"
+        assert compaction.is_summary(new[0]), "folded turns become one summary message at the head"
+        assert new[-2].content == "q3" and new[-1].content == "a3", "recent turn kept verbatim"
+        # A prior summary chains forward (folded into the next) rather than accreting.
+        chained = new + [HumanMessage("q4"), AIMessage("a4")]
+        n2, _ = compaction.summarize_messages(chained)
+        assert sum(compaction.is_summary(m) for m in n2) == 1, "summaries don't pile up"
+        # Only the recent turn present -> nothing to fold.
+        _, s2 = compaction.summarize_messages([HumanMessage("only"), AIMessage("a")])
+        assert s2["summarized_turns"] == 0
+    finally:
+        compaction._llm_summary = orig
+
+
+def test_compaction_llm_failure_leaves_history_intact():
+    import compaction
+
+    orig = compaction._llm_summary
+
+    def boom(older):
+        raise RuntimeError("model down")
+
+    compaction._llm_summary = boom
+    try:
+        msgs = [HumanMessage("q1"), AIMessage("a1"), HumanMessage("q2"), AIMessage("a2")]
+        new, stats = compaction.summarize_messages(msgs)
+        assert new is msgs and stats["summarized_turns"] == 0, "a failed summary must not lose history"
+    finally:
+        compaction._llm_summary = orig
+
+
+# --- Tier 2 #6: type-ahead queue + Esc steering (InputQueue char handling, no console) ----------
+def test_typeahead_queues_enter_terminated_lines_fifo():
+    import typeahead
+
+    q = typeahead.InputQueue()
+    for ch in "first":
+        q._on_char(ch)
+    q._on_char("\r")
+    for ch in "second":
+        q._on_char(ch)
+    q._on_char("\n")
+    assert q.pending()
+    assert q.pop() == "first" and q.pop() == "second", "queue drains FIFO"
+    assert q.pop() is None
+
+
+def test_typeahead_blank_not_queued_and_backspace_edits():
+    import typeahead
+
+    q = typeahead.InputQueue()
+    for ch in "   ":
+        q._on_char(ch)
+    q._on_char("\r")
+    assert not q.pending(), "a blank line never queues"
+    for ch in "abx":
+        q._on_char(ch)
+    q._on_char("\x08")  # backspace removes the x
+    q._on_char("c")
+    q._on_char("\r")
+    assert q.pop() == "abc"
+
+
+def test_escape_with_text_steers_empty_reviews():
+    import interrupts
+    import typeahead
+
+    c = interrupts.get_pause_controller()
+    c.clear()
+    q = typeahead.InputQueue()
+    for ch in "use the 2023 figures":
+        q._on_char(ch)
+    q._on_escape()
+    req = c.peek()
+    assert req.source == "steer" and req.reason == "use the 2023 figures"
+    assert q._buffer == "", "the typed line is consumed as a steer, not left to queue"
+    c.clear()
+    q._on_escape()  # empty buffer
+    assert c.peek().source == "user", "empty Esc asks for a plan-review pause"
+    c.clear()
+
+
+def test_plan_gate_injects_steer_and_consumes_request():
+    import interrupts
+    from node_registry.plan_gate import plan_gate_node
+
+    c = interrupts.get_pause_controller()
+    c.clear()
+    c.request("steer", "focus on cost, not schedule")
+    upd = plan_gate_node({"messages": [HumanMessage("q")], "plan": [], "iteration": 1})
+    assert "messages" in upd, "a steer is injected as a message update"
+    assert "focus on cost" in upd["messages"][0].content
+    assert not c.pending(), "the steer request is consumed (won't re-inject next boundary)"
+
+
+# --- Tier 2 #5: write_file diff preview (pure diff classification) ------------------------------
+def test_write_diff_new_file_is_all_additions():
+    from tui import ui
+
+    rows, is_new, _hidden = ui._diff_lines("___does_not_exist___.txt", "alpha\nbeta\n", True)
+    assert is_new
+    assert [k for k, _ in rows] == ["hunk", "add", "add"]
+
+
+def test_write_diff_overwrite_shows_delete_and_add():
+    from config import get_config
+    from tui import ui
+
+    ws = get_config().path("workspace")
+    ws.mkdir(parents=True, exist_ok=True)
+    p = ws / "___difftest___.txt"
+    p.write_text("one\ntwo\n", encoding="utf-8")
+    try:
+        rows, is_new, _hidden = ui._diff_lines("___difftest___.txt", "one\nTWO\n", True)
+        kinds = [k for k, _ in rows]
+        assert not is_new
+        assert "del" in kinds and "add" in kinds, "a changed line shows as a delete + an add"
+    finally:
+        p.unlink()
+
+
 def _run_standalone():
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     failed = 0

@@ -44,8 +44,12 @@ import commands
 # `@file` mention expansion (pull a referenced file's contents into the turn's context)
 import mentions
 
-# Human-in-the-loop plan-review pause: the shared controller + the keyboard trigger.
-from interrupts import get_pause_controller, KeyWatcher
+# Human-in-the-loop plan-review pause: the shared controller.
+from interrupts import get_pause_controller
+
+# Type-ahead: the single console reader during a turn — queues follow-up queries/commands the user
+# types while the agent works, and carries the Esc plan-review pause trigger.
+from typeahead import InputQueue
 
 DB_PATH = str(get_config().path("db_sqlite"))
 
@@ -123,9 +127,10 @@ def run_turn(graph, payload, config, approver, on_update=None, pause=None, on_to
     `Command(resume=...)` value. `on_update(node, delta)` is called for every node update (the trace
     + live plan panel). `on_token(text)`, if given, receives the *synthesize* node's answer tokens as
     they generate (LangGraph `stream_mode="messages"`, filtered to that node), so the UI can render
-    the final answer live. `pause`, if given, is an `interrupts.KeyWatcher`: it's started only while
-    the graph is executing and stopped before any blocking input(), so a keypress can request a
-    mid-turn plan review without ever stealing the prompt's keystrokes. Returns the final state.
+    the final answer live. `pause`, if given, is a `typeahead.InputQueue` (any start()/stop() console
+    reader): it's started only while the graph is executing and stopped before any blocking input(),
+    so it can capture type-ahead + the Esc pause without ever stealing the prompt's keystrokes (the
+    queued lines themselves are drained by the REPL loop, not here). Returns the final state.
 
     Streams two modes at once: "updates" drives the trace/plan and carries the interrupt marker
     (unchanged routing — pause/resume is still decided by get_state below); "messages" carries the
@@ -181,7 +186,6 @@ def _make_on_update(tracer, run_id, show_ui=True):
         tracer.log_event(run_id, node, delta)
         if show_ui:
             ui.show_node(node, delta)
-            ui.show_reasoning(node, delta)  # the agent's between-tool reasoning, live (was /trace-only)
             if delta.get("plan"):
                 ui.show_plan(delta["plan"])
 
@@ -231,6 +235,50 @@ def _compact_history(messages: list, keep_recent_turns: int = 1) -> list:
             kept.append(m)
         # else: ToolMessage or tool-call/empty AIMessage from an OLD turn — drop it.
     return kept + messages[boundary:]
+
+
+def _maybe_autocompact(state: AgentState) -> AgentState:
+    """If the turn that just finished left the context filled past `runtime.compact_threshold`, fold
+    the older turns into an LLM summary (compaction.summarize_messages) so the NEXT turn doesn't
+    re-send — and overflow — the window. This is the heavier LLM compaction; the mechanical
+    `_compact_history` still runs every turn regardless.
+
+    Best-effort and non-fatal: disabled via `runtime.auto_compact`, skipped when the fill is unknown,
+    and any summary failure leaves the history untouched (summarize_messages swallows it). Mutates +
+    returns `state` so the caller can keep its handle current."""
+    cfg = get_config()
+    if not cfg.get("runtime.auto_compact", True):
+        return state
+    used = int(state.get("context_tokens", 0) or 0)
+    from llms import active_context_window
+
+    window = active_context_window()
+    if not window or used <= 0:
+        return state
+    threshold = float(cfg.get("runtime.compact_threshold", 0.85) or 0.85)
+    if used / window < threshold:
+        return state
+
+    from compaction import summarize_messages
+
+    new_msgs, stats = summarize_messages(state["messages"])
+    if stats["summarized_turns"] > 0 and stats["after"] < stats["before"]:
+        state["messages"] = new_msgs
+        ui.note(
+            f"auto-compacted {stats['summarized_turns']} earlier turn(s) "
+            f"({stats['before']}→{stats['after']} messages) — context was "
+            f"{used / window * 100:.0f}% full ({_human_int(used)}/{_human_int(window)} tok)."
+        )
+    return state
+
+
+def _human_int(n: int) -> str:
+    """Compact integer for the auto-compaction notice (1800 -> 1.8k)."""
+    if n < 1000:
+        return str(int(n))
+    if n < 1_000_000:
+        return f"{n / 1000:.1f}k"
+    return f"{n / 1_000_000:.2f}M"
 
 
 def _fresh_turn(state: AgentState, user_input: str) -> AgentState:
@@ -333,16 +381,32 @@ def main():
         session_started_at=datetime.now().isoformat(),  # session boundary for /cost
     )
 
-    # One keyboard watcher for the session: while a turn runs, pressing the pause key (default 'p')
-    # asks the plan_gate to pause at the next step boundary so the plan can be reviewed/edited.
-    # No-ops cleanly when the console can't be polled (see interrupts.KeyWatcher).
-    pause_watcher = KeyWatcher()
+    # One input reader for the session. While a turn runs it captures type-ahead so the user can
+    # queue follow-up queries / slash commands without waiting (drained between turns below). The Esc
+    # key acts on whatever is typed: with text, it's a mid-turn steering correction (injected into
+    # the running turn at the next step boundary via plan_gate, acknowledged by ui.steer_note); with
+    # an empty line, it asks the plan_gate to pause for plan review. The in-progress line + queue
+    # depth render live in the status bar (on_change -> ui). No-ops cleanly off-TTY (see
+    # typeahead.InputQueue).
+    input_queue = InputQueue(on_change=ui.set_input_preview, on_steer=ui.steer_note)
     pause_controller = get_pause_controller()
 
     # print_graph(graph=graph)
 
+    def _next_input() -> str:
+        """The next line to process: anything the user typed-ahead while the last turn ran is
+        drained first (FIFO, echoed so it reads like it was entered live), and only once the queue
+        is empty do we block on the `»` prompt. A queued line can be a query or a slash command —
+        both flow through the same handling below — so follow-ups and commands alike can be lined
+        up mid-turn and run the moment the agent is free."""
+        queued = input_queue.pop()
+        if queued is not None:
+            ui.echo_queued(queued)
+            return queued
+        return ui.prompt(commands.command_completions())
+
     while True:
-        user_input = ui.prompt(commands.command_completions())
+        user_input = _next_input()
 
         # `/`-prefixed lines are REPL meta-commands, not agent turns — intercept them here.
         if commands.is_command(user_input):
@@ -396,7 +460,7 @@ def main():
                 config,
                 approver=on_interrupt,
                 on_update=_make_on_update(tracer, run_id, show_ui=cmd_ctx.show_ui),
-                pause=pause_watcher,
+                pause=input_queue,
                 on_token=answer.feed,
             )
             tracer.end_run(run_id, "ok", state["messages"][-1].content)
@@ -450,6 +514,12 @@ def main():
             answer.finish()
         else:
             ui.response(state["messages"][-1].content)
+
+        # If this turn pushed the context past the compaction threshold, summarize older turns now so
+        # the next turn starts with a smaller window (best-effort; see _maybe_autocompact). Runs after
+        # the answer is rendered so its LLM call never delays the response the user is waiting on.
+        state = _maybe_autocompact(state)
+        cmd_ctx.state = state
 
 
 if __name__ == "__main__":

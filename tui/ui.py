@@ -256,6 +256,20 @@ _status = {"node": "", "iteration": 0, "tools": 0, "tok_per_sec": 0.0,
 _model = "unknown"
 _live = None
 
+# Type-ahead preview: the line the user is currently typing mid-turn + how many completed lines are
+# already queued. Fed by typeahead.InputQueue's on_change callback (set_input_preview); rendered in
+# the pinned status bar so queuing follow-ups while the agent works has live feedback.
+_input_state = {"buffer": "", "queued": 0}
+
+
+def set_input_preview(buffer: str, queued: int) -> None:
+    """Update the status bar's type-ahead readout (current in-progress line + queue depth) and
+    repaint the bar immediately so typing feels live, not capped at the bar's idle refresh rate.
+    No-op visually when no bar is up (between turns) — the state is still stored for the next bar."""
+    _input_state["buffer"] = buffer
+    _input_state["queued"] = queued
+    _live_refresh()
+
 
 class _StatusBar:
     """Renderable for the pinned bar. `__rich__` is re-evaluated on every Live refresh, so the
@@ -281,6 +295,19 @@ class _StatusBar:
         bar.append("saturday", style=f"bold {_ACCENT}")
         dot()
         bar.append(_active_model_short(), style="default")
+
+        # ── type-ahead ── only present while the user is queuing input mid-turn. Placed right after
+        # identity (ahead of progress) so the line being typed is never the part trimmed by the
+        # bar's ellipsis overflow — seeing your own keystrokes matters more than the gauges here.
+        buf, queued = _input_state["buffer"], _input_state["queued"]
+        if buf or queued:
+            zone()
+            if buf:
+                bar.append(buf, style=_ACCENT)  # the line being typed, highlighted in cyan
+                bar.append("▏", style=f"bold {_ACCENT}")  # block cursor on the typed line
+            if queued:
+                label = f"  ({queued} queued)" if buf else f"{queued} queued"
+                bar.append(label, style=_DIM)
 
         # ── progress ── the active stage leads: it's the highest-value live datum, and keeping it
         # left means a narrow terminal trims resources off the right rather than "where am I".
@@ -1321,9 +1348,102 @@ def show_plan(plan) -> None:
 
 
 # ── approval gate (the one place that gets to shout) ─────────────────────────────
+# Cap the diff preview so a huge rewrite can't flood the gate; the agent still sees the full
+# content, this is just the human-facing safety preview.
+_MAX_DIFF_LINES = 60
+
+
+def _workspace_old_text(file_path: str) -> "tuple[str, bool]":
+    """Current contents of a workspace file (for the write_file diff preview) + whether it exists.
+    Resolved exactly like the write_file tool (sandboxed to the workspace), so the preview matches
+    what the write will actually touch. Any failure degrades to ('', False) — the preview is
+    best-effort and must never block the gate."""
+    try:
+        from config import get_config
+
+        workspace = get_config().path("workspace")
+        target = (workspace / file_path).resolve()
+        if not target.is_relative_to(workspace) or not target.exists():
+            return "", False
+        return target.read_text(encoding="utf-8", errors="replace"), True
+    except Exception:
+        return "", False
+
+
+def _diff_lines(file_path: str, content: str, overwrite: bool) -> "tuple[list, bool, int]":
+    """Build the unified-diff rows for a pending write_file. Returns (rows, is_new_file,
+    hidden_count) where each row is (kind, text), kind ∈ {add, del, hunk, ctx}. An append
+    (overwrite=False) diffs old-vs-(old+content) so the appended text reads as additions."""
+    import difflib
+
+    old, existed = _workspace_old_text(file_path)
+    new = content if overwrite else (old + content)
+    old_lines = old.splitlines()
+    new_lines = new.splitlines()
+    rows: list = []
+    diff = list(difflib.unified_diff(old_lines, new_lines, lineterm="", n=2))
+    for line in diff[2:]:  # skip the two file-name headers positionally (content may start with +++/---)
+        if line.startswith("@@"):
+            rows.append(("hunk", line))
+        elif line.startswith("+"):
+            rows.append(("add", line[1:]))
+        elif line.startswith("-"):
+            rows.append(("del", line[1:]))
+        else:
+            rows.append(("ctx", line[1:] if line.startswith(" ") else line))
+    hidden = max(0, len(rows) - _MAX_DIFF_LINES)
+    return rows[:_MAX_DIFF_LINES], not existed, hidden
+
+
+_DIFF_STYLE = {"add": "green", "del": "red", "hunk": _ACCENT, "ctx": _DIM}
+_DIFF_SIGN = {"add": "+", "del": "-", "hunk": "", "ctx": " "}
+
+
+def _render_write_diff(args: dict) -> None:
+    """Render the colored unified diff for a pending write_file inside the approval frame, so the
+    user sees exactly what changes before approving an overwrite (write_file overwrites by default —
+    see gotcha #2). Falls back to a plain +/- listing without rich."""
+    file_path = str(args.get("file_path", ""))
+    content = args.get("content", "")
+    overwrite = args.get("overwrite", True)
+    rows, is_new, hidden = _diff_lines(file_path, str(content), bool(overwrite))
+
+    mode = "new file" if is_new else ("overwrite" if overwrite else "append")
+    if _RICH:
+        head = Text()
+        head.append("  ┃ ", style="bold")
+        head.append(f"    ↳ diff ({mode}) ", style=_DIM)
+        head.append(file_path, style="default")
+        _console.print(head)
+        if not rows:
+            empty = Text()
+            empty.append("  ┃ ", style="bold")
+            empty.append("        (no textual change)", style=_DIM)
+            _console.print(empty)
+        width = max(20, _term_width() - 12)  # loop-invariant — compute once
+        for kind, text in rows:
+            row = Text()
+            row.append("  ┃ ", style="bold")
+            row.append(f"      {_DIFF_SIGN[kind]} ", style=_DIFF_STYLE[kind])
+            row.append(_truncate(text, width), style=_DIFF_STYLE[kind])
+            _console.print(row)
+        if hidden:
+            more = Text()
+            more.append("  ┃ ", style="bold")
+            more.append(f"        … {hidden} more diff line(s)", style=_DIM)
+            _console.print(more)
+    else:
+        print(f"  ┃     -> diff ({mode}) {file_path}")
+        for kind, text in rows:
+            print(f"  ┃       {_DIFF_SIGN[kind]} {text}")
+        if hidden:
+            print(f"  ┃        … {hidden} more diff line(s)")
+
+
 def ask_approval(value: dict) -> bool:
     """Compact, high-signal gate. Heavy rule + risk-colored tier so it breaks out of the dim
-    trace rail. Returns True to approve the whole batch."""
+    trace rail. A write_file call additionally renders a colored unified diff of what it will
+    change (gotcha #2: write_file overwrites by default). Returns True to approve the whole batch."""
     global _t_last
     tool_calls = value.get("tool_calls", []) if isinstance(value, dict) else []
 
@@ -1347,12 +1467,19 @@ def ask_approval(value: dict) -> bool:
             head.append(f"{risk:<14} ", style=risk_style)  # tier chip, risk-colored
             head.append(f"{tc.get('name')}", style="default")
             _console.print(head)
+            is_write = tc.get("name") == "write_file"
             for k, v in (tc.get("args") or {}).items():  # one line per argument — full clarity
+                # For write_file the `content` arg is shown as a diff below, not as a truncated
+                # repr — the diff is the real safety surface, the 80-char repr would just be noise.
+                if is_write and k == "content":
+                    continue
                 arow = Text()
                 arow.append("  ┃ ", style="bold")
                 arow.append(f"    {k} = ", style=_DIM)
                 arow.append(arg_repr(v), style="default")
                 _console.print(arow)
+            if is_write:
+                _render_write_diff(tc.get("args") or {})
             hint = _RISK_HINT.get(risk)
             if hint:
                 hrow = Text()
@@ -1364,8 +1491,13 @@ def ask_approval(value: dict) -> bool:
         print("  ┏━ approval required " + "━" * 30)
         for tc in tool_calls:
             print(f"  ┃ [{tc.get('risk')}] {tc.get('name')}")
+            is_write = tc.get("name") == "write_file"
             for k, v in (tc.get("args") or {}).items():
+                if is_write and k == "content":
+                    continue
                 print(f"  ┃     {k} = {arg_repr(v)}")
+            if is_write:
+                _render_write_diff(tc.get("args") or {})
             hint = _RISK_HINT.get(str(tc.get("risk")))
             if hint:
                 print(f"  ┃     -> {hint}")
@@ -1981,3 +2113,32 @@ def warn(msg: str) -> None:
         _console.print(t)
     else:
         print(f"  ! {msg}")
+
+
+def steer_note(text: str) -> None:
+    """Acknowledge a mid-turn steering correction the moment it's captured (Esc with typed text).
+    The correction is injected into the running turn at the next step boundary (see plan_gate); this
+    is the immediate feedback that it landed, printed above the live status bar."""
+    msg = text if len(text) <= 80 else text[:79] + "…"
+    if _RICH:
+        t = Text()
+        t.append("  ↪ ", style=f"bold {_ACCENT}")
+        t.append("steering — applies at the next step: ", style=_ACCENT)
+        t.append(msg, style=_DIM)
+        _console.print(t)
+    else:
+        print(f"  ↪ steering — applies at the next step: {msg}")
+
+
+def echo_queued(line: str) -> None:
+    """Echo a type-ahead line as the REPL pulls it off the queue to run, so a query/command the
+    user typed while a previous turn was working shows up in the transcript just like a line typed
+    live at the `»` prompt (with a quiet `queued` tag to mark where it came from)."""
+    if _RICH:
+        t = Text()
+        t.append("» ", style=f"bold {_ACCENT}")
+        t.append(line, style="default")
+        t.append("   (queued)", style=_DIM)
+        _console.print(t)
+    else:
+        print(f"» {line}   (queued)")

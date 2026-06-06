@@ -68,6 +68,16 @@ web:
   deep_research_timeout: 180  # max seconds to wait on a Tavily research job before the local fallback
 
 # ---------------------------------------------------------------------------
+# Shell / code-execution tool (tool_registry/shell.py).
+#   run_shell is registered `destructive`, so it ALWAYS hits the approval gate — the gate (the
+#   user seeing + approving the exact command), not a path jail, is the safety boundary.
+#   timeout: seconds before a running command is killed, so a hung or interactive command can't
+#            wedge the turn (mirrors runtime.llm_timeout / web.deep_research_timeout). <=0 disables.
+# ---------------------------------------------------------------------------
+shell:
+  timeout: 60
+
+# ---------------------------------------------------------------------------
 # Hardware-tier presets. Each maps the agent's roles -> concrete models.
 #
 # A role value is either:

@@ -282,9 +282,10 @@ Example:
 """,
 )
 def _clear(ctx: CommandContext, args: list[str]) -> None:
-    import os
+    import subprocess
+    import sys
 
-    os.system("cls" if os.name == "nt" else "clear")
+    subprocess.run("cls" if sys.platform == "win32" else "clear", shell=True, check=False)
 
 
 @command(

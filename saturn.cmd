@@ -1,4 +1,4 @@
 @echo off
 REM Launch Saturday.ai from anywhere.
-cd /d "C:\Users\Workstation\Projects\agent"
+cd /d "%~dp0"
 python agent.py %*

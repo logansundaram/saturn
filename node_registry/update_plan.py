@@ -65,7 +65,13 @@ def update_plan_node(state: AgentState):
     if called and not newly_marked:
         for step in plan:
             if step["status"] not in _TERMINAL:
-                step["status"] = "done"
+                # Only advance a step that actually expected a tool (the intended_tool-mismatch
+                # case this fallback is for). A no-intended_tool step — notably the generic
+                # single-step fallback plan — must NOT be marked done off the first tool round, or
+                # the plan reports complete mid-task and the gathering-floor nudge switches off. A
+                # genuine no-tool step is retired by agent_node's lockstep advance when it finishes.
+                if step.get("intended_tool"):
+                    step["status"] = "done"
                 break
 
     # 3) Surface the next remaining step as active.

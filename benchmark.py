@@ -190,17 +190,27 @@ def run_conversation(graph, convo: dict) -> dict:
 
 
 def _fresh_state() -> AgentState:
+    # Must match agent._initial_state's shape: nodes read several of these via state[...] (e.g.
+    # synthesize reads context/current_query), so an omitted key KeyErrors here but not in the REPL.
     return {
         "messages": [],
         "current_query": "",
         "current_response": "",
         "context": "",
+        "attachments": "",
         "plan": [],
         "iteration": 0,
         "agent_nudges": 0,
+        "replans": 0,
+        "pause_requested": False,
+        "pause_reason": "",
+        "aborted": False,
         "tools_called": [],
         "tool_results": [],
         "documents_retrieved": [],
+        "tool_events": [],
+        "tok_per_sec": 0.0,
+        "context_tokens": 0,
     }
 
 

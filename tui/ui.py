@@ -56,6 +56,7 @@ import io
 import math
 import os
 import shutil
+import textwrap
 import time
 
 try:
@@ -1119,13 +1120,8 @@ def show_node(node: str, delta: dict | None = None) -> None:
         _status["ctx_used"] = used
     _status["node"] = node
 
-    # The synthesize node's output IS the answer — it's streamed/printed by ResponseStream (or
-    # `response`), so it gets no rail line of its own (that line used to land between the response
-    # rule and the streamed answer). Its metrics above still feed the live bar + the post-turn
-    # receipt, and the /trace replay still renders it as a node.
-    if node == "synthesize":
-        _live_refresh()
-        return
+    # synthesize falls through to the normal rail line — its metrics (tok/s, context) are useful
+    # for transparency; the streamed answer prints directly after it so the output is not repeated.
 
     # Per-node trace row: `│ ✓ node  elapsed  metrics` (metrics dim). The metric annotations are
     # built from the delta by the shared _node_line helper (the live trace + the /trace replay
@@ -1440,6 +1436,33 @@ def _render_write_diff(args: dict) -> None:
             print(f"  ┃        … {hidden} more diff line(s)")
 
 
+def _render_shell_command(args: dict) -> None:
+    """Render a pending run_shell call's full command inside the approval frame. run_shell is
+    `destructive` and the command is the entire safety surface, so — like write_file's diff — it is
+    shown in full (wrapped, not truncated to the 80-char arg repr that would hide the tail of a long
+    one-liner)."""
+    command = str(args.get("command", ""))
+    lines = command.splitlines() or [""]
+    if _RICH:
+        head = Text()
+        head.append("  ┃ ", style="bold")
+        head.append("    ↳ command", style=_DIM)
+        _console.print(head)
+        width = max(20, _term_width() - 12)
+        for line in lines:
+            # Hard-wrap each logical line so nothing runs off the frame or gets silently clipped.
+            for chunk in textwrap.wrap(line, width) or [""]:
+                row = Text()
+                row.append("  ┃ ", style="bold")
+                row.append("      $ ", style=_DIM)
+                row.append(chunk, style="default")
+                _console.print(row)
+    else:
+        print("  ┃     -> command")
+        for line in lines:
+            print(f"  ┃       $ {line}")
+
+
 def ask_approval(value: dict) -> bool:
     """Compact, high-signal gate. Heavy rule + risk-colored tier so it breaks out of the dim
     trace rail. A write_file call additionally renders a colored unified diff of what it will
@@ -1468,10 +1491,14 @@ def ask_approval(value: dict) -> bool:
             head.append(f"{tc.get('name')}", style="default")
             _console.print(head)
             is_write = tc.get("name") == "write_file"
+            is_shell = tc.get("name") == "run_shell"
             for k, v in (tc.get("args") or {}).items():  # one line per argument — full clarity
-                # For write_file the `content` arg is shown as a diff below, not as a truncated
-                # repr — the diff is the real safety surface, the 80-char repr would just be noise.
+                # For write_file the `content` arg is shown as a diff below, and for run_shell the
+                # `command` is shown in full below — not as a truncated repr. In both cases that arg
+                # IS the safety surface, so the 80-char repr would hide the part that matters.
                 if is_write and k == "content":
+                    continue
+                if is_shell and k == "command":
                     continue
                 arow = Text()
                 arow.append("  ┃ ", style="bold")
@@ -1480,6 +1507,8 @@ def ask_approval(value: dict) -> bool:
                 _console.print(arow)
             if is_write:
                 _render_write_diff(tc.get("args") or {})
+            if is_shell:
+                _render_shell_command(tc.get("args") or {})
             hint = _RISK_HINT.get(risk)
             if hint:
                 hrow = Text()
@@ -1492,12 +1521,17 @@ def ask_approval(value: dict) -> bool:
         for tc in tool_calls:
             print(f"  ┃ [{tc.get('risk')}] {tc.get('name')}")
             is_write = tc.get("name") == "write_file"
+            is_shell = tc.get("name") == "run_shell"
             for k, v in (tc.get("args") or {}).items():
                 if is_write and k == "content":
+                    continue
+                if is_shell and k == "command":
                     continue
                 print(f"  ┃     {k} = {arg_repr(v)}")
             if is_write:
                 _render_write_diff(tc.get("args") or {})
+            if is_shell:
+                _render_shell_command(tc.get("args") or {})
             hint = _RISK_HINT.get(str(tc.get("risk")))
             if hint:
                 print(f"  ┃     -> {hint}")

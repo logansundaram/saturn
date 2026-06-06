@@ -180,7 +180,9 @@ def web_extract(url: str):
             except _TAVILY_FALLBACK_ERRORS as err:
                 _disable_tavily(err)
         # Local-first path: handle a single URL or a list of URLs.
-        urls = url if isinstance(url, (list, tuple)) else [url]
+        urls = [u for u in (url if isinstance(url, (list, tuple)) else [url]) if u]
+        if not urls:
+            return "No URL provided to extract."
         results = {u: _local_extract(u) for u in urls}
         return results if len(results) > 1 else next(iter(results.values()))
     finally:

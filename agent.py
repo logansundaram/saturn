@@ -139,6 +139,10 @@ def run_turn(graph, payload, config, approver, on_update=None, pause=None, on_to
     while True:
         if pause is not None:
             pause.start()
+        # Buffer synthesize tokens so the rail line (with full metrics from the node delta) can
+        # print before the response section opens. The update event is guaranteed to arrive after
+        # all message chunks for the same node, so flushing on the update preserves ordering.
+        _synth_buf: list[str] = []
         try:
             for mode, data in graph.stream(pending, config, stream_mode=["updates", "messages"]):
                 if mode == "messages":
@@ -155,7 +159,7 @@ def run_turn(graph, payload, config, approver, on_update=None, pause=None, on_to
                     ):
                         text = getattr(message_chunk, "content", "")
                         if text:
-                            on_token(text if isinstance(text, str) else str(text))
+                            _synth_buf.append(text if isinstance(text, str) else str(text))
                     continue
                 # mode == "updates"
                 if "__interrupt__" in data:
@@ -163,6 +167,10 @@ def run_turn(graph, payload, config, approver, on_update=None, pause=None, on_to
                 for node, delta in data.items():
                     if on_update:
                         on_update(node, delta or {})
+                    if node == "synthesize" and on_token and _synth_buf:
+                        for tok in _synth_buf:
+                            on_token(tok)
+                        _synth_buf.clear()
         finally:
             if pause is not None:
                 pause.stop()  # never leave the watcher live across the input() below

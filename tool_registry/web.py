@@ -34,7 +34,6 @@ import httpx
 import trafilatura
 from ddgs import DDGS
 from dotenv import load_dotenv
-from langchain.tools import tool
 from tavily import (
     InvalidAPIKeyError,
     MissingAPIKeyError,
@@ -43,6 +42,7 @@ from tavily import (
 )
 
 from config import get_config
+from toolspec import register_tool
 
 load_dotenv()
 
@@ -151,7 +151,7 @@ def _local_extract(url: str) -> str:
 
 
 # --- tools -----------------------------------------------------------------
-@tool
+@register_tool("read_only")
 def web_search(query: str):
     """Execute a web search query. Uses Tavily when a key is configured, otherwise falls back
     to keyless DuckDuckGo automatically — no API key required."""
@@ -167,7 +167,7 @@ def web_search(query: str):
         diag.log(f"web_search : {time.perf_counter() - start:.4f}s")
 
 
-@tool
+@register_tool("read_only")
 def web_extract(url: str):
     """Extract the readable page content behind a URL. Use this to read a specific page that
     web_search surfaced. Runs locally (trafilatura) with no API key by default; only uses
@@ -213,7 +213,7 @@ def _local_deep_research(query: str) -> str:
     return get_model("synthesizer").invoke(msgs).content
 
 
-@tool
+@register_tool("side_effecting")
 def deep_research(query: str):
     """Performs deep research on the given query and returns a comprehensive research report.
     A more advanced, multi-source version of web_search for a thorough, detailed analysis.

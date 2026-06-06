@@ -23,6 +23,7 @@ from pathlib import Path
 
 from langchain.messages import HumanMessage
 
+import diag
 from config import get_config
 
 _MANIFEST_HEADER = "# Document manifest\n\n"
@@ -131,12 +132,12 @@ def _summarize(content: str, filename: str) -> str:
             )
         )
         response = get_model("utility").invoke([msg])
-        print(
+        diag.log(
             f"document_registry summary ({filename}) : {time.perf_counter() - start:.4f}s"
         )
         summary = response.content.strip()
     except Exception as exc:
-        print(f"document_registry: summary failed for {filename}: {exc}")
+        diag.log(f"document_registry: summary failed for {filename}: {exc}")
         return "No summary available."
 
     cache[filename] = {"hash": digest, "summary": summary}

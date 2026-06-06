@@ -113,6 +113,14 @@ def grounding_node(state: AgentState) -> dict:
         + (ws_manifest or "No workspace files yet.")
     )
 
+    # Files the user attached to THIS message with `@path` (resolved + read by mentions.expand in the
+    # REPL loop, stashed on state). Folded in here so the planner/agent/synthesize — which read this
+    # context, not the raw messages — all see the file contents inline. Empty on a turn with no
+    # resolvable mentions.
+    attachments = state.get("attachments", "")
+    if attachments:
+        sections.append(attachments)
+
     context = "\n\n".join(sections)
     diag.log(f"grounding_node : {time.perf_counter() - start:.4f}s")
     return {"context": context}

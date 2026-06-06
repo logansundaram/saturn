@@ -9,12 +9,14 @@ if hasattr(sys.stderr, "reconfigure"):
 
 import sqlite3
 import uuid
+from datetime import datetime
 
 from langgraph.graph import StateGraph, START, END
 from langgraph.types import Command
 from langgraph.checkpoint.sqlite import SqliteSaver
-from langchain.messages import HumanMessage, AIMessage
+from langchain.messages import HumanMessage, AIMessage, AIMessageChunk
 
+import diag
 from config import get_config
 from state import AgentState
 
@@ -38,6 +40,9 @@ from tui import ui
 
 # REPL meta-commands (lines starting with `/`)
 import commands
+
+# `@file` mention expansion (pull a referenced file's contents into the turn's context)
+import mentions
 
 # Human-in-the-loop plan-review pause: the shared controller + the keyboard trigger.
 from interrupts import get_pause_controller, KeyWatcher
@@ -110,24 +115,47 @@ def build_agent():
     return builder.compile(checkpointer=checkpointer)
 
 
-def run_turn(graph, payload, config, approver, on_update=None, pause=None):
+def run_turn(graph, payload, config, approver, on_update=None, pause=None, on_token=None):
     """Drive one turn to completion, streaming node updates and pausing at an interrupt.
 
     `approver(interrupt_value) -> decision` resolves each interrupt — for the approval gate a bool,
     for the plan-review gate the editor's `{action, plan}` dict — and the result is fed back as the
     `Command(resume=...)` value. `on_update(node, delta)` is called for every node update (the trace
-    + live plan panel). `pause`, if given, is an `interrupts.KeyWatcher`: it's started only while
+    + live plan panel). `on_token(text)`, if given, receives the *synthesize* node's answer tokens as
+    they generate (LangGraph `stream_mode="messages"`, filtered to that node), so the UI can render
+    the final answer live. `pause`, if given, is an `interrupts.KeyWatcher`: it's started only while
     the graph is executing and stopped before any blocking input(), so a keypress can request a
-    mid-turn plan review without ever stealing the prompt's keystrokes. Returns the final state."""
+    mid-turn plan review without ever stealing the prompt's keystrokes. Returns the final state.
+
+    Streams two modes at once: "updates" drives the trace/plan and carries the interrupt marker
+    (unchanged routing — pause/resume is still decided by get_state below); "messages" carries the
+    per-token answer stream. Each streamed item is a `(mode, data)` pair."""
     pending = payload
     while True:
         if pause is not None:
             pause.start()
         try:
-            for chunk in graph.stream(pending, config, stream_mode="updates"):
-                if "__interrupt__" in chunk:
+            for mode, data in graph.stream(pending, config, stream_mode=["updates", "messages"]):
+                if mode == "messages":
+                    # (message_chunk, metadata) — stream only the synthesize node's answer tokens.
+                    # Filters: skip other LLM nodes (agent draft, planner/judge structured output);
+                    # and require an AIMessageChunk (a streaming delta) — messages mode ALSO emits the
+                    # node's returned, complete AIMessage (the full answer written to state), which
+                    # would otherwise re-deliver the whole text once more and double the display.
+                    message_chunk, metadata = data
+                    if (
+                        on_token
+                        and isinstance(message_chunk, AIMessageChunk)
+                        and metadata.get("langgraph_node") == "synthesize"
+                    ):
+                        text = getattr(message_chunk, "content", "")
+                        if text:
+                            on_token(text if isinstance(text, str) else str(text))
+                    continue
+                # mode == "updates"
+                if "__interrupt__" in data:
                     continue  # detected via get_state below
-                for node, delta in chunk.items():
+                for node, delta in data.items():
                     if on_update:
                         on_update(node, delta or {})
         finally:
@@ -153,6 +181,7 @@ def _make_on_update(tracer, run_id, show_ui=True):
         tracer.log_event(run_id, node, delta)
         if show_ui:
             ui.show_node(node, delta)
+            ui.show_reasoning(node, delta)  # the agent's between-tool reasoning, live (was /trace-only)
             if delta.get("plan"):
                 ui.show_plan(delta["plan"])
 
@@ -214,6 +243,7 @@ def _fresh_turn(state: AgentState, user_input: str) -> AgentState:
     state["current_query"] = user_input
     state["current_response"] = ""
     state["context"] = ""
+    state["attachments"] = ""  # set by the loop after expanding @file mentions (mentions.expand)
     state["plan"] = []
     state["iteration"] = 0
     state["agent_nudges"] = 0
@@ -236,6 +266,7 @@ def _initial_state() -> AgentState:
         "current_query": "",
         "current_response": "",
         "context": "",
+        "attachments": "",
         "plan": [],
         "iteration": 0,
         "agent_nudges": 0,
@@ -277,7 +308,7 @@ def main():
     state = _initial_state()
 
     # Startup header — tier/model / tool count / corpus size, like a tool's first line.
-    from llms import model_id
+    from llms import model_id, check_models
     from registry import tool as _tools
     from stores.rag import iter_documents
 
@@ -287,10 +318,19 @@ def main():
         f"{cfg.active_tier}:{model_id('tool_caller')}", len(_tools), n_docs, DB_PATH
     )
 
+    # Health-check the active tier up front: a down daemon / un-pulled model / missing cloud key is
+    # surfaced now with an actionable fix, rather than as a generic turn failure on the first query.
+    # Non-fatal — the REPL still starts (commands work; an affected turn fails cleanly).
+    for problem in check_models():
+        ui.warn(problem)
+
     # Carries the live session into slash-command handlers. `make_initial_state` lets
     # /reset rebuild state without commands.py importing back into agent.py.
     cmd_ctx = commands.CommandContext(
-        state=state, make_initial_state=_initial_state, db_path=DB_PATH
+        state=state,
+        make_initial_state=_initial_state,
+        db_path=DB_PATH,
+        session_started_at=datetime.now().isoformat(),  # session boundary for /cost
     )
 
     # One keyboard watcher for the session: while a turn runs, pressing the pause key (default 'p')
@@ -316,6 +356,13 @@ def main():
             continue
 
         state = _fresh_turn(state, user_input)
+        # Expand @file mentions: read any files the user referenced as `@path` and stash their
+        # contents on state for the grounding node to fold into context (so every node sees the
+        # file inline). The message text itself is left untouched — the @mention stays visible.
+        attach_block, attached = mentions.expand(user_input)
+        if attached:
+            state["attachments"] = attach_block
+            ui.note("attached " + ", ".join(mentions.display(p) for p in attached))
         # Persistent review mode (/plan review on) arms a pause at the FIRST gate every turn, so the
         # plan is vetted before any execution. A one-shot /plan pause set the controller directly.
         if cmd_ctx.review_plan:
@@ -328,6 +375,9 @@ def main():
         config = {"configurable": {"thread_id": thread_id}}
         run_id = tracer.start_run(thread_id, user_input)
         ui.reset_turn()  # reset node-timing + plan-diff state for this turn's trace
+        # Renders the synthesize node's answer token-by-token as it streams (on_token below). It
+        # opens the response section on the first token and is finished (or aborted) after the turn.
+        answer = ui.ResponseStream()
 
         # Resolve each interrupt by type: the plan-review gate -> the plan editor; the approval
         # gate -> /autoapprove (always yes) or the approval prompt. Keeping this dispatch here lets
@@ -347,11 +397,13 @@ def main():
                 approver=on_interrupt,
                 on_update=_make_on_update(tracer, run_id, show_ui=cmd_ctx.show_ui),
                 pause=pause_watcher,
+                on_token=answer.feed,
             )
             tracer.end_run(run_id, "ok", state["messages"][-1].content)
         except KeyboardInterrupt:
             # Ctrl-C abandons the in-flight turn but not the session — record it and return to
             # the prompt. (KeyboardInterrupt is not an Exception, so it bypasses the catch below.)
+            answer.abort()  # tear down the live answer region (never leak it across the prompt)
             tracer.end_run(run_id, "interrupted", "turn cancelled by user (Ctrl-C)")
             ui.warn("Turn cancelled.")
             cmd_ctx.state = state
@@ -362,6 +414,7 @@ def main():
             # lose the session. Record it, tell the user, and drop back to the prompt with the
             # conversation intact (the unanswered query stays in `messages`; the next turn's
             # _compact_history tolerates it).
+            answer.abort()  # tear down the live answer region before the warning prints
             tracer.end_run(run_id, "error", str(exc))
             ui.warn(f"Turn failed: {exc}")
             cmd_ctx.state = state
@@ -373,9 +426,30 @@ def main():
             # and pause it. A `/plan pause` issued at the prompt is set after this point, so it
             # survives; review mode re-arms each turn — neither is affected.
             pause_controller.clear()
+            # Prune this turn's checkpoints. Each turn runs on a fresh thread_id and cross-turn
+            # memory rides on the manually-carried `messages` (not the checkpointer), so once the
+            # turn returns its checkpoints/writes are dead weight — without this they accumulate in
+            # db.sqlite forever (one thread per turn). delete_thread touches only the checkpointer's
+            # own tables; the trace (runs/events) and the in-memory state we carry forward are
+            # untouched. Best-effort: a prune failure must never end the turn or the session.
+            try:
+                graph.checkpointer.delete_thread(thread_id)
+            except Exception as exc:
+                diag.log(f"checkpoint prune failed for thread {thread_id}: {exc}")
+            # Autosave the conversation to the reserved /resume slot. The checkpoints we just pruned
+            # can't restore a session, so this slot is what survives a quit/crash/Ctrl-C. Runs for
+            # every outcome (ok/error/interrupt) since `state` always carries the latest messages;
+            # write_autosave is itself best-effort, so a failure can't end the turn or the session.
+            commands.write_autosave(state)
 
         cmd_ctx.state = state  # keep the command context pointed at the latest state
-        ui.response(state["messages"][-1].content)
+        # The answer streamed live during synthesize — close it out (final markdown render + receipt).
+        # If nothing streamed (e.g. the model yielded no content, or the turn aborted at the plan
+        # gate before synthesize produced text), fall back to rendering the recorded final message.
+        if answer.started:
+            answer.finish()
+        else:
+            ui.response(state["messages"][-1].content)
 
 
 if __name__ == "__main__":

@@ -140,6 +140,12 @@ class AgentState(TypedDict):
     # nodes read but never mutate it.
     context: str
 
+    # Per-turn @file attachments: the contents of files the user referenced with `@path` in their
+    # message, pre-formatted as a context section by `mentions.expand` and appended to `context` by
+    # the grounding node — so the planner/agent/synthesize (which read `context`, not raw `messages`)
+    # all see the file inline. Empty when the message had no resolvable @mentions. Reset per turn.
+    attachments: str
+
     # Living plan (see above), stored as plain dicts: {step_id, label, status, intended_tool}.
     # Overwritten wholesale by `plan` and `update_plan`. Kept as dicts (not PlanStep objects)
     # so the checkpointer serializes it without custom-type warnings.

@@ -10,13 +10,13 @@ one side-effecting tool here (it goes through the approval gate via registry.TOO
 import time
 import diag
 
-from langchain.tools import tool
+from toolspec import register_tool
 
 from config import get_config
 from stores.document_registry import register_workspace_file
 
 
-@tool
+@register_tool("read_only")
 def read_file(file_path: str):
     """Reads the contents of a file in the workspace and returns it as a string. file_path is relative to the workspace root."""
     start = time.perf_counter()
@@ -37,7 +37,7 @@ def read_file(file_path: str):
         diag.log(f"read_file : {time.perf_counter() - start:.4f}s")
 
 
-@tool
+@register_tool("side_effecting")
 def write_file(file_path: str, content: str, overwrite: bool = True):
     """Writes content to a file in the workspace. file_path is relative to the workspace root. content is the text to write. overwrite=True (default) replaces the file's contents; pass overwrite=False to append to the existing file instead."""
     start = time.perf_counter()
@@ -48,11 +48,16 @@ def write_file(file_path: str, content: str, overwrite: bool = True):
 
         if not target_path.is_relative_to(workspace):
             return "Invalid file path: outside the workspace."
+        # Create any intermediate directories so a nested path (e.g. "notes/todo.md") works —
+        # without this, writing into a not-yet-existing subdirectory raised FileNotFoundError.
+        # Safe: target_path is already verified to be inside the sandbox above.
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        existed = target_path.exists()
         if overwrite:
             with open(target_path, "w", encoding="utf-8") as file:
                 file.write(content)
             register_workspace_file(file_path, content)
-            return "File overwritten successfully"
+            return "File overwritten successfully" if existed else "File created successfully"
         else:
             with open(target_path, "a", encoding="utf-8") as file:
                 file.write(content)
@@ -64,7 +69,7 @@ def write_file(file_path: str, content: str, overwrite: bool = True):
         diag.log(f"write_file : {time.perf_counter() - start:.4f}s")
 
 
-@tool
+@register_tool("read_only")
 def list_directory(directory: str = "."):
     """Lists the files and folders inside a workspace directory. directory is a path relative to the workspace root. Use '.' to list the workspace root."""
     start = time.perf_counter()

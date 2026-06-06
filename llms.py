@@ -244,6 +244,83 @@ def list_local_models() -> list[LocalModel]:
     return sorted(out, key=lambda lm: lm.name.lower())
 
 
+# ── startup health check ──────────────────────────────────────────────────────
+# Surfaces a missing daemon / un-pulled model / missing cloud key at STARTUP with an actionable
+# message, instead of letting it surface as a generic turn failure on the first real query.
+
+
+def ollama_reachable() -> bool:
+    """True if the local Ollama daemon answers. Distinguishes 'daemon down' from 'no models
+    pulled' (both make list_local_models return [])."""
+    try:
+        import ollama
+
+        ollama.list()
+        return True
+    except Exception:
+        return False
+
+
+def _model_present(required: str, have: set[str]) -> bool:
+    """Whether a required model tag is among the pulled ones, tolerating the implicit ':latest'
+    tag Ollama adds (so 'qwen3.5:9b' and a bare 'mymodel' both match correctly)."""
+    def _norm(n: str) -> str:
+        return n if ":" in n else f"{n}:latest"
+
+    return _norm(required) in {_norm(h) for h in have}
+
+
+# Cloud providers and the env var that unlocks them (mirrors env_keys.KNOWN_KEYS; extend together).
+_PROVIDER_KEY = {"anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY"}
+
+
+def check_models() -> list[str]:
+    """Startup health report for the active tier. Returns a list of human-readable PROBLEM strings
+    (empty when all is well): the Ollama daemon being down, local model tags not pulled, or a
+    missing API key for a cloud-bound role. Non-fatal — `agent.main` prints these as warnings and
+    continues (a degraded tier still runs the commands/REPL; the first affected turn fails cleanly
+    rather than the app refusing to start)."""
+    cfg = get_config()
+    problems: list[str] = []
+
+    need_ollama: list[str] = []
+    cloud: dict[str, set[str]] = {}
+    for role in ("planner", "tool_caller", "synthesizer", "utility", "judge"):
+        spec = cfg.model_for_role(role)
+        if spec.provider == "ollama":
+            need_ollama.append(spec.model)
+        else:
+            cloud.setdefault(spec.provider, set()).add(spec.model)
+    need_ollama.append(cfg.embedder_model)  # embeddings always run through Ollama
+    need_ollama = sorted(set(need_ollama))
+
+    if need_ollama:
+        local = list_local_models()
+        have = {m.name for m in local}
+        if not local and not ollama_reachable():
+            problems.append(
+                "Ollama daemon not reachable — start it with `ollama serve`, then pull: "
+                + ", ".join(need_ollama)
+            )
+        else:
+            for m in need_ollama:
+                if not _model_present(m, have):
+                    problems.append(f"model not pulled: `{m}`  →  run `ollama pull {m}`")
+
+    if cloud:
+        import env_keys
+
+        for provider, models in sorted(cloud.items()):
+            key = _PROVIDER_KEY.get(provider)
+            if key and not env_keys.is_set(key):
+                problems.append(
+                    f"{provider} model(s) {', '.join(sorted(models))} need {key} — "
+                    f"set it with `/config key set {key} <value>`"
+                )
+
+    return problems
+
+
 def extract_tok_per_sec(response) -> float:
     """Return tokens/second from an AIMessage's response_metadata, or 0.0 if unavailable.
     Ollama populates eval_count (tokens generated) and eval_duration (nanoseconds); other

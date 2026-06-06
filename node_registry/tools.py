@@ -11,11 +11,8 @@ import time
 
 from langchain.messages import ToolMessage
 
-from registry import tools_by_name
+from registry import tools_by_name, RETRIEVAL_TOOLS
 from state import AgentState
-
-# Tools whose results are documents worth recording as retrieved (for citations / trace).
-_RETRIEVAL_TOOLS = {"search_knowledge_base"}
 
 # Cap each argument's length so a big write_file payload doesn't bloat the trace/synthesis input.
 _MAX_ARG_REPR = 200
@@ -118,7 +115,7 @@ def tool_node(state: AgentState):
                 "ok": ok,
             }
         )
-        if name in _RETRIEVAL_TOOLS:
+        if name in RETRIEVAL_TOOLS:
             documents_retrieved.append(clamped)
 
     return {

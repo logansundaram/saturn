@@ -9,10 +9,10 @@ documents, not the internet.
 import time
 import diag
 
-from langchain.tools import tool
+from toolspec import register_tool
 
 
-@tool
+@register_tool("read_only", retrieval=True)
 def search_knowledge_base(query: str):
     """Search the local document knowledge base for passages relevant to the query. Use this to answer questions about ingested documents, handbooks, notes, or reference material. Returns the most relevant chunks with their source. Does not search the live web."""
     start = time.perf_counter()

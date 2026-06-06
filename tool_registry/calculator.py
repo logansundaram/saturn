@@ -1,9 +1,9 @@
 import time
 import diag
-from langchain.tools import tool
+from toolspec import register_tool
 
 
-@tool
+@register_tool("read_only")
 def calculate(expression: str) -> str:
     """Evaluates a mathematical expression and returns the result as a string.
     Supports basic arithmetic (+, -, *, /), exponentiation (**), modulo (%),
@@ -20,10 +20,16 @@ def calculate(expression: str) -> str:
     }
     try:
         result = eval(expression, {"__builtins__": {}}, allowed_names)
-        # Tame float noise (e.g. 672.3499999999999 -> 672.35) and render whole-number
-        # floats as ints (37.0 -> 37) so the agent reports clean values.
+        # Tame binary-float epsilon (672.3499999999999 -> 672.35) WITHOUT capping real precision:
+        # rounding to 12 significant figures removes the representation artifact while preserving
+        # legitimate decimals (1/3 -> 0.333333333333, not 0.3333). Only apply it when the value is
+        # small enough that 12 sig figs still spans the whole integer part (abs < 1e12); above that
+        # the same formatting would truncate real integer digits and return a WRONG value
+        # (2.0**47 -> 140737488355000 instead of ...328), so leave large magnitudes untouched.
+        # Whole-number floats render as ints either way (37.0 -> 37).
         if isinstance(result, float):
-            result = round(result, 4)
+            if abs(result) < 1e12:
+                result = float(f"{result:.12g}")
             if result.is_integer():
                 result = int(result)
         return str(result)

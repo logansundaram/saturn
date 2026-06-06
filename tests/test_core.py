@@ -120,6 +120,43 @@ def test_planner_catalog_lists_every_registered_tool():
         assert t.name in catalog, f"{t.name} missing from planner catalog (drift!)"
 
 
+# --- #5: registration decorator keeps the registry views consistent -------------------------
+def test_registry_views_consistent():
+    import registry
+
+    # Every registered tool has a risk tier, and tools_by_name covers the whole list.
+    assert {t.name for t in registry.tool} == set(registry.tools_by_name)
+    assert all(t.name in registry.TOOL_RISK for t in registry.tool)
+    # Risk tiers are valid, and unknown tools fail safe to the strictest tier.
+    from toolspec import RISK_TIERS
+
+    assert all(v in RISK_TIERS for v in registry.TOOL_RISK.values())
+    assert registry.risk_of("a-tool-that-does-not-exist") == "destructive"
+    # The retrieval flag rode along with the tool that declared it.
+    assert "search_knowledge_base" in registry.RETRIEVAL_TOOLS
+
+
+# --- #8: model-presence normalization for the startup health check --------------------------
+def test_model_present_normalizes_latest_tag():
+    from llms import _model_present
+
+    assert _model_present("qwen3.5:9b", {"qwen3.5:9b"})
+    assert _model_present("foo", {"foo:latest"})        # implicit :latest
+    assert _model_present("foo:latest", {"foo"})        # and the reverse
+    assert not _model_present("missing:9b", {"other:9b"})
+
+
+# --- #3: calculate tames float epsilon without capping real precision -----------------------
+def test_calculate_tames_epsilon_keeps_precision():
+    from tool_registry.calculator import calculate
+
+    call = lambda e: calculate.invoke({"expression": e})
+    assert call("672.34999999999999 + 0") == "672.35"   # epsilon artifact removed
+    assert call("37.0") == "37"                          # whole-number float -> int
+    assert call("2+3*4") == "14"
+    assert call("1/3") == "0.333333333333"               # real precision preserved (not 0.3333)
+
+
 def _run_standalone():
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     failed = 0

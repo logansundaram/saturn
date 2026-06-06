@@ -2,7 +2,7 @@ import time
 from state import AgentState, unrun_planned_tools
 from llms import get_model, extract_tok_per_sec, extract_prompt_tokens
 from messages import synthesize_sys_msg
-from langchain.messages import HumanMessage
+from langchain.messages import HumanMessage, AIMessage
 
 
 def synthesize_node(state: AgentState):
@@ -53,10 +53,30 @@ def synthesize_node(state: AgentState):
 
     llm_input.append(HumanMessage(content=f"Current user query:\n{query}"))
 
-    llm_response = get_model("synthesizer").invoke(llm_input)
+    # Stream the answer so the UI can render it token-by-token: LangGraph surfaces these chunks via
+    # stream_mode="messages" (filtered to this node in agent.run_turn -> on_token). We still aggregate
+    # the whole message here and return it, so state["messages"] / the trace / autosave see a complete
+    # AIMessage exactly as the old .invoke() path did — the streaming is purely additive. Ollama
+    # attaches eval/usage metadata to the final aggregated chunk, so the tok/s + context gauges keep
+    # working off it unchanged.
+    model = get_model("synthesizer")
+    aggregated = None
+    for chunk in model.stream(llm_input):
+        aggregated = chunk if aggregated is None else aggregated + chunk
+    if aggregated is None:  # a model that streamed nothing — fall back to a blocking call
+        aggregated = model.invoke(llm_input)
+
+    # Normalize the aggregated chunk to a plain AIMessage so every downstream type matches the old
+    # invoke() path exactly (add_messages, _compact_history's isinstance checks, autosave).
+    content = aggregated.content if isinstance(aggregated.content, str) else str(aggregated.content)
+    msg_kwargs = {"response_metadata": getattr(aggregated, "response_metadata", {}) or {}}
+    if getattr(aggregated, "usage_metadata", None):
+        msg_kwargs["usage_metadata"] = aggregated.usage_metadata
+    llm_response = AIMessage(content=content, **msg_kwargs)
+
     return {
         "current_response": llm_response,
         "messages": [llm_response],
-        "tok_per_sec": extract_tok_per_sec(llm_response),
-        "context_tokens": extract_prompt_tokens(llm_response),
+        "tok_per_sec": extract_tok_per_sec(aggregated),
+        "context_tokens": extract_prompt_tokens(aggregated),
     }

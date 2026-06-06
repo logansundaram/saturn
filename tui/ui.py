@@ -75,7 +75,13 @@ except Exception:  # pragma: no cover - fallback path
 # fall back to rich's (or plain) input(), just without the live highlight.
 try:
     from prompt_toolkit import PromptSession
-    from prompt_toolkit.completion import Completer as _PTKCompleter, Completion as _PTKCompletion
+    from prompt_toolkit.completion import (
+        Completer as _PTKCompleter,
+        Completion as _PTKCompletion,
+        PathCompleter as _PTKPathCompleter,
+    )
+    from prompt_toolkit.document import Document as _PTKDocument
+    from prompt_toolkit.key_binding import KeyBindings as _PTKKeyBindings
     from prompt_toolkit.lexers import Lexer as _PTKLexer
     from prompt_toolkit.styles import Style as _PTKStyle
 
@@ -839,11 +845,35 @@ def banner(model: str, n_tools: int, n_docs: int, db_path: str) -> None:
 if _PTK:
     _PTK_STYLE = _PTKStyle.from_dict({
         "prompt": "ansicyan bold",
+        "prompt.cont": "ansibrightblack",
         "cmd.valid": "ansicyan bold",
         "cmd.partial": "ansiyellow",
         "cmd.unknown": "ansired bold",
         "cmd.args": "ansibrightblack",
+        "mention": "ansibrightblue",
     })
+
+    # An `@mention` inside a normal (non-slash) line: `@` at a word boundary + a run of
+    # non-space/non-`@`. Highlighted live so the user sees which token will attach a file
+    # (mentions.expand resolves them for real at submit; see mentions.py).
+    import re as _re
+    _MENTION_LEX_RE = _re.compile(r"(?<!\S)@[^\s@]+")
+    # Same grammar but capturing just the path fragment up to the cursor, for Tab completion.
+    _AT_FRAGMENT_RE = _re.compile(r"(?:^|\s)@([^\s@]*)$")
+
+    def _mention_fragments(line: str):
+        """Split one plain line into prompt_toolkit (style, text) fragments, coloring any
+        `@mention` runs. Used for normal turns so file mentions stand out as they're typed."""
+        frags = []
+        pos = 0
+        for m in _MENTION_LEX_RE.finditer(line):
+            if m.start() > pos:
+                frags.append(("", line[pos:m.start()]))
+            frags.append(("class:mention", m.group(0)))
+            pos = m.end()
+        if pos < len(line):
+            frags.append(("", line[pos:]))
+        return frags or [("", line)]
 
     def _slash_token(text: str):
         """Split a prompt line into `(lead, token, args)` around the leading `/command` word —
@@ -877,12 +907,16 @@ if _PTK:
             return "class:cmd.unknown"      # a typo — make it loud
 
         def lex_document(self, document):
-            text = document.text
+            # Per-line so multiline input (Alt+Enter / paste) highlights each line. Only the
+            # FIRST line is treated as a possible `/command` (a slash command is always single-
+            # line); every line gets `@mention` highlighting.
+            lines = document.lines
 
-            def get_line(_lineno):
-                parsed = _slash_token(text)
+            def get_line(lineno):
+                line = lines[lineno] if 0 <= lineno < len(lines) else ""
+                parsed = _slash_token(line) if lineno == 0 else None
                 if parsed is None:
-                    return [("", text)]
+                    return _mention_fragments(line)
                 lead, token, args = parsed
                 frags = []
                 if lead:
@@ -895,16 +929,33 @@ if _PTK:
             return get_line
 
     class _CommandCompleter(_PTKCompleter):
-        """Tab-completes the leading `/command` token against the known command set. Fires only
-        on the first token of a slash line (a space ends the token — args are left alone), so it
-        never interferes with normal turns or command arguments. `display_meta` carries each
-        command's one-line summary into the completion menu."""
+        """Tab-completes two things, depending on where the cursor sits:
+          - the leading `/command` token of a slash line (against the known command set), and
+          - an `@path` mention anywhere in a normal line (against the filesystem, so a file can be
+            pulled into the turn inline — see mentions.py).
+        Command completion fires only on the first token of a slash line (a space ends it); `@path`
+        completion fires on the partial path after an `@` at a word boundary. `display_meta` carries
+        each command's one-line summary into the menu."""
 
         def __init__(self, meta):
             self._meta = meta  # list of (token, summary), tokens lowercased, no leading slash
+            # Delegate the actual path matching to prompt_toolkit's PathCompleter; we only carve
+            # out the `@`-prefixed fragment and re-base its replacement offset.
+            self._paths = _PTKPathCompleter(expanduser=True)
 
         def get_completions(self, document, complete_event):
-            parsed = _slash_token(document.text_before_cursor)
+            # `@path` mention completion takes precedence: it can occur anywhere on the line,
+            # including inside what would otherwise be a slash command's args.
+            before = document.text_before_cursor
+            at = _AT_FRAGMENT_RE.search(before)
+            if at is not None:
+                frag = at.group(1)  # the partial path typed after `@` (no `@`)
+                sub = _PTKDocument(frag, len(frag))
+                for comp in self._paths.get_completions(sub, complete_event):
+                    yield comp  # offsets are relative to `frag`'s end == the cursor, so they map 1:1
+                return
+
+            parsed = _slash_token(before)
             if parsed is None:
                 return
             _lead, token, args = parsed
@@ -921,14 +972,37 @@ if _PTK:
                         display_meta=summary,
                     )
 
+    # Multiline input: Enter submits, Alt+Enter inserts a newline. So a pasted multi-line block
+    # (bracketed paste inserts its newlines directly, never submitting) or a deliberately-composed
+    # multi-paragraph turn survives instead of being chopped at the first newline. When the
+    # completion menu is open, Enter accepts the highlighted completion rather than submitting.
+    _PTK_KB = _PTKKeyBindings()
+
+    @_PTK_KB.add("enter")
+    def _ptk_enter(event):
+        buf = event.current_buffer
+        if buf.complete_state and buf.complete_state.current_completion:
+            buf.apply_completion(buf.complete_state.current_completion)
+        else:
+            buf.validate_and_handle()  # submit the line
+
+    @_PTK_KB.add("escape", "enter")  # Alt/Option+Enter (and Esc then Enter) -> hard newline
+    def _ptk_newline(event):
+        event.current_buffer.insert_text("\n")
+
+    def _ptk_continuation(width, line_number, is_soft_wrap):
+        """Gutter for continuation lines of a multiline entry — a dim `·` aligned under the `»`."""
+        return [("class:prompt.cont", "· ".rjust(width))] if not is_soft_wrap else ""
+
     _ptk_session = None  # one PromptSession for the process -> free line history across turns
 
 
 def prompt(command_meta=None) -> str:
     """Read the `»` input line. With prompt_toolkit and a `command_meta` list of `(token, summary)`
-    pairs, a typed `/command` is highlighted live (valid=cyan, typo=red) and Tab completes the
-    leading `/command` token — the highlight set is derived from the same tokens. Without it, falls
-    back to rich/plain input. Returns the raw line (slash-command detection happens upstream)."""
+    pairs, a typed `/command` is highlighted live (valid=cyan, typo=red), Tab completes the leading
+    `/command` token or an `@path` mention, and the line is multiline (Enter submits, Alt+Enter adds
+    a newline — so pasted/multi-paragraph input survives). Without prompt_toolkit, falls back to
+    rich/plain input. Returns the raw line (slash-command + @mention handling happen upstream)."""
     _live_stop()  # never read a line under an active Live (also clears a bar left by an error)
     if _PTK and command_meta is not None:
         global _ptk_session
@@ -941,6 +1015,9 @@ def prompt(command_meta=None) -> str:
             style=_PTK_STYLE,
             completer=_CommandCompleter(command_meta),
             complete_while_typing=False,  # Tab-triggered, so the menu never fights live typing
+            multiline=True,
+            key_bindings=_PTK_KB,
+            prompt_continuation=_ptk_continuation,
         )
     if _RICH:
         return _console.input(f"[bold {_ACCENT}]»[/] ")
@@ -1014,6 +1091,14 @@ def show_node(node: str, delta: dict | None = None) -> None:
     if used > 0:
         _status["ctx_used"] = used
     _status["node"] = node
+
+    # The synthesize node's output IS the answer — it's streamed/printed by ResponseStream (or
+    # `response`), so it gets no rail line of its own (that line used to land between the response
+    # rule and the streamed answer). Its metrics above still feed the live bar + the post-turn
+    # receipt, and the /trace replay still renders it as a node.
+    if node == "synthesize":
+        _live_refresh()
+        return
 
     # Per-node trace row: `│ ✓ node  elapsed  metrics` (metrics dim). The metric annotations are
     # built from the delta by the shared _node_line helper (the live trace + the /trace replay
@@ -1094,6 +1179,27 @@ def _render_tool_events(events: list[dict], *, always_show_results: bool = False
 _MSG_ROLE = {"AIMessage": "ai", "HumanMessage": "in", "SystemMessage": "sys"}
 
 
+def _msg_kind_content(m) -> tuple[str, str]:
+    """Normalize one delta message to `(kind, content)` — handling BOTH forms it can take:
+      - a live LangChain message OBJECT (the live trace: `delta["messages"]` straight off the
+        graph), or
+      - the trace DB's pre-serialized `"AIMessage: <text> [tool_calls: ...]"` STRING (the /trace
+        replay: deltas are JSON, and `stores.trace._json_default` flattened each message to a string).
+    Returning the same `(kind, content)` for both keeps the live and replay rendering identical.
+    The object branch mirrors `_json_default`'s format (content + a `[tool_calls: …]` suffix) so a
+    content-less tool-calling turn still records WHAT the agent decided."""
+    if not isinstance(m, str):
+        kind = type(m).__name__
+        content = str(getattr(m, "content", "") or "")
+        calls = getattr(m, "tool_calls", None)
+        if calls:
+            names = ", ".join(c.get("name", "?") for c in calls)
+            content = (content + " " if content else "") + f"[tool_calls: {names}]"
+        return kind, content
+    kind, _, content = m.partition(": ")
+    return kind.strip(), content
+
+
 def _emit_message_leaf(label: str, text: str) -> None:
     """One message/reasoning leaf under a node row: `└ <role>  <wrapped text>`, hanging-indented
     under the rail so a long thought stays inside the trace gutter. Dim — it's narrative, not the
@@ -1113,23 +1219,50 @@ def _emit_message_leaf(label: str, text: str) -> None:
             print(f"  {_RAIL_GLYPH} {head if i == 0 else rest}{ln}")
 
 
-def _render_trace_messages(node: str, delta: dict) -> None:
+def _render_trace_messages(node: str, delta: dict, max_chars: int | None = None) -> None:
     """Render the messages a node ADDED — chiefly the agent's reasoning text and its tool-call
-    decisions — as dim leaves under its trace row. This is the piece the live trace and the
-    default tool tree never surface, and what turns the /trace replay from a reprint of the answer
-    into a real execution log. ToolMessages are skipped (the tool sub-tree already carries their
-    output) and the synthesize node's message is skipped (it's the final answer, shown once in the
-    response section below)."""
+    decisions — as dim leaves under its trace row. This is the piece the default tool tree never
+    surfaces, and what turns the /trace replay from a reprint of the answer into a real execution
+    log. ToolMessages are skipped (the tool sub-tree already carries their output) and the
+    synthesize node's message is skipped (it's the final answer, shown once in the response section
+    below). Used by BOTH the /trace replay (full fidelity, `max_chars=None`) and the live trace
+    (`show_reasoning`, a bounded preview) — `_msg_kind_content` normalizes the two message forms so
+    they render identically. `max_chars` clips each leaf to a preview (the full text lives in the
+    /trace replay)."""
     if node == "synthesize":
         return
     for m in (delta.get("messages") or []):
-        kind, _, content = str(m).partition(": ")
+        kind, content = _msg_kind_content(m)
         if "ToolMessage" in kind:
             continue
         content = " ".join(content.split())  # collapse to a compact one-block preview
         if not content:
             continue
-        _emit_message_leaf(_MSG_ROLE.get(kind.strip(), kind.strip().lower() or "msg"), content)
+        if max_chars and len(content) > max_chars:
+            content = content[: max_chars - 1] + "…"
+        _emit_message_leaf(_MSG_ROLE.get(kind, kind.lower() or "msg"), content)
+
+
+# Live-trace reasoning preview cap. The agent's between-tool reasoning can run long (a thinking
+# model especially), so live we show a bounded preview — enough to read the model's intent without
+# flooding the rail; the full text is always in the /trace replay. Lifted at "verbose".
+_LIVE_REASONING_CAP = 500
+
+
+def show_reasoning(node: str, delta: dict | None = None) -> None:
+    """Live counterpart to the /trace replay's reasoning leaves: render the agent's between-tool
+    reasoning (and its tool-call decision) under the node's trace row, as it happens — the
+    "show me the thinking" detail the live rail otherwise omits until you open /trace. Shown at
+    normal verbosity as a bounded preview (_LIVE_REASONING_CAP) and in full at "verbose"; skipped
+    for nodes that print no rail row (synthesize, plan_gate, and the folded plumbing nodes) so a
+    leaf never dangles under a row that isn't there. The caller only invokes this when show_ui is
+    on, so `/verbose off` (trace hidden) suppresses it for free."""
+    if node in ("synthesize", "plan_gate"):
+        return
+    if node in _FOLD_NODES and _VERBOSITY != "verbose":
+        return
+    cap = None if _VERBOSITY == "verbose" else _LIVE_REASONING_CAP
+    _render_trace_messages(node, delta or {}, max_chars=cap)
 
 
 def _plan_line(step: dict, *, show_tool: bool) -> "Text | str":
@@ -1426,6 +1559,108 @@ def response(text: str) -> None:
         print()
         print("  ╶ " + " · ".join(_turn_summary_parts()))
         print()
+
+
+# ── streaming the final answer ─────────────────────────────────────────────────────
+# The synthesize node streams its answer token-by-token (LangGraph messages mode -> run_turn ->
+# on_token). ResponseStream renders those tokens live, then finishes with the same finished look as
+# `response`. The hard part in a terminal is long output: a growing Live region that outgrows the
+# screen can't be erased cleanly. So during streaming we show a *transient* Live of only the last
+# screenful (a bounded tail — see `_tail`), which always fits and so always erases cleanly; on
+# `finish` we tear that down and render the WHOLE answer once as real markdown (+ the receipt). The
+# permanent scrollback record is that final rendered block, not the transient tail. Without rich we
+# just type the raw tokens out incrementally. If the model yields no tokens, `started` stays False
+# and the caller renders via `response` instead.
+class ResponseStream:
+    def __init__(self) -> None:
+        self._chars: list[str] = []
+        self._live = None
+        self._started = False
+        self._last = 0.0  # last repaint time (throttle)
+
+    @property
+    def started(self) -> bool:
+        return self._started
+
+    def feed(self, text: str) -> None:
+        """Append a streamed answer token; opens the response section on the first one."""
+        if not text:
+            return
+        if not self._started:
+            self._begin()
+        self._chars.append(text)
+        if self._live is not None:
+            now = time.perf_counter()
+            if now - self._last >= 0.06:  # throttle (~16/s) so granular tokens don't thrash the live
+                self._live.update(self._tail(), refresh=True)
+                self._last = now
+        else:  # plain (no-rich) path: just type it out
+            print(text, end="", flush=True)
+
+    def _begin(self) -> None:
+        self._started = True
+        _live_stop()  # drop the turn's status bar — the answer takes over the bottom of the screen
+        if _RICH:
+            _console.print()  # part the answer from the trace rail above it
+            rule = Text()
+            rule.append("  ── ", style=_DIM)
+            rule.append("response", style=f"bold {_ACCENT}")
+            rule.append(" " + "─" * 40, style=_DIM)
+            _console.print(rule)
+            _console.print()
+            # transient + a screen-bounded tail => the live region always fits, so stop() erases it
+            # cleanly no matter how long the answer runs. Manual refresh (throttled in feed).
+            self._live = Live(console=_console, transient=True, auto_refresh=False)
+            self._live.start()
+        else:
+            print()
+            print("  ── response " + "─" * 36)
+            print()
+
+    def _tail(self) -> "Text":
+        """The last screenful of the answer-so-far as plain Text. Bounded by a character budget
+        (rows × width) rather than a line count, so even one long unwrapped paragraph can't push the
+        live region past the screen height (which would break the transient erase)."""
+        rows = max(4, (_console.size.height or 24) - 6)
+        width = max(20, (_console.size.width or 80) - 4)
+        tail = "".join(self._chars)[-(rows * width):]
+        t = Text()
+        for i, ln in enumerate(tail.split("\n")):
+            if i:
+                t.append("\n")
+            t.append("  ")
+            t.append(ln)
+        return t
+
+    def finish(self) -> None:
+        """Close out a successful turn: tear down the live tail, render the full answer once as
+        markdown, then the one-line receipt. Mirrors `response`'s final look exactly."""
+        text = "".join(self._chars)
+        if self._live is not None:
+            self._live.stop()  # transient: erases the streaming tail
+            self._live = None
+        if _RICH:
+            try:
+                _console.print(Markdown(text))
+            except Exception:
+                _console.print(text, markup=False)
+            _console.print()
+            _console.print(Text("  ╶ " + " · ".join(_turn_summary_parts()), style=_DIM))
+            _console.print()
+        else:
+            print()  # close the typed-out line
+            print("  ╶ " + " · ".join(_turn_summary_parts()))
+            print()
+
+    def abort(self) -> None:
+        """Tear down the live tail without a final render — a failed/cancelled turn. The transient
+        Live erases the partial text; the caller surfaces the error (`warn`) separately."""
+        if self._live is not None:
+            try:
+                self._live.stop()
+            except Exception:
+                pass
+            self._live = None
 
 
 # ── system metrics display ───────────────────────────────────────────────────────
@@ -1726,6 +1961,18 @@ def ask(prompt_text: str) -> str:
 
 
 # ── log lines (startup notices, warnings) ────────────────────────────────────────
+def note(msg: str) -> None:
+    """A quiet informational line (dim) — e.g. the `@file` attachment notice. Distinct from
+    `warn` (yellow), which flags a problem; a note is just neutral context."""
+    if _RICH:
+        t = Text()
+        t.append("  · ", style=_DIM)
+        t.append(msg, style=_DIM)
+        _console.print(t)
+    else:
+        print(f"  · {msg}")
+
+
 def warn(msg: str) -> None:
     if _RICH:
         t = Text()

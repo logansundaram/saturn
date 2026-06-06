@@ -11,12 +11,12 @@ for searching a large memory or confirming a specific detail.
 import time
 import diag
 
-from langchain.tools import tool
+from toolspec import register_tool
 
 from stores.memory_registry import add_memory, search_memory
 
 
-@tool
+@register_tool("side_effecting")
 def remember(fact: str, category: str = "general"):
     """Save a durable fact about the user or their preferences to persistent memory so it is
     remembered in future sessions. Use this when the user shares a lasting preference, a fact
@@ -31,7 +31,7 @@ def remember(fact: str, category: str = "general"):
         diag.log(f"remember : {time.perf_counter() - start:.4f}s")
 
 
-@tool
+@register_tool("read_only")
 def recall(query: str = ""):
     """Retrieve durable facts previously saved to persistent memory about the user or their
     preferences. `query` filters to matching facts (case-insensitive); an empty query returns

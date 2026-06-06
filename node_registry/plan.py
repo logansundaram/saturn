@@ -14,24 +14,31 @@ def plan_node(state: AgentState):
     step rather than aborting the turn — the agent loop can still resolve the request."""
     start = time.perf_counter()
 
-    try:
-        result = get_plan_model().invoke(
-            [
-                planner_sys_msg,
-                HumanMessage(
-                    content="Grounding context:\n"
-                    + state.get("context", "")
-                    + "\n\nUser request:\n"
-                    + state["current_query"]
-                ),
-            ]
-        )
-        plan = steps_to_dicts(result.steps)
-    except Exception as exc:
-        diag.log(f"plan_node : structured-output failed ({exc}); using fallback plan")
-        plan = []
+    prompt = [
+        planner_sys_msg,
+        HumanMessage(
+            content="Grounding context:\n"
+            + state.get("context", "")
+            + "\n\nUser request:\n"
+            + state["current_query"]
+        ),
+    ]
+
+    # Small local models (gemma4:e4b, the laptop tier) intermittently emit invalid JSON for the
+    # Plan schema. Sampling differs run to run, so retry once — a second pass frequently parses —
+    # before falling back to a single generic step so the loop can still resolve the request.
+    plan = []
+    for attempt in range(2):
+        try:
+            result = get_plan_model().invoke(prompt)
+            plan = steps_to_dicts(result.steps)
+            if plan:
+                break
+        except Exception as exc:
+            diag.log(f"plan_node : structured-output attempt {attempt + 1} failed ({exc})")
 
     if not plan:
+        diag.log("plan_node : falling back to a single generic step")
         plan = [
             {
                 "step_id": 1,

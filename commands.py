@@ -47,6 +47,10 @@ class CommandContext:
     show_ui: bool = True
     auto_approve: bool = False
     should_quit: bool = False
+    # ISO timestamp of when THIS process's REPL started — the session boundary for /cost (runs in
+    # the trace DB started at/after this belong to the current session). Empty -> /cost spans all
+    # recorded runs. Set once when agent.py builds the context.
+    session_started_at: str = ""
     # Persistent plan-review mode: when on, every turn pauses at the first plan_gate so the plan can
     # be vetted/edited before any execution (see /plan review). Armed each turn in agent.py's loop.
     review_plan: bool = False
@@ -256,6 +260,11 @@ Example:
 """,
 )
 def _quit(ctx: CommandContext, args: list[str]) -> None:
+    # Autosave the conversation so /resume can restore it next launch (best-effort — never blocks
+    # the quit). The per-turn hook in agent.py usually has this current already; saving here too
+    # covers a quit issued right after a state-swapping command (e.g. /load).
+    if write_autosave(ctx.state):
+        _print("  session autosaved — type /resume next launch to continue.")
     ctx.should_quit = True
 
 
@@ -1110,6 +1119,147 @@ def _calls(ctx: CommandContext, args: list[str]) -> None:
         _print(f"             -> {out}" if out else "             -> (no output)")
 
 
+def _fmt_secs(s: float) -> str:
+    """Compact wall-clock: 8.4s, 1m23s, 2h05m."""
+    if s < 60:
+        return f"{s:.1f}s"
+    m, sec = divmod(int(round(s)), 60)
+    if m < 60:
+        return f"{m}m{sec:02d}s"
+    h, m = divmod(m, 60)
+    return f"{h}h{m:02d}m"
+
+
+def _fmt_count(n: int) -> str:
+    """Compact integer: 980, 1.8k, 2.34M."""
+    if n < 1000:
+        return str(int(n))
+    if n < 1_000_000:
+        return f"{n / 1000:.1f}k"
+    return f"{n / 1_000_000:.2f}M"
+
+
+@command(
+    "cost",
+    "Session totals: turns, time, tokens, tools.",
+    aliases=("session", "usage"),
+    usage="/cost [--all]",
+    details="""
+Cumulative accounting for the current session: how many turns you've run, total + average wall
+time, the slowest turn, total agent iterations and tool calls, and the prompt tokens processed
+(with the peak context fill reached). The per-turn receipt under each answer shows one turn; this
+is the running total across the whole session.
+
+The numbers are aggregated from the trace database (database/db.sqlite), so they're exact and
+survive /reset (which clears the in-memory conversation, not the trace). By default the scope is
+THIS session (runs started since the process launched); pass --all to total every recorded run
+across all past sessions.
+
+"prompt tok processed" sums the prompt tokens ingested across every LLM call this session (agent
+passes + synthesis) — the bulk of local-model cost; output tokens aren't separately recorded. Only
+Ollama models report token counts, so this reads 0 on providers that don't.
+
+Examples:
+  /cost        this session's totals
+  /cost --all  every recorded run, all sessions
+""",
+)
+def _cost(ctx: CommandContext, args: list[str]) -> None:
+    import json
+    import sqlite3
+    from datetime import datetime
+
+    all_time = any(a.lower() in ("--all", "-a", "all") for a in args)
+    scope = "" if all_time else (ctx.session_started_at or "")
+
+    conn = sqlite3.connect(ctx.db_path)
+    try:
+        if scope:
+            runs = conn.execute(
+                "SELECT run_id, query, started_at, ended_at, status FROM runs "
+                "WHERE started_at >= ? ORDER BY run_id",
+                (scope,),
+            ).fetchall()
+        else:
+            runs = conn.execute(
+                "SELECT run_id, query, started_at, ended_at, status FROM runs ORDER BY run_id"
+            ).fetchall()
+        if not runs:
+            _print("  (no runs recorded yet this session)" if scope
+                   else "  (no runs recorded yet)")
+            return
+        # Events carry the per-turn token/tool/iteration detail in their JSON deltas. Run_ids are
+        # contiguous AUTOINCREMENT and the session is a tail, so `run_id >= first` selects exactly
+        # this scope's events without an IN-list (which has a 999-variable limit on long sessions).
+        ev_rows = conn.execute(
+            "SELECT run_id, data FROM events WHERE run_id >= ?", (runs[0][0],)
+        ).fetchall()
+    finally:
+        conn.close()
+
+    def _parse(ts):
+        try:
+            return datetime.fromisoformat(ts) if ts else None
+        except (TypeError, ValueError):
+            return None
+
+    # --- runs: wall time, status mix, slowest turn ---
+    total_wall = 0.0
+    timed = 0
+    slowest = (0.0, "")  # (seconds, query)
+    status_mix = {"ok": 0, "error": 0, "interrupted": 0, "other": 0}
+    for _rid, query, started_at, ended_at, status in runs:
+        s, e = _parse(started_at), _parse(ended_at)
+        if s and e:
+            secs = (e - s).total_seconds()
+            total_wall += secs
+            timed += 1
+            if secs > slowest[0]:
+                slowest = (secs, query or "")
+        status_mix[status if status in status_mix else "other"] += 1
+
+    # --- events: iterations, tool calls, prompt tokens, peak context ---
+    total_tools = 0
+    total_prompt_tokens = 0
+    peak_ctx = 0
+    max_iter = {}  # run_id -> highest iteration seen (= that turn's pass count)
+    for run_id, data in ev_rows:
+        try:
+            delta = json.loads(data or "{}")
+        except (json.JSONDecodeError, TypeError):
+            continue
+        total_tools += len(delta.get("tools_called") or [])
+        ct = delta.get("context_tokens") or 0
+        if ct:
+            total_prompt_tokens += ct
+            peak_ctx = max(peak_ctx, ct)
+        if "iteration" in delta:
+            max_iter[run_id] = max(max_iter.get(run_id, 0), delta["iteration"] or 0)
+    total_iters = sum(max_iter.values())
+
+    turns = len(runs)
+    avg = total_wall / timed if timed else 0.0
+    mix = " · ".join(f"{v} {k}" for k, v in status_mix.items() if v)
+
+    _print("")
+    _print(f"  session totals — {turns} turn{'' if turns == 1 else 's'}"
+           + ("" if scope else "  (all recorded runs)"))
+    _print(f"    turns        {turns}" + (f"   ({mix})" if mix else ""))
+    if timed:
+        _print(f"    wall time    {_fmt_secs(total_wall)}   "
+               f"(avg {_fmt_secs(avg)}/turn)")
+    _print(f"    iterations   {total_iters}")
+    _print(f"    tool calls   {total_tools}")
+    _print(f"    prompt tok   {_fmt_count(total_prompt_tokens)} processed"
+           + (f"   (peak ctx {_fmt_count(peak_ctx)})" if peak_ctx else ""))
+    if slowest[0]:
+        q = " ".join(str(slowest[1]).split())
+        if len(q) > 48:
+            q = q[:47] + "…"
+        _print(f"    slowest      {_fmt_secs(slowest[0])}  \"{q}\"")
+    _print("")
+
+
 _RISK_TIERS = ("read_only", "side_effecting", "destructive")
 
 
@@ -1283,8 +1433,73 @@ def _session_file(name: str) -> Path:
     stem = Path(name).name  # drop any path components a user might type
     if stem.lower().endswith(".json"):
         stem = stem[:-5]
-    stem = _SAFE_NAME.sub("-", stem).strip("-") or "session"
+    # Strip leading/trailing `-`/`_`: a leading underscore is the reserved namespace for internal
+    # slots (e.g. the `_autosave` slot behind /resume), so a user save can never collide with one.
+    stem = _SAFE_NAME.sub("-", stem).strip("-_") or "session"
     return _sessions_dir() / f"{stem}.json"
+
+
+# The reserved slot that autosaves the live conversation (on /quit and after each turn) so
+# /resume can restore the last session. Underscore-prefixed, so it's hidden from /load's listing
+# and unreachable by a user /save name (see _session_file).
+_AUTOSAVE_NAME = "_autosave"
+
+
+def _autosave_file() -> Path:
+    return _sessions_dir() / f"{_AUTOSAVE_NAME}.json"
+
+
+def _session_payload(messages) -> dict:
+    """The on-disk shape shared by /save and the autosave slot."""
+    from datetime import datetime
+    from langchain_core.messages import messages_to_dict
+
+    return {
+        "version": _SESSION_VERSION,
+        "saved_at": datetime.now().isoformat(timespec="seconds"),
+        "messages": messages_to_dict(messages),
+    }
+
+
+def _read_session(path: Path):
+    """Read + validate a session file -> (messages, saved_at). Prints a warning on a version
+    mismatch but still attempts the load. Raises on an unreadable/corrupt file."""
+    import json
+    from langchain_core.messages import messages_from_dict
+
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if payload.get("version") != _SESSION_VERSION:
+        _print(f"  warning: session format v{payload.get('version')} != v{_SESSION_VERSION}; "
+               "attempting to load anyway.")
+    return messages_from_dict(payload.get("messages", [])), payload.get("saved_at", "?")
+
+
+def _swap_to_messages(ctx: CommandContext, messages) -> None:
+    """Rebuild a fresh state seeded with `messages` (mirrors /reset, which is the only other
+    command that swaps state wholesale). agent.py picks up ctx.state after dispatch."""
+    state = ctx.make_initial_state()
+    state["messages"] = messages
+    ctx.state = state
+
+
+def write_autosave(state: dict) -> bool:
+    """Persist the live conversation to the reserved autosave slot so /resume can restore it after
+    a /quit, crash, or Ctrl-C (the per-turn checkpoints in db.sqlite are pruned, so they can't).
+    Best-effort: a write failure must never break a turn or the quit. Returns True if it wrote."""
+    import json
+    import diag
+
+    messages = (state or {}).get("messages", [])
+    if not messages:
+        return False
+    try:
+        _autosave_file().write_text(
+            json.dumps(_session_payload(messages), indent=2), encoding="utf-8"
+        )
+        return True
+    except Exception as exc:
+        diag.log(f"autosave failed: {exc}")
+        return False
 
 
 @command(
@@ -1308,7 +1523,6 @@ Examples:
 def _save(ctx: CommandContext, args: list[str]) -> None:
     import json
     from datetime import datetime
-    from langchain_core.messages import messages_to_dict
 
     messages = ctx.state.get("messages", [])
     if not messages:
@@ -1318,12 +1532,7 @@ def _save(ctx: CommandContext, args: list[str]) -> None:
     name = " ".join(args) if args else "session-" + datetime.now().strftime("%Y%m%d-%H%M%S")
     path = _session_file(name)
     existed = path.exists()
-    payload = {
-        "version": _SESSION_VERSION,
-        "saved_at": datetime.now().isoformat(timespec="seconds"),
-        "messages": messages_to_dict(messages),
-    }
-    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    path.write_text(json.dumps(_session_payload(messages), indent=2), encoding="utf-8")
     note = " (overwrote existing)" if existed else ""
     _print(f"  saved {len(messages)} message(s) -> {path.name}{note}")
     _print(f"  restore it with /load {path.stem}")
@@ -1347,11 +1556,9 @@ Examples:
 """,
 )
 def _load(ctx: CommandContext, args: list[str]) -> None:
-    import json
-    from langchain_core.messages import messages_from_dict
-
     if not args:
-        files = sorted(_sessions_dir().glob("*.json"))
+        # Underscore-prefixed files are reserved internal slots (the /resume autosave) — hide them.
+        files = sorted(f for f in _sessions_dir().glob("*.json") if not f.stem.startswith("_"))
         if not files:
             _print("  no saved sessions yet — use /save [name] first.")
             return
@@ -1366,20 +1573,44 @@ def _load(ctx: CommandContext, args: list[str]) -> None:
         _print(f"  no saved session named {path.stem!r} (run /load with no args to list).")
         return
 
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    if payload.get("version") != _SESSION_VERSION:
-        _print(f"  warning: session format v{payload.get('version')} != v{_SESSION_VERSION}; "
-               "attempting to load anyway.")
-    messages = messages_from_dict(payload.get("messages", []))
-
-    # Fresh state seeded with the restored history — mirrors /reset, which is the only other
-    # command that swaps state wholesale. agent.py picks up ctx.state after dispatch.
-    state = ctx.make_initial_state()
-    state["messages"] = messages
-    ctx.state = state
-    saved_at = payload.get("saved_at", "?")
+    messages, saved_at = _read_session(path)
+    _swap_to_messages(ctx, messages)
     _print(f"  loaded {len(messages)} message(s) from {path.name} (saved {saved_at}).")
     _print("  fresh state — conversation history restored.")
+
+
+@command(
+    "resume",
+    "Resume your most recent session (autosaved on quit / each turn).",
+    aliases=("continue",),
+    usage="/resume",
+    details="""
+Restores the last conversation from the autosave slot, so you can pick up where you left off
+across restarts. Unlike /load, it needs no explicit /save: the live conversation is autosaved to a
+reserved slot on /quit and after every turn (the per-turn db.sqlite checkpoints are pruned, so this
+slot is what survives a quit, crash, or Ctrl-C).
+
+Like /load, it rebuilds a fresh state seeded with the restored messages — config, model bindings,
+and the RAG corpus are untouched. Typically the first thing you type in a new session.
+
+Example:
+  /resume               continue your previous session
+""",
+)
+def _resume(ctx: CommandContext, args: list[str]) -> None:
+    path = _autosave_file()
+    if not path.exists():
+        _print("  no previous session to resume — nothing has been autosaved yet.")
+        _print("  (a session autosaves on /quit and after each turn; or use /save then /load.)")
+        return
+
+    messages, saved_at = _read_session(path)
+    if not messages:
+        _print("  the autosaved session is empty — nothing to resume.")
+        return
+    _swap_to_messages(ctx, messages)
+    _print(f"  resumed {len(messages)} message(s) from your last session (saved {saved_at}).")
+    _print("  conversation history restored — continue where you left off.")
 
 
 def _config_keys(ctx: CommandContext, args: list[str]) -> None:

@@ -1,0 +1,31 @@
+# Ayush Mishra - UMD Student Profile
+
+## Personal Information
+- **Name:** Ayush Mishra
+- **Institution:** University of Maryland, College Park
+- **Program:** Computer Science + Computer and Computational and Information Justice Policy (CS + CCJS)
+- **School:** Honors College
+- **Location:** College Park, Maryland, United States
+
+## Education
+- **University:** University of Maryland
+- **Enrollment Period:** 2023 - 2027
+
+## Experience
+- **Position:** Software Engineer Intern
+- **Company:** Veteran Technology Leaders, LLC (VTL)
+- **Duration:** March 2025 - Present
+
+## Academic Focus
+- **Interests:** Computer Science, Computer and Computational and Information Justice Policy
+- **College:** Honors College
+- **Major:** CS + CCJS (Computer Science + Computer and Computational and Information Justice Policy)
+
+## Professional Profile
+Ayush Mishra is a Computer Science undergraduate student at the University of Maryland, specializing in the intersection of computer science with information justice and policy. Currently pursuing his degree through the Honors College, he has gained practical experience as a Software Engineer Intern at VTL, a company focused on serving veterans and military personnel.
+
+His profile reflects a multidisciplinary approach, combining technical computer science skills with social justice and policy considerations - a valuable combination in modern technology development.
+
+---
+*Research compiled from public LinkedIn and educational institution sources*
+*Last Updated: 2025*

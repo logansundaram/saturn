@@ -11,6 +11,8 @@ import sqlite3
 import uuid
 from datetime import datetime
 
+__version__ = "0.1.0"
+
 from langgraph.graph import StateGraph, START, END
 from langgraph.types import Command
 from langgraph.checkpoint.sqlite import SqliteSaver
@@ -346,12 +348,14 @@ def main():
       -p / --prompt QUERY   Run one query headlessly, print the answer to stdout, and exit.
                             No TUI, no interactive prompts; all tool calls auto-approved.
                             Compatible with `saturn -p "..."` and shell pipelines.
+      --version             Print the version and exit.
     """
     import argparse
 
     _parser = argparse.ArgumentParser(prog="saturn", add_help=False)
     _parser.add_argument("-p", "--prompt", metavar="QUERY", default=None,
                          help="Run a single query headlessly and print the answer to stdout.")
+    _parser.add_argument("--version", action="version", version=f"saturn {__version__}")
     _args, _ = _parser.parse_known_args()
 
     # The slow startup loading (knowledge-base ingest + graph build) runs while the ring art

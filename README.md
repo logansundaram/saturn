@@ -70,6 +70,33 @@ execution.
 
 ## Getting started
 
+### Quick install (recommended)
+
+One command. It installs [Ollama](https://ollama.com) if needed, clones Saturn into `~/.saturday`
+in an isolated virtualenv, pulls the small local models, and puts a `saturn` command on your PATH.
+
+```bash
+# macOS / Linux / WSL2
+curl -fsSL https://raw.githubusercontent.com/logansundaram/saturn/main/install.sh | sh
+```
+
+```powershell
+# Windows (PowerShell)
+irm https://raw.githubusercontent.com/logansundaram/saturn/main/install.ps1 | iex
+```
+
+Then open a new terminal and run `saturn`. The first run pulls a few GB of models, so it takes a
+minute. Prefer to read before you pipe? Both scripts are plain text at the URLs above — download
+and inspect first.
+
+The installer defaults to the lightweight **`laptop`** tier (`gemma4:e4b`); switch to a bigger
+tier anytime with `/models`, or set `SATURDAY_TIER=workstation` before installing. Other knobs:
+`SATURDAY_HOME` (install dir), `SATURDAY_MODELS` (models to pull), `SATURDAY_BRANCH`.
+
+> Prefer to set it up by hand, or hacking on Saturn itself? Use the **Manual install** below.
+
+### Manual install (from source)
+
 ### 1. Prerequisites
 
 - **Python 3.11+**

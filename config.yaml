@@ -95,12 +95,12 @@ tiers:
   laptop:
     provider: ollama
     roles:
-      planner: gemma4:e4b
-      tool_caller: gemma4:e4b
-      synthesizer: gemma4:e4b
-      utility: gemma4:e4b
-      judge: gemma4:e4b
-    embedder: qwen3-embedding:8b
+      planner: gemma4:e2b
+      tool_caller: gemma4:e2b
+      synthesizer: gemma4:e2b
+      utility: gemma4:e2b
+      judge: gemma4:e2b
+    embedder: qwen3-embedding:4b
 
   # The machine this repo runs on today. All roles share qwen3.5:9b — a capable ~9B local
   # model with reliable native tool-calling + structured output, which the living-plan loop
@@ -135,6 +135,11 @@ tiers:
 # defaults in config.py (tools + structured output assumed true, vision false).
 # ---------------------------------------------------------------------------
 capabilities:
+  "gemma4:e2b":
+    supports_tools: true
+    supports_structured_output: true
+    context_window: 8192
+    supports_vision: false
   "gemma4:e4b":
     supports_tools: true
     supports_structured_output: true

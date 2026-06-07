@@ -22,6 +22,9 @@ database/db.sqlite-shm
 # First-run setup sentinel — runtime state written on first launch; not source.
 database/.setup_done
 
+# Autosaved session (the /resume slot) - rewritten every turn; runtime state, not source.
+database/sessions/_autosave.json
+
 # Model cache
 models/
 ollama/

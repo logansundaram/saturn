@@ -11,6 +11,8 @@ import sqlite3
 import uuid
 from datetime import datetime
 
+__version__ = "0.1.0"
+
 from langgraph.graph import StateGraph, START, END
 from langgraph.types import Command
 from langgraph.checkpoint.sqlite import SqliteSaver
@@ -139,6 +141,10 @@ def run_turn(graph, payload, config, approver, on_update=None, pause=None, on_to
     while True:
         if pause is not None:
             pause.start()
+        # Buffer synthesize tokens so the rail line (with full metrics from the node delta) can
+        # print before the response section opens. The update event is guaranteed to arrive after
+        # all message chunks for the same node, so flushing on the update preserves ordering.
+        _synth_buf: list[str] = []
         try:
             for mode, data in graph.stream(pending, config, stream_mode=["updates", "messages"]):
                 if mode == "messages":
@@ -155,7 +161,7 @@ def run_turn(graph, payload, config, approver, on_update=None, pause=None, on_to
                     ):
                         text = getattr(message_chunk, "content", "")
                         if text:
-                            on_token(text if isinstance(text, str) else str(text))
+                            _synth_buf.append(text if isinstance(text, str) else str(text))
                     continue
                 # mode == "updates"
                 if "__interrupt__" in data:
@@ -163,6 +169,10 @@ def run_turn(graph, payload, config, approver, on_update=None, pause=None, on_to
                 for node, delta in data.items():
                     if on_update:
                         on_update(node, delta or {})
+                    if node == "synthesize" and on_token and _synth_buf:
+                        for tok in _synth_buf:
+                            on_token(tok)
+                        _synth_buf.clear()
         finally:
             if pause is not None:
                 pause.stop()  # never leave the watcher live across the input() below
@@ -332,10 +342,24 @@ def _initial_state() -> AgentState:
 
 
 def main():
-    """CLI entry point: ingest the knowledge base, build the graph, run the REPL loop."""
+    """CLI entry point: ingest the knowledge base, build the graph, run the REPL loop.
+
+    Flags:
+      -p / --prompt QUERY   Run one query headlessly, print the answer to stdout, and exit.
+                            No TUI, no interactive prompts; all tool calls auto-approved.
+                            Compatible with `saturn -p "..."` and shell pipelines.
+      --version             Print the version and exit.
+    """
+    import argparse
+
+    _parser = argparse.ArgumentParser(prog="saturn", add_help=False)
+    _parser.add_argument("-p", "--prompt", metavar="QUERY", default=None,
+                         help="Run a single query headlessly and print the answer to stdout.")
+    _parser.add_argument("--version", action="version", version=f"saturn {__version__}")
+    _args, _ = _parser.parse_known_args()
 
     # The slow startup loading (knowledge-base ingest + graph build) runs while the ring art
-    # animates, so the splash keeps drawing itself out until everything is ready.
+    # animates in interactive mode, or directly (no TUI) in headless mode.
     def _startup_load():
         warn = None
         # Reconcile the knowledge base against the disk cache at startup: only new/changed
@@ -347,6 +371,43 @@ def main():
             warn = f"knowledge-base ingest failed, continuing without RAG: {exc}"
         return build_agent(), warn
 
+    # --- headless path: one query, print answer, exit ---------------------------------
+    if _args.prompt:
+        graph, ingest_warning = _startup_load()
+        if ingest_warning:
+            print(ingest_warning, file=sys.stderr)
+        tracer = Tracer(DB_PATH)
+        state = _initial_state()
+        state = _fresh_turn(state, _args.prompt)
+        thread_id = str(uuid.uuid4())
+        run_id = tracer.start_run(thread_id, _args.prompt)
+        config = {
+            "configurable": {"thread_id": thread_id},
+            "callbacks": [tracer.llm_handler(run_id)],
+        }
+        try:
+            state = run_turn(
+                graph,
+                state,
+                config,
+                approver=lambda _v: True,  # auto-approve: no interactive gates in headless mode
+                on_update=_make_on_update(tracer, run_id, show_ui=False),
+            )
+            answer = state["messages"][-1].content
+            tracer.end_run(run_id, "ok", answer)
+            print(answer)
+        except Exception as exc:
+            tracer.end_run(run_id, "error", str(exc))
+            print(f"error: {exc}", file=sys.stderr)
+            sys.exit(1)
+        finally:
+            try:
+                graph.checkpointer.delete_thread(thread_id)
+            except Exception:
+                pass
+        return
+
+    # --- interactive path -------------------------------------------------------------
     graph, ingest_warning = ui.splash(
         _startup_load
     )  # ring-and-planet art over the load
@@ -380,6 +441,24 @@ def main():
         db_path=DB_PATH,
         session_started_at=datetime.now().isoformat(),  # session boundary for /cost
     )
+
+    # First-run setup check: if the sentinel hasn't been written yet, auto-run /config setup so a
+    # fresh install surfaces any gaps (Ollama down, models not pulled, keys missing) before the
+    # user's first query, rather than as a confusing turn failure. Non-fatal: a dispatch error
+    # mustn't prevent the REPL from starting. The sentinel lives in the database directory so
+    # deleting the database also resets first-run (a full reinstall should re-check).
+    _setup_sentinel = get_config().path("database") / ".setup_done"
+    if not _setup_sentinel.exists():
+        ui.note("First launch — running /config setup (won't repeat; re-run any time with /config setup).")
+        try:
+            commands.dispatch("/config setup", cmd_ctx)
+        except Exception as exc:
+            ui.warn(f"/config setup failed: {exc}")
+        try:
+            _setup_sentinel.parent.mkdir(parents=True, exist_ok=True)
+            _setup_sentinel.touch()
+        except Exception as exc:
+            diag.log(f"first-run sentinel write failed: {exc}")
 
     # One input reader for the session. While a turn runs it captures type-ahead so the user can
     # queue follow-up queries / slash commands without waiting (drained between turns below). The Esc
@@ -436,8 +515,15 @@ def main():
         # Fresh thread per turn: gives the interrupts a stable thread to pause/resume on,
         # while cross-turn memory rides on the manually-carried `messages`.
         thread_id = str(uuid.uuid4())
-        config = {"configurable": {"thread_id": thread_id}}
         run_id = tracer.start_run(thread_id, user_input)
+        # Attach the LLM-call tracer as a run-scoped callback: it captures every model call's input
+        # messages + output (across all nodes) into the trace DB, surfaced by `/trace invoke`.
+        # Callbacks in the config propagate into the nested model.invoke()/stream() calls via
+        # LangChain's contextvars — the same propagation the token stream above already relies on.
+        config = {
+            "configurable": {"thread_id": thread_id},
+            "callbacks": [tracer.llm_handler(run_id)],
+        }
         ui.reset_turn()  # reset node-timing + plan-diff state for this turn's trace
         # Renders the synthesize node's answer token-by-token as it streams (on_token below). It
         # opens the response section on the first token and is finished (or aborted) after the turn.

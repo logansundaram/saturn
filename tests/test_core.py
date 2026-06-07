@@ -330,6 +330,121 @@ def test_write_diff_overwrite_shows_delete_and_add():
         p.unlink()
 
 
+# --- config.persist: surgical YAML edit keeps comments + round-trips, fails safe ---------------
+def test_set_yaml_scalar_replaces_value_and_keeps_comments():
+    import yaml
+    from config import _set_yaml_scalar, _CONFIG_PATH
+
+    text = _CONFIG_PATH.read_text(encoding="utf-8")
+    out = _set_yaml_scalar(text, "runtime.max_iterations", 12)
+    assert yaml.safe_load(out)["runtime"]["max_iterations"] == 12, "the value is updated on parse"
+    # The change is surgical: only the one line differs, every comment/line else is untouched.
+    a, b = text.splitlines(), out.splitlines()
+    assert len(a) == len(b)
+    diff = [i for i, (x, y) in enumerate(zip(a, b)) if x != y]
+    assert len(diff) == 1, "exactly one line changed"
+    assert b[diff[0]].lstrip().startswith("max_iterations:")
+
+
+def test_set_yaml_scalar_preserves_inline_comment():
+    from config import _set_yaml_scalar
+
+    src = "runtime:\n  num_ctx: null  # the context window comment\n"
+    out = _set_yaml_scalar(src, "runtime.num_ctx", 8192)
+    assert out == "runtime:\n  num_ctx: 8192  # the context window comment\n"
+
+
+def test_set_yaml_scalar_quotes_stringy_values():
+    import yaml
+    from config import _set_yaml_scalar
+
+    src = "web:\n  provider: auto\n"
+    # A value that looks like a bool must round-trip as a string, not True.
+    out = _set_yaml_scalar(src, "web.provider", "true")
+    assert isinstance(yaml.safe_load(out)["web"]["provider"], str)
+
+
+def test_set_yaml_scalar_missing_key_raises():
+    from config import _set_yaml_scalar
+
+    try:
+        _set_yaml_scalar("runtime:\n  max_iterations: 8\n", "runtime.nope", 1)
+    except KeyError:
+        return
+    raise AssertionError("a missing leaf must raise KeyError, not silently no-op")
+
+
+def test_set_yaml_scalar_container_value_raises():
+    from config import _set_yaml_scalar
+
+    try:
+        _set_yaml_scalar("tiers:\n  workstation: x\n", "tiers", {"a": 1})
+    except ValueError:
+        return
+    raise AssertionError("persisting a container must raise ValueError")
+
+
+def test_dump_scalar_renders_yaml_literals():
+    from config import _dump_scalar
+
+    assert _dump_scalar(None) == "null"
+    assert _dump_scalar(True) == "true" and _dump_scalar(False) == "false"
+    assert _dump_scalar(12) == "12"
+    assert _dump_scalar("auto") == "auto"
+    assert _dump_scalar("true").startswith('"'), "a stringy bool gets quoted"
+    assert _dump_scalar("a:b").startswith('"'), "punctuation forces quoting"
+
+
+# --- LLM-call tracing: faithful (de)serialization + durable storage ----------------------------
+def test_trace_msg_to_dict_normalizes_role_and_keeps_toolcalls():
+    from langchain_core.messages import SystemMessage
+    from stores.trace import _msg_to_dict
+
+    d = _msg_to_dict(SystemMessage(content="the context"))
+    assert d["role"] == "system" and d["content"] == "the context"
+    ai = _msg_to_dict(AIMessage(content="", tool_calls=[{"name": "web_search", "args": {"q": "x"}, "id": "1"}]))
+    assert ai["role"] == "ai" and ai["tool_calls"][0]["name"] == "web_search"
+
+
+def test_trace_msg_to_dict_flags_truncation():
+    from langchain_core.messages import HumanMessage as HM
+    from stores.trace import _msg_to_dict, _LLM_MSG_CAP
+
+    d = _msg_to_dict(HM(content="x" * (_LLM_MSG_CAP + 100)))
+    assert len(d["content"]) == _LLM_MSG_CAP and d["truncated"] == _LLM_MSG_CAP + 100
+
+
+def test_trace_llm_output_extracts_content_and_tokens():
+    from langchain_core.outputs import LLMResult, ChatGeneration
+    from stores.trace import _llm_output
+
+    msg = AIMessage(content="hello", usage_metadata={"input_tokens": 12, "output_tokens": 3, "total_tokens": 15})
+    out, ptok, otok = _llm_output(LLMResult(generations=[[ChatGeneration(message=msg)]]))
+    assert out["content"] == "hello" and ptok == 12 and otok == 3
+
+
+def test_tracer_records_and_reads_back_llm_calls():
+    import os
+    import sqlite3
+    import tempfile
+    from stores.trace import Tracer
+
+    db = os.path.join(tempfile.mkdtemp(), "trace.sqlite")
+    t = Tracer(db)
+    rid = t.start_run("thread", "a query")
+    t.log_llm_call(rid, "agent", "qwen3.5:9b", 1.5, 100, 20, "[]", '{"content":"hi"}', "ok")
+    t.log_llm_call(rid, "synthesize", "qwen3.5:9b", 0.4, 50, 8, "[]", '{"content":"done"}', "ok")
+    conn = sqlite3.connect(db)
+    try:
+        rows = conn.execute(
+            "SELECT seq, node, prompt_tokens FROM llm_calls WHERE run_id = ? ORDER BY seq", (rid,)
+        ).fetchall()
+    finally:
+        conn.close()
+    assert [r[0] for r in rows] == [1, 2], "per-run seq increments"
+    assert rows[0][1] == "agent" and rows[1][1] == "synthesize"
+
+
 def _run_standalone():
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     failed = 0

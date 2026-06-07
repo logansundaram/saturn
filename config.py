@@ -10,12 +10,15 @@ Nothing here imports from the rest of the project, so it is safe to import from 
 (no circular-import risk).
 
 Live edits: `set(dotted_key, value)` mutates the in-memory config for the session (used by
-the `/config` slash command). `reload()` re-reads the file from disk. Neither writes back to
-`config.yaml`; persistence is a deliberate non-goal for the MVP.
+the `/config` slash command). `reload()` re-reads the file from disk. `persist(dotted_key)`
+writes a single scalar leaf back to `config.yaml` *in place* — preserving every comment and the
+existing layout — so a `/config … --save` change survives a restart. (A full YAML rewrite would
+shred the heavily-commented file; the surgical line edit keeps it intact.)
 """
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -205,6 +208,84 @@ def _coerce(value: Any) -> Any:
         return float(value)
     except ValueError:
         return value
+
+
+def _dump_scalar(value: Any) -> str:
+    """Render a Python scalar back to its YAML literal for an in-place line edit. Quotes a string
+    only when it would otherwise be misread (empty, leading/trailing space, YAML-significant
+    punctuation, or a word like `true`/`null` that would round-trip as a non-string)."""
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(value)
+    s = str(value)
+    bare_ok = (
+        s
+        and s.strip() == s
+        and not any(c in s for c in ":#{}[],&*!|>%@`\"'")
+        and s.lower() not in ("null", "~", "true", "false", "yes", "no", "on", "off")
+    )
+    if bare_ok:
+        return s
+    return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+# A `key: …` mapping line. Stops the key at the first colon, so a deep quoted key like
+# `"gemma4:e4b":` misparses — harmless, since persist only ever targets the shallow scalar leaves
+# that appear before those blocks (it returns or raises before reaching them).
+_YAML_KEY_LINE = re.compile(r"^(\s*)([^\s#][^:]*):(.*)$")
+
+
+def _set_yaml_scalar(text: str, dotted_key: str, value: Any) -> str:
+    """Return `text` (raw config.yaml) with the scalar at `dotted_key` replaced by `value`,
+    preserving comments, indentation, and every unrelated line. Tracks nesting by indentation so a
+    dotted path resolves to the right leaf. Raises KeyError if the key isn't present as an existing
+    scalar leaf, ValueError if the in-memory value is a container (only scalars are persistable)."""
+    if isinstance(value, (dict, list)):
+        raise ValueError(f"{dotted_key} is a container, not a scalar — edit config.yaml by hand")
+
+    target = dotted_key.split(".")
+    lines = text.splitlines(keepends=True)
+    stack: list[tuple[int, str]] = []  # (indent, key) for the active nesting path
+
+    for i, raw in enumerate(lines):
+        body = raw.rstrip("\n").rstrip("\r")
+        m = _YAML_KEY_LINE.match(body)
+        if not m:
+            continue
+        indent = len(m.group(1))
+        key = m.group(2).strip()
+        after = m.group(3)  # everything past the colon: " value  # comment"
+
+        while stack and stack[-1][0] >= indent:
+            stack.pop()
+        stack.append((indent, key))
+
+        if [k for _, k in stack] != target:
+            continue
+
+        ws = re.match(r"^(\s*)(.*)$", after)
+        sep = ws.group(1) or " "
+        cmt = re.search(r"(\s+#.*)$", ws.group(2))
+        comment = cmt.group(1) if cmt else ""
+        eol = raw[len(body):]  # keep the original line ending (\n / \r\n / none)
+        lines[i] = f"{m.group(1)}{key}:{sep}{_dump_scalar(value)}{comment}{eol}"
+        return "".join(lines)
+
+    raise KeyError(f"{dotted_key} not found in config.yaml as an editable scalar")
+
+
+def persist(dotted_key: str) -> Path:
+    """Write the current in-memory value of `dotted_key` back to config.yaml in place (comments and
+    layout preserved) so it survives a restart. Returns the config path. Covers the scalar leaves a
+    user actually tunes — the runtime knobs, `active_tier`, the web/shell settings, the paths.
+    Deeper structural edits (per-tier role bindings) belong in the file or `/models`."""
+    value = get_config().get(dotted_key)
+    text = _CONFIG_PATH.read_text(encoding="utf-8")
+    _CONFIG_PATH.write_text(_set_yaml_scalar(text, dotted_key, value), encoding="utf-8")
+    return _CONFIG_PATH
 
 
 def _load() -> Config:

@@ -48,7 +48,11 @@ def _recent_exchanges(messages: list) -> str:
     pending_q = None
     for m in messages:
         if isinstance(m, HumanMessage):
-            pending_q = str(m.content).strip()
+            # First unanswered human turn wins, so a mid-turn steering HumanMessage injected after
+            # the real question doesn't overwrite it and get mis-paired with the answer.
+            text = str(m.content).strip()
+            if text and pending_q is None:
+                pending_q = text
         elif isinstance(m, AIMessage) and not getattr(m, "tool_calls", None):
             answer = str(m.content).strip()
             if pending_q and answer:
@@ -73,7 +77,9 @@ def _read_profiles() -> str:
     for name in _PROFILE_FILES:
         path = workspace / name
         if path.exists():
-            text = path.read_text(encoding="utf-8").strip()
+            # errors="replace": a hand-edited cp1252 profile must not raise here — grounding is the
+            # first node, so an uncaught decode error fails every turn with no in-app recovery.
+            text = path.read_text(encoding="utf-8", errors="replace").strip()
             if text:
                 chunks.append(text)
     return "\n\n".join(chunks)

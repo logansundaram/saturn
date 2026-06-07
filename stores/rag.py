@@ -146,7 +146,10 @@ def _load_file_docs(path: Path):
                 )
         full_text = "\n".join(p.extract_text() or "" for p in reader.pages)
     else:
-        full_text = path.read_text(encoding="utf-8")
+        # errors="replace": one undecodable byte in a corpus file must degrade to a marker, not
+        # raise — an uncaught UnicodeDecodeError here aborts sync() and breaks ALL retrieval
+        # (get_vector_store runs sync on first use). Mirrors read_file / mentions.
+        full_text = path.read_text(encoding="utf-8", errors="replace")
         docs.append(Document(page_content=full_text, metadata={"source": source}))
     return source, docs, full_text
 
@@ -228,7 +231,12 @@ def sync_to_config() -> bool:
     """Re-embed the corpus if the configured embedder changed since the store was built. Returns
     True if it re-ingested. Call after a live model/tier change (e.g. /model, /config) so an
     embedder swap takes effect; a no-op when the embedder is unchanged."""
-    if _vector_store is not None and _store_embedder == get_config().embedder_model:
+    # What embedder the cache was built with: the live store's if loaded, else the persisted
+    # index's. Using the on-disk index (rather than forcing a rebuild whenever the store happens to
+    # be unloaded) means an unrelated model rebind doesn't needlessly re-embed the whole corpus when
+    # the embedder is actually unchanged.
+    cached_embedder = _store_embedder if _vector_store is not None else _read_index().get("embedder")
+    if cached_embedder == get_config().embedder_model:
         return False
     sync(force=True)
     return True

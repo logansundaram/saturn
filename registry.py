@@ -16,6 +16,7 @@ from tool_registry.web import web_search, web_extract, deep_research  # noqa: E4
 from tool_registry.files import read_file, write_file, list_directory  # noqa: E402,F401
 from tool_registry.knowledge import search_knowledge_base  # noqa: E402,F401
 from tool_registry.memory import remember, recall  # noqa: E402,F401
+from tool_registry.shell import run_shell  # noqa: E402,F401
 
 # --- collected views (established public names) ---------------------------------------------
 tool = _TOOLS                      # the active tool list (bound to the agent, listed by the planner)

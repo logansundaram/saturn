@@ -102,9 +102,14 @@ def tool_node(state: AgentState):
             ToolMessage(content=clamped, tool_call_id=tool_call["id"], name=name)
         )
         tools_called.append(name)
-        # Pair the result with its call so synthesis can't divorce the value from what it
-        # answers (this is what stops the model recomputing and contradicting the tool).
-        tool_results.append(f"{_fmt_call(name, args)} -> {clamped}")
+        # Retrieval results go to documents_retrieved (synthesize's "Retrieved documents"); every
+        # other tool's result is paired with its call in tool_results ("Tool results") so synthesis
+        # can't divorce the value from what it answers. Keeping retrieval OUT of tool_results avoids
+        # feeding the same passage to the synthesizer twice.
+        if name in RETRIEVAL_TOOLS:
+            documents_retrieved.append(clamped)
+        else:
+            tool_results.append(f"{_fmt_call(name, args)} -> {clamped}")
         # Structured per-call record for the UI's tool-I/O tree (args + result preview + timing).
         tool_events.append(
             {
@@ -115,8 +120,6 @@ def tool_node(state: AgentState):
                 "ok": ok,
             }
         )
-        if name in RETRIEVAL_TOOLS:
-            documents_retrieved.append(clamped)
 
     return {
         "messages": tool_messages,

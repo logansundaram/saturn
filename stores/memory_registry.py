@@ -14,11 +14,22 @@ wrappers over `add_memory` / `search_memory`; the grounding node calls `read_mem
 
 from __future__ import annotations
 
+import os
 import re
 from datetime import date
 from pathlib import Path
 
 from config import get_config
+
+
+def _atomic_write(path: Path, text: str) -> None:
+    """Write durable memory crash-safely: write a sibling temp file, then os.replace (atomic on
+    Windows + POSIX). A crash mid-write leaves the original intact rather than truncating the
+    user's irreplaceable facts."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
 
 _HEADER = (
     "# Saturday — persistent memory\n\n"
@@ -74,10 +85,10 @@ def add_memory(fact: str, category: str = "general") -> str:
     entry = f"- ({date.today()}) {tag}{fact}\n"
 
     if not path.exists():
-        path.write_text(_HEADER + entry, encoding="utf-8")
+        _atomic_write(path, _HEADER + entry)
     else:
         current = path.read_text(encoding="utf-8").rstrip("\n")
-        path.write_text(current + "\n" + entry, encoding="utf-8")
+        _atomic_write(path, current + "\n" + entry)
     return f"Remembered: {fact!r}"
 
 

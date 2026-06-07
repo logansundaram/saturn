@@ -1,0 +1,85 @@
+"""
+Session persistence helpers shared by /save, /load, /resume, and /quit.
+"""
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+_SESSION_VERSION = 1
+_SAFE_NAME = re.compile(r"[^A-Za-z0-9._-]+")
+# Reserved slot that autosaves the live conversation so /resume can restore it.
+# Underscore-prefixed so it's hidden from /load's listing and unreachable by a user /save name.
+_AUTOSAVE_NAME = "_autosave"
+
+
+def _sessions_dir() -> Path:
+    from config import get_config
+    d = get_config().path("sessions")
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _session_file(name: str) -> Path:
+    """Resolve a user-supplied name to a safe `<dir>/<stem>.json` path."""
+    stem = Path(name).name
+    if stem.lower().endswith(".json"):
+        stem = stem[:-5]
+    stem = _SAFE_NAME.sub("-", stem).strip("-_") or "session"
+    return _sessions_dir() / f"{stem}.json"
+
+
+def _autosave_file() -> Path:
+    return _sessions_dir() / f"{_AUTOSAVE_NAME}.json"
+
+
+def _session_payload(messages) -> dict:
+    from datetime import datetime
+    from langchain_core.messages import messages_to_dict
+
+    return {
+        "version": _SESSION_VERSION,
+        "saved_at": datetime.now().isoformat(timespec="seconds"),
+        "messages": messages_to_dict(messages),
+    }
+
+
+def _read_session(path: Path):
+    """Read + validate a session file -> (messages, saved_at)."""
+    import json
+    from langchain_core.messages import messages_from_dict
+    from commands._framework import _print
+
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if payload.get("version") != _SESSION_VERSION:
+        _print(
+            f"  warning: session format v{payload.get('version')} != v{_SESSION_VERSION}; "
+            "attempting to load anyway."
+        )
+    return messages_from_dict(payload.get("messages", [])), payload.get("saved_at", "?")
+
+
+def _swap_to_messages(ctx, messages) -> None:
+    """Rebuild a fresh state seeded with `messages` (mirrors /reset)."""
+    state = ctx.make_initial_state()
+    state["messages"] = messages
+    ctx.state = state
+
+
+def write_autosave(state: dict) -> bool:
+    """Persist the live conversation to the reserved autosave slot so /resume can restore it.
+    Best-effort: a write failure must never break a turn or the quit. Returns True if it wrote."""
+    import json
+    import diag
+
+    messages = (state or {}).get("messages", [])
+    if not messages:
+        return False
+    try:
+        _autosave_file().write_text(
+            json.dumps(_session_payload(messages), indent=2), encoding="utf-8"
+        )
+        return True
+    except Exception as exc:
+        diag.log(f"autosave failed: {exc}")
+        return False

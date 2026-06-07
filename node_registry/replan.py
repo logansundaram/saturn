@@ -32,6 +32,12 @@ from state import AgentState, active_step
 from llms import get_judge_model
 from messages import judge_sys_msg
 from plan_ops import add_step
+from registry import RETRIEVAL_TOOLS
+
+# External-gathering tools: if ANY of these already ran this turn, escalating to a fresh web_search
+# won't rescue the answer — re-searching in circles. The web tools aren't retrieval-flagged (their
+# results aren't recorded as documents), so union them with the retrieval set explicitly.
+_GATHERING_TOOLS = {"web_search", "web_extract", "deep_research"} | set(RETRIEVAL_TOOLS)
 
 
 def _draft_answer(state: AgentState) -> str:
@@ -51,7 +57,7 @@ def replan_node(state: AgentState) -> Command[Literal["agent", "synthesize"]]:
 
     # Re-searching within the same turn won't rescue an answer the model already deemed thin after
     # a web round — let synthesize handle it honestly instead of escalating in circles.
-    if "web_search" in set(state.get("tools_called", [])) or not draft.strip():
+    if _GATHERING_TOOLS & set(state.get("tools_called", [])) or not draft.strip():
         diag.log(f"replan_node : {time.perf_counter() - start:.4f}s (skipped)")
         return Command(goto="synthesize")
 
@@ -91,7 +97,10 @@ def replan_node(state: AgentState) -> Command[Literal["agent", "synthesize"]]:
     new_plan = add_step(plan, f"Search the web: {query}", "web_search", at=at)
 
     diag.log(f"replan_node : {time.perf_counter() - start:.4f}s (escalate -> web_search)")
+    # Reset agent_nudges so the freshly inserted step gets its own full NUDGE_BUDGET. Otherwise a
+    # nudge budget already spent earlier this turn leaves zero budget to make the model honor the
+    # judge's inserted search, and route_after_agent silently falls through to synthesize.
     return Command(
         goto="agent",
-        update={"plan": new_plan, "replans": state.get("replans", 0) + 1},
+        update={"plan": new_plan, "replans": state.get("replans", 0) + 1, "agent_nudges": 0},
     )

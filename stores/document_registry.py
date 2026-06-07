@@ -45,21 +45,22 @@ def _documents_manifest() -> Path:
 
 
 def register_workspace_file(file_path: str, content: str) -> None:
-    """Called by write_file after a successful write."""
-    path = Path(file_path)
-    _upsert(_workspace_manifest(), path.name, content, path.suffix)
+    """Called by write_file after a successful write. Keyed by the full relative path (not the
+    basename) so files with the same name in different subdirs don't collide on one entry."""
+    _upsert(_workspace_manifest(), file_path, content, Path(file_path).suffix)
 
 
 def register_rag_document(source: str, content: str) -> None:
-    """Called by rag.sync for each new/changed document."""
-    path = Path(source)
-    _upsert(_documents_manifest(), path.name, content, path.suffix)
+    """Called by rag.sync for each new/changed document. `source` is the corpus-relative path;
+    key the manifest + summary cache by it (not the basename) so e.g. teamA/report.md and
+    teamB/report.md get distinct entries instead of overwriting each other."""
+    _upsert(_documents_manifest(), source, content, Path(source).suffix)
 
 
 def remove_rag_document(source: str) -> None:
     """Strip a document's entry from the RAG manifest and its cached summary. Called by rag.sync
     when a file is removed from the corpus, so the manifest never lists documents that are gone."""
-    name = Path(source).name
+    name = source
     _remove_entry(_documents_manifest(), name)
     cache = _read_summary_cache()
     if name in cache:

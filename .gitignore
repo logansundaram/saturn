@@ -9,7 +9,18 @@ logs/
 # Vector DBs / embeddings
 chroma/
 vectordb/
-database/cache/   # derived RAG store cache (vectors.json/index.json/summaries.json) — rebuilt by sync()
+# derived RAG store cache (vectors.json/index.json/summaries.json) — rebuilt by sync()
+# (comment on its own line: git treats a trailing inline comment as part of the pattern)
+database/cache/
+
+# Runtime SQLite store (checkpoints + trace runs/events/llm_calls) — churns every turn, recreated
+# on first run; tracking it produced constant binary diffs in git status. Sidecars appear in WAL mode.
+database/db.sqlite
+database/db.sqlite-wal
+database/db.sqlite-shm
+
+# First-run setup sentinel — runtime state written on first launch; not source.
+database/.setup_done
 
 # Model cache
 models/

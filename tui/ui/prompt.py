@@ -1,0 +1,301 @@
+"""
+The `»` input line + the startup banner. prompt_toolkit (when present) drives a live-highlighted
+input where a typed `/command` is colored by how it matches the command set, `@path` mentions stand
+out and Tab-complete, and input is multiline (Enter submits, Alt+Enter newlines). Falls back to
+rich's (or plain) input() without prompt_toolkit. `banner` prints the session header and captures
+the model label for the status bar.
+"""
+
+from . import _base
+from ._base import (
+    Text, _console, _RICH,
+    _ACCENT, _DIM, _RISK,
+    _active_ctx_window, _git_branch, _human_tokens, _short_cwd,
+)
+from .statusbar import _live_stop
+
+# prompt_toolkit drives the `»` input line so a typed `/command` is highlighted live, character
+# by character — valid commands glow cyan, typos go red. Independent of rich: if it's missing we
+# fall back to rich's (or plain) input(), just without the live highlight.
+try:
+    from prompt_toolkit import PromptSession
+    from prompt_toolkit.application import run_in_terminal as _ptk_run_in_terminal
+    from prompt_toolkit.completion import (
+        Completer as _PTKCompleter,
+        Completion as _PTKCompletion,
+        PathCompleter as _PTKPathCompleter,
+    )
+    from prompt_toolkit.document import Document as _PTKDocument
+    from prompt_toolkit.key_binding import KeyBindings as _PTKKeyBindings
+    from prompt_toolkit.lexers import Lexer as _PTKLexer
+    from prompt_toolkit.styles import Style as _PTKStyle
+
+    _PTK = True
+except Exception:  # pragma: no cover - fallback path
+    _PTK = False
+
+_ptk_session = None  # one PromptSession for the process -> free line history across turns
+
+
+# ── startup banner ─────────────────────────────────────────────────────────────
+def banner(model: str, n_tools: int, n_docs: int, db_path: str) -> None:
+    """Session header: a light two-line identity block — model/tier · context window, then tool +
+    doc counts · git branch · working dir, with the `/help` hint folded onto the second line. No
+    box and no absolute trace-DB path (it widened the old card for a value that's a `/config` away);
+    just alignment and whitespace, in the dim/accent palette. `db_path` is accepted for callers /
+    future relocation but isn't rendered here."""
+    _base._model = model  # captured here so the live status bar needs no model passed per turn
+    win = _active_ctx_window()
+    ctx = _human_tokens(win) if win else "?"
+    branch = _git_branch()
+    cwd = _short_cwd()
+
+    if _RICH:
+        head = Text("  ")
+        head.append("saturday.ai", style=f"bold {_ACCENT}")
+        head.append("   ", style=_DIM)
+        head.append(model, style="default")
+        head.append("  ·  ctx ", style=_DIM)
+        head.append(ctx, style="default")
+        _console.print(head)
+
+        info = Text("  ")
+        info.append(f"{n_tools} tools", style="default")
+        info.append("  ·  ", style=_DIM)
+        info.append(f"{n_docs} docs", style="default")
+        if branch:
+            info.append("  ·  ", style=_DIM)
+            info.append(f"git {branch}", style="default")
+        info.append("  ·  ", style=_DIM)
+        info.append(cwd, style=_DIM)
+        info.append("      ", style=_DIM)
+        info.append("/help", style=_ACCENT)
+        info.append(" for commands", style=_DIM)
+        _console.print(info)
+    else:
+        git = f"  ·  git {branch}" if branch else ""
+        print(f"saturday.ai  {model}  ·  ctx {ctx}")
+        print(f"{n_tools} tools  ·  {n_docs} docs{git}  ·  {cwd}      /help for commands")
+
+
+# ── input prompt ───────────────────────────────────────────────────────────────
+# Live highlight for the `»` line: a `/token` is colored by how it matches the command set, so
+# a typo never blends in with a real command. Valid -> cyan, a prefix of some command (mid-type)
+# -> yellow, anything else -> red. Args after the token stay dim. Built only when prompt_toolkit
+# is present; the palette mirrors the rest of ui.py (cyan accent, semantic status colors).
+if _PTK:
+    _PTK_STYLE = _PTKStyle.from_dict({
+        "prompt": "ansicyan bold",
+        "prompt.cont": "ansibrightblack",
+        "cmd.valid": "ansicyan bold",
+        "cmd.partial": "ansiyellow",
+        "cmd.unknown": "ansired bold",
+        "cmd.args": "ansibrightblack",
+        "mention": "ansibrightblue",
+    })
+
+    # An `@mention` inside a normal (non-slash) line: `@` at a word boundary + a run of
+    # non-space/non-`@`. Highlighted live so the user sees which token will attach a file
+    # (mentions.expand resolves them for real at submit; see mentions.py).
+    import re as _re
+    _MENTION_LEX_RE = _re.compile(r"(?<!\S)@[^\s@]+")
+    # Same grammar but capturing just the path fragment up to the cursor, for Tab completion.
+    _AT_FRAGMENT_RE = _re.compile(r"(?:^|\s)@([^\s@]*)$")
+
+    def _mention_fragments(line: str):
+        """Split one plain line into prompt_toolkit (style, text) fragments, coloring any
+        `@mention` runs. Used for normal turns so file mentions stand out as they're typed."""
+        frags = []
+        pos = 0
+        for m in _MENTION_LEX_RE.finditer(line):
+            if m.start() > pos:
+                frags.append(("", line[pos:m.start()]))
+            frags.append(("class:mention", m.group(0)))
+            pos = m.end()
+        if pos < len(line):
+            frags.append(("", line[pos:]))
+        return frags or [("", line)]
+
+    def _slash_token(text: str):
+        """Split a prompt line into `(lead, token, args)` around the leading `/command` word —
+        `lead` is any whitespace before the slash, `token` the command word (no slash, original
+        case), `args` the remainder (its leading space included). Returns `None` for a non-slash
+        line. The single definition of the `/token` grammar, shared by the lexer and the completer."""
+        stripped = text.lstrip()
+        if not stripped.startswith("/"):
+            return None
+        lead = text[: len(text) - len(stripped)]  # preserve leading whitespace verbatim
+        body = stripped[1:]
+        cut = len(body)
+        for i, ch in enumerate(body):
+            if ch.isspace():
+                cut = i
+                break
+        return lead, body[:cut], body[cut:]
+
+    class _CommandLexer(_PTKLexer):
+        """Colors the first `/token` of the line against a known-command set, live as it's typed.
+        Only the command token is styled; normal (non-slash) turns render plain."""
+
+        def __init__(self, names):
+            self._names = names  # canonical names + aliases, lowercased, no leading slash
+
+        def _style_for(self, key: str) -> str:
+            if key in self._names:
+                return "class:cmd.valid"
+            if not key or any(n.startswith(key) for n in self._names):
+                return "class:cmd.partial"  # lone "/" or still typing a real command
+            return "class:cmd.unknown"      # a typo — make it loud
+
+        def lex_document(self, document):
+            # Per-line so multiline input (Alt+Enter / paste) highlights each line. Only the
+            # FIRST line is treated as a possible `/command` (a slash command is always single-
+            # line); every line gets `@mention` highlighting.
+            lines = document.lines
+
+            def get_line(lineno):
+                line = lines[lineno] if 0 <= lineno < len(lines) else ""
+                parsed = _slash_token(line) if lineno == 0 else None
+                if parsed is None:
+                    return _mention_fragments(line)
+                lead, token, args = parsed
+                frags = []
+                if lead:
+                    frags.append(("", lead))
+                frags.append((self._style_for(token.lower()), "/" + token))
+                if args:
+                    frags.append(("class:cmd.args", args))
+                return frags
+
+            return get_line
+
+    class _CommandCompleter(_PTKCompleter):
+        """Tab-completes two things, depending on where the cursor sits:
+          - the leading `/command` token of a slash line (against the known command set), and
+          - an `@path` mention anywhere in a normal line (against the filesystem, so a file can be
+            pulled into the turn inline — see mentions.py).
+        Command completion fires only on the first token of a slash line (a space ends it); `@path`
+        completion fires on the partial path after an `@` at a word boundary. `display_meta` carries
+        each command's one-line summary into the menu."""
+
+        def __init__(self, meta):
+            self._meta = meta  # list of (token, summary), tokens lowercased, no leading slash
+            # Delegate the actual path matching to prompt_toolkit's PathCompleter; we only carve
+            # out the `@`-prefixed fragment and re-base its replacement offset.
+            self._paths = _PTKPathCompleter(expanduser=True)
+
+        def get_completions(self, document, complete_event):
+            # `@path` mention completion takes precedence: it can occur anywhere on the line,
+            # including inside what would otherwise be a slash command's args.
+            before = document.text_before_cursor
+            at = _AT_FRAGMENT_RE.search(before)
+            if at is not None:
+                frag = at.group(1)  # the partial path typed after `@` (no `@`)
+                sub = _PTKDocument(frag, len(frag))
+                for comp in self._paths.get_completions(sub, complete_event):
+                    yield comp  # offsets are relative to `frag`'s end == the cursor, so they map 1:1
+                return
+
+            parsed = _slash_token(before)
+            if parsed is None:
+                return
+            _lead, token, args = parsed
+            if args:  # past the command token, into the args
+                return
+            word = token.lower()
+            for tok, summary in self._meta:
+                if tok.startswith(word):
+                    # Replace just the typed token (the leading "/" stays put).
+                    yield _PTKCompletion(
+                        tok,
+                        start_position=-len(token),
+                        display="/" + tok,
+                        display_meta=summary,
+                    )
+
+    # Multiline input: Enter submits, Alt+Enter inserts a newline. So a pasted multi-line block
+    # (bracketed paste inserts its newlines directly, never submitting) or a deliberately-composed
+    # multi-paragraph turn survives instead of being chopped at the first newline. When the
+    # completion menu is open, Enter accepts the highlighted completion rather than submitting.
+    _PTK_KB = _PTKKeyBindings()
+
+    @_PTK_KB.add("enter")
+    def _ptk_enter(event):
+        buf = event.current_buffer
+        if buf.complete_state and buf.complete_state.current_completion:
+            buf.apply_completion(buf.complete_state.current_completion)
+        else:
+            buf.validate_and_handle()  # submit the line
+
+    @_PTK_KB.add("escape", "enter")  # Alt/Option+Enter (and Esc then Enter) -> hard newline
+    def _ptk_newline(event):
+        event.current_buffer.insert_text("\n")
+
+    @_PTK_KB.add("s-tab")  # Shift+Tab: cycle runtime.auto_approve tier
+    def _ptk_cycle_permission(event):
+        from config import get_config, RISK_ORDER
+        cfg = get_config()
+        current = cfg.auto_approve
+        idx = RISK_ORDER.index(current) if current in RISK_ORDER else 0
+        next_tier = RISK_ORDER[(idx + 1) % len(RISK_ORDER)]
+        cfg.set("runtime.auto_approve", next_tier)
+
+        def _notify():
+            style = _RISK.get(next_tier, "default")
+            if _RICH:
+                from rich.text import Text as _Text
+                msg = _Text()
+                msg.append("  permission: ", style=_DIM)
+                msg.append(next_tier, style=style)
+                msg.append("  (Shift+Tab to cycle)", style=_DIM)
+                _console.print(msg)
+            else:
+                print(f"  permission: {next_tier}")
+
+        _ptk_run_in_terminal(_notify)
+
+    def _ptk_continuation(width, line_number, is_soft_wrap):
+        """Gutter for continuation lines of a multiline entry — a dim `·` aligned under the `»`."""
+        return [("class:prompt.cont", "· ".rjust(width))] if not is_soft_wrap else ""
+
+
+def prompt(command_meta=None) -> str:
+    """Read the `»` input line. With prompt_toolkit and a `command_meta` list of `(token, summary)`
+    pairs, a typed `/command` is highlighted live (valid=cyan, typo=red), Tab completes the leading
+    `/command` token or an `@path` mention, and the line is multiline (Enter submits, Alt+Enter adds
+    a newline — so pasted/multi-paragraph input survives). Without prompt_toolkit, falls back to
+    rich/plain input. Returns the raw line (slash-command + @mention handling happen upstream)."""
+    _live_stop()  # never read a line under an active Live (also clears a bar left by an error)
+    if _PTK and command_meta is not None:
+        global _ptk_session
+        if _ptk_session is None:
+            _ptk_session = PromptSession()
+        names = {token for token, _ in command_meta}  # valid-command set for the live highlight
+        return _ptk_session.prompt(
+            [("class:prompt", "» ")],
+            lexer=_CommandLexer(names),
+            style=_PTK_STYLE,
+            completer=_CommandCompleter(command_meta),
+            complete_while_typing=False,  # Tab-triggered, so the menu never fights live typing
+            multiline=True,
+            key_bindings=_PTK_KB,
+            prompt_continuation=_ptk_continuation,
+        )
+    if _RICH:
+        return _console.input(f"[bold {_ACCENT}]»[/] ")
+    return input("» ")
+
+
+def ask(prompt_text: str) -> str:
+    """Read a single line for an interactive command prompt (e.g. the /models picker). Tears down
+    any live status bar first — input() can't run under an active Live — and returns the raw,
+    stripped reply. Degrades to plain input() without rich."""
+    _live_stop()
+    try:
+        if _RICH:
+            # markup=False: prompts carry literal brackets (e.g. "[all|planner|…]") that Rich
+            # would otherwise eat as style tags.
+            return _console.input(f"  {prompt_text}", markup=False).strip()
+        return input(f"  {prompt_text}").strip()
+    except (EOFError, KeyboardInterrupt):
+        return ""

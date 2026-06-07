@@ -24,8 +24,8 @@ Steering vs. queuing is thus the same key story as Enter vs. Esc: Enter defers, 
 
 Degrades to a no-op when the console can't be polled (not a TTY, or neither msvcrt nor POSIX
 termios is available): the queue simply stays empty and the REPL blocks on the prompt exactly as
-before. The repo's platform is win32, so the msvcrt path is primary; the POSIX path is best-effort
-(cbreak via termios, restored on stop).
+before. On Windows the msvcrt path is used; on macOS/Linux the POSIX termios path runs instead
+(cbreak, restored on stop).
 """
 
 from __future__ import annotations
@@ -37,8 +37,8 @@ from typing import Callable, Optional
 
 from interrupts import PauseController, get_pause_controller
 
-# Windows console key polling — the primary path on this repo's platform (win32). Absent
-# elsewhere, where we fall back to a best-effort POSIX termios reader, then to a no-op.
+# Windows console key polling (msvcrt). On macOS/Linux this import fails and we fall back to
+# a POSIX termios reader; if that's also unavailable the queue degrades to a no-op.
 try:
     import msvcrt  # type: ignore
 

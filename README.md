@@ -40,6 +40,9 @@ priorities, in order:
 - **Your documents (RAG)** — ingest PDFs/text/markdown into a local knowledge base it can search.
 - **Math** — a precise calculator tool.
 - **Memory** — durable facts that persist across sessions (`remember` / `recall`).
+- **Shell commands** — run arbitrary shell commands (scripts, build tools, git, package managers)
+  in the sandboxed workspace. Uses PowerShell on Windows and `/bin/sh` on macOS/Linux — write
+  commands in your platform's native syntax.
 - **Human-in-the-loop planning** — pause and edit the agent's plan mid-run if it's heading the
   wrong way.
 
@@ -66,6 +69,33 @@ execution.
 ---
 
 ## Getting started
+
+### Quick install (recommended)
+
+One command. It installs [Ollama](https://ollama.com) if needed, clones Saturn into `~/.saturday`
+in an isolated virtualenv, pulls the small local models, and puts a `saturn` command on your PATH.
+
+```bash
+# macOS / Linux / WSL2
+curl -fsSL https://raw.githubusercontent.com/logansundaram/saturn/main/install.sh | sh
+```
+
+```powershell
+# Windows (PowerShell)
+irm https://raw.githubusercontent.com/logansundaram/saturn/main/install.ps1 | iex
+```
+
+Then open a new terminal and run `saturn`. The first run pulls a few GB of models, so it takes a
+minute. Prefer to read before you pipe? Both scripts are plain text at the URLs above — download
+and inspect first.
+
+The installer defaults to the lightweight **`laptop`** tier (`gemma4:e4b`); switch to a bigger
+tier anytime with `/models`, or set `SATURDAY_TIER=workstation` before installing. Other knobs:
+`SATURDAY_HOME` (install dir), `SATURDAY_MODELS` (models to pull), `SATURDAY_BRANCH`.
+
+> Prefer to set it up by hand, or hacking on Saturn itself? Use the **Manual install** below.
+
+### Manual install (from source)
 
 ### 1. Prerequisites
 
@@ -115,7 +145,8 @@ These are saved to a `.env` file in the repo root and applied immediately.
 ### 4. Run it
 
 ```bash
-python agent.py
+python agent.py        # Windows / venv-activated
+python3 agent.py       # macOS/Linux without a venv (if `python` isn't in PATH)
 ```
 
 You'll get an interactive prompt (`»`). Just type. Anything starting with `/` is a command;
@@ -127,8 +158,17 @@ everything else is a turn for the agent.
 » remember that I prefer concise answers
 ```
 
-> **Windows shortcut:** `saturn.cmd` in the repo root launches the agent from anywhere. Wire a
-> `saturn` function into your PowerShell profile to just type `saturn`.
+> **Shortcut launchers**
+>
+> **Windows:** `saturn.cmd` launches from anywhere. Wire a `saturn` function into your PowerShell
+> profile to type just `saturn`.
+>
+> **macOS/Linux:** make `saturn.sh` executable once, then run it directly or add the repo to your
+> `PATH`:
+> ```bash
+> chmod +x saturn.sh
+> ./saturn.sh
+> ```
 
 ---
 
@@ -146,6 +186,20 @@ Everything lives in **`config.yaml`**:
 
 Most of it is also adjustable **live** (session-only) with slash commands — handy for
 experimenting without restarting.
+
+### macOS / Linux notes
+
+No platform-specific config is required — `config.yaml` works as-is on all platforms. The only
+differences to know about:
+
+| | Windows | macOS / Linux |
+|---|---|---|
+| Launcher | `saturn.cmd` | `./saturn.sh` (run `chmod +x saturn.sh` once) |
+| Shell tool syntax | PowerShell | `/bin/sh` (`bash`, `zsh`, etc.) |
+| Python command | `python` | `python3` (or `python` inside a venv) |
+
+The `run_shell` tool hands commands directly to the host shell, so write Unix shell syntax
+(`ls`, `&&`, `|`, etc.) on macOS/Linux and PowerShell syntax on Windows.
 
 ---
 

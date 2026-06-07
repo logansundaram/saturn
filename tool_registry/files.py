@@ -62,7 +62,9 @@ def write_file(file_path: str, content: str, overwrite: bool = True):
             with open(target_path, "a", encoding="utf-8") as file:
                 file.write(content)
             # Read back the full file content so the manifest reflects the complete document.
-            full_content = target_path.read_text(encoding="utf-8")
+            # errors="replace" (matching read_file): the append already landed, so a decode error
+            # on a pre-existing non-UTF-8 byte must not fail the call and strand the manifest.
+            full_content = target_path.read_text(encoding="utf-8", errors="replace")
             register_workspace_file(file_path, full_content)
             return "Content appended to file successfully"
     finally:

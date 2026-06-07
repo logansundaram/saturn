@@ -49,7 +49,11 @@ def _skip_rejected_steps(plan: list[dict], rejected_tools: list[str]) -> list[di
     if sum(remaining.values()) > 0:
         for step in plan:
             if step.get("status") not in ("done", "skipped"):
-                step["status"] = "skipped"
+                # Only skip a step that expected a tool. A no-intended_tool step (e.g. the generic
+                # "answer the request" fallback plan) shouldn't be retired just because an unplanned
+                # gated call was declined — the user declined one action, not the whole task.
+                if step.get("intended_tool"):
+                    step["status"] = "skipped"
                 break
     return plan
 

@@ -340,10 +340,22 @@ def _initial_state() -> AgentState:
 
 
 def main():
-    """CLI entry point: ingest the knowledge base, build the graph, run the REPL loop."""
+    """CLI entry point: ingest the knowledge base, build the graph, run the REPL loop.
+
+    Flags:
+      -p / --prompt QUERY   Run one query headlessly, print the answer to stdout, and exit.
+                            No TUI, no interactive prompts; all tool calls auto-approved.
+                            Compatible with `saturn -p "..."` and shell pipelines.
+    """
+    import argparse
+
+    _parser = argparse.ArgumentParser(prog="saturn", add_help=False)
+    _parser.add_argument("-p", "--prompt", metavar="QUERY", default=None,
+                         help="Run a single query headlessly and print the answer to stdout.")
+    _args, _ = _parser.parse_known_args()
 
     # The slow startup loading (knowledge-base ingest + graph build) runs while the ring art
-    # animates, so the splash keeps drawing itself out until everything is ready.
+    # animates in interactive mode, or directly (no TUI) in headless mode.
     def _startup_load():
         warn = None
         # Reconcile the knowledge base against the disk cache at startup: only new/changed
@@ -355,6 +367,43 @@ def main():
             warn = f"knowledge-base ingest failed, continuing without RAG: {exc}"
         return build_agent(), warn
 
+    # --- headless path: one query, print answer, exit ---------------------------------
+    if _args.prompt:
+        graph, ingest_warning = _startup_load()
+        if ingest_warning:
+            print(ingest_warning, file=sys.stderr)
+        tracer = Tracer(DB_PATH)
+        state = _initial_state()
+        state = _fresh_turn(state, _args.prompt)
+        thread_id = str(uuid.uuid4())
+        run_id = tracer.start_run(thread_id, _args.prompt)
+        config = {
+            "configurable": {"thread_id": thread_id},
+            "callbacks": [tracer.llm_handler(run_id)],
+        }
+        try:
+            state = run_turn(
+                graph,
+                state,
+                config,
+                approver=lambda _v: True,  # auto-approve: no interactive gates in headless mode
+                on_update=_make_on_update(tracer, run_id, show_ui=False),
+            )
+            answer = state["messages"][-1].content
+            tracer.end_run(run_id, "ok", answer)
+            print(answer)
+        except Exception as exc:
+            tracer.end_run(run_id, "error", str(exc))
+            print(f"error: {exc}", file=sys.stderr)
+            sys.exit(1)
+        finally:
+            try:
+                graph.checkpointer.delete_thread(thread_id)
+            except Exception:
+                pass
+        return
+
+    # --- interactive path -------------------------------------------------------------
     graph, ingest_warning = ui.splash(
         _startup_load
     )  # ring-and-planet art over the load
@@ -388,6 +437,24 @@ def main():
         db_path=DB_PATH,
         session_started_at=datetime.now().isoformat(),  # session boundary for /cost
     )
+
+    # First-run setup check: if the sentinel hasn't been written yet, auto-run /config setup so a
+    # fresh install surfaces any gaps (Ollama down, models not pulled, keys missing) before the
+    # user's first query, rather than as a confusing turn failure. Non-fatal: a dispatch error
+    # mustn't prevent the REPL from starting. The sentinel lives in the database directory so
+    # deleting the database also resets first-run (a full reinstall should re-check).
+    _setup_sentinel = get_config().path("database") / ".setup_done"
+    if not _setup_sentinel.exists():
+        ui.note("First launch — running /config setup (won't repeat; re-run any time with /config setup).")
+        try:
+            commands.dispatch("/config setup", cmd_ctx)
+        except Exception as exc:
+            ui.warn(f"/config setup failed: {exc}")
+        try:
+            _setup_sentinel.parent.mkdir(parents=True, exist_ok=True)
+            _setup_sentinel.touch()
+        except Exception as exc:
+            diag.log(f"first-run sentinel write failed: {exc}")
 
     # One input reader for the session. While a turn runs it captures type-ahead so the user can
     # queue follow-up queries / slash commands without waiting (drained between turns below). The Esc

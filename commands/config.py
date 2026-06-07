@@ -57,7 +57,7 @@ def _config_keys(ctx, args):
 @command(
     "config",
     "View or edit runtime config (config.yaml) and API keys (.env); --save persists to disk.",
-    usage="/config | /config <dotted.key> [value [--save]] | /config persist <key> | /config doctor | /config key … | /config reload",
+    usage="/config | /config <dotted.key> [value [--save]] | /config persist <key> | /config setup | /config key … | /config reload",
     details="""
 With no args, prints the key runtime settings (active_tier, runtime.max_iterations,
 runtime.auto_approve), the resolved paths, and which API keys are set.
@@ -70,9 +70,9 @@ survives a restart:
   /config persist runtime.max_iterations     persist whatever the current value is
 `/config reload` re-reads config.yaml from disk, discarding any unsaved session edits.
 
-/config doctor (setup, check) — first-run / health check: is the Ollama daemon up, are the
+/config setup (doctor, check) — first-run / health check: is the Ollama daemon up, are the
 active tier's models pulled, and are the needed API keys set, with the exact command to fix each
-gap. Run this right after installing.
+gap. Runs automatically on first launch; re-run any time with /config setup.
 
 API keys live in .env, not config.yaml, so they have their own subcommand (already persistent):
   /config key                       list known keys and whether each is set (masked)
@@ -88,7 +88,7 @@ To change model bindings specifically, /models is the friendlier front end.
 
 Examples:
   /config                              show the summary
-  /config doctor                       check the install (Ollama, models, keys)
+  /config setup                        check the install (Ollama, models, keys)
   /config runtime.max_iterations       read one key
   /config runtime.max_iterations 12 --save  set it and persist to config.yaml
   /config key set TAVILY_API_KEY tvly-... add an API key

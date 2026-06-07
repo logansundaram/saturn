@@ -63,9 +63,12 @@ SATURDAY_MVP_PLAN.md
 # exports (graphs/). diag.log is already covered by *.log above; this catches the rest.
 logging/
 
-# Synthetic RAG test corpus, dogfooding workspace files, durable memory, and the derived
-# .manifest.md summaries. All runtime/test data — these dirs are recreated empty on first run
-# (iter_documents/files.py mkdir), so users start with a clean corpus and workspace.
-database/documents/
+# Dogfooding workspace files, durable memory, and the derived .manifest.md summaries — all
+# runtime/test data, recreated as needed on first run (files.py mkdir), so users don't inherit
+# our local files. The documents/ corpus ships with exactly one seeded doc: welcome-to-saturn.md
+# gives a fresh install a working knowledge base + onboarding; everything else in documents/
+# (your ingested files, the derived .manifest.md) stays ignored.
+database/documents/*
+!database/documents/welcome-to-saturn.md
 database/workspace/
 database/memory/

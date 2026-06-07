@@ -1,0 +1,4 @@
+# Shell scripts must stay LF — a CRLF shebang line breaks `sh` / `curl | sh`,
+# even when authored on Windows.
+*.sh text eol=lf
+install.sh text eol=lf

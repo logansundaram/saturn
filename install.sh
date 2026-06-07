@@ -84,7 +84,9 @@ say "Creating virtual environment and installing dependencies"
 [ -d "$INSTALL_DIR/.venv" ] || "$PY" -m venv "$INSTALL_DIR/.venv"
 VENV_PY="$INSTALL_DIR/.venv/bin/python"
 "$VENV_PY" -m pip install --quiet --upgrade pip
-"$VENV_PY" -m pip install --quiet -r "$INSTALL_DIR/requirements.txt"
+# Not --quiet: a swallowed dependency failure here is how a broken install slips through
+# (e.g. a missing package). Let pip's output and any error be visible.
+"$VENV_PY" -m pip install -r "$INSTALL_DIR/requirements.txt"
 ok "Dependencies installed"
 
 # --- 4b. select the active tier (in-place, comment-preserving) ----------------------
@@ -98,11 +100,13 @@ PYEOF
 ); then ok "Tier set to '$TIER'"; else warn "Could not set tier - defaulting to config.yaml. Change it later with /models."; fi
 
 # --- 5. pull local models ----------------------------------------------------------
+# Show ollama's live progress bar (do NOT redirect to /dev/null) - these are multi-GB
+# downloads and a silent pull looks like a frozen installer.
 if [ -n "$MODELS" ]; then
-  say "Pulling local models (this can be several GB)"
+  say "Pulling local models (several GB - live progress below)"
   for m in $MODELS; do
-    printf '     %s ... ' "$m"
-    if ollama pull "$m" >/dev/null 2>&1; then printf '%sok%s\n' "$G" "$X"; else printf '%sfailed%s\n' "$Y" "$X"; warn "pull '$m' failed - pull it later with: ollama pull $m"; fi
+    say "  $m"
+    if ollama pull "$m"; then ok "$m"; else warn "pull '$m' failed - pull it later with: ollama pull $m"; fi
   done
 fi
 
@@ -117,13 +121,44 @@ EOF
 chmod +x "$BIN_DIR/saturn"
 ok "Launcher installed"
 
-# --- done --------------------------------------------------------------------------
+# --- 7. ensure the launcher is on PATH ---------------------------------------------
+# Pick the shell rc file we'd persist PATH to.
+case "$(basename "${SHELL:-sh}")" in
+  zsh)  PROFILE="$HOME/.zshrc" ;;
+  bash) [ "$(uname -s)" = "Darwin" ] && PROFILE="$HOME/.bash_profile" || PROFILE="$HOME/.bashrc" ;;
+  *)    PROFILE="$HOME/.profile" ;;
+esac
+
+# Append the export line to $PROFILE (idempotent - safe on re-runs).
+add_to_path() {
+  LINE="export PATH=\"$BIN_DIR:\$PATH\""
+  grep -qsF "$LINE" "$PROFILE" 2>/dev/null || printf '\n# Added by the Saturday.ai installer\n%s\n' "$LINE" >> "$PROFILE"
+  ok "Added $BIN_DIR to PATH in $PROFILE"
+  printf '%sActivate it now:%s export PATH="%s:$PATH"   (or just open a new terminal)\n' "$B" "$X" "$BIN_DIR"
+}
+
 echo
 ok "Saturday.ai installed."
 case ":$PATH:" in
-  *":$BIN_DIR:"*) printf '%sRun:%s saturn\n' "$B" "$X" ;;
-  *) warn "$BIN_DIR is not on your PATH. Add it (then restart your shell):"
-     printf '       echo '\''export PATH="%s:$PATH"'\'' >> ~/.profile\n' "$BIN_DIR"
-     printf '     Until then, run: %s/saturn\n' "$BIN_DIR" ;;
+  *":$BIN_DIR:"*)
+    printf '%sRun:%s saturn\n' "$B" "$X" ;;
+  *)
+    warn "$BIN_DIR is not on your PATH."
+    # stdin is the piped script under `curl | sh`, so ask on the controlling terminal.
+    # If we can't open one (headless/CI), skip the prompt and add it by default.
+    ans=y
+    if { exec 3</dev/tty; } 2>/dev/null; then
+      printf ' Add it to %s automatically? [Y/n] ' "$PROFILE"
+      read ans <&3 || ans=y
+      exec 3<&-
+    fi
+    case "${ans:-y}" in
+      [Nn]*)
+        warn "Skipped. Add it later with:"
+        printf '       echo '\''export PATH="%s:$PATH"'\'' >> %s\n' "$BIN_DIR" "$PROFILE"
+        printf '     Until then, run: %s/saturn\n' "$BIN_DIR" ;;
+      *)
+        add_to_path ;;
+    esac ;;
 esac
 echo "First launch runs a setup check (/config setup). Use 'saturn -p \"your question\"' for one-shot mode."

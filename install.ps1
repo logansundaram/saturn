@@ -82,7 +82,8 @@ Say 'Creating virtual environment and installing dependencies'
 $VenvPy = Join-Path $InstallDir '.venv\Scripts\python.exe'
 if (-not (Test-Path $VenvPy)) { & $Py -m venv (Join-Path $InstallDir '.venv') }
 & $VenvPy -m pip install --quiet --upgrade pip
-& $VenvPy -m pip install --quiet -r (Join-Path $InstallDir 'requirements.txt')
+# Not --quiet: a swallowed dependency failure here is how a broken install slips through.
+& $VenvPy -m pip install -r (Join-Path $InstallDir 'requirements.txt')
 Ok 'Dependencies installed'
 
 # --- 4b. select the active tier (in-place, comment-preserving) ----------------------
@@ -95,12 +96,13 @@ try {
 
 # --- 5. pull local models ----------------------------------------------------------
 if ($Models.Count -gt 0) {
-  Say 'Pulling local models (this can be several GB)'
+  # Show ollama's live progress (no redirect) - multi-GB downloads, a silent pull looks frozen.
+  Say 'Pulling local models (several GB - live progress below)'
   foreach ($m in $Models) {
-    Write-Host "     $m ... " -NoNewline
-    & ollama pull $m *> $null
-    if ($LASTEXITCODE -eq 0) { Write-Host 'ok' -ForegroundColor Green }
-    else { Write-Host 'failed' -ForegroundColor Yellow; Warn "pull '$m' failed - pull it later with: ollama pull $m" }
+    Say "  $m"
+    & ollama pull $m
+    if ($LASTEXITCODE -eq 0) { Ok $m }
+    else { Warn "pull '$m' failed - pull it later with: ollama pull $m" }
   }
 }
 

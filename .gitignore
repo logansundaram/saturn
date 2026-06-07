@@ -52,3 +52,20 @@ CLAUDE.md
 USER.md
 
 CONSOLIDATION.md
+
+# Claude/dev-only working docs — not shipped to installers (CLAUDE.md is the architecture
+# reference; these are the build log, refactor plan, and original vision/roadmap).
+NOTES.md
+RESTRUCTURE.md
+SATURDAY_MVP_PLAN.md
+
+# Generated dev artifacts: benchmark result dumps (benchmarks/*.json) and Mermaid/PNG graph
+# exports (graphs/). diag.log is already covered by *.log above; this catches the rest.
+logging/
+
+# Synthetic RAG test corpus, dogfooding workspace files, durable memory, and the derived
+# .manifest.md summaries. All runtime/test data — these dirs are recreated empty on first run
+# (iter_documents/files.py mkdir), so users start with a clean corpus and workspace.
+database/documents/
+database/workspace/
+database/memory/

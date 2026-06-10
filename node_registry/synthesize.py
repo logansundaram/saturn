@@ -33,6 +33,27 @@ def synthesize_node(state: AgentState):
             )
         )
 
+    # The agent's draft answer — its final no-tool-call message. This is the exact text the
+    # replan judge verified for groundedness, so the shipped answer must BUILD ON it rather than
+    # be re-derived blind: regenerating from scratch paid a second full generation for nothing
+    # and could introduce new claims the judge never saw. Absent on the paths that never produced
+    # a draft (abort at the plan gate, iteration cap hit mid-tool-round) — those synthesize from
+    # the gathered material alone, exactly as before.
+    msgs = state.get("messages", [])
+    last = msgs[-1] if msgs else None
+    draft = ""
+    if isinstance(last, AIMessage) and not getattr(last, "tool_calls", None):
+        draft = str(last.content).strip()
+    if draft:
+        llm_input.append(
+            HumanMessage(
+                content=(
+                    "Draft answer from the reasoning loop (already checked against the gathered "
+                    "results — build on it, do not contradict it):\n" + draft
+                )
+            )
+        )
+
     # If we arrive here with a planned gathering step still un-run (the agent gave up and the
     # nudge budget was exhausted), be honest about the gap instead of asserting the information
     # doesn't exist — the failure mode this whole guard exists to avoid.
@@ -75,7 +96,6 @@ def synthesize_node(state: AgentState):
     llm_response = AIMessage(content=content, **msg_kwargs)
 
     return {
-        "current_response": llm_response,
         "messages": [llm_response],
         "tok_per_sec": extract_tok_per_sec(aggregated),
         "context_tokens": extract_prompt_tokens(aggregated),

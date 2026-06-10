@@ -23,6 +23,8 @@ tool_node clamps the observation before it enters context (gotcha #5), so a runa
 overflow the window.
 """
 
+import os
+import signal
 import subprocess
 import sys
 import time
@@ -46,6 +48,28 @@ def _timeout() -> "float | None":
     except (TypeError, ValueError):
         return float(_DEFAULT_TIMEOUT)
     return n if n > 0 else None
+
+
+def _kill_tree(proc: "subprocess.Popen") -> None:
+    """Terminate the command's whole process TREE, not just the shell. A bare proc.kill() (what
+    subprocess.run's own timeout does) only takes out the direct child — a grandchild the command
+    started (a server, a hung build step) would survive the 'timeout' and keep running unattended.
+    Windows: taskkill /T walks the tree. POSIX: the child runs in its own session (start_new_session
+    below), so killing its process group gets everything. Best-effort, falls back to a plain kill."""
+    try:
+        if sys.platform == "win32":
+            subprocess.run(
+                ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                capture_output=True,
+                timeout=10,
+            )
+        else:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except Exception:
+        try:
+            proc.kill()
+        except Exception:
+            pass
 
 
 def _format(returncode: int, stdout: str, stderr: str) -> str:
@@ -76,29 +100,40 @@ def run_shell(command: str):
             argv = command
             use_shell = True
 
+        popen_kwargs = dict(
+            shell=use_shell,
+            cwd=str(workspace),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            # The workspace holds arbitrary user content and shells emit non-cp1252 bytes;
+            # decode as UTF-8 and degrade undecodable bytes to a marker (matching files.py)
+            # rather than letting a UnicodeDecodeError crash the turn.
+            encoding="utf-8",
+            errors="replace",
+        )
+        if sys.platform != "win32":
+            # Own session = own process group, so a timeout can kill the whole tree (_kill_tree).
+            popen_kwargs["start_new_session"] = True
+
+        # Popen + communicate (not subprocess.run): on timeout we need the child's pid to kill
+        # its whole process tree — run() kills only the direct child, leaving grandchildren alive.
+        proc = subprocess.Popen(argv, **popen_kwargs)
         try:
-            proc = subprocess.run(
-                argv,
-                shell=use_shell,
-                cwd=str(workspace),
-                capture_output=True,
-                text=True,
-                # The workspace holds arbitrary user content and shells emit non-cp1252 bytes;
-                # decode as UTF-8 and degrade undecodable bytes to a marker (matching files.py)
-                # rather than letting a UnicodeDecodeError crash the turn.
-                encoding="utf-8",
-                errors="replace",
-                timeout=timeout,
-            )
-        except subprocess.TimeoutExpired as exc:
-            # Surface whatever the command printed before it was killed — it's often the most
-            # useful part (e.g. a test runner that hung mid-suite). exc.stdout/stderr are str here
-            # (text=True); they may be None if nothing was captured.
-            partial = ((exc.stdout or "") + (exc.stderr or "")).strip()
+            stdout, stderr = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            _kill_tree(proc)
+            # Collect whatever the command printed before it was killed — it's often the most
+            # useful part (e.g. a test runner that hung mid-suite).
+            try:
+                stdout, stderr = proc.communicate(timeout=5)
+            except Exception:
+                stdout, stderr = "", ""
+            partial = ((stdout or "") + (stderr or "")).strip()
             msg = f"Command timed out after {timeout:g}s and was terminated."
             return f"{msg}\n{partial}" if partial else msg
 
-        return _format(proc.returncode, proc.stdout, proc.stderr)
+        return _format(proc.returncode, stdout, stderr)
     except Exception as exc:  # never let a shell failure kill the turn — report it to the agent
         return f"Shell execution failed: {exc}"
     finally:

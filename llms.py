@@ -84,12 +84,8 @@ def model_id(role: str) -> str:
 def get_tool_model():
     """The agent role's model with the tool registry bound natively (cached)."""
     if "tool_caller" not in _DERIVED_CACHE:
-        cap = capability_of("tool_caller")
-        if not cap.supports_tools:
-            print(
-                f"[llms] WARNING: model '{model_id('tool_caller')}' for role 'tool_caller' "
-                f"does not advertise native tool-calling; the agent loop may misbehave."
-            )
+        # Capability advisories surface at startup via check_models() — no mid-turn print here
+        # (print collides with the rich.Live TUI; see the diag.log design rule).
         _DERIVED_CACHE["tool_caller"] = get_model("tool_caller").bind_tools(tool)
     return _DERIVED_CACHE["tool_caller"]
 
@@ -101,12 +97,6 @@ def get_plan_model():
     other providers use the default structured-output method."""
     if "planner" not in _DERIVED_CACHE:
         spec = get_config().model_for_role("planner")
-        cap = get_config().capability_of(spec.model)
-        if not cap.supports_structured_output:
-            print(
-                f"[llms] WARNING: model '{spec.model}' for role 'planner' does not advertise "
-                f"structured output; the planner will lean on its fallback plan."
-            )
         base = get_model("planner")
         if spec.provider == "ollama":
             _DERIVED_CACHE["planner"] = base.with_structured_output(
@@ -125,12 +115,6 @@ def get_judge_model():
     Mirrors get_plan_model — Ollama uses method="json_schema" for server-constrained generation."""
     if "judge" not in _DERIVED_CACHE:
         spec = get_config().model_for_role("judge")
-        cap = get_config().capability_of(spec.model)
-        if not cap.supports_structured_output:
-            print(
-                f"[llms] WARNING: model '{spec.model}' for role 'judge' does not advertise "
-                f"structured output; the replan node will skip escalation rather than misfire."
-            )
         if spec.provider == "ollama":
             # A dedicated temperature-0 instance: groundedness is a classification, so we want a
             # stable verdict, not sampled variety (at the default temperature the same draft flips
@@ -317,6 +301,22 @@ def check_models() -> list[str]:
                     f"{provider} model(s) {', '.join(sorted(models))} need {key} — "
                     f"set it with `/config key set {key} <value>`"
                 )
+
+    # Capability advisories for the loop-driving roles. These used to print lazily on a model's
+    # first use (mid-turn, colliding with the live TUI); surfacing them here puts them next to
+    # the other startup warnings with the rest of the health report.
+    for role, attr, needs, consequence in (
+        ("tool_caller", "supports_tools", "native tool-calling", "the agent loop may misbehave"),
+        ("planner", "supports_structured_output", "structured output",
+         "the planner will lean on its fallback plan"),
+        ("judge", "supports_structured_output", "structured output",
+         "the replan judge may misfire"),
+    ):
+        spec = cfg.model_for_role(role)
+        if not getattr(cfg.capability_of(spec.model), attr):
+            problems.append(
+                f"model `{spec.model}` (role {role}) does not advertise {needs} — {consequence}"
+            )
 
     return problems
 

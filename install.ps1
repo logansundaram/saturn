@@ -1,4 +1,4 @@
-# Saturday.ai installer (Windows / PowerShell).
+# Saturn installer (Windows / PowerShell) - by Saturday.ai.
 #
 #   irm https://raw.githubusercontent.com/logansundaram/saturn/main/install.ps1 | iex
 #
@@ -16,7 +16,9 @@ $BinDir     = if ($env:SATURDAY_BIN)    { $env:SATURDAY_BIN }    else { Join-Pat
 # Active tier for a fresh install. 'laptop' uses the small gemma4 models (light download, runs on
 # modest hardware); switch to 'workstation'/'cloud-hybrid' later via /models.
 $Tier       = if ($env:SATURDAY_TIER)   { $env:SATURDAY_TIER }   else { 'laptop' }
-# Local models the laptop tier needs (small gemma4 chat model + the RAG embedder).
+# Local models the laptop tier needs (small gemma4 chat model + the RAG embedder). Must match the
+# `laptop` tier bindings in config.yaml - pulling different models than the tier binds breaks the
+# first run. If you override this, rebind the roles afterwards with /models.
 $Models     = if ($env:SATURDAY_MODELS) { $env:SATURDAY_MODELS -split '\s+' } else { @('gemma4:e4b', 'qwen3-embedding:8b') }
 # Minimum Ollama daemon version. Older daemons can't pull the current model formats (the pull
 # fails or the model runs wrong), so we update below if the installed one is behind this.
@@ -52,7 +54,7 @@ foreach ($c in @('py', 'python', 'python3')) {
     if ($LASTEXITCODE -eq 0) { $Py = $c; break }
   }
 }
-if (-not $Py) { Die 'Python 3.10+ is required (older versions cannot run Saturday). Install or update it from https://python.org, then re-run.' }
+if (-not $Py) { Die 'Python 3.10+ is required (older versions cannot run Saturn). Install or update it from https://python.org, then re-run.' }
 Ok ("Python: " + (& $Py --version 2>&1))
 
 # --- 2. Ollama (local model runtime) ----------------------------------------------
@@ -106,7 +108,7 @@ if (Test-Path (Join-Path $InstallDir '.git')) {
   git -C $InstallDir pull --quiet --ff-only origin $Branch
   if ($LASTEXITCODE -ne 0) { Warn 'Could not fast-forward (local changes?) - keeping current checkout.' }
 } else {
-  Say "Cloning Saturday.ai into $InstallDir"
+  Say "Cloning Saturn into $InstallDir"
   git clone --quiet --branch $Branch $RepoUrl $InstallDir
 }
 Ok 'Source ready'
@@ -171,20 +173,24 @@ Say "Installing the 'saturn' launcher into $BinDir"
 New-Item -ItemType Directory -Force -Path $BinDir | Out-Null
 $launcher = @"
 @echo off
-REM Saturday.ai launcher - runs the agent from its isolated venv.
+REM Saturn launcher - runs the agent from its isolated venv.
 "$VenvPy" "$(Join-Path $InstallDir 'agent.py')" %*
 "@
-Set-Content -Path (Join-Path $BinDir 'saturn.cmd') -Value $launcher -Encoding ascii
+# Default (ANSI) encoding, not ascii: a username with non-ASCII characters would corrupt the
+# venv path inside the launcher if forced to 7-bit.
+Set-Content -Path (Join-Path $BinDir 'saturn.cmd') -Value $launcher -Encoding default
 Ok 'Launcher installed'
 
 $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+if (-not $userPath) { $userPath = '' }   # a fresh account can have an empty user PATH
 if ($userPath -notlike "*$BinDir*") {
-  [Environment]::SetEnvironmentVariable('Path', ($userPath.TrimEnd(';') + ';' + $BinDir), 'User')
+  $newPath = if ($userPath) { $userPath.TrimEnd(';') + ';' + $BinDir } else { $BinDir }
+  [Environment]::SetEnvironmentVariable('Path', $newPath, 'User')
   Warn "Added $BinDir to your PATH - open a new terminal for 'saturn' to resolve."
 }
 
 # --- done --------------------------------------------------------------------------
 Write-Host ''
-Ok 'Saturday.ai installed.'
+Ok 'Saturn installed.'
 Write-Host "Run: saturn   (open a new terminal if PATH was just updated)" -ForegroundColor Cyan
 Write-Host 'First launch runs a setup check (/config setup). Use ''saturn -p "your question"'' for one-shot mode.'

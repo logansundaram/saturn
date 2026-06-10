@@ -35,6 +35,7 @@ _COMMAND_MODULES = [
     "help",
     "ingest",
     "load",
+    "memory",
     "models",
     "plan",
     "quit",

@@ -96,10 +96,47 @@ def show_node(node: str, delta: dict | None = None) -> None:
         _base._trace_started = True
     _emit(_node_line(node, dur, delta))
 
+    # Live reasoning: when the agent thinks out loud BEFORE acting (text content alongside its
+    # tool calls), surface it as a dim leaf under the agent's rail line — the "why" behind the
+    # tool sub-tree that follows. Text-only agent messages are skipped: a draft answer flows into
+    # synthesize (which the user sees), and showing it here would print it twice.
+    if node == "agent":
+        _render_agent_reasoning(delta.get("messages") or [])
+
     if delta.get("tool_events"):
         _render_tool_events(delta["tool_events"])
 
     _live_refresh()  # repaint the bar with the new node/iter/tools immediately
+
+
+# Cap the live reasoning preview: enough to read the thought, not enough to drown the trace.
+_REASONING_CAP = 280
+
+
+def _render_agent_reasoning(messages: list) -> None:
+    """Render the agent's pre-action reasoning (the text content of a tool-calling AIMessage) as
+    dim, wrapped leaf lines under the agent's trace row. Quietly does nothing when the message
+    has no text or no tool calls."""
+    import textwrap
+
+    msg = messages[-1] if messages else None
+    if msg is None or not getattr(msg, "tool_calls", None):
+        return
+    text = msg.content if isinstance(getattr(msg, "content", ""), str) else str(getattr(msg, "content", ""))
+    text = " ".join(text.split())
+    if not text:
+        return
+    text = _truncate(text, _REASONING_CAP)
+    avail = max(20, _term_width() - 10)
+    for i, ln in enumerate(textwrap.wrap(text, width=avail) or [text]):
+        prefix = f"{_TREE_LEAF} " if i == 0 else "  "
+        if _RICH:
+            row = _rail()
+            row.append(f"  {prefix}", style=_RAIL)
+            row.append(ln, style=_DIM)
+            _emit(row)
+        else:
+            _emit(f"  {_RAIL_GLYPH}   {prefix}{ln}")
 
 
 def _emit_result_leaf(cont: str, text: str, style: str) -> None:

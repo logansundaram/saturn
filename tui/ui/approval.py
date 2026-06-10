@@ -136,10 +136,57 @@ def _render_shell_command(args: dict) -> None:
             print(f"  ┃       $ {line}")
 
 
-def ask_approval(value: dict) -> bool:
+def _always_allow(tool_calls: list) -> None:
+    """The `a(lways)` answer: drop each gated tool to the auto-approved tier for THIS session —
+    exactly what `/risk <tool> read_only` does, without making the user know the command. Session-
+    only by design (registry.TOOL_RISK is in-memory); the declared tiers return on restart."""
+    import registry
+
+    names = sorted({tc.get("name", "") for tc in tool_calls if tc.get("name")})
+    for name in names:
+        registry.TOOL_RISK[name] = "read_only"
+    listing = ", ".join(names)
+    msg = f"  always-allowing this session: {listing}  (undo with /risk <tool> <tier>)"
+    if _RICH:
+        _console.print(Text(msg, style=_DIM))
+    else:
+        print(msg)
+
+
+def _select_calls(tool_calls: list, ask) -> "bool | dict":
+    """Per-call decisions (`s(elect)`): ask y/N for each gated call. Collapses to True/False when
+    the answers were unanimous; otherwise returns the partial-approval dict the gate understands."""
+    approved = []
+    for tc in tool_calls:
+        r = ask(f"      allow {tc.get('name')}? y/N » ").strip().lower()
+        if r in ("y", "yes"):
+            approved.append(tc.get("id"))
+    if len(approved) == len(tool_calls):
+        return True
+    if not approved:
+        return False
+    return {"approved_ids": approved}
+
+
+def _resolve_decision(resp: str, tool_calls: list, ask) -> "bool | dict":
+    """Map the gate prompt's answer to the approval node's resume value. Default (anything
+    unrecognized) is reject — the gate must fail closed."""
+    if resp in ("y", "yes"):
+        return True
+    if resp in ("a", "always"):
+        _always_allow(tool_calls)
+        return True
+    if resp in ("s", "select", "sel"):
+        return _select_calls(tool_calls, ask)
+    return False
+
+
+def ask_approval(value: dict) -> "bool | dict":
     """Compact, high-signal gate. Heavy rule + risk-colored tier so it breaks out of the dim
     trace rail. A write_file call additionally renders a colored unified diff of what it will
-    change (gotcha #2: write_file overwrites by default). Returns True to approve the whole batch."""
+    change (gotcha #2: write_file overwrites by default). Answers: `y` approves the batch, `n`
+    (default) rejects it, `s` decides per call, `a` approves AND auto-approves these tools for
+    the rest of the session. Returns True/False or {"approved_ids": [...]} for a partial batch."""
     tool_calls = value.get("tool_calls", []) if isinstance(value, dict) else []
 
     _live_stop()  # the gate blocks on input(); the bar can't be live while it does
@@ -187,7 +234,10 @@ def ask_approval(value: dict) -> bool:
                 hrow.append("  ┃ ", style="bold")
                 hrow.append(f"    ↳ {hint}", style=risk_style)
                 _console.print(hrow)
-        resp = _console.input("  [bold]┗━[/] approve? [bold]y/N[/] » ").strip().lower()
+        resp = _console.input(
+            "  [bold]┗━[/] approve? [bold]y[/]es / [bold]N[/]o / [bold]s[/]elect / [bold]a[/]lways » "
+        ).strip().lower()
+        decision = _resolve_decision(resp, tool_calls, _console.input)
     else:
         print("  ┏━ approval required " + "━" * 30)
         for tc in tool_calls:
@@ -207,8 +257,9 @@ def ask_approval(value: dict) -> bool:
             hint = _RISK_HINT.get(str(tc.get("risk")))
             if hint:
                 print(f"  ┃     -> {hint}")
-        resp = input("  ┗━ approve? y/N » ").strip().lower()
+        resp = input("  ┗━ approve? [y]es / [N]o / [s]elect / [a]lways » ").strip().lower()
+        decision = _resolve_decision(resp, tool_calls, input)
 
     _base._t_last = time.perf_counter()  # don't bill the human's decision time to the next node
     _live_start()  # the turn continues (tools -> agent -> …); re-pin the bar
-    return resp in ("y", "yes")
+    return decision

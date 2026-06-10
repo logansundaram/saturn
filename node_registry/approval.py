@@ -61,11 +61,14 @@ def _skip_rejected_steps(plan: list[dict], rejected_tools: list[str]) -> list[di
 def approval_node(state: AgentState) -> Command[Literal["tools", "agent"]]:
     """Human-in-the-loop safety gate. Calls within the configured auto-approve tier pass
     straight through. If any pending call exceeds it, pause via `interrupt` and let the user
-    approve or reject the whole batch.
+    decide per batch OR per call.
 
-    On reject we still emit ToolMessages for every pending call (so the message history stays
-    valid — orphaned tool_calls break the next model turn) and route back to the agent to
-    respond without having performed the action."""
+    The resume value is either a bool (True = approve the whole batch, False = reject it) or
+    `{"approved_ids": [...]}` from the UI's per-call select mode. Rejected calls get a decline
+    ToolMessage here (orphaned tool_calls break the next model turn); everything else in the
+    batch — ungated calls and per-call-approved ones — still routes to `tools`, which executes
+    only the calls that don't already have a ToolMessage. Only a fully-rejected batch goes back
+    to the agent to respond without having acted."""
     last = state["messages"][-1]
     tool_calls = getattr(last, "tool_calls", None) or []
     cfg = get_config()
@@ -74,44 +77,57 @@ def approval_node(state: AgentState) -> Command[Literal["tools", "agent"]]:
     if not gated:
         return Command(goto="tools")
 
-    approved = interrupt(
+    decision = interrupt(
         {
             "type": "approval_request",
             "tool_calls": [
-                {"name": tc["name"], "args": tc["args"], "risk": risk_of(tc["name"])}
+                {
+                    "id": tc["id"],
+                    "name": tc["name"],
+                    "args": tc["args"],
+                    "risk": risk_of(tc["name"]),
+                }
                 for tc in gated
             ],
         }
     )
 
-    if approved:
+    # Resolve the decision into the set of approved gated-call ids.
+    gated_ids = {tc["id"] for tc in gated}
+    if isinstance(decision, dict):
+        approved_ids = gated_ids & set(decision.get("approved_ids") or [])
+    elif decision:
+        approved_ids = set(gated_ids)
+    else:
+        approved_ids = set()
+
+    if approved_ids == gated_ids:
         return Command(goto="tools")
 
-    # Every pending tool_call still needs a ToolMessage (orphaned calls break the next model
-    # turn), but only the calls the user actually rejected should be told not to retry. A
-    # read-only call merely bundled into the same batch was never gated — decline it neutrally so
-    # the agent can re-issue it on its own next iteration instead of abandoning the result.
-    gated_ids = {tc["id"] for tc in gated}
-    decline = []
-    for tc in tool_calls:
-        if tc["id"] in gated_ids:
-            content = (
+    # Decline ONLY the rejected calls. (Previously a rejection abandoned the whole batch and a
+    # read-only call riding along had to be re-issued next iteration; now it just runs.)
+    rejected = [tc for tc in gated if tc["id"] not in approved_ids]
+    decline = [
+        ToolMessage(
+            content=(
                 "Execution declined by the user. Do not retry this action; tell the user you "
                 "did not perform it."
-            )
-        else:
-            content = (
-                "Not executed: this read-only call was held with a batch the user declined. "
-                "Call it again on its own if you still need its result."
-            )
-        decline.append(
-            ToolMessage(content=content, tool_call_id=tc["id"], name=tc["name"])
+            ),
+            tool_call_id=tc["id"],
+            name=tc["name"],
         )
+        for tc in rejected
+    ]
 
     # Retire the planned step(s) the rejected calls were fulfilling, so the plan stops demanding
     # work the user declined (otherwise lockstep + the nudge re-issue the same call indefinitely).
     update = {"messages": decline}
     plan = state.get("plan", [])
     if plan:
-        update["plan"] = _skip_rejected_steps(plan, [tc["name"] for tc in gated])
+        update["plan"] = _skip_rejected_steps(plan, [tc["name"] for tc in rejected])
+
+    # Anything left to run (ungated or approved) still runs; a fully-rejected batch goes back to
+    # the agent instead.
+    if len(rejected) < len(tool_calls):
+        return Command(goto="tools", update=update)
     return Command(goto="agent", update=update)

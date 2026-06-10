@@ -1,6 +1,7 @@
 # Saturn
 
 > A **local-first, transparent, general-purpose** AI agent that runs on your own machine.
+> Built by **Saturday.ai**.
 
 Saturn is a personal copilot you run in your terminal. It can search the web, read and
 write your files, retrieve from your own document library, do math, and remember things across
@@ -15,7 +16,7 @@ your machine by default, with optional cloud models when you want more horsepowe
 
 ## Why Saturn?
 
-Most AI assistants are a chat box in front of a remote model. Saturday.ai is built around four
+Most AI assistants are a chat box in front of a remote model. Saturn is built around four
 priorities, in order:
 
 - **Transparency** — A live execution trace shows each node, the evolving plan, every tool
@@ -39,7 +40,8 @@ priorities, in order:
 - **Your files** — read, write, and list files in a sandboxed workspace.
 - **Your documents (RAG)** — ingest PDFs/text/markdown into a local knowledge base it can search.
 - **Math** — a precise calculator tool.
-- **Memory** — durable facts that persist across sessions (`remember` / `recall`).
+- **Memory** — durable facts that persist across sessions (`remember` / `recall`), fully
+  inspectable and editable with `/memory`.
 - **Shell commands** — run arbitrary shell commands (scripts, build tools, git, package managers)
   in the sandboxed workspace. Uses PowerShell on Windows and `/bin/sh` on macOS/Linux — write
   commands in your platform's native syntax.
@@ -127,7 +129,7 @@ pip install -r requirements.txt
 ```
 
 > `prompt_toolkit` (live command highlighting) and `tavily-python` (premium web search) are
-> optional — Saturday runs fine without either.
+> optional — Saturn runs fine without either.
 
 ### 3. (Optional) Add API keys
 
@@ -217,8 +219,9 @@ Type `/help` for the full list, or `/<command> --help` for details on any one. H
 | `/ingest <path>` | Add a document to the knowledge base. |
 | `/docs` | List ingested documents and workspace files. |
 | `/tools` | List the agent's tools and their risk tiers. |
+| `/memory` | See, add, or delete the facts the agent permanently remembers. |
 | `/risk` · `/autoapprove` | Tune the safety gate. |
-| `/trace` · `/calls` | Inspect past runs and tool I/O. |
+| `/trace` | Inspect past runs, tool I/O (`/trace calls`), and LLM calls (`/trace invoke`). |
 | `/save` · `/load` | Persist and restore a conversation. |
 | `/reset` · `/quit` | Clear the conversation / exit. |
 
@@ -226,7 +229,7 @@ Type `/help` for the full list, or `/<command> --help` for details on any one. H
 
 ## Web search without an API key
 
-Saturday treats Tavily as an **upgrade, not a requirement**:
+Saturn treats Tavily as an **upgrade, not a requirement**:
 
 - **`web_search`** prefers Tavily when a healthy key exists and **automatically falls back to
   keyless DuckDuckGo** on a missing key or quota error.
@@ -244,7 +247,7 @@ So you can use every web feature with zero keys. Control the backend with `web.p
 ```
 agent.py            # entry point: builds the graph + runs the interactive loop
 config.yaml         # all settings: models, paths, safety, web provider
-commands.py         # slash-command layer
+commands/           # slash commands (one module per command)
 node_registry/      # the graph's nodes (ground, plan, agent, tools, synthesize, …)
 tool_registry/      # the agent's tools (web, files, calculator, knowledge, memory)
 stores/             # persistence: RAG, document manifests, durable memory, trace
@@ -272,7 +275,7 @@ Reports are written to `logging/benchmarks/`.
 
 ## Status
 
-Saturday.ai is an actively developed MVP: a CLI-first personal copilot today, with an
+Saturn (by Saturday.ai) is an actively developed MVP: a CLI-first personal copilot today, with an
 Electron/React frontend and integrations (email, calendar, Drive) on the post-MVP roadmap. It's
 built so adding those is straightforward. Contributions and feedback welcome.
 

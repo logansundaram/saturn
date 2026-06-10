@@ -1,5 +1,5 @@
 #!/bin/sh
-# Saturday.ai installer (macOS / Linux).
+# Saturn installer (macOS / Linux) - by Saturday.ai.
 #
 #   curl -fsSL https://raw.githubusercontent.com/logansundaram/saturn/main/install.sh | sh
 #
@@ -18,8 +18,9 @@ MIN_PY_MINOR=10
 # Active tier for a fresh install. 'laptop' uses the small gemma4 models so the download is
 # light and it runs on modest hardware; switch to 'workstation'/'cloud-hybrid' later via /models.
 TIER="${SATURDAY_TIER:-laptop}"
-# Local models the laptop tier needs (small gemma4 chat model + the RAG embedder). Override to
-# skip/customize, e.g. SATURDAY_MODELS="gemma4:e2b qwen3-embedding:8b" for an even lighter chat model.
+# Local models the laptop tier needs (small gemma4 chat model + the RAG embedder). Must match the
+# `laptop` tier bindings in config.yaml — pulling different models than the tier binds breaks the
+# first run. If you override this, rebind the roles afterwards with /models.
 MODELS="${SATURDAY_MODELS:-gemma4:e4b qwen3-embedding:8b}"
 # Minimum Ollama daemon version. Older daemons can't pull the current model formats (the pull
 # fails or the model runs wrong), so we update below if the installed one is behind this.
@@ -51,7 +52,7 @@ PY=""
 for c in python3 python; do
   if have "$c" && "$c" -c "import sys;exit(0 if sys.version_info>=($MIN_PY_MAJOR,$MIN_PY_MINOR) else 1)" 2>/dev/null; then PY="$c"; break; fi
 done
-[ -n "$PY" ] || die "Python ${MIN_PY_MAJOR}.${MIN_PY_MINOR}+ is required (older versions cannot run Saturday). Install or update it from https://python.org, then re-run."
+[ -n "$PY" ] || die "Python ${MIN_PY_MAJOR}.${MIN_PY_MINOR}+ is required (older versions cannot run Saturn). Install or update it from https://python.org, then re-run."
 ok "Python: $("$PY" --version 2>&1) ($(command -v "$PY"))"
 
 # --- 2. Ollama (local model runtime) ----------------------------------------------
@@ -103,7 +104,7 @@ if [ -d "$INSTALL_DIR/.git" ]; then
   git -C "$INSTALL_DIR" checkout --quiet "$BRANCH"
   git -C "$INSTALL_DIR" pull --quiet --ff-only origin "$BRANCH" || warn "Could not fast-forward (local changes?) - keeping current checkout."
 else
-  say "Cloning Saturday.ai into $INSTALL_DIR"
+  say "Cloning Saturn into $INSTALL_DIR"
   git clone --quiet --branch "$BRANCH" "$REPO_URL" "$INSTALL_DIR"
 fi
 ok "Source ready"
@@ -171,7 +172,7 @@ say "Installing the 'saturn' launcher into $BIN_DIR"
 mkdir -p "$BIN_DIR"
 cat > "$BIN_DIR/saturn" <<EOF
 #!/bin/sh
-# Saturday.ai launcher - runs the agent from its isolated venv.
+# Saturn launcher - runs the agent from its isolated venv.
 exec "$INSTALL_DIR/.venv/bin/python" "$INSTALL_DIR/agent.py" "\$@"
 EOF
 chmod +x "$BIN_DIR/saturn"
@@ -188,13 +189,13 @@ esac
 # Append the export line to $PROFILE (idempotent - safe on re-runs).
 add_to_path() {
   LINE="export PATH=\"$BIN_DIR:\$PATH\""
-  grep -qsF "$LINE" "$PROFILE" 2>/dev/null || printf '\n# Added by the Saturday.ai installer\n%s\n' "$LINE" >> "$PROFILE"
+  grep -qsF "$LINE" "$PROFILE" 2>/dev/null || printf '\n# Added by the Saturn installer\n%s\n' "$LINE" >> "$PROFILE"
   ok "Added $BIN_DIR to PATH in $PROFILE"
   printf '%sActivate it now:%s export PATH="%s:$PATH"   (or just open a new terminal)\n' "$B" "$X" "$BIN_DIR"
 }
 
 echo
-ok "Saturday.ai installed."
+ok "Saturn installed."
 case ":$PATH:" in
   *":$BIN_DIR:"*)
     printf '%sRun:%s saturn\n' "$B" "$X" ;;

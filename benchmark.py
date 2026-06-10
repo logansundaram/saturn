@@ -195,7 +195,6 @@ def _fresh_state() -> AgentState:
     return {
         "messages": [],
         "current_query": "",
-        "current_response": "",
         "context": "",
         "attachments": "",
         "plan": [],

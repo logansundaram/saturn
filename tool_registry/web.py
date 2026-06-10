@@ -161,7 +161,13 @@ def web_search(query: str):
             try:
                 return _client().search(query, max_results=_max_results())
             except _TAVILY_FALLBACK_ERRORS as err:
-                _disable_tavily(err)  # fall through to the keyless backend below
+                _disable_tavily(err)  # dead key/quota — keyless for the rest of the session
+            except Exception as err:
+                # Any other Tavily failure (network blip, 5xx, odd response shape) falls back to
+                # the keyless backend for THIS call only — the key may be fine, so it isn't
+                # disabled for the session. A flaky Tavily must never cost an answer DuckDuckGo
+                # could have given (deep_research already degrades the same way).
+                diag.log(f"[web] Tavily search failed ({type(err).__name__}); DuckDuckGo fallback")
         return _ddg_search(query, _max_results())
     finally:
         diag.log(f"web_search : {time.perf_counter() - start:.4f}s")
@@ -179,6 +185,10 @@ def web_extract(url: str):
                 return _client().extract(url)
             except _TAVILY_FALLBACK_ERRORS as err:
                 _disable_tavily(err)
+            except Exception as err:
+                # Transient Tavily failure: degrade to the local extractor for this call only
+                # (mirrors web_search — the key may be fine, so don't disable it).
+                diag.log(f"[web] Tavily extract failed ({type(err).__name__}); local fallback")
         # Local-first path: handle a single URL or a list of URLs.
         urls = [u for u in (url if isinstance(url, (list, tuple)) else [url]) if u]
         if not urls:

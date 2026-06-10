@@ -299,7 +299,6 @@ def _fresh_turn(state: AgentState, user_input: str) -> AgentState:
     state["messages"] = _compact_history(state["messages"])
     state["messages"].append(HumanMessage(content=user_input))
     state["current_query"] = user_input
-    state["current_response"] = ""
     state["context"] = ""
     state["attachments"] = ""  # set by the loop after expanding @file mentions (mentions.expand)
     state["plan"] = []
@@ -322,7 +321,6 @@ def _initial_state() -> AgentState:
     return {
         "messages": [],
         "current_query": "",
-        "current_response": "",
         "context": "",
         "attachments": "",
         "plan": [],
@@ -346,8 +344,13 @@ def main():
 
     Flags:
       -p / --prompt QUERY   Run one query headlessly, print the answer to stdout, and exit.
-                            No TUI, no interactive prompts; all tool calls auto-approved.
+                            No TUI, no interactive prompts. Read-only tools run freely; gated
+                            (side-effecting/destructive) tool calls are DENIED by default —
+                            there is no human at the approval gate, and safe-by-default must
+                            hold in every mode. Pass --yolo to auto-approve them instead.
                             Compatible with `saturn -p "..."` and shell pipelines.
+      --yolo                With -p: auto-approve gated tool calls (file writes, shell commands)
+                            instead of denying them. Mirrors the /autoapprove command.
       --version             Print the version and exit.
     """
     import argparse
@@ -355,6 +358,9 @@ def main():
     _parser = argparse.ArgumentParser(prog="saturn", add_help=False)
     _parser.add_argument("-p", "--prompt", metavar="QUERY", default=None,
                          help="Run a single query headlessly and print the answer to stdout.")
+    _parser.add_argument("--yolo", action="store_true",
+                         help="With -p: auto-approve side-effecting/destructive tool calls "
+                              "(denied by default in headless mode).")
     _parser.add_argument("--version", action="version", version=f"saturn {__version__}")
     _args, _ = _parser.parse_known_args()
 
@@ -379,18 +385,46 @@ def main():
         tracer = Tracer(DB_PATH)
         state = _initial_state()
         state = _fresh_turn(state, _args.prompt)
+        # @file mentions work headlessly too: `saturn -p "summarize @notes.md"` attaches the
+        # file exactly as the interactive loop does (the grounding node folds it into context).
+        attach_block, attached = mentions.expand(_args.prompt)
+        if attached:
+            state["attachments"] = attach_block
         thread_id = str(uuid.uuid4())
         run_id = tracer.start_run(thread_id, _args.prompt)
         config = {
             "configurable": {"thread_id": thread_id},
             "callbacks": [tracer.llm_handler(run_id)],
         }
+
+        def _headless_approver(value):
+            """Resolve interrupts with no human present. Gated tool calls are DENIED unless
+            --yolo was passed: the approval gate (the user seeing and approving the exact
+            action) is the product's safety boundary, and headless mode silently approving a
+            run_shell or write_file would delete it. The decline path is already honest — the
+            agent tells the user the action was not performed. Any other interrupt type (the
+            plan-review gate never arms headless) resumes unchanged via a bare True, which
+            plan_gate tolerates by design."""
+            if isinstance(value, dict) and value.get("type") == "approval_request":
+                if _args.yolo:
+                    return True
+                names = ", ".join(
+                    tc.get("name", "?") for tc in value.get("tool_calls", [])
+                )
+                print(
+                    f"denied gated tool call(s): {names} — headless mode does not approve "
+                    "side-effecting actions; re-run with --yolo to allow them.",
+                    file=sys.stderr,
+                )
+                return False
+            return True
+
         try:
             state = run_turn(
                 graph,
                 state,
                 config,
-                approver=lambda _v: True,  # auto-approve: no interactive gates in headless mode
+                approver=_headless_approver,
                 on_update=_make_on_update(tracer, run_id, show_ui=False),
             )
             answer = state["messages"][-1].content

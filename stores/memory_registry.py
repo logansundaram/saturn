@@ -102,6 +102,27 @@ def search_memory(query: str = "") -> list[str]:
     return [f for f in facts if query in f.lower()]
 
 
+def list_memory() -> list[str]:
+    """The stored fact lines (with their date/category prefix), in file order. Backs the
+    /memory command's numbered listing — the user-facing view of what the agent permanently
+    believes, so it must show exactly what the grounding node will load."""
+    return _facts(_read_raw())
+
+
+def remove_memory(index: int) -> "str | None":
+    """Delete the 1-based Nth stored fact (the numbering /memory shows). Returns the removed
+    fact line, or None if the index is out of range. Rewrites the file atomically with the
+    standard header — hand-written non-bullet lines outside the header are not preserved (the
+    file's contract is one fact per bullet; see _HEADER)."""
+    facts = _facts(_read_raw())
+    if not (1 <= index <= len(facts)):
+        return None
+    removed = facts.pop(index - 1)
+    body = "".join(f"- {f}\n" for f in facts)
+    _atomic_write(_memory_path(), _HEADER + body)
+    return removed
+
+
 def read_memory_block() -> str:
     """The stored facts formatted for injection into the grounding context. Empty string if
     nothing has been remembered yet (the grounding node then omits the section)."""

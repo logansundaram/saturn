@@ -67,15 +67,31 @@ def _fmt_call(name: str, args: dict) -> str:
 
 
 def tool_node(state: AgentState):
-    """Execute the tool calls on the last AI message and feed results back as ToolMessages."""
-    last = state["messages"][-1]
+    """Execute the pending tool calls and feed results back as ToolMessages.
+
+    The batch is the most recent tool-calling AIMessage's calls MINUS any call that already has
+    a ToolMessage: the approval gate answers rejected calls itself (decline ToolMessages) and
+    still routes here so the approved/ungated remainder runs. Walk back over those trailing
+    ToolMessages to find the issuing AIMessage."""
+    answered = set()
+    last = None
+    for m in reversed(state["messages"]):
+        if isinstance(m, ToolMessage):
+            answered.add(m.tool_call_id)
+            continue
+        last = m
+        break
+    pending_calls = [
+        tc for tc in (getattr(last, "tool_calls", None) or []) if tc["id"] not in answered
+    ]
+
     tool_messages = []
     tools_called = []
     tool_results = []
     documents_retrieved = []
     tool_events = []
 
-    for tool_call in last.tool_calls:
+    for tool_call in pending_calls:
         name = tool_call["name"]
         args = tool_call["args"]
 

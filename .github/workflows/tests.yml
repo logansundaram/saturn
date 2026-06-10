@@ -1,0 +1,27 @@
+# Core test suite — the pure-logic invariants in tests/test_core.py (plan accounting, history
+# compaction, observation clamping, config persistence, approval skip logic). No Ollama, no
+# network: everything under test is offline by design, so this runs anywhere.
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  core:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Run core tests
+        run: python tests/test_core.py

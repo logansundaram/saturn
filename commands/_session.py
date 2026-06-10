@@ -1,5 +1,5 @@
 """
-Session persistence helpers shared by /save, /load, /resume, and /quit.
+Session persistence helpers shared by /resume (autosave + named save/load/list) and /quit.
 """
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from pathlib import Path
 _SESSION_VERSION = 1
 _SAFE_NAME = re.compile(r"[^A-Za-z0-9._-]+")
 # Reserved slot that autosaves the live conversation so /resume can restore it.
-# Underscore-prefixed so it's hidden from /load's listing and unreachable by a user /save name.
+# Underscore-prefixed so it's hidden from /resume list and unreachable as a save name.
 _AUTOSAVE_NAME = "_autosave"
 
 

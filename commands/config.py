@@ -312,6 +312,19 @@ def _config_doctor(ctx) -> None:
         else:
             _print(f"        not set  {k.name:<18} -> /config key set {k.name} <value>")
 
+    # MCP servers (only when any are configured — most installs have none).
+    import mcp_client
+    statuses = mcp_client.status()
+    if statuses:
+        _print("    mcp servers")
+        for s in statuses:
+            if s.state == "connected":
+                _print(f"        ok       {s.name:<18} {len(s.tools)} tool(s)")
+            elif s.state == "disabled":
+                _print(f"        off      {s.name:<18} disabled in config.yaml")
+            else:
+                _print(f"        FAILED   {s.name:<18} {s.error or s.state}   -> /mcp reload")
+
     problems = check_models()
     _print("")
     if problems:

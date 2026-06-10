@@ -19,6 +19,7 @@ from langgraph.types import Command
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langchain.messages import HumanMessage, AIMessage, AIMessageChunk
 
+import budget
 import diag
 from config import get_config
 from state import AgentState
@@ -358,6 +359,10 @@ def main():
                             Compatible with `saturn -p "..."` and shell pipelines.
       --yolo                With -p: auto-approve gated tool calls (file writes, shell commands)
                             instead of denying them. Mirrors the /autoapprove command.
+      --json                With -p: emit one machine-readable JSON object to stdout instead of
+                            the plain answer — answer + plan + tools called + per-call events +
+                            token/timing stats — so Saturn can be piped into scripts and other
+                            programs. Errors also emit JSON (status: "error") and still exit 1.
       --version             Print the version and exit.
     """
     import argparse
@@ -368,6 +373,9 @@ def main():
     _parser.add_argument("--yolo", action="store_true",
                          help="With -p: auto-approve side-effecting/destructive tool calls "
                               "(denied by default in headless mode).")
+    _parser.add_argument("--json", action="store_true",
+                         help="With -p: print a structured JSON result (answer, plan, tools, "
+                              "tokens, timing) instead of the bare answer.")
     _parser.add_argument("--version", action="version", version=f"saturn {__version__}")
     _args, _ = _parser.parse_known_args()
 
@@ -426,6 +434,16 @@ def main():
                 return False
             return True
 
+        # --json: one machine-readable result object on stdout (the scripting/pipe contract).
+        # Built from the same state/trace the interactive receipts render; `default=str` so an
+        # odd arg value in tool_events can never crash the dump after the run itself succeeded.
+        import json as _json
+        import time as _time
+
+        def _emit_json(payload: dict) -> None:
+            print(_json.dumps(payload, ensure_ascii=False, default=str))
+
+        _started = _time.perf_counter()
         try:
             state = run_turn(
                 graph,
@@ -436,10 +454,42 @@ def main():
             )
             answer = state["messages"][-1].content
             tracer.end_run(run_id, "ok", answer)
-            print(answer)
+            if _args.json:
+                _emit_json(
+                    {
+                        "status": "ok",
+                        "query": _args.prompt,
+                        "answer": answer,
+                        "plan": state.get("plan", []),
+                        "tools_called": state.get("tools_called", []),
+                        "tool_events": state.get("tool_events", []),
+                        "documents_retrieved": len(state.get("documents_retrieved", [])),
+                        "iterations": state.get("iteration", 0),
+                        "context_tokens": state.get("context_tokens", 0),
+                        "tok_per_sec": round(float(state.get("tok_per_sec", 0.0) or 0.0), 1),
+                        "session_tokens": budget.spent(),
+                        "duration_s": round(_time.perf_counter() - _started, 3),
+                        "run_id": run_id,
+                        "version": __version__,
+                    }
+                )
+            else:
+                print(answer)
         except Exception as exc:
             tracer.end_run(run_id, "error", str(exc))
-            print(f"error: {exc}", file=sys.stderr)
+            if _args.json:
+                _emit_json(
+                    {
+                        "status": "error",
+                        "error": str(exc),
+                        "query": _args.prompt,
+                        "duration_s": round(_time.perf_counter() - _started, 3),
+                        "run_id": run_id,
+                        "version": __version__,
+                    }
+                )
+            else:
+                print(f"error: {exc}", file=sys.stderr)
             sys.exit(1)
         finally:
             try:
@@ -472,6 +522,12 @@ def main():
     # surfaced now with an actionable fix, rather than as a generic turn failure on the first query.
     # Non-fatal — the REPL still starts (commands work; an affected turn fails cleanly).
     for problem in check_models():
+        ui.warn(problem)
+    # MCP servers connected (or failed) while registry imported — surface any problems with the
+    # rest of the startup health report. /mcp shows the full status any time.
+    import mcp_client
+
+    for problem in mcp_client.problems():
         ui.warn(problem)
 
     # Carries the live session into slash-command handlers. `make_initial_state` lets
@@ -558,7 +614,14 @@ def main():
             if cmd_ctx.should_quit:
                 break
             state = cmd_ctx.state  # a command (e.g. /reset) may have swapped state out
-            continue
+            if cmd_ctx.requeue:
+                # The command queued a query to run NOW (today only /retry full, which rewinds
+                # the last turn and re-runs its question) — fall through and run it as an
+                # ordinary agent turn instead of returning to the prompt.
+                user_input = cmd_ctx.requeue
+                cmd_ctx.requeue = None
+            else:
+                continue
 
         if not user_input.strip():
             continue
@@ -664,9 +727,29 @@ def main():
         # If nothing streamed (e.g. the model yielded no content, or the turn aborted at the plan
         # gate before synthesize produced text), fall back to rendering the recorded final message.
         if answer.started:
-            answer.finish()
+            # Pass the RECORDED final message: synthesize may append the citations Sources footer
+            # after the token stream ended, so the streamed chars alone would silently drop it.
+            final = state["messages"][-1].content if state.get("messages") else None
+            answer.finish(final if isinstance(final, str) else None)
         else:
             ui.response(state["messages"][-1].content)
+
+        # Surface the session token budget (runtime.token_budget) when it bites. Once spent, every
+        # turn force-lands at synthesize without new tool rounds (route_after_agent) — which would
+        # otherwise look like the agent silently refusing to work. Warn-each-turn is deliberate:
+        # the condition persists until the user raises or clears the budget.
+        if budget.exceeded():
+            ui.warn(
+                f"session token budget spent ({_human_int(budget.spent())} of "
+                f"{_human_int(budget.limit())} tok) — turns now answer from what's already "
+                "gathered, with no new tool calls. Raise or clear it with "
+                "`/config runtime.token_budget <n|0>`."
+            )
+        elif budget.near():
+            ui.note(
+                f"session token budget {budget.spent() / budget.limit() * 100:.0f}% used "
+                f"({_human_int(budget.spent())}/{_human_int(budget.limit())} tok)."
+            )
 
         # If this turn pushed the context past the compaction threshold, summarize older turns now so
         # the next turn starts with a smaller window (best-effort; see _maybe_autocompact). Runs after

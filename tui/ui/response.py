@@ -158,10 +158,15 @@ class ResponseStream:
             t.append(ln)
         return t
 
-    def finish(self) -> None:
+    def finish(self, final_text: "str | None" = None) -> None:
         """Close out a successful turn: tear down the live tail, render the full answer once as
-        markdown, then the one-line receipt. Mirrors `response`'s final look exactly."""
-        text = "".join(self._chars)
+        markdown, then the one-line receipt. Mirrors `response`'s final look exactly.
+
+        `final_text`, when given, is rendered instead of the streamed chars — the loop passes the
+        RECORDED final message, which may carry mechanically-appended trailers the token stream
+        never saw (the citations Sources footer from synthesize). Falls back to the streamed text
+        when absent/empty so a caller without the final message loses nothing."""
+        text = final_text if isinstance(final_text, str) and final_text else "".join(self._chars)
         if self._live is not None:
             self._live.stop()  # transient: erases the streaming tail
             self._live = None
@@ -175,6 +180,12 @@ class ResponseStream:
             _console.print()
         else:
             print()  # close the typed-out line
+            # The plain path typed the streamed tokens out already — print only what the recorded
+            # final text appends beyond them (e.g. the Sources footer), never the whole thing twice.
+            streamed = "".join(self._chars).rstrip()
+            if text.rstrip() != streamed and text.startswith(streamed):
+                print(text[len(streamed):].strip("\n"))
+                print()
             print("  ╶ " + " · ".join(_turn_summary_parts()))
             print()
 

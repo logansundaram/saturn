@@ -1,5 +1,5 @@
 """
-On-demand readouts (`/system`, `/context`, `/models`) and the one-off log lines (notes, warnings,
+On-demand readouts (`/context`, `/models`) and the one-off log lines (notes, warnings,
 steering acknowledgements, queued-line echoes). All render in the trace-rail style and reuse the
 shared meter vocabulary (`_mini_bar`/`_meter_color`), so a gauge reads identically here, in the
 status bar, and in the live trace. None of these touch per-turn state.

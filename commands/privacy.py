@@ -71,10 +71,36 @@ def _privacy(ctx, args):
     _print("  web egress (only when the agent uses a web tool — every call shows in /trace)")
     ui.table(
         [
-            ("web_search / deep_research", f"the search query goes to {backend}"),
+            ("web_search", f"the search query goes to {backend}"),
             ("web_extract", "fetches the page directly from this machine; extraction is local"),
+            ("http_request", "sends exactly the request you approve at the gate — any URL"),
         ]
     )
+
+    # --- mcp servers ----------------------------------------------------------
+    import mcp_client
+
+    statuses = mcp_client.status()
+    if statuses or mcp_client.configured():
+        _print("  mcp servers (remote tools — a call sends its arguments to the server)")
+        if statuses:
+            ui.table(
+                [
+                    (
+                        s.name,
+                        (
+                            "local process — egress is whatever this server itself does"
+                            if s.transport == "stdio"
+                            else f"remote — tool args go to {s.target}"
+                        ),
+                        (s.state, ui.risk_style("read_only") if s.state == "connected" else "dim"),
+                    )
+                    for s in statuses
+                ]
+            )
+        else:
+            _print("    configured in config.yaml but not loaded — run /mcp reload")
+        _print("    every MCP tool faces the approval gate unless you lowered its tier (/mcp, /risk).")
 
     # --- api keys ------------------------------------------------------------
     _print("  api keys (set keys enable the egress above — /config key to manage)")

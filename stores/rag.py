@@ -17,7 +17,11 @@ from state import AgentState
 from stores.document_registry import register_rag_document, remove_rag_document
 
 
-SUPPORTED_EXTENSIONS = {".txt", ".md", ".pdf"}
+# What the corpus ingests. Text formats load directly; PDFs are cleaned (furniture/hyphenation);
+# HTML goes through trafilatura (already a dependency for web_extract) with a tag-strip fallback;
+# CSV is prefixed with a column summary so chunks keep their schema; DOCX needs python-docx
+# (requirements.txt) and fails that one file with a clear message when it's missing.
+SUPPORTED_EXTENSIONS = {".txt", ".md", ".pdf", ".html", ".htm", ".csv", ".docx"}
 
 
 def documents_dir():
@@ -38,7 +42,7 @@ def iter_documents():
         # dir) so the manifest isn't itself ingested as a corpus document.
         if file_path.name.startswith("."):
             continue
-        if file_path.is_file() and file_path.suffix in SUPPORTED_EXTENSIONS:
+        if file_path.is_file() and file_path.suffix.lower() in SUPPORTED_EXTENSIONS:
             yield file_path
 
 
@@ -214,15 +218,76 @@ def _normalize_pdf_text(text: str) -> str:
 _MD_HEADERS = [("#", "h1"), ("##", "h2"), ("###", "h3")]
 
 
+def _html_to_text(raw: str) -> str:
+    """Readable text from an HTML corpus file. trafilatura (the same local extractor web_extract
+    uses) does the heavy lifting; when it's unavailable or extracts nothing (a fragment, a
+    minimal page), degrade to a crude tag-strip so the file still embeds as *something* readable
+    rather than failing or embedding angle-bracket soup."""
+    try:
+        import trafilatura
+
+        text = trafilatura.extract(raw) or ""
+        if text.strip():
+            return text
+    except Exception:
+        pass
+    import html as _html
+
+    text = re.sub(r"(?is)<(script|style)[^>]*>.*?</\1>", " ", raw)
+    text = re.sub(r"(?s)<[^>]+>", " ", text)
+    text = _html.unescape(text)
+    text = re.sub(r"[ \t]+", " ", text)
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
+def _csv_to_text(raw: str) -> str:
+    """CSV prepared for chunking: a `[columns: …]` header line is prepended so every chunk —
+    including ones far from the first row — can be traced back to the schema. The rows themselves
+    stay verbatim (the chunker splits long files; values are what retrieval matches on)."""
+    try:
+        import csv as _csv
+        import io
+
+        first = next(_csv.reader(io.StringIO(raw)), None)
+        if first and any(c.strip() for c in first):
+            cols = ", ".join(c.strip() for c in first if c.strip())
+            return f"[columns: {cols}]\n{raw}"
+    except Exception:
+        pass
+    return raw
+
+
+def _docx_to_text(path: Path) -> str:
+    """Text from a .docx: paragraphs in order, plus table cells row by row (tab-joined) — the two
+    places Word documents keep their prose. Needs python-docx; a missing package raises a clear,
+    actionable error that sync() reports for THIS file while the rest of the corpus proceeds."""
+    try:
+        import docx  # python-docx
+    except ImportError as exc:
+        raise RuntimeError(
+            "reading .docx needs the python-docx package — run `pip install python-docx`"
+        ) from exc
+    d = docx.Document(str(path))
+    parts = [p.text for p in d.paragraphs if p.text.strip()]
+    for table in d.tables:
+        for row in table.rows:
+            cells = [c.text.strip() for c in row.cells if c.text.strip()]
+            if cells:
+                parts.append("\t".join(cells))
+    return "\n\n".join(parts)
+
+
 def _load_file_docs(path: Path):
     """Load one corpus file into (source, [Document], full_text). PDFs become one cleaned Document
     per page (`page` in metadata; furniture stripped, hyphenation repaired); markdown is
-    pre-sectioned by heading so chunks carry their section breadcrumb; plain text a single
-    Document. `full_text` is what the manifest summarizer sees."""
+    pre-sectioned by heading so chunks carry their section breadcrumb; HTML is extracted to
+    readable text (trafilatura); CSV gets a schema header; DOCX extracts paragraphs + tables;
+    plain text a single Document. `full_text` is what the manifest summarizer sees."""
     root = documents_dir()
     source = str(path.relative_to(root))
+    suffix = path.suffix.lower()
     docs = []
-    if path.suffix == ".pdf":
+    if suffix == ".pdf":
         reader = pypdf.PdfReader(str(path))
         raw_pages = [page.extract_text() or "" for page in reader.pages]
         page_texts = [_normalize_pdf_text(t) for t in _strip_repeated_furniture(raw_pages)]
@@ -232,12 +297,21 @@ def _load_file_docs(path: Path):
                     Document(page_content=text, metadata={"source": source, "page": page_num + 1})
                 )
         full_text = "\n\n".join(t for t in page_texts if t.strip())
-    elif path.suffix == ".md":
+    elif suffix == ".md":
         # errors="replace": one undecodable byte in a corpus file must degrade to a marker, not
         # raise — an uncaught UnicodeDecodeError here aborts sync() and breaks ALL retrieval
         # (get_vector_store runs sync on first use). Mirrors read_file / mentions.
         full_text = path.read_text(encoding="utf-8", errors="replace")
         docs = _markdown_sections(source, full_text)
+    elif suffix in (".html", ".htm"):
+        full_text = _html_to_text(path.read_text(encoding="utf-8", errors="replace"))
+        docs.append(Document(page_content=full_text, metadata={"source": source}))
+    elif suffix == ".csv":
+        full_text = _csv_to_text(path.read_text(encoding="utf-8", errors="replace"))
+        docs.append(Document(page_content=full_text, metadata={"source": source}))
+    elif suffix == ".docx":
+        full_text = _docx_to_text(path)
+        docs.append(Document(page_content=full_text, metadata={"source": source}))
     else:
         full_text = path.read_text(encoding="utf-8", errors="replace")
         docs.append(Document(page_content=full_text, metadata={"source": source}))
@@ -314,7 +388,17 @@ def sync(*, force: bool = False, verbose: bool = True, on_file=None) -> dict:
 
     store = _vector_store
     on_disk = {str(p.relative_to(documents_dir())): p for p in iter_documents()}
-    stats = {"added": 0, "updated": 0, "removed": 0, "unchanged": 0, "rebuilt": full_rebuild}
+    stats = {
+        "added": 0,
+        "updated": 0,
+        "removed": 0,
+        "unchanged": 0,
+        "rebuilt": full_rebuild,
+        # (source, error) for files whose LOADER failed (corrupt docx, missing python-docx, …).
+        # A bad file degrades to a reported skip instead of aborting the whole sync — one
+        # unreadable document must never take down retrieval for the rest of the corpus.
+        "failed": [],
+    }
 
     # Files gone from disk: drop their vectors + manifest entry.
     for source in [s for s in files if s not in on_disk]:
@@ -339,10 +423,18 @@ def sync(*, force: bool = False, verbose: bool = True, on_file=None) -> dict:
     for i, (source, path, h, entry) in enumerate(to_embed, start=1):
         if on_file:
             on_file(source, i, len(to_embed))
+        # Load BEFORE deleting the old vectors: if the loader fails (corrupt file, missing
+        # optional package), the previously-embedded version stays searchable and the failure is
+        # reported per-file instead of aborting the sync for the whole corpus. An EMBEDDING
+        # failure (daemon down) still raises out as before — nothing can proceed without it.
+        try:
+            _src, docs, full_text = _load_file_docs(path)
+            chunks, ids = _chunks_for(source, docs)
+        except Exception as exc:
+            stats["failed"].append((source, str(exc)))
+            continue
         if entry and entry.get("chunk_ids"):
             store.delete(entry["chunk_ids"])  # replace the old vectors for a changed file
-        _src, docs, full_text = _load_file_docs(path)
-        chunks, ids = _chunks_for(source, docs)
         if chunks:
             store.add_documents(chunks, ids=ids)
         register_rag_document(source, full_text)  # manifest summary (cached by hash downstream)
@@ -358,6 +450,8 @@ def sync(*, force: bool = False, verbose: bool = True, on_file=None) -> dict:
             f"+{stats['added']} ~{stats['updated']} -{stats['removed']} "
             f"={stats['unchanged']}" + ("  [full rebuild]" if full_rebuild else "")
         )
+        for source, err in stats["failed"]:
+            print(f"  failed to load {source}: {err}")
     return stats
 
 
@@ -383,7 +477,7 @@ def ingest_file(src_path: str) -> dict:
     p = Path(src_path).expanduser()
     if not p.exists():
         raise FileNotFoundError(src_path)
-    if p.suffix not in SUPPORTED_EXTENSIONS:
+    if p.suffix.lower() not in SUPPORTED_EXTENSIONS:
         raise ValueError(
             f"unsupported type '{p.suffix}'; supported: {sorted(SUPPORTED_EXTENSIONS)}"
         )

@@ -40,6 +40,9 @@ dependencies = [
     "ollama>=0.6.2",
     # --- knowledge base / documents ---
     "pypdf>=6.12.2",
+    "python-docx>=1.1.0",
+    # --- MCP client (remote tools behind the approval gate — mcp_client.py) ---
+    "mcp>=1.27.2",
     # --- web tools (keyless by default) ---
     "ddgs>=9.14.4",
     "trafilatura>=2.0.0",
@@ -57,6 +60,8 @@ dependencies = [
 [project.optional-dependencies]
 # Only needed if a tier binds a role to a cloud provider (the cloud-hybrid tier).
 cloud = ["langchain-anthropic>=1.0.0", "langchain-openai>=1.0.0"]
+# Dev-only: the unit test suite (tests/).
+dev = ["pytest>=8.0"]
 
 [project.urls]
 Homepage = "https://github.com/logansundaram/saturn"
@@ -69,9 +74,9 @@ saturn = "agent:main"
 # The repo is deliberately flat (see CLAUDE.md): runtime modules at the root, a few
 # subpackages. Dev-only artifacts (benchmark.py, utilities/, tests/) are not shipped.
 py-modules = [
-    "agent", "compaction", "config", "diag", "env_keys", "interrupts",
-    "llms", "mentions", "messages", "permissions", "plan_ops", "registry",
-    "state", "toolspec", "typeahead",
+    "agent", "budget", "compaction", "config", "diag", "env_keys", "interrupts",
+    "llms", "mcp_client", "mentions", "messages", "permissions", "plan_ops",
+    "registry", "state", "toolspec", "typeahead",
 ]
 
 [tool.setuptools.packages.find]

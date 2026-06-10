@@ -38,26 +38,42 @@ nodes are small registry-based modules; adding a capability is adding a file).
 ## What it can do
 
 - **Multi-step reasoning** — a living-plan ReAct loop: it drafts a plan, executes one step at a
-  time, sees each tool result, and decides the next action.
-- **Web search & research** — works **with or without an API key**. With a
-  [Tavily](https://tavily.com) key you get premium search/extract/research; without one it falls
-  back automatically to keyless DuckDuckGo search + local page extraction.
+  time, sees each tool result, and decides the next action. Multi-source research works this
+  way too: search + read steps composed in a plan you can watch and edit, not an opaque
+  "research" call.
+- **Web search** — works **with or without an API key**. With a [Tavily](https://tavily.com)
+  key you get premium search; without one it falls back automatically to keyless DuckDuckGo
+  search + local page extraction.
+- **Your APIs** — `http_request` talks to any REST endpoint or self-hosted service (Home
+  Assistant, Gitea, Jellyfin, …), and shows you the exact request — method, URL, headers,
+  body — for approval before anything is sent. One tool instead of fifty integrations.
 - **Your files** — read, write, edit (anchored string replace), search (content regex + name
   glob), and list files in a sandboxed workspace — with pre-write snapshots, so `/undo` can
   revert any turn's file changes.
-- **Your documents (RAG)** — ingest PDFs/text/markdown into a local knowledge base it can search.
-- **Math** — a precise calculator tool.
+- **Your documents (RAG)** — ingest PDFs, text, markdown, HTML, CSV, and Word (.docx) files into
+  a local knowledge base it can search.
+- **Math & time** — a precise calculator and the machine's own clock, so arithmetic and
+  "today" are computed, never guessed from memory.
 - **Memory** — durable facts that persist across sessions (`remember` / `recall`), fully
   inspectable and editable with `/memory`.
 - **Shell commands** — run arbitrary shell commands (scripts, build tools, git, package managers)
   in the sandboxed workspace. Uses PowerShell on Windows and `/bin/sh` on macOS/Linux — write
-  commands in your platform's native syntax.
+  commands in your platform's native syntax. Long-running processes (a dev server, a watcher)
+  can run **in the background** with their output captured to a log the agent can check and a
+  job it can stop; anything still running when you quit is cleaned up.
+- **Cited answers** — answers that drew on tools or documents cite their sources inline (`[1]`)
+  and end with a Sources list mapping each number to the exact tool call or document behind it.
+- **MCP servers** — plug in any [Model Context Protocol](https://modelcontextprotocol.io) server
+  (stdio or remote HTTP/SSE) by declaring it in `config.yaml`; its tools join the agent behind
+  the **same approval gate** as everything else. Remote tools always prompt until *you* lower
+  their risk tier — a server's own "read-only" claim is never trusted. `/mcp` shows status.
 - **Human-in-the-loop planning** — pause and edit the agent's plan mid-run if it's heading the
   wrong way, or type a correction and press Esc to steer the running turn.
 - **Per-workspace instructions** — `/init` surveys your workspace and drafts `SATURDAY.md`,
   standing instructions loaded every turn (like a per-project system prompt).
 - **Headless mode** — `saturn -p "query"` runs one query and prints the answer; gated tools are
-  denied by default (no human at the gate) unless you pass `--yolo`.
+  denied by default (no human at the gate) unless you pass `--yolo`. Add `--json` for a
+  machine-readable result (answer, plan, tools, tokens, timing) you can pipe into scripts.
 
 ---
 
@@ -210,7 +226,8 @@ Everything lives in **`config.yaml`**:
 - **`tiers`** — maps each role (planner / tool_caller / synthesizer / …) to a concrete model, so
   swapping hardware is a one-line change.
 - **`runtime`** — loop and safety knobs: `max_iterations`, `auto_approve` (the approval policy),
-  `num_ctx` (context window), `lockstep`.
+  `num_ctx` (context window), `lockstep`, `token_budget` (a hard session spend ceiling — useful
+  with cloud models), `citations` (inline source citations in answers).
 - **`web`** — search backend: `auto` (prefer Tavily if a key exists, else DuckDuckGo), `tavily`,
   or `duckduckgo`.
 
@@ -242,17 +259,20 @@ Type `/help` for the full list, or `/<command> --help` for details on any one. H
 | `/help` | List all commands (or detail one). |
 | `/models` | List installed Ollama models; switch what drives each role. |
 | `/config` | View/edit settings and **API keys** (`/config key …`). |
-| `/context` | Show / resize the model context window. |
+| `/context` | Runtime readout (context window + fill, CPU/RAM/GPU); resize the window. |
 | `/plan` | Show the plan; control review mode, mid-run pause, and lockstep. |
 | `/docs` | The knowledge base: list documents, `add <path>`, `remove <name>`, `sync`. |
 | `/tools` | List the agent's tools and their risk tiers. |
+| `/mcp` | MCP server status + the remote tools they add; `reload` after a config edit. |
 | `/memory` | See, add, or delete the facts the agent permanently remembers. |
 | `/risk` · `/allow` · `/autoapprove` | Tune the safety gate (persistable overrides + shell allowlist). |
 | `/privacy` | What can leave this machine right now — inference, web egress, keys, data locations. |
 | `/undo` | Revert the file changes of the last turn that wrote anything. |
+| `/rewind` | Drop the last exchange from the conversation (files untouched — that's `/undo`). |
+| `/retry` | Regenerate the last answer; `/retry full` re-runs the whole turn from scratch. |
 | `/init` | Survey the workspace and draft `SATURDAY.md` standing instructions. |
 | `/trace` | Inspect past runs, tool I/O, LLM calls, cost; `/trace export` writes a tamper-evident run record. |
-| `/save` · `/load` · `/resume` | Persist and restore conversations (autosave survives a crash). |
+| `/resume` | Continue your last session (autosaved); `save`/`list`/`delete`/`rename`/`<name>` for named sessions. |
 | `/update` | Self-update: pull the latest Saturn (your data is never touched). |
 | `/clear` · `/quit` | Start a fresh conversation / exit. |
 
@@ -265,11 +285,10 @@ Saturn treats Tavily as an **upgrade, not a requirement**:
 - **`web_search`** prefers Tavily when a healthy key exists and **automatically falls back to
   keyless DuckDuckGo** on a missing key or quota error.
 - **`web_extract`** reads pages **locally** (via `trafilatura`) — no key, no API call.
-- **`deep_research`** uses Tavily's research job when available, otherwise runs a local loop:
-  search → read top results → synthesize.
 
 So you can use every web feature with zero keys. Control the backend with `web.provider` in
-`config.yaml`.
+`config.yaml`. For deeper research, the agent plans multiple search + read steps — visible in
+the plan rail, every call traced — rather than hiding them inside a monolithic research tool.
 
 ---
 

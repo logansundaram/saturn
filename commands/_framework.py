@@ -26,6 +26,10 @@ class CommandContext:
     session_started_at: str = ""
     # Persistent plan-review mode: when on, every turn pauses at the first plan_gate.
     review_plan: bool = False
+    # A query a command wants run as an agent turn IMMEDIATELY after it returns (today only
+    # /retry full, which rewinds the last turn and re-runs its question). The REPL loop consumes
+    # and clears it instead of returning to the prompt.
+    requeue: Optional[str] = None
 
 
 Handler = Callable[["CommandContext", list[str]], None]
@@ -112,6 +116,13 @@ _RENAMED = {
     "forget": "docs remove",
     "remove": "docs remove",
     "reingest": "docs sync --force",
+    # June 2026 focus pass: overlapping readouts + session commands consolidated.
+    "workspace": "docs",
+    "ws": "docs",
+    "system": "context",
+    "sys": "context",
+    "save": "resume save",
+    "load": "resume",
 }
 
 

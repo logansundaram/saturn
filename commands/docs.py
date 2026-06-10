@@ -99,7 +99,11 @@ def _add(rest: list) -> None:
         _print(f"  unsupported type '{path.suffix}' — supported: {', '.join(sorted(SUPPORTED_EXTENSIONS))}")
         return
     s = ingest_file(str(path))
-    if s["added"] or s["updated"]:
+    failed = dict(s.get("failed") or [])
+    if any(src == path.name or src.endswith(path.name) for src in failed):
+        err = next(e for src, e in failed.items() if src == path.name or src.endswith(path.name))
+        _print(f"  could not load {path.name}: {err}")
+    elif s["added"] or s["updated"]:
         _print(f"  added {path.name} — +{s['added']} ~{s['updated']} (cache updated).")
     else:
         _print(f"  {path.name} already up to date in the corpus.")
@@ -142,3 +146,5 @@ def _sync(*, force: bool) -> None:
         f"-{s['removed']} removed  ={s['unchanged']} unchanged"
         + ("  [full rebuild]" if s["rebuilt"] else "")
     )
+    for src, err in s.get("failed") or []:
+        _print(f"  failed to load {src}: {err}")

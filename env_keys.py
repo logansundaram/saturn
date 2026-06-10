@@ -4,7 +4,7 @@ Managed API-key store — the `.env`-backed secrets layer behind `/config key`.
 `config.py` owns `config.yaml` (non-secret runtime settings); this owns the secrets in `.env`
 at the repo root — the API keys the tools and providers read from the environment. They're kept
 separate on purpose: secrets don't belong in `config.yaml` (which `/config` can echo and a future
-`/save` could serialize), and they have different mechanics — persisted to `.env`, applied to
+`/resume save` could serialize), and they have different mechanics — persisted to `.env`, applied to
 `os.environ` live, and masked whenever displayed.
 
 Like the rest of the repo this imports nothing from the project (no circular-import risk), so it's

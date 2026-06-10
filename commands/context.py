@@ -6,13 +6,14 @@ _MIN_NUM_CTX = 256  # below this Ollama can't fit the system prompts; reject obv
 
 @command(
     "context",
-    "Show the model context window and how full it is; resize it.",
+    "Runtime readout: context window + fill, CPU/RAM/GPU; resize the window.",
     aliases=("ctx",),
     usage="/context [size|auto]",
     details="""
-With no args, shows the active context window (num_ctx), how full it was on the last LLM call
-(a fill bar + token count), and the per-role windows. The same fill gauge rides the bottom
-status bar live during a turn, colored green→yellow→red as it fills.
+With no args, the combined runtime readout: the active context window (num_ctx), how full it was
+on the last LLM call (a fill bar + token count), the per-role windows, and a point-in-time
+CPU/RAM/GPU/VRAM snapshot (the same gauges the status bar streams live during a turn, colored
+green→yellow→red by load). (/system was folded in here — one runtime readout, not two.)
 
 With a size, sets the Ollama context window for every local role at once (session only) and
 rebuilds the models so it takes effect next turn — num_ctx is fixed when a model is built, so
@@ -53,6 +54,23 @@ def _context(ctx, args):
             source = f"auto · {model_id('tool_caller')} capability"
         per_role = {role: cfg.num_ctx_for(model_id(role)) for role in _ROLES}
         ui.show_context(window, used, source, per_role)
+        # Session token budget (runtime.token_budget) — shown only when one is set, with the
+        # enforcement consequence spelled out once it has actually been spent.
+        import budget
+
+        if budget.limit():
+            pct = budget.spent() / budget.limit() * 100
+            line = (
+                f"  token budget: {budget.spent():,} / {budget.limit():,} session tokens"
+                f" ({pct:.0f}%)"
+            )
+            if budget.exceeded():
+                line += " — SPENT: turns answer without new tool calls"
+            _print(line)
+        # The hardware half of the runtime readout (absorbed from the old /system).
+        from tui.system_monitor import get_system_metrics
+
+        ui.show_system_metrics(get_system_metrics())
         return
 
     arg = args[0].lower()

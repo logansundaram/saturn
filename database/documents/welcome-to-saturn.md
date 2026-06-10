@@ -47,7 +47,8 @@ Saturn has a built-in toolbox. It decides which to use; you approve anything ris
 | `calculate` | Precise arithmetic and math. |
 | `web_search` | Search the web (Tavily if you set `TAVILY_API_KEY`, otherwise keyless DuckDuckGo). |
 | `web_extract` | Pull the readable text out of a web page (local, no key). |
-| `deep_research` | Multi-source research over several pages, bounded by a time budget. |
+| `http_request` | Send one HTTP request to any URL/API (self-hosted services especially). **Always** asks for approval first, showing the exact request. |
+| `current_time` | The machine's current date/time — so "today" is never guessed. |
 | `read_file` / `write_file` / `edit_file` | Read, create, and surgically edit files in your **workspace** (see below). Writes are snapshotted first, so `/undo` can revert them. |
 | `list_directory` / `search_files` / `find_files` | Browse the workspace, grep file contents, find files by name. |
 | `search_knowledge_base` | Semantic search over your ingested **documents** (this is RAG). |
@@ -87,13 +88,14 @@ Anything you type starting with `/` is a command, not a message to the agent.
 - `/plan` — view the plan and execution mode; pause or edit it mid-turn.
 - `/trace` — drill into what just happened: tool inputs/outputs, the model's reasoning, and cost.
 - `/tools` — list available tools and their risk level.
-- `/models`, `/config`, `/system` — see and tune which models run and how.
+- `/models`, `/config`, `/context` — see and tune which models run, the context window, and
+  the hardware load.
 - `/context`, `/compact` — manage the conversation's context window.
 - `/memory` — see, add, or delete the facts Saturn permanently remembers.
 - `/undo` — revert the file changes of the last turn that wrote anything.
 - `/init` — survey your workspace and draft `SATURDAY.md`, standing instructions Saturn loads
   every turn.
-- `/save`, `/load`, `/resume` — keep and restore conversations.
+- `/resume` — continue your last conversation (autosaved), or `save`/`list`/restore named ones.
 - `/risk`, `/allow`, `/autoapprove` — tune the approval gate (use the last with care).
 - `/update` — pull the latest Saturn (your data is never touched).
 - `/clear` — start a fresh conversation; `/quit` — exit.

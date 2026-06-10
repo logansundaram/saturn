@@ -12,7 +12,8 @@ from toolspec import _TOOLS, _RISK, _RETRIEVAL  # collected as the imports below
 # Importing each module runs its @register_tool decorators, populating the toolspec collections.
 # Import order here is purely cosmetic — it sets the order the planner lists tools in.
 from tool_registry.calculator import calculate  # noqa: E402,F401
-from tool_registry.web import web_search, web_extract, deep_research  # noqa: E402,F401
+from tool_registry.clock import current_time  # noqa: E402,F401
+from tool_registry.web import web_search, web_extract, http_request  # noqa: E402,F401
 from tool_registry.files import (  # noqa: E402,F401
     read_file,
     write_file,
@@ -23,7 +24,19 @@ from tool_registry.files import (  # noqa: E402,F401
 )
 from tool_registry.knowledge import search_knowledge_base  # noqa: E402,F401
 from tool_registry.memory import remember, recall  # noqa: E402,F401
-from tool_registry.shell import run_shell  # noqa: E402,F401
+from tool_registry.shell import run_shell, check_shell_job, stop_shell_job  # noqa: E402,F401
+
+# Remote MCP tools (roadmap #12): connect the servers declared under `mcp.servers` in config.yaml
+# and register each remote tool through toolspec.register_tool_object, so they land in the same
+# collections as the local tools above — same gate, same /tools, same planner catalog. Runs HERE,
+# after the local registrations (collisions resolve in the local tools' favour) and BEFORE the
+# persisted /risk overrides below (so a saved override on an MCP tool name applies). Every MCP
+# tool fails closed to `destructive` unless the user's own config/overrides relax it. No servers
+# configured -> no-op. Failures are recorded (mcp_client.problems(), warned at startup) — never
+# raised, so a bad server entry can't take the app down.
+import mcp_client  # noqa: E402
+
+mcp_client.startup()
 
 # --- collected views (established public names) ---------------------------------------------
 tool = _TOOLS                      # the active tool list (bound to the agent, listed by the planner)

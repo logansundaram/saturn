@@ -3,11 +3,19 @@ Web tools — everything that reaches the live internet.
 
   web_search    — a single web search query.
   web_extract   — fetch + extract the readable content behind a URL.
-  deep_research — multi-source research report.
+  http_request  — one HTTP request to any URL/API; registered `destructive` so the gate shows
+                  the exact method/URL/headers/body before anything is sent. The universal
+                  integration: it talks to every REST API (self-hosted services especially)
+                  without Saturn owning a per-service integration.
+
+(There is deliberately no monolithic `deep_research` tool: multi-source research is the
+living-plan loop's job — the planner composes web_search + web_extract steps, each visible in
+the plan rail, gated, and traced. A single opaque research call would hide exactly the steps
+this product exists to show; it was removed June 2026 as a scope cut.)
 
 Key-optional, local-first provider strategy
 --------------------------------------------
-None of these *require* a Tavily API key. Tavily is treated as a quality upgrade, not a hard
+Neither of these *require* a Tavily API key. Tavily is treated as a quality upgrade, not a hard
 dependency, so the agent stays useful when the user has no key or has run out of usage.
 
   web_search    resolves a backend via `_use_tavily()`. With `web.provider: auto` (the default)
@@ -18,12 +26,9 @@ dependency, so the agent stays useful when the user has no key or has run out of
   web_extract   is local-first: it fetches + extracts readable text with `trafilatura`, no key
                 and no API call. (Tavily Extract is only used if `web.provider: tavily` is
                 forced and a key is present.)
-  deep_research uses Tavily's research job when Tavily is available; otherwise it reimplements
-                the same shape locally — web_search -> read the top hits -> synthesize with the
-                local `synthesizer` model. Slower, but keyless and free.
 
-Provider selection lives in `config.yaml` under `web:` (`provider`, `max_results`,
-`deep_research_sources`); nothing is hard-coded here.
+Provider selection lives in `config.yaml` under `web:` (`provider`, `max_results`); nothing is
+hard-coded here.
 """
 
 import os
@@ -45,22 +50,6 @@ from config import get_config
 from toolspec import register_tool
 
 load_dotenv()
-
-# Seconds between status checks while a (Tavily) deep_research job runs.
-_POLL_INTERVAL = 3
-
-# Hard ceiling (seconds) on how long we wait for a Tavily research job before giving up and
-# falling back to the local research loop. Without it the poll below is an unbounded `while True`
-# that hangs the whole turn forever if the job never reaches "completed" (stuck or failed job).
-_RESEARCH_TIMEOUT_DEFAULT = 180
-
-
-def _research_timeout() -> float:
-    """Max seconds to wait on a Tavily research job (config `web.deep_research_timeout`)."""
-    try:
-        return float(get_config().get("web.deep_research_timeout", _RESEARCH_TIMEOUT_DEFAULT))
-    except (TypeError, ValueError):
-        return float(_RESEARCH_TIMEOUT_DEFAULT)
 
 # Tavily errors that mean "this key is unusable" — they trigger the keyless fallback and
 # disable Tavily for the rest of the session.
@@ -166,7 +155,7 @@ def web_search(query: str):
                 # Any other Tavily failure (network blip, 5xx, odd response shape) falls back to
                 # the keyless backend for THIS call only — the key may be fine, so it isn't
                 # disabled for the session. A flaky Tavily must never cost an answer DuckDuckGo
-                # could have given (deep_research already degrades the same way).
+                # could have given.
                 diag.log(f"[web] Tavily search failed ({type(err).__name__}); DuckDuckGo fallback")
         return _ddg_search(query, _max_results())
     finally:
@@ -199,65 +188,40 @@ def web_extract(url: str):
         diag.log(f"web_extract : {time.perf_counter() - start:.4f}s")
 
 
-def _local_deep_research(query: str) -> str:
-    """Keyless deep_research: search, read the top hits, and synthesize a report with the
-    local `synthesizer` model. Mirrors the shape of Tavily's research job without a key."""
-    from langchain_core.messages import HumanMessage, SystemMessage
-
-    from llms import get_model
-
-    n = int(get_config().get("web.deep_research_sources", 4))
-    hits = _ddg_search(query, max_results=n).get("results", [])
-    sources = []
-    for h in hits:
-        body = _local_extract(h["url"]) if h.get("url") else (h.get("content") or "")
-        sources.append(f"## {h.get('title')}\n{h.get('url')}\n\n{body[:4000]}")
-    corpus = "\n\n---\n\n".join(sources) or "(no sources retrieved)"
-
-    msgs = [
-        SystemMessage(content=(
-            "You are a research assistant. Write a comprehensive, well-structured report that "
-            "answers the user's query using ONLY the provided sources. Cite source URLs inline. "
-            "If the sources are insufficient, say so plainly."
-        )),
-        HumanMessage(content=f"Query: {query}\n\nSOURCES:\n{corpus}"),
-    ]
-    return get_model("synthesizer").invoke(msgs).content
+# Response content-types returned as text; anything else is summarized, not dumped — a binary
+# body would be mojibake in context (and the tool node clamps observations anyway, gotcha #5).
+_TEXTUAL_TYPES = ("text", "json", "xml", "html", "javascript", "urlencoded")
 
 
-@register_tool("side_effecting")
-def deep_research(query: str):
-    """Performs deep research on the given query and returns a comprehensive research report.
-    A more advanced, multi-source version of web_search for a thorough, detailed analysis.
-    Slow and costly — use only when a single web_search will not suffice. Uses Tavily's
-    research job when a key is configured, otherwise runs a keyless local research loop."""
+@register_tool("destructive")
+def http_request(url: str, method: str = "GET", headers: dict | None = None,
+                 body: str | None = None):
+    """Send one HTTP request to a URL or API endpoint and return the response (status code,
+    content type, body). Use this to talk to APIs and self-hosted services (REST endpoints,
+    home-lab apps, webhooks) — NOT for ordinary web reading (use web_search/web_extract for
+    that). Every call is approved by the human first, who sees the exact method, URL, headers,
+    and body before anything is sent."""
+    method = (method or "GET").upper()
+    try:
+        timeout = float(get_config().get("web.request_timeout", 30))
+    except (TypeError, ValueError):
+        timeout = 30.0
     start = time.perf_counter()
     try:
-        if _use_tavily():
-            try:
-                client = _client()
-                job = client.research(input=query, model="pro")
-                request_id = job["request_id"]
-                # Bounded poll: give up at the deadline or on a terminal failure status, then fall
-                # through to the keyless local loop — never spin forever on a stuck/failed job.
-                deadline = time.perf_counter() + _research_timeout()
-                while time.perf_counter() < deadline:
-                    status_response = client.research_get(request_id)
-                    status = status_response.get("status")
-                    if status == "completed":
-                        return status_response["response"]
-                    if status in ("failed", "error", "cancelled"):
-                        diag.log(f"deep_research : Tavily job {status}; falling back to local")
-                        break
-                    time.sleep(_POLL_INTERVAL)
-                else:
-                    diag.log("deep_research : Tavily research timed out; falling back to local")
-            except _TAVILY_FALLBACK_ERRORS as err:
-                _disable_tavily(err)  # key/quota dead — fall through to the local loop below
-            except Exception as err:
-                # Any other Tavily failure (unexpected response shape, network drop) must not strand
-                # the turn — log and fall through to the keyless local research loop.
-                diag.log(f"deep_research : Tavily research failed ({type(err).__name__}); local fallback")
-        return _local_deep_research(query)
+        resp = httpx.request(
+            method, url,
+            headers=headers or None,
+            content=body if body is not None else None,
+            timeout=timeout,
+            follow_redirects=True,
+        )
+        ctype = resp.headers.get("content-type", "")
+        if not ctype or any(t in ctype for t in _TEXTUAL_TYPES):
+            payload = resp.text
+        else:
+            payload = f"(binary response: {ctype}, {len(resp.content)} bytes)"
+        return {"status": resp.status_code, "content_type": ctype, "body": payload}
+    except httpx.HTTPError as err:
+        return f"http_request failed: {type(err).__name__}: {err}"
     finally:
-        diag.log(f"deep_research : {time.perf_counter() - start:.4f}s")
+        diag.log(f"http_request : {method} {url} : {time.perf_counter() - start:.4f}s")

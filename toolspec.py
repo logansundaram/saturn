@@ -53,3 +53,26 @@ def register_tool(risk: str = "destructive", *, retrieval: bool = False):
         return t
 
     return decorate
+
+
+def register_tool_object(t, risk: str = "destructive", *, retrieval: bool = False):
+    """Register an ALREADY-CONSTRUCTED LangChain tool object (list + risk tier + retrieval flag).
+
+    The dynamic-source counterpart of @register_tool: a tool that can't be written as a decorated
+    local function — e.g. a remote MCP tool built at runtime from a server's listing
+    (mcp_client.py) — registers through here and flows into the exact same collections, so the
+    approval gate, /tools, /risk, and the planner catalog treat it like any local tool.
+
+    Unlike @register_tool (a developer-facing decorator, where an unknown tier is a programming
+    error worth crashing on), `risk` here may originate from user config or a remote source, so an
+    invalid value FAILS CLOSED to 'destructive' instead of raising — a dynamically-sourced tool
+    must never end up ungated by a typo. Callers wanting to surface the downgrade should validate
+    before calling. A tool must NEVER self-declare its tier (a remote server claiming read_only is
+    exactly the attack the gate exists for); only the user's own config/overrides may relax it."""
+    if risk not in RISK_TIERS:
+        risk = "destructive"
+    _TOOLS.append(t)
+    _RISK[t.name] = risk
+    if retrieval:
+        _RETRIEVAL.add(t.name)
+    return t

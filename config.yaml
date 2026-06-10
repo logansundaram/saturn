@@ -23,6 +23,7 @@ paths:
   snapshots: database/snapshots        # per-turn pre-write file snapshots (/undo)
   permissions: database/permissions.json  # persisted /risk overrides + /allow shell prefixes
   exports: logging/exports             # /trace export run records (audit artifacts)
+  shell_jobs: logging/shell            # background run_shell job logs (check_shell_job reads them)
 
 # ---------------------------------------------------------------------------
 # Loop / safety runtime knobs (were the MAX_ITERATIONS constant + the gate policy).
@@ -52,6 +53,16 @@ runtime:
   # compaction always runs; this is the heavier LLM summary. `/compact` triggers it on demand.
   auto_compact: true
   compact_threshold: 0.85
+  # Session token budget: total tokens (input + output, summed over this session's agent +
+  # synthesizer LLM calls — best-effort accounting, see budget.py) the agent may spend before the
+  # loop stops starting new tool rounds and wraps every turn up at synthesize immediately (the
+  # same forced landing as max_iterations). Mainly a cost ceiling for cloud-bound tiers; the
+  # status warning at the prompt explains when it bites. 0 disables.
+  token_budget: 0
+  # Answer provenance: number the gathered tool results/retrieved documents handed to the
+  # synthesizer, ask it to cite the matching [n] inline, and append a mechanical "Sources" footer
+  # mapping each number to the tool call/document behind it. false restores unadorned answers.
+  citations: true
 
 # ---------------------------------------------------------------------------
 # Web tools (tool_registry/web.py). Key-optional, local-first.
@@ -65,8 +76,7 @@ runtime:
 web:
   provider: auto
   max_results: 5            # results returned per web_search
-  deep_research_sources: 4  # pages read + synthesized by the keyless deep_research fallback
-  deep_research_timeout: 180  # max seconds to wait on a Tavily research job before the local fallback
+  request_timeout: 30       # seconds before an http_request call is killed (mirrors shell.timeout)
 
 # ---------------------------------------------------------------------------
 # RAG pipeline (stores/rag.py + the search_knowledge_base tool). Escape-hatch tuning knobs —
@@ -83,11 +93,49 @@ rag:
   k: 6
 
 # ---------------------------------------------------------------------------
+# MCP servers (mcp_client.py) — remote Model Context Protocol tools, registered at startup
+# behind the SAME risk-tier approval gate as local tools. Check status with /mcp; apply config
+# edits with /mcp reload (or restart).
+#
+#   connect_timeout: seconds to start + handshake the servers at startup (shared, they connect
+#                    in parallel). A server that misses it is reported and skipped.
+#   call_timeout:    seconds per remote tool call before it fails cleanly (mirrors shell.timeout).
+#   servers:         name -> entry. Each entry:
+#     transport: stdio | http | sse     (optional — inferred: command -> stdio, url -> http)
+#     command/args/env                  (stdio: the server process to spawn)
+#     url/headers                       (http/sse: the remote endpoint)
+#     risk: read_only|side_effecting|destructive   default tier for the server's tools.
+#           OMITTED or invalid -> destructive (always prompts). This is YOUR trust declaration —
+#           the server's own annotations never drive the gate. Per-tool: /risk <tool> <tier> --save.
+#     enabled: false                    (keep the entry, skip the connection)
+#   ${VAR} in url/args/env/headers expands from the environment / .env (/config key), so secrets
+#   never sit in this file. Tools register as `mcp_<server>_<tool>`.
+#
+# servers:
+#   github:
+#     command: npx
+#     args: ["-y", "@modelcontextprotocol/server-github"]
+#     env:
+#       GITHUB_PERSONAL_ACCESS_TOKEN: ${GITHUB_TOKEN}
+#   internal-docs:
+#     url: https://mcp.example.com/mcp
+#     headers:
+#       Authorization: Bearer ${EXAMPLE_TOKEN}
+#     risk: read_only
+# ---------------------------------------------------------------------------
+mcp:
+  connect_timeout: 20
+  call_timeout: 60
+  servers: {}
+
+# ---------------------------------------------------------------------------
 # Shell / code-execution tool (tool_registry/shell.py).
 #   run_shell is registered `destructive`, so it ALWAYS hits the approval gate — the gate (the
 #   user seeing + approving the exact command), not a path jail, is the safety boundary.
 #   timeout: seconds before a running command is killed, so a hung or interactive command can't
-#            wedge the turn (mirrors runtime.llm_timeout / web.deep_research_timeout). <=0 disables.
+#            wedge the turn (mirrors runtime.llm_timeout). <=0 disables. Does NOT apply to
+#            run_shell(background=true) jobs — those are meant to outlive the turn; their logs
+#            land under paths.shell_jobs and any still running at quit are terminated.
 # ---------------------------------------------------------------------------
 shell:
   timeout: 60

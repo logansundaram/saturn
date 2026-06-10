@@ -95,20 +95,6 @@ SUITES: dict[str, list[str]] = {
 
 SUITE_NAMES = list(SUITES.keys())
 
-# Deep research — exercises the `deep_research` tool (multi-source synthesis via Tavily's
-# research API). DEFINED FOR REFERENCE BUT NOT RUN BY DEFAULT: each query is slow (minutes of
-# polling) and costly (many external API calls). Opt in explicitly with --run-deep-research.
-DEEP_RESEARCH_QUERIES: list[str] = [
-    "Do a deep research report on the current state of local LLMs.",
-    "Research the pros and cons of using LangGraph versus CrewAI for building AI agents.",
-    "Do a deep research report on the best open-source embedding models available for local use.",
-]
-DEEP_RESEARCH_SKIP_REASON = (
-    "deep_research is slow (minutes per query) and costly (many external API calls); "
-    "queries are defined for reference and skipped unless --run-deep-research is passed."
-)
-
-
 # ---------------------------------------------------------------------------
 # Trust benchmark — the GRADED suite. The rest of this harness measures capability;
 # this measures the trust stack itself, the two mechanisms the product's claims rest on:
@@ -163,7 +149,7 @@ def run_trust_benchmark(graph) -> dict:
             entry["verdict"] = "error"
         elif (entry.get("replans") or 0) >= 1:
             entry["verdict"] = "caught_by_judge"
-        elif any(t in entry["tools_called"] for t in ("web_search", "deep_research")):
+        elif "web_search" in entry["tools_called"]:
             entry["verdict"] = "searched_upfront"
         else:
             entry["verdict"] = "ungrounded"
@@ -415,7 +401,6 @@ def run_query(graph, query: str) -> dict:
 def run_suites(
     selected: list[str],
     output_path: Path | None = None,
-    run_deep_research: bool = False,
     run_conversations: bool = True,
     run_trust: bool = True,
 ) -> Path:
@@ -430,14 +415,11 @@ def run_suites(
     graph.invoke(_warmup_state, {"configurable": {"thread_id": str(uuid.uuid4())}})
 
     total = sum(len(SUITES[s]) for s in selected)
-    if run_deep_research:
-        total += len(DEEP_RESEARCH_QUERIES)
     if run_conversations:
         total += sum(len(c["turns"]) for c in CONVERSATIONS)
     if run_trust:
         total += len(GROUNDING_BAIT) + len(GATE_PROBES)
     print(f"Running {total} queries across suite(s): {', '.join(selected)}"
-          + (", deep_research" if run_deep_research else "")
           + (f", {len(CONVERSATIONS)} conversations" if run_conversations else "")
           + (", trust" if run_trust else "") + "\n")
 
@@ -455,28 +437,6 @@ def run_suites(
             print(f"  → {entry['status']}  ({entry['latency_s']}s)")
         results[suite_name] = suite_results
         print()
-
-    # Deep research: opt-in only. By default we record the queries as skipped rather than
-    # spending the time/cost to run them.
-    skipped: dict[str, dict] = {}
-    if run_deep_research:
-        suite_results = []
-        print(f"[deep_research] ({len(DEEP_RESEARCH_QUERIES)} queries) — WARNING: slow + costly")
-        for query in DEEP_RESEARCH_QUERIES:
-            preview = query[:72] + "..." if len(query) > 72 else query
-            print(f"  Q: {preview}")
-            entry = run_query(graph, query)
-            suite_results.append(entry)
-            print(f"  → {entry['status']}  ({entry['latency_s']}s)")
-        results["deep_research"] = suite_results
-        print()
-    else:
-        skipped["deep_research"] = {
-            "reason": DEEP_RESEARCH_SKIP_REASON,
-            "queries": DEEP_RESEARCH_QUERIES,
-        }
-        print(f"[deep_research] SKIPPED ({len(DEEP_RESEARCH_QUERIES)} queries defined) — "
-              "pass --run-deep-research to execute.\n")
 
     # Multi-turn conversations: carried-state runs that exercise cross-turn reference handling.
     conversations: list[dict] = []
@@ -534,7 +494,6 @@ def run_suites(
         },
         "conversation_summary": convo_summary,
         "trust_summary": trust["summary"] if trust else None,
-        "skipped": skipped,
         "results": results,
         "conversations": conversations,
         "trust": trust,
@@ -549,9 +508,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="Benchmark the AI agent across query suites.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=f"Available suites: {', '.join(SUITE_NAMES)}\n"
-        "deep_research is defined but skipped by default (slow + costly); "
-        "use --run-deep-research to include it.",
+        epilog=f"Available suites: {', '.join(SUITE_NAMES)}",
     )
     parser.add_argument(
         "--suites",
@@ -560,11 +517,6 @@ def main():
         default=["all"],
         metavar="SUITE",
         help=f"Suites to run: {{{', '.join(SUITE_NAMES + ['all'])}}} (default: all)",
-    )
-    parser.add_argument(
-        "--run-deep-research",
-        action="store_true",
-        help="Also run the deep_research queries (slow + costly; off by default).",
     )
     parser.add_argument(
         "--no-conversations",
@@ -591,7 +543,6 @@ def main():
     run_suites(
         selected,
         output_path,
-        run_deep_research=args.run_deep_research,
         run_conversations=not args.no_conversations,
         run_trust=not args.no_trust,
     )

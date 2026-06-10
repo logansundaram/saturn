@@ -1,0 +1,86 @@
+"""stores/rag.py loaders — the per-format ingest paths (html/csv/docx joined txt/md/pdf) and the
+'what counts as a document' rules. No embedding happens here: only the load/normalize layer."""
+
+import pytest
+
+from stores.rag import (
+    SUPPORTED_EXTENSIONS,
+    _csv_to_text,
+    _html_to_text,
+    _load_file_docs,
+    iter_documents,
+)
+
+
+def test_supported_extensions_cover_new_formats():
+    for ext in (".txt", ".md", ".pdf", ".html", ".htm", ".csv", ".docx"):
+        assert ext in SUPPORTED_EXTENSIONS
+
+
+def test_html_to_text_strips_markup_and_script():
+    raw = (
+        "<html><head><style>p{color:red}</style></head><body>"
+        "<h1>Title</h1><p>Hello <b>world</b></p>"
+        "<script>var evil = 'payload';</script></body></html>"
+    )
+    out = _html_to_text(raw)
+    assert "Hello" in out and "world" in out
+    assert "<" not in out
+    assert "evil" not in out and "color:red" not in out
+
+
+def test_html_entities_unescaped():
+    out = _html_to_text("<p>a &amp; b &lt;ok&gt;</p>")
+    assert "a & b" in out
+
+
+def test_csv_gets_schema_header():
+    raw = "name,age,city\nada,36,london\n"
+    out = _csv_to_text(raw)
+    assert out.startswith("[columns: name, age, city]")
+    assert "ada,36,london" in out  # rows stay verbatim
+
+
+def test_csv_without_parseable_header_passes_through():
+    assert _csv_to_text("") == ""
+
+
+def test_load_file_docs_html_and_csv(isolated_paths):
+    docs_dir = isolated_paths / "database" / "documents"
+    docs_dir.mkdir(parents=True, exist_ok=True)
+    (docs_dir / "page.html").write_text("<p>html body text</p>", encoding="utf-8")
+    (docs_dir / "data.csv").write_text("a,b\n1,2\n", encoding="utf-8")
+
+    source, docs, full_text = _load_file_docs(docs_dir / "page.html")
+    assert source == "page.html"
+    assert docs[0].metadata["source"] == "page.html"
+    assert "html body text" in full_text and "<p>" not in full_text
+
+    source, docs, full_text = _load_file_docs(docs_dir / "data.csv")
+    assert full_text.startswith("[columns: a, b]")
+
+
+def test_load_file_docs_docx(isolated_paths):
+    docx = pytest.importorskip("docx", reason="python-docx not installed")
+    docs_dir = isolated_paths / "database" / "documents"
+    docs_dir.mkdir(parents=True, exist_ok=True)
+    d = docx.Document()
+    d.add_paragraph("First paragraph of prose.")
+    table = d.add_table(rows=1, cols=2)
+    table.rows[0].cells[0].text = "cell-a"
+    table.rows[0].cells[1].text = "cell-b"
+    d.save(str(docs_dir / "doc.docx"))
+
+    source, docs, full_text = _load_file_docs(docs_dir / "doc.docx")
+    assert "First paragraph of prose." in full_text
+    assert "cell-a\tcell-b" in full_text
+
+
+def test_iter_documents_extension_casing_and_dotfiles(isolated_paths):
+    docs_dir = isolated_paths / "database" / "documents"
+    docs_dir.mkdir(parents=True, exist_ok=True)
+    (docs_dir / "NOTES.MD").write_text("upper-ext", encoding="utf-8")
+    (docs_dir / ".manifest.md").write_text("hidden", encoding="utf-8")
+    (docs_dir / "skip.xyz").write_text("unsupported", encoding="utf-8")
+    names = {p.name for p in iter_documents()}
+    assert names == {"NOTES.MD"}

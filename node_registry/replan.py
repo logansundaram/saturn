@@ -37,7 +37,7 @@ from registry import RETRIEVAL_TOOLS
 # External-gathering tools: if ANY of these already ran this turn, escalating to a fresh web_search
 # won't rescue the answer — re-searching in circles. The web tools aren't retrieval-flagged (their
 # results aren't recorded as documents), so union them with the retrieval set explicitly.
-_GATHERING_TOOLS = {"web_search", "web_extract", "deep_research"} | set(RETRIEVAL_TOOLS)
+_GATHERING_TOOLS = {"web_search", "web_extract"} | set(RETRIEVAL_TOOLS)
 
 
 def _draft_answer(state: AgentState) -> str:

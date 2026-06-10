@@ -359,6 +359,22 @@ def extract_prompt_tokens(response) -> int:
     return int(meta.get("prompt_eval_count", 0) or 0)
 
 
+def extract_total_tokens(response) -> int:
+    """Total tokens (input + output) consumed by one LLM call, best-effort — feeds the session
+    token budget (budget.py). Prefers the standard usage_metadata; falls back to Ollama's
+    response_metadata counters (prompt_eval_count + eval_count); 0 when neither is present (the
+    budget then simply doesn't see that call — an undercount, never a crash)."""
+    usage = getattr(response, "usage_metadata", None) or {}
+    total = usage.get("total_tokens")
+    if total:
+        return int(total)
+    n = int(usage.get("input_tokens", 0) or 0) + int(usage.get("output_tokens", 0) or 0)
+    if n:
+        return n
+    meta = getattr(response, "response_metadata", None) or {}
+    return int(meta.get("prompt_eval_count", 0) or 0) + int(meta.get("eval_count", 0) or 0)
+
+
 def active_context_window(role: str = "tool_caller") -> int:
     """Effective context window (`num_ctx`) of the model serving `role` — the denominator of the
     UI's fill gauge and the /context readout. Defaults to the agent (tool_caller) role, the one

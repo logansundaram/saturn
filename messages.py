@@ -18,8 +18,10 @@ _PLANNER_TOOL_HINTS = {
     "web_search": "search the web for current or external information.",
     "web_extract": "fetch and extract the readable content behind a specific URL (e.g. one that "
     "web_search surfaced).",
-    "deep_research": "heavyweight multi-source web research; slow and costly, use only when a "
-    "single web_search clearly will not suffice.",
+    "http_request": "send one HTTP request to a specific URL/API endpoint (REST APIs, "
+    "self-hosted services); human-approved per call. Not for ordinary web reading.",
+    "current_time": "the machine's current date/time/timezone — use for anything involving "
+    "'today', 'now', or relative dates; never guess the date.",
     "read_file": "read a file in the workspace.",
     "write_file": "write content to a file in the workspace (whole file; for new files).",
     "edit_file": "make a targeted change inside an existing workspace file (preferred over "
@@ -29,6 +31,8 @@ _PLANNER_TOOL_HINTS = {
     "matches — use before reading whole files).",
     "find_files": "find workspace files by NAME with a glob pattern (when the path is unknown).",
     "calculate": "evaluate a precise arithmetic expression.",
+    "check_shell_job": "check the status/output of a background shell job started by run_shell.",
+    "stop_shell_job": "stop a running background shell job.",
     "remember": "save a durable fact/preference about the user to persistent memory (across sessions).",
     "recall": "look up facts previously saved to persistent memory.",
 }
@@ -296,6 +300,11 @@ everything gathered — retrieved context, tool results, and prior reasoning.
   contradicts it, the current document wins; ignore the deprecated value unless asked about it.
 - When you use information from a retrieved document, cite its source (the filename or title
   shown with the retrieved text) inline so the user can trace the claim.
+- The tool results and retrieved documents may arrive NUMBERED ("[1] …", "[2] …"). When a
+  specific claim in your answer comes from a numbered item, append that marker right after the
+  claim (e.g. "the latest release is 3.2 [2]"). Use only numbers that actually appear in the
+  material — never invent one — and do not mark statements that are your own general knowledge.
+  Do NOT write your own "Sources" section or bibliography; one is appended automatically.
 - Write in plain prose. Do not add meta-commentary about the pipeline, tools used, or steps
   taken.
 - Do not hedge or qualify conclusions that the gathered evidence supports.

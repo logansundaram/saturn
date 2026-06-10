@@ -19,7 +19,17 @@ import logging
 import os
 from pathlib import Path
 
-_LOG_DIR = Path(__file__).parent / "logging"
+def _resolve_log_dir() -> Path:
+    # Clone mode: logging/ at the repo root (config.yaml sits next to this file). Wheel installs
+    # (pipx/uv) must not write into site-packages — use SATURDAY_HOME (~/.saturday), mirroring
+    # config.py's lookup (kept in step by hand: this module imports nothing project-side).
+    root = Path(__file__).parent
+    if (root / "config.yaml").exists():
+        return root / "logging"
+    return Path(os.environ.get("SATURDAY_HOME") or Path.home() / ".saturday") / "logging"
+
+
+_LOG_DIR = _resolve_log_dir()
 _logger: logging.Logger | None = None
 
 

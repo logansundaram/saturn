@@ -1,10 +1,15 @@
 """
 The `»` input line + the startup banner. prompt_toolkit (when present) drives a live-highlighted
 input where a typed `/command` is colored by how it matches the command set, `@path` mentions stand
-out and Tab-complete, and input is multiline (Enter submits, Alt+Enter newlines). Falls back to
-rich's (or plain) input() without prompt_toolkit. `banner` prints the session header and captures
-the model label for the status bar.
+out and Tab-complete, and input is multiline: Enter submits; Shift+Enter (Windows console — see
+`_make_ptk_input`), Ctrl+Enter, Ctrl+J, and Alt+Enter all insert a newline. A large paste is
+compacted to a `[paste #N +L lines]` chip so a wall of code doesn't flood the prompt — the full
+text is kept aside, re-expanded into the message at submit, and Ctrl+E with the cursor on the chip
+re-expands it in place for editing. Falls back to rich's (or plain) input() without prompt_toolkit.
+`banner` prints the session header and captures the model label for the status bar.
 """
+
+import sys
 
 from . import _base
 from ._base import (
@@ -20,13 +25,16 @@ from .statusbar import _live_stop
 try:
     from prompt_toolkit import PromptSession
     from prompt_toolkit.application import run_in_terminal as _ptk_run_in_terminal
+    from prompt_toolkit.application.current import get_app as _ptk_get_app
     from prompt_toolkit.completion import (
         Completer as _PTKCompleter,
         Completion as _PTKCompletion,
         PathCompleter as _PTKPathCompleter,
     )
     from prompt_toolkit.document import Document as _PTKDocument
+    from prompt_toolkit.filters import Condition as _PTKCondition
     from prompt_toolkit.key_binding import KeyBindings as _PTKKeyBindings
+    from prompt_toolkit.keys import Keys as _PTKKeys
     from prompt_toolkit.lexers import Lexer as _PTKLexer
     from prompt_toolkit.styles import Style as _PTKStyle
 
@@ -92,7 +100,21 @@ if _PTK:
         "cmd.unknown": "ansired bold",
         "cmd.args": "ansibrightblack",
         "mention": "ansibrightblue",
+        "paste": "reverse ansibrightblack",  # the [paste #N …] chip — reads as one atomic token
     })
+
+    # Teach the vt100 parser the Shift/Ctrl+Enter escape sequences modern POSIX terminals emit
+    # (kitty, foot, Ghostty, WezTerm send CSI-u by default; xterm-family sends the modifyOtherKeys
+    # form when that mode is on). Mapped to (Escape, Enter) so they land on the same newline
+    # binding as Alt+Enter. NOTE: prompt_toolkit ships `\x1b[27;2;13~` mapped to plain Enter —
+    # without the override a Shift+Enter there would *submit*, the opposite of what the user
+    # meant. Safe to extend at import: the parser's prefix cache is lazy, and nothing has parsed
+    # yet. (Windows console input never sees these; it gets `_make_ptk_input`'s reader instead.)
+    from prompt_toolkit.input.ansi_escape_sequences import ANSI_SEQUENCES as _PTK_ANSI_SEQ
+
+    for _seq in ("\x1b[13;2u", "\x1b[13;5u", "\x1b[27;2;13~", "\x1b[27;5;13~"):
+        _PTK_ANSI_SEQ[_seq] = (_PTKKeys.Escape, _PTKKeys.ControlM)
+    del _seq
 
     # An `@mention` inside a normal (non-slash) line: `@` at a word boundary + a run of
     # non-space/non-`@`, or a double-quoted run (`@"path with spaces"` — what dragging a file in
@@ -106,16 +128,48 @@ if _PTK:
     _AT_QUOTED_FRAGMENT_RE = _re.compile(r'(?:^|\s)@"([^"\n]*)$')
     _AT_FRAGMENT_RE = _re.compile(r"(?:^|\s)@([^\s@]*)$")
 
+    # ── paste compaction (the [paste #N …] chips) ─────────────────────────────────
+    # A multi-line/huge paste would flood the prompt with raw text; instead it's stored here and
+    # the buffer gets one compact chip. The chip is ordinary buffer text — deletable like a word —
+    # and is swapped back for the full text at submit (`_expand_paste_tags`) or in place via
+    # Ctrl+E (`_ptk_expand_paste`) when something in it needs editing. The store survives the
+    # whole session (ids never reset) so a chip recalled from line HISTORY still expands.
+    _PASTE_STORE: dict[int, str] = {}
+    _paste_seq = 0  # last id handed out
+    _PASTE_TAG_RE = _re.compile(r"\[paste #(\d+)[^\]\n]*\]")
+    _PASTE_TAG_LINES = 3    # compact a paste of >= this many lines
+    _PASTE_TAG_CHARS = 600  # ... or this many chars (single-line walls); dragged paths stay raw
+
+    def _paste_tag_at(text: str, pos: int):
+        """The chip regex-match spanning (or abutting) cursor offset `pos`, else None."""
+        for m in _PASTE_TAG_RE.finditer(text):
+            if m.start() <= pos <= m.end():
+                return m
+        return None
+
+    def _expand_paste_tags(text: str) -> str:
+        """Replace every chip with its stored full text — run on the submitted line, so the agent
+        always sees what was actually pasted. An unknown id (hand-typed chip) stays literal."""
+        return _PASTE_TAG_RE.sub(
+            lambda m: _PASTE_STORE.get(int(m.group(1)), m.group(0)), text
+        )
+
     def _mention_fragments(line: str):
-        """Split one plain line into prompt_toolkit (style, text) fragments, coloring any
-        `@mention` runs. Used for normal turns so file mentions stand out as they're typed."""
+        """Split one plain line into prompt_toolkit (style, text) fragments, coloring `@mention`
+        runs and `[paste #N …]` chips. Used for normal turns so the tokens that mean something
+        (a file attach, a stored paste) stand out from plain text as they're typed."""
+        spans = [(m.start(), m.end(), "class:mention") for m in _MENTION_LEX_RE.finditer(line)]
+        spans += [(m.start(), m.end(), "class:paste") for m in _PASTE_TAG_RE.finditer(line)]
+        spans.sort()
         frags = []
         pos = 0
-        for m in _MENTION_LEX_RE.finditer(line):
-            if m.start() > pos:
-                frags.append(("", line[pos:m.start()]))
-            frags.append(("class:mention", m.group(0)))
-            pos = m.end()
+        for start, end, style in spans:
+            if start < pos:  # overlapping span (mention swallowing a chip) — first one wins
+                continue
+            if start > pos:
+                frags.append(("", line[pos:start]))
+            frags.append((style, line[start:end]))
+            pos = end
         if pos < len(line):
             frags.append(("", line[pos:]))
         return frags or [("", line)]
@@ -217,10 +271,14 @@ if _PTK:
                         display_meta=summary,
                     )
 
-    # Multiline input: Enter submits, Alt+Enter inserts a newline. So a pasted multi-line block
-    # (bracketed paste inserts its newlines directly, never submitting) or a deliberately-composed
-    # multi-paragraph turn survives instead of being chopped at the first newline. When the
-    # completion menu is open, Enter accepts the highlighted completion rather than submitting.
+    # Multiline input: Enter submits; Shift+Enter / Ctrl+Enter / Ctrl+J / Alt+Enter insert a
+    # newline. Shift+Enter reaches us three different ways depending on the platform: the Windows
+    # console reader subclass (`_make_ptk_input`), the CSI-u / modifyOtherKeys sequences taught to
+    # the vt100 parser above (kitty/foot/Ghostty/WezTerm/xterm), or — on terminals that simply
+    # can't distinguish it (Apple Terminal, default iTerm2/VS Code) — the backslash+Enter fallback
+    # below. A pasted multi-line block never submits: it arrives as ONE BracketedPaste event
+    # (native on vt100; burst-detected on the Windows console) and is compacted to a chip. When
+    # the completion menu is open, Enter accepts the highlighted completion rather than submitting.
     _PTK_KB = _PTKKeyBindings()
 
     @_PTK_KB.add("enter")
@@ -231,9 +289,66 @@ if _PTK:
         else:
             buf.validate_and_handle()  # submit the line
 
-    @_PTK_KB.add("escape", "enter")  # Alt/Option+Enter (and Esc then Enter) -> hard newline
+    @_PTK_KB.add("escape", "enter")  # Alt/Option+Enter, Esc-then-Enter, and Shift/Ctrl+Enter
+    @_PTK_KB.add("escape", "c-j")    # Ctrl+Enter on the Windows console (arrives as Meta+LF)
+    @_PTK_KB.add("c-j")              # Ctrl+J everywhere (LF byte); Ctrl+Enter in some terminals
     def _ptk_newline(event):
         event.current_buffer.insert_text("\n")
+
+    if sys.platform != "win32":
+        # Backslash+Enter -> newline (the Claude Code convention): the universal fallback for
+        # POSIX terminals where Shift+Enter is indistinguishable from Enter. The backslash is
+        # consumed (it was a line continuation, not text). POSIX-only: on Windows Shift+Enter
+        # works natively and backslash is the path separator — making it a binding prefix would
+        # lag every path keystroke against the ambiguity timeout.
+        @_PTK_KB.add("\\", "enter")
+        def _ptk_newline_backslash(event):
+            event.current_buffer.insert_text("\n")
+
+    @_PTK_KB.add(_PTKKeys.BracketedPaste)
+    def _ptk_paste(event):
+        """One paste = one event. Small pastes insert verbatim (newlines included — never a
+        submit); anything bigger is stored and rendered as a `[paste #N +L lines]` chip so the
+        prompt stays one clean line. The full text rides into the message at submit."""
+        global _paste_seq
+        data = event.data.replace("\r\n", "\n").replace("\r", "\n")
+        n_lines = data.count("\n") + 1
+        if n_lines < _PASTE_TAG_LINES and len(data) < _PASTE_TAG_CHARS:
+            event.current_buffer.insert_text(data)
+            return
+        _paste_seq += 1
+        _PASTE_STORE[_paste_seq] = data
+        size = f"+{n_lines} lines" if n_lines > 1 else f"{_human_tokens(len(data))} chars"
+        tag = f"[paste #{_paste_seq} {size}]"
+        event.current_buffer.insert_text(tag)
+
+        def _notify():
+            msg = f"  · paste captured as {tag} — sent in full; Ctrl+E on the chip edits it"
+            if _RICH:
+                _console.print(Text(msg, style=_DIM))
+            else:
+                print(msg)
+
+        _ptk_run_in_terminal(_notify)
+
+    @_PTKCondition
+    def _cursor_on_paste_tag() -> bool:
+        doc = _ptk_get_app().current_buffer.document
+        return _paste_tag_at(doc.text, doc.cursor_position) is not None
+
+    @_PTK_KB.add("c-e", filter=_cursor_on_paste_tag)
+    def _ptk_expand_paste(event):
+        """Ctrl+E with the cursor on a chip swaps it back to the full pasted text, in place, so
+        it can be edited like anything else. Filtered: anywhere else Ctrl+E keeps its normal
+        end-of-line meaning."""
+        buf = event.current_buffer
+        doc = buf.document
+        m = _paste_tag_at(doc.text, doc.cursor_position)
+        full = _PASTE_STORE.get(int(m.group(1))) if m else None
+        if full is None:
+            return
+        buf.text = doc.text[: m.start()] + full + doc.text[m.end():]
+        buf.cursor_position = m.start() + len(full)
 
     @_PTK_KB.add("s-tab")  # Shift+Tab: cycle runtime.auto_approve tier
     def _ptk_cycle_permission(event):
@@ -262,20 +377,61 @@ if _PTK:
         """Gutter for continuation lines of a multiline entry — a dim `·` aligned under the `»`."""
         return [("class:prompt.cont", "· ".rjust(width))] if not is_soft_wrap else ""
 
+    def _make_ptk_input():
+        """Platform input for the PromptSession, or None for prompt_toolkit's default.
+
+        Windows console only: the stock reader throws away the shift state on Enter (the
+        KEY_EVENT_RECORD carries it; only Tab/arrows get shift mappings), so Shift+Enter is
+        indistinguishable from Enter. The subclass translates Shift+Enter into the same
+        (Escape, Enter) pair Alt+Enter produces — landing on the newline binding. POSIX needs
+        no custom input: Shift+Enter arrives as the escape sequences taught to the vt100
+        parser above. Best-effort — any failure (no console, VT-input mode, future ptk
+        internals change) degrades to the default input, losing only Shift+Enter."""
+        if sys.platform != "win32":
+            return None
+        try:
+            from prompt_toolkit.input.win32 import ConsoleInputReader, Win32Input
+            from prompt_toolkit.key_binding.key_processor import KeyPress as _KeyPress
+
+            class _ShiftEnterReader(ConsoleInputReader):
+                def _event_to_key_presses(self, ev):
+                    if (
+                        ev.VirtualKeyCode == 0x0D  # VK_RETURN
+                        and ev.ControlKeyState & self.SHIFT_PRESSED
+                        and not ev.ControlKeyState
+                        & (self.LEFT_CTRL_PRESSED | self.RIGHT_CTRL_PRESSED)
+                    ):
+                        return [
+                            _KeyPress(_PTKKeys.Escape, ""),
+                            _KeyPress(_PTKKeys.ControlM, "\r"),
+                        ]
+                    return super()._event_to_key_presses(ev)
+
+            inp = Win32Input()
+            # Only swap in the subclass over the exact reader it extends; a VT-input-mode
+            # console uses a different reader (and already speaks the escape sequences).
+            if type(inp.console_input_reader) is ConsoleInputReader:
+                inp.console_input_reader = _ShiftEnterReader()
+            return inp
+        except Exception:
+            return None
+
 
 def prompt(command_meta=None) -> str:
     """Read the `»` input line. With prompt_toolkit and a `command_meta` list of `(token, summary)`
     pairs, a typed `/command` is highlighted live (valid=cyan, typo=red), Tab completes the leading
-    `/command` token or an `@path` mention, and the line is multiline (Enter submits, Alt+Enter adds
-    a newline — so pasted/multi-paragraph input survives). Without prompt_toolkit, falls back to
-    rich/plain input. Returns the raw line (slash-command + @mention handling happen upstream)."""
+    `/command` token or an `@path` mention, and the line is multiline: Enter submits;
+    Shift+Enter / Ctrl+Enter / Ctrl+J / Alt+Enter (POSIX fallback: backslash+Enter) insert a
+    newline. A large paste renders as a `[paste #N …]` chip (Ctrl+E on it re-expands for editing)
+    and is swapped back to the full text in the returned line. Without prompt_toolkit, falls back
+    to rich/plain input. Returns the raw line (slash-command + @mention handling happen upstream)."""
     _live_stop()  # never read a line under an active Live (also clears a bar left by an error)
     if _PTK and command_meta is not None:
         global _ptk_session
         if _ptk_session is None:
-            _ptk_session = PromptSession()
+            _ptk_session = PromptSession(input=_make_ptk_input())
         names = {token for token, _ in command_meta}  # valid-command set for the live highlight
-        return _ptk_session.prompt(
+        return _expand_paste_tags(_ptk_session.prompt(
             [("class:prompt", "» ")],
             lexer=_CommandLexer(names),
             style=_PTK_STYLE,
@@ -284,7 +440,7 @@ def prompt(command_meta=None) -> str:
             multiline=True,
             key_bindings=_PTK_KB,
             prompt_continuation=_ptk_continuation,
-        )
+        ))
     if _RICH:
         return _console.input(f"[bold {_ACCENT}]»[/] ")
     return input("» ")

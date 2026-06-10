@@ -4,8 +4,6 @@
 # document_registry.py, and agent.py: the model bindings, the filesystem paths, and the
 # loop/safety knobs. The agent references model ROLES, never concrete model ids — so
 # swapping hardware is a one-line `active_tier` change here and never touches graph logic.
-#
-# See SATURDAY_MVP_PLAN.md §7 (role-based modular models) and Phase 3 of the roadmap.
 
 # Which hardware-tier preset (under `tiers:` below) is live. Change this one line to
 # re-point every role at a different model set.
@@ -24,6 +22,7 @@ paths:
   sessions: database/sessions          # saved conversations (/save and /load)
   snapshots: database/snapshots        # per-turn pre-write file snapshots (/undo)
   permissions: database/permissions.json  # persisted /risk overrides + /allow shell prefixes
+  exports: logging/exports             # /trace export run records (audit artifacts)
 
 # ---------------------------------------------------------------------------
 # Loop / safety runtime knobs (were the MAX_ITERATIONS constant + the gate policy).
@@ -68,6 +67,20 @@ web:
   max_results: 5            # results returned per web_search
   deep_research_sources: 4  # pages read + synthesized by the keyless deep_research fallback
   deep_research_timeout: 180  # max seconds to wait on a Tavily research job before the local fallback
+
+# ---------------------------------------------------------------------------
+# RAG pipeline (stores/rag.py + the search_knowledge_base tool). Escape-hatch tuning knobs —
+# the defaults are sane for a local embedder; most users should never touch these.
+#   chunk_size / chunk_overlap: characters per chunk fed to the embedder. Changing either
+#     forces a full re-embed on the next sync/startup (the chunking is part of the cache
+#     fingerprint, so the stored vectors always match the live settings).
+#   k: chunks returned per search_knowledge_base call. Raise for better recall at the cost
+#     of more context per retrieval; applies immediately (no re-embed).
+# ---------------------------------------------------------------------------
+rag:
+  chunk_size: 1000
+  chunk_overlap: 150
+  k: 6
 
 # ---------------------------------------------------------------------------
 # Shell / code-execution tool (tool_registry/shell.py).
@@ -121,7 +134,9 @@ tiers:
     embedder: qwen3-embedding:8b
 
   # Heavy reasoning roles go to a cloud model; everything else stays local. Requires the
-  # provider's SDK + API key (e.g. ANTHROPIC_API_KEY) in the environment.
+  # provider's LangChain package + API key (e.g. `pip install langchain-anthropic` +
+  # ANTHROPIC_API_KEY — set keys with `/config key set …`). Any init_chat_model provider works
+  # the same way: e.g. {provider: openai, model: gpt-4o} + langchain-openai + OPENAI_API_KEY.
   cloud-hybrid:
     provider: ollama
     roles:
@@ -134,7 +149,7 @@ tiers:
 
 # ---------------------------------------------------------------------------
 # Capability descriptors, keyed by model id. The MVP REQUIRES native tool-calling +
-# structured output (SATURDAY_MVP_PLAN.md §7); get_model() warns if a model bound to a
+# structured output; get_model() warns if a model bound to a
 # role that needs a capability lacks it. Unknown models fall back to the conservative
 # defaults in config.py (tools + structured output assumed true, vision false).
 # ---------------------------------------------------------------------------
@@ -158,4 +173,9 @@ capabilities:
     supports_tools: true
     supports_structured_output: true
     context_window: 200000
+    supports_vision: true
+  "gpt-4o":
+    supports_tools: true
+    supports_structured_output: true
+    context_window: 128000
     supports_vision: true

@@ -27,16 +27,18 @@ Examples:
 )
 def _memory(ctx, args):
     from stores.memory_registry import add_memory, list_memory, remove_memory
+    from tui import ui
 
     if not args:
         facts = list_memory()
         if not facts:
-            _print("  no persistent memory yet — say `remember that ...` or use /memory add.")
+            ui.note("no persistent memory yet — say `remember that ...` or use /memory add.")
             return
-        _print(f"  persistent memory — {len(facts)} fact(s), loaded into context every turn:")
-        for i, fact in enumerate(facts, start=1):
-            _print(f"    {i:>3}. {fact}")
-        _print("  delete one with /memory forget <n>")
+        ui.section(
+            "memory",
+            f"{len(facts)} fact(s) · loaded into context every turn · /memory forget <n> deletes",
+        )
+        ui.table([((f"{i}", "accent"), fact) for i, fact in enumerate(facts, start=1)])
         return
 
     sub = args[0].lower()

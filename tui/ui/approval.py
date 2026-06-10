@@ -215,7 +215,7 @@ def _select_calls(tool_calls: list, ask) -> "bool | dict":
     the answers were unanimous; otherwise returns the partial-approval dict the gate understands."""
     approved = []
     for tc in tool_calls:
-        r = ask(f"      allow {tc.get('name')}? y/N » ").strip().lower()
+        r = ask(f"      allow {tc.get('name')}? y/n » ").strip().lower()
         if r in ("y", "yes"):
             approved.append(tc.get("id"))
     if len(approved) == len(tool_calls):
@@ -298,7 +298,7 @@ def ask_approval(value: dict) -> "bool | dict":
                 hrow.append(f"    ↳ {hint}", style=risk_style)
                 _console.print(hrow)
         resp = _console.input(
-            "  [bold]┗━[/] approve? [bold]y[/]es / [bold]N[/]o / [bold]s[/]elect / [bold]a[/]lways » "
+            "  [bold]┗━[/] approve? [bold]y[/]es / [bold]n[/]o / [bold]s[/]elect / [bold]a[/]lways » "
         ).strip().lower()
         decision = _resolve_decision(resp, tool_calls, _console.input)
     else:
@@ -325,7 +325,7 @@ def ask_approval(value: dict) -> "bool | dict":
             hint = _RISK_HINT.get(str(tc.get("risk")))
             if hint:
                 print(f"  ┃     -> {hint}")
-        resp = input("  ┗━ approve? [y]es / [N]o / [s]elect / [a]lways » ").strip().lower()
+        resp = input("  ┗━ approve? [y]es / [n]o / [s]elect / [a]lways » ").strip().lower()
         decision = _resolve_decision(resp, tool_calls, input)
 
     _base._t_last = time.perf_counter()  # don't bill the human's decision time to the next node

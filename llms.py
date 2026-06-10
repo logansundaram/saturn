@@ -259,6 +259,9 @@ def _model_present(required: str, have: set[str]) -> bool:
 
 # Cloud providers and the env var that unlocks them (mirrors env_keys.KNOWN_KEYS; extend together).
 _PROVIDER_KEY = {"anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY"}
+# ... and the LangChain integration package each provider needs (init_chat_model imports it lazily,
+# so a missing one otherwise surfaces as an ImportError mid-turn instead of at startup).
+_PROVIDER_PKG = {"anthropic": "langchain_anthropic", "openai": "langchain_openai"}
 
 
 def check_models() -> list[str]:
@@ -295,6 +298,8 @@ def check_models() -> list[str]:
                     problems.append(f"model not pulled: `{m}`  →  run `ollama pull {m}`")
 
     if cloud:
+        import importlib.util
+
         import env_keys
 
         for provider, models in sorted(cloud.items()):
@@ -303,6 +308,12 @@ def check_models() -> list[str]:
                 problems.append(
                     f"{provider} model(s) {', '.join(sorted(models))} need {key} — "
                     f"set it with `/config key set {key} <value>`"
+                )
+            pkg = _PROVIDER_PKG.get(provider)
+            if pkg and importlib.util.find_spec(pkg) is None:
+                problems.append(
+                    f"{provider} model(s) {', '.join(sorted(models))} need the "
+                    f"`{pkg.replace('_', '-')}` package — run `pip install {pkg.replace('_', '-')}`"
                 )
 
     # Capability advisories for the loop-driving roles. These used to print lazily on a model's

@@ -17,6 +17,7 @@ vibe coded, need to review
 
 import hashlib
 import json
+import re
 import time
 from datetime import date
 from pathlib import Path
@@ -83,6 +84,31 @@ def read_workspace_manifest() -> str:
 def read_documents_manifest() -> str:
     manifest = _documents_manifest()
     return manifest.read_text(encoding="utf-8") if manifest.exists() else ""
+
+
+_META_FIELD_RE = re.compile(r"\*\*(\w+)\*\*:\s*([^|]+?)\s*(?:\||$)")
+
+
+def manifest_entries(text: str) -> list[dict]:
+    """Parse a manifest's `### <name>` blocks into structured rows for the /docs table:
+    [{name, type, added, size, summary}]. Tolerant of hand-edited manifests — a block missing
+    its metadata line still yields its name plus whatever summary text follows."""
+    entries: list[dict] = []
+    for block in re.split(r"^### ", text, flags=re.M)[1:]:
+        lines = block.splitlines()
+        if not lines or not lines[0].strip():
+            continue
+        entry = {"name": lines[0].strip(), "type": "", "added": "", "size": "", "summary": ""}
+        body = lines[1:]
+        if body and body[0].lstrip().startswith("- **"):
+            for key, val in _META_FIELD_RE.findall(body[0]):
+                k = key.lower()
+                if k in ("type", "added", "size"):
+                    entry[k] = val.strip()
+            body = body[1:]
+        entry["summary"] = " ".join(ln.strip() for ln in body if ln.strip())
+        entries.append(entry)
+    return entries
 
 
 # ---------------------------------------------------------------------------

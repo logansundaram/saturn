@@ -53,7 +53,9 @@ def _update(ctx, args):
         return
     if rc != 0:
         _print(f"  {_REPO_ROOT} is not a git repository — was Saturday installed by hand?")
-        _print("  re-install with the install script, or update by replacing the files yourself.")
+        _print("  installed via pipx/uv? update with `pipx upgrade saturn-agent` "
+               "(or `uv tool upgrade saturn-agent`).")
+        _print("  otherwise re-install with the install script, or replace the files yourself.")
         return
 
     try:

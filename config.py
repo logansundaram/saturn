@@ -18,7 +18,10 @@ shred the heavily-commented file; the surgical line edit keeps it intact.)
 
 from __future__ import annotations
 
+import os
 import re
+import shutil
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -30,8 +33,42 @@ import yaml
 # `runtime.auto_approve` tier.
 RISK_ORDER = ["read_only", "side_effecting", "destructive"]
 
-_CONFIG_PATH = Path(__file__).parent / "config.yaml"
-_REPO_ROOT = Path(__file__).parent
+
+def _resolve_config_path() -> Path:
+    """Locate the live config.yaml.
+
+    Clone mode (the curl installers and manual installs): config.yaml sits next to this file
+    at the repo root — the historical behavior, unchanged.
+
+    Installed mode (pipx/uv/pip wheel): the user's editable copy lives under SATURDAY_HOME
+    (default ~/.saturday), seeded on first run from the packaged default that the wheel ships
+    to <venv>/share/saturn/ (see pyproject.toml). Keeping the live copy out of site-packages
+    means `/config … --save` edits survive a `pipx upgrade`.
+    """
+    local = Path(__file__).parent / "config.yaml"
+    if local.exists():
+        return local
+    home = Path(os.environ.get("SATURDAY_HOME") or Path.home() / ".saturday")
+    user_cfg = home / "config.yaml"
+    if not user_cfg.exists():
+        default = Path(sys.prefix) / "share" / "saturn" / "config.yaml"
+        if not default.exists():
+            raise FileNotFoundError(
+                "config.yaml not found: not running from a Saturn clone, and the packaged "
+                f"default ({default}) is missing. Reinstall Saturn, or point SATURDAY_HOME "
+                "at a directory containing a config.yaml."
+            )
+        home.mkdir(parents=True, exist_ok=True)
+        shutil.copy(default, user_cfg)
+    return user_cfg
+
+
+_CONFIG_PATH = _resolve_config_path()
+# Data root: every `paths.*` entry resolves against the directory holding the live config.yaml —
+# the repo root in clone mode, SATURDAY_HOME for a wheel install. User data never lands in
+# site-packages, where an upgrade would clobber it. (diag.py and env_keys.py mirror this lookup;
+# they deliberately import nothing project-side, so keep the three in step.)
+_REPO_ROOT = _CONFIG_PATH.parent
 
 
 @dataclass(frozen=True)

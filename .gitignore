@@ -22,8 +22,13 @@ database/db.sqlite-shm
 # First-run setup sentinel — runtime state written on first launch; not source.
 database/.setup_done
 
-# Autosaved session (the /resume slot) - rewritten every turn; runtime state, not source.
-database/sessions/_autosave.json
+# User data that must survive /update (git pull): saved sessions (named /save files + the
+# /resume autosave slot), the persisted /risk + /allow decisions, and the /undo snapshots.
+# Ignoring the whole paths means a future tracked file can never collide with a user's local
+# one and break the ff-only pull — user-generated artifacts live ONLY in ignored paths.
+database/sessions/
+database/permissions.json
+database/snapshots/
 
 # Model cache
 models/
@@ -53,11 +58,14 @@ USER.md
 
 CONSOLIDATION.md
 
-# Claude/dev-only working docs — not shipped to installers (CLAUDE.md is the architecture
-# reference; these are the build log, refactor plan, and original vision/roadmap).
+# Claude/dev-only working docs — not shipped to installers. documentation.md is the local
+# detailed feature reference + changelog (see CLAUDE.md "Documentation maintenance"). The other
+# three were deleted (historical build log / refactor plan / vision doc); their patterns stay so
+# a restored copy is never accidentally tracked.
 NOTES.md
 RESTRUCTURE.md
 SATURDAY_MVP_PLAN.md
+documentation.md
 
 # Generated dev artifacts: benchmark result dumps (benchmarks/*.json) and Mermaid/PNG graph
 # exports (graphs/). diag.log is already covered by *.log above; this catches the rest.

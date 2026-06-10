@@ -70,6 +70,20 @@ def set_input_preview(buffer: str, queued: int) -> None:
     _live_refresh()
 
 
+# /autoapprove's session toggle bypasses the gate entirely — a different (and louder) mechanism
+# than the `runtime.auto_approve` tier the bar normally shows. "Auto-approval is an explicit,
+# loudly-labeled user choice": the banner /autoapprove prints scrolls away, so the persistent
+# indicator here must tell the truth for as long as the gate is open.
+_gate_off = False
+
+
+def set_gate_off(off: bool) -> None:
+    """Flag the status bar that the approval gate is disabled for the session (/autoapprove)."""
+    global _gate_off
+    _gate_off = bool(off)
+    _live_refresh()
+
+
 class _StatusBar:
     """Renderable for the pinned bar. `__rich__` is re-evaluated on every Live refresh, so the
     elapsed clock and the sampled system gauges tick even when no node update has fired. One
@@ -96,12 +110,17 @@ class _StatusBar:
         dot()
         bar.append(_active_model_short(), style="default")
         dot()
-        try:
-            from config import get_config
-            _perm = get_config().auto_approve
-        except Exception:
-            _perm = "read_only"
-        bar.append(_perm, style=_RISK.get(_perm, _DIM))
+        if _gate_off:
+            # The /autoapprove toggle trumps the tier display: the gate is not "at a tier",
+            # it's off, and the bar must say so for as long as that is true.
+            bar.append("⚠ GATE OFF", style=f"bold {_RISK.get('destructive', 'red')}")
+        else:
+            try:
+                from config import get_config
+                _perm = get_config().auto_approve
+            except Exception:
+                _perm = "read_only"
+            bar.append(_perm, style=_RISK.get(_perm, _DIM))
 
         # ── type-ahead ── only present while the user is queuing input mid-turn. Placed right after
         # identity (ahead of progress) so the line being typed is never the part trimmed by the

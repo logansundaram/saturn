@@ -10,6 +10,7 @@ from ._base import (
     _ACCENT, _DIM, _RAIL_GLYPH,
     _emit, _meter_color, _mini_bar, _rail,
 )
+from .listing import section
 
 
 # ── system metrics display ───────────────────────────────────────────────────────
@@ -32,14 +33,7 @@ def show_system_metrics(metrics) -> None:
         else:
             print(f"  {_RAIL_GLYPH} {label:<6}  {bar}  {pct:>3.0f}%{'   ' + detail if detail else ''}")
 
-    if _RICH:
-        rule = Text()
-        rule.append("  ╶── ", style=_DIM)
-        rule.append("system", style=f"bold {_ACCENT}")
-        rule.append(" " + "─" * 40, style=_DIM)
-        _console.print(rule)
-    else:
-        print("  ╶── system " + "─" * 44)
+    section("system")
 
     _row("cpu", metrics.cpu_usage_percent)
     ram_pct = metrics.ram_used_gb / metrics.total_ram_gb * 100
@@ -61,13 +55,9 @@ def show_context(window: int, used: int, source: str, per_role: dict[str, int]) 
     col = _meter_color(pct)
     bar = _mini_bar(pct, width=28)
 
-    if _RICH:
-        rule = Text()
-        rule.append("  ╶── ", style=_DIM)
-        rule.append("context", style=f"bold {_ACCENT}")
-        rule.append(" " + "─" * 40, style=_DIM)
-        _console.print(rule)
+    section("context")
 
+    if _RICH:
         win = Text("  ")
         win.append("window ", style=_DIM)
         win.append(f"{window:,}", style="default")
@@ -82,7 +72,6 @@ def show_context(window: int, used: int, source: str, per_role: dict[str, int]) 
         usage.append(f"   {used:,} / {window:,}", style=_DIM)
         _console.print(usage)
     else:
-        print("  ╶── context " + "─" * 42)
         print(f"  window {window:,} tokens   ({source})")
         print(f"  {_RAIL_GLYPH} usage  {bar}  {pct:>4.0f}%   {used:,} / {window:,}")
 
@@ -122,21 +111,7 @@ def show_models(models, bindings: dict, active_tier: str, embedder: str,
             parts.append("embedder")
         return "  ".join(parts)
 
-    if _RICH:
-        rule = Text()
-        rule.append("  ╶── ", style=_DIM)
-        rule.append("models", style=f"bold {_ACCENT}")
-        rule.append(" " + "─" * 40, style=_DIM)
-        _console.print(rule)
-        sub = Text("  ")
-        sub.append("tier ", style=_DIM)
-        sub.append(active_tier, style="default")
-        sub.append("  ·  embedder ", style=_DIM)
-        sub.append(embedder or "—", style="default")
-        _console.print(sub)
-    else:
-        print("  ╶── models " + "─" * 44)
-        print(f"  tier {active_tier}  ·  embedder {embedder or '—'}")
+    section("models", f"tier {active_tier}  ·  embedder {embedder or '—'}")
 
     if not models:
         _emit("  (no local models — is the Ollama daemon running? `ollama list`)")

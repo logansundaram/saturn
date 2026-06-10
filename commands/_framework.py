@@ -105,6 +105,15 @@ def _todo(cmd: SlashCommand, args: list[str]) -> None:
 
 _HELP_FLAGS = {"--help", "-h"}
 
+# Old command names -> where the behaviour lives now. Typing one prints a pointer instead of a
+# bare "unknown command", so muscle memory from before the /docs consolidation lands softly.
+_RENAMED = {
+    "ingest": "docs add",
+    "forget": "docs remove",
+    "remove": "docs remove",
+    "reingest": "docs sync --force",
+}
+
 
 def _show_help(cmd: SlashCommand) -> None:
     """`git <cmd> --help`-style detail view for one command."""
@@ -139,7 +148,11 @@ def dispatch(line: str, ctx: CommandContext) -> None:
     name = key if key in COMMANDS else _ALIASES.get(key)
     cmd = COMMANDS.get(name) if name else None
     if cmd is None:
-        _print(f"  unknown command: /{key} - try /help")
+        moved = _RENAMED.get(key)
+        if moved:
+            _print(f"  /{key} moved — use /{moved} (see /{moved.split()[0]} --help)")
+        else:
+            _print(f"  unknown command: /{key} - try /help")
         return
 
     if args and args[0].lower() in _HELP_FLAGS:

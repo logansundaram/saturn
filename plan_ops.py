@@ -6,7 +6,7 @@ drift — the prompt you get mid-turn understands exactly the same `add`/`edit`/
 `tool`/`status` words you'd document for `/plan`.
 
 The plan is the same plain-dict shape used everywhere else in state:
-`{step_id, label, status, intended_tool}` (see state.py / SATURDAY_MVP_PLAN.md). These functions
+`{step_id, label, status, intended_tool}` (see state.py). These functions
 are pure: they take a plan list and return a NEW edited list (the caller decides whether to commit
 it), so they're trivially testable and never mutate the live plan in place by surprise.
 

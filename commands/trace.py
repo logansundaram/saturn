@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import sqlite3
+import sys
 from contextlib import contextmanager
+from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
 from commands._framework import command, _print
@@ -170,6 +175,210 @@ def _to_int(s) -> Optional[int]:
         return None
 
 
+# --- /trace export · /trace verify ------------------------------------------------------------
+# The seed of the audit layer: one run's complete record (run + events + LLM calls) written to a
+# self-contained file. JSON is the audit format — canonical, with a tamper-evident sha256 digest
+# that `/trace verify` recomputes. --md renders a human-readable report instead (no digest).
+
+def _saturn_version() -> str:
+    """The running version without importing agent.py (heavy, and double-imports when the app
+    runs as `python agent.py`): read __version__ off the already-loaded module."""
+    for name in ("__main__", "agent"):
+        v = getattr(sys.modules.get(name), "__version__", None)
+        if v:
+            return str(v)
+    return "unknown"
+
+
+def _canonical_digest(payload: dict) -> str:
+    """sha256 over the canonical JSON of `payload` (sorted keys, tight separators, raw unicode) —
+    the byte stream `/trace verify` reproduces. The 'integrity' key must not be in `payload`."""
+    canon = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(canon.encode("utf-8")).hexdigest()
+
+
+def _export_payload(run, events, calls) -> dict:
+    run_id, query, started_at, ended_at, status, response = run
+    return {
+        "saturn_trace_export": 1,
+        "saturn_version": _saturn_version(),
+        "exported_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "run": {
+            "run_id": run_id,
+            "query": query,
+            "started_at": started_at,
+            "ended_at": ended_at,
+            "status": status,
+            "response": response,
+        },
+        "events": [
+            {
+                "seq": seq,
+                "ts": ts,
+                "node": node,
+                "summary": summary,
+                # keep undecodable deltas verbatim — an audit record drops nothing
+                "data": decode_json(data, None) if data else None,
+            }
+            for seq, ts, node, summary, data in events
+        ],
+        "llm_calls": [
+            {
+                "seq": seq,
+                "ts": ts,
+                "node": node,
+                "model": model,
+                "dur": dur,
+                "prompt_tokens": p_tok,
+                "output_tokens": o_tok,
+                "input": decode_json(inp, None) if inp else None,
+                "output": decode_json(out, None) if out else None,
+                "status": call_status,
+            }
+            for seq, ts, node, model, dur, p_tok, o_tok, inp, out, call_status in calls
+        ],
+    }
+
+
+def _export_markdown(payload: dict) -> str:
+    """The human-readable rendering of an export payload — a report, not the audit format."""
+    run = payload["run"]
+    lines = [
+        f"# Saturn run record — run #{run['run_id']}",
+        "",
+        f"- **query:** {run['query'] or '(none)'}",
+        f"- **started:** {run['started_at'] or '?'}   **ended:** {run['ended_at'] or '?'}",
+        f"- **status:** {run['status'] or '?'}",
+        f"- **exported:** {payload['exported_at']}  (saturn {payload['saturn_version']})",
+        "",
+        "## Timeline",
+        "",
+    ]
+    for ev in payload["events"]:
+        ts = (ev["ts"] or "")[11:19]
+        lines.append(f"- `{ts}` **{ev['node']}** — {ev['summary'] or ''}")
+        delta = ev["data"] if isinstance(ev["data"], dict) else {}
+        for result in delta.get("tool_results") or []:
+            lines.append("")
+            lines.append("  ```")
+            lines.extend(f"  {ln}" for ln in str(result).splitlines())
+            lines.append("  ```")
+    calls = payload["llm_calls"]
+    if calls:
+        lines += ["", f"## LLM calls ({len(calls)})", ""]
+        for c in calls:
+            dur = f"{c['dur']:.1f}s" if isinstance(c["dur"], (int, float)) else "?"
+            toks = f"{c['prompt_tokens'] or 0}→{c['output_tokens'] or 0} tok"
+            lines.append(f"- `{c['node']}` {c['model'] or '?'} — {dur}, {toks}, {c['status']}")
+    lines += ["", "## Final response", "", run["response"] or "(none)", ""]
+    return "\n".join(lines)
+
+
+def _export(ctx, args):
+    fmt_md = False
+    run_id: Optional[int] = None
+    out_path: Optional[str] = None
+    it = iter(args)
+    for a in it:
+        low = a.lower()
+        if low in ("--md", "-m", "md", "markdown"):
+            fmt_md = True
+        elif low in ("-o", "--out", "--output"):
+            out_path = next(it, None)
+        elif low in ("-r", "--run"):
+            rid = _to_int(next(it, ""))
+            if rid is not None:
+                run_id = rid
+        elif a.startswith("#") or a.lstrip("+-").isdigit():
+            rid = _to_int(a)
+            if rid is not None:
+                run_id = rid
+        else:
+            _print(f"  ignoring unrecognized argument: {a!r}")
+
+    with _connect(ctx.db_path) as conn:
+        if run_id is None:
+            row = conn.execute("SELECT MAX(run_id) FROM runs").fetchone()
+            run_id = row[0] if row else None
+            if run_id is None:
+                _print("  (no runs recorded yet)")
+                return
+        run = conn.execute(
+            "SELECT run_id, query, started_at, ended_at, status, response FROM runs WHERE run_id = ?",
+            (run_id,),
+        ).fetchone()
+        if not run:
+            _print(f"  no run #{run_id} — try /trace -l to list recorded runs.")
+            return
+        events = conn.execute(
+            "SELECT seq, ts, node, summary, data FROM events WHERE run_id = ? ORDER BY seq, id",
+            (run_id,),
+        ).fetchall()
+        has_calls = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='llm_calls'"
+        ).fetchone()
+        calls = conn.execute(
+            "SELECT seq, ts, node, model, dur, prompt_tokens, output_tokens, input, output, status "
+            "FROM llm_calls WHERE run_id = ? ORDER BY seq, id",
+            (run_id,),
+        ).fetchall() if has_calls else []
+
+    payload = _export_payload(run, events, calls)
+
+    if out_path:
+        dest = Path(out_path).expanduser()
+    else:
+        from config import get_config
+
+        ext = "md" if fmt_md else "json"
+        dest = get_config().path("exports") / f"run_{run_id}.{ext}"
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if fmt_md:
+            dest.write_text(_export_markdown(payload), encoding="utf-8")
+        else:
+            payload["integrity"] = {"algorithm": "sha256", "digest": _canonical_digest(payload)}
+            dest.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+    except OSError as e:
+        _print(f"  could not write {dest}: {e}")
+        return
+
+    _print(f"  run #{run_id} exported -> {dest}")
+    _print(f"    {len(payload['events'])} event(s), {len(payload['llm_calls'])} LLM call(s)")
+    if not fmt_md:
+        _print(f"    sha256 {payload['integrity']['digest']}")
+        _print("    (anyone can re-check it later: /trace verify <file>)")
+
+
+def _verify(ctx, args):
+    if not args:
+        _print("  usage: /trace verify <exported .json file>")
+        return
+    path = Path(" ".join(args).strip('"')).expanduser()
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as e:
+        _print(f"  could not read {path}: {e}")
+        return
+    integrity = payload.pop("integrity", None) if isinstance(payload, dict) else None
+    if not isinstance(payload, dict) or payload.get("saturn_trace_export") != 1:
+        _print(f"  {path.name} is not a Saturn trace export.")
+        return
+    if not integrity or "digest" not in integrity:
+        _print(f"  {path.name} carries no integrity digest (a --md report? only JSON exports do).")
+        return
+    actual = _canonical_digest(payload)
+    if actual == integrity["digest"]:
+        _print(f"  ✓ {path.name} verifies — sha256 {actual}")
+        _print(f"    run #{payload['run']['run_id']}, recorded {payload['run']['started_at']}")
+    else:
+        _print(f"  ⨯ {path.name} DOES NOT verify — the record was modified after export.")
+        _print(f"    stored   {integrity['digest']}")
+        _print(f"    computed {actual}")
+
+
 def _verbosity(ctx, args):
     from tui import ui
 
@@ -244,6 +453,12 @@ Subviews:
   /trace cost [--all]  session totals: turns, time, tokens
   /trace state         dump the live AgentState (message count, plan steps, tools called, etc.)
                        pass --full to also dump the raw state dict
+  /trace export [#id]  write a run's complete record (events + tool I/O + LLM calls) to a
+                       self-contained file under logging/exports/ — JSON with a sha256 integrity
+                       digest by default; --md for a readable markdown report; -o <path> to
+                       choose the destination. The audit record you can hand to someone else.
+  /trace verify <file> recompute an exported record's digest and report whether it still matches
+                       — a modified record fails loudly.
 
 Live trace verbosity (controls what scrolls during a turn; recording is always on):
 
@@ -257,6 +472,10 @@ def _trace(ctx, args):
 
     if args and args[0].lower() in ("invoke", "--invoke", "llm", "--llm", "model", "models"):
         return _show_llm_calls(ctx, args[1:])
+    if args and args[0].lower() in ("export", "--export"):
+        return _export(ctx, args[1:])
+    if args and args[0].lower() in ("verify", "--verify"):
+        return _verify(ctx, args[1:])
     if args and args[0].lower() in ("calls", "io"):
         return _calls(ctx, args[1:])
     if args and args[0].lower() in ("cost", "session", "usage"):

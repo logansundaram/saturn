@@ -95,7 +95,7 @@ A step may use one of these tools (set `intended_tool` to the exact name; otherw
 # --- agent node ------------------------------------------------------------------------
 # The ReAct core. Tools are bound natively (get_tool_model), so this prompt intentionally
 # does NOT re-list them as text — duplicating the schemas degrades tool-calling on small
-# local models (see SATURDAY_MVP_PLAN.md §8). It either emits tool calls or, when done
+# local models. It either emits tool calls or, when done
 # gathering, emits no tool calls to signal completion.
 agent_sys_msg = SystemMessage(
     content="""

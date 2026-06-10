@@ -545,7 +545,7 @@ def main():
                 "[a]ttach to next message · [Enter] send as-is"
             choice = ui.ask(f"file dropped: {label} — {choices} » ").lower()
             if choice.startswith("i") and ingestable:
-                commands.dispatch(f"/ingest {dropped}", cmd_ctx)
+                commands.dispatch(f"/docs add {dropped}", cmd_ctx)
                 continue
             if choice.startswith("a"):
                 pending_attachments.append(dropped)

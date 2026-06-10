@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 # `plan` node and revised in-loop by `update_plan`. It is ADVISORY, not a rigid
 # DAG — the agent may deviate, but each loop step it must reconcile against it.
 # It is also the transparency surface: each step's `label` is streamed to the UI
-# as a PlanEvent and persisted to the trace. (See SATURDAY_MVP_PLAN.md.)
+# as a PlanEvent and persisted to the trace.
 
 StepStatus = Literal["pending", "active", "done", "skipped"]
 

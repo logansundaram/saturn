@@ -1,0 +1,83 @@
+# Packaging for pipx / uv / pip installs ("installed mode").
+#
+# The curl installers (install.sh / install.ps1) clone the repo and use requirements.txt —
+# that file stays the source of truth for the clone install; keep `dependencies` below in
+# sync with it. In installed mode there is no repo: config.py seeds config.yaml into
+# SATURDAY_HOME (~/.saturday) from the packaged default (shipped via data-files below), and
+# all user data lives there instead of site-packages, so upgrades can't clobber it.
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "saturn-agent"
+version = "0.1.0"  # keep in sync with __version__ in agent.py
+description = "Saturn — a local-first, transparent AI agent for the terminal. AI agents should show their work."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+authors = [{ name = "Saturday.ai" }]
+keywords = ["agent", "llm", "local-first", "ollama", "terminal", "transparency"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    # --- core agent framework ---
+    "langgraph>=1.2.0",
+    "langchain>=1.3.1",
+    "langchain-core>=1.4.0",
+    "langchain-ollama>=1.1.0",
+    "langchain-text-splitters>=1.0.0",
+    "langgraph-checkpoint-sqlite>=3.1.0",
+    "ollama>=0.6.2",
+    # --- knowledge base / documents ---
+    "pypdf>=6.12.2",
+    # --- web tools (keyless by default) ---
+    "ddgs>=9.14.4",
+    "trafilatura>=2.0.0",
+    "httpx>=0.28.1",
+    "tavily-python>=0.7.24",
+    # --- config / utilities ---
+    "pyyaml>=6.0.3",
+    "python-dotenv>=1.2.2",
+    # --- terminal UI ---
+    "rich>=15.0.0",
+    "prompt_toolkit>=3.0.52",
+    "psutil>=7.2.2",
+]
+
+[project.optional-dependencies]
+# Only needed if a tier binds a role to a cloud provider (the cloud-hybrid tier).
+cloud = ["langchain-anthropic>=1.0.0", "langchain-openai>=1.0.0"]
+
+[project.urls]
+Homepage = "https://github.com/logansundaram/saturn"
+Issues = "https://github.com/logansundaram/saturn/issues"
+
+[project.scripts]
+saturn = "agent:main"
+
+[tool.setuptools]
+# The repo is deliberately flat (see CLAUDE.md): runtime modules at the root, a few
+# subpackages. Dev-only artifacts (benchmark.py, utilities/, tests/) are not shipped.
+py-modules = [
+    "agent", "compaction", "config", "diag", "env_keys", "interrupts",
+    "llms", "mentions", "messages", "permissions", "plan_ops", "registry",
+    "state", "toolspec", "typeahead",
+]
+
+[tool.setuptools.packages.find]
+include = ["commands*", "node_registry*", "stores*", "tool_registry*", "tui*"]
+namespaces = true  # node_registry/stores/tool_registry/tui are implicit namespace packages
+
+[tool.setuptools.data-files]
+# Lands at <venv>/share/saturn/ — config.py seeds SATURDAY_HOME/config.yaml from it on first run.
+"share/saturn" = ["config.yaml"]

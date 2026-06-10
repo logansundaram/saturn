@@ -15,10 +15,10 @@ Extensible by design
 To make a new key manageable, add one `ManagedKey` to `KNOWN_KEYS`:
 
     ManagedKey(
-        name="OPENAI_API_KEY",            # the env var
-        label="OpenAI",                   # human name for listings
-        purpose="OpenAI-backed models",   # what it unlocks
-        url="https://platform.openai.com/api-keys",
+        name="MISTRAL_API_KEY",           # the env var
+        label="Mistral",                  # human name for listings
+        purpose="Mistral-backed models",  # what it unlocks
+        url="https://console.mistral.ai/api-keys",
         on_change=_reset_models,          # drop any client that captured the old value
     )
 
@@ -38,7 +38,17 @@ from typing import Callable, Optional
 
 from dotenv import dotenv_values, set_key, unset_key
 
-_ENV_PATH = Path(__file__).parent / ".env"
+def _resolve_env_path() -> Path:
+    # Clone mode: .env at the repo root (config.yaml sits next to this file). Wheel installs
+    # (pipx/uv) keep secrets in SATURDAY_HOME (~/.saturday) with the rest of the user's data,
+    # mirroring config.py's lookup (kept in step by hand: no project imports here).
+    root = Path(__file__).parent
+    if (root / "config.yaml").exists():
+        return root / ".env"
+    return Path(os.environ.get("SATURDAY_HOME") or Path.home() / ".saturday") / ".env"
+
+
+_ENV_PATH = _resolve_env_path()
 
 
 # --- on_change hooks -------------------------------------------------------
@@ -69,7 +79,9 @@ class ManagedKey:
     on_change: Optional[Callable[[], None]] = None
 
 
-# The registry the /config key command renders and validates against. Add a row to expose a new key.
+# The registry the /config key command renders and validates against. Add a row to expose a new
+# key. Order matters for detect(): it checks prefixes in registry order, so a more specific
+# prefix (sk-ant-) must come before a generic one it would also match (sk-).
 KNOWN_KEYS: tuple[ManagedKey, ...] = (
     ManagedKey(
         name="TAVILY_API_KEY",
@@ -86,6 +98,15 @@ KNOWN_KEYS: tuple[ManagedKey, ...] = (
         purpose="cloud models for the cloud-hybrid tier (planner/synthesizer)",
         url="https://console.anthropic.com/settings/keys",
         prefix="sk-ant-",
+        on_change=_reset_models,
+    ),
+    ManagedKey(
+        name="OPENAI_API_KEY",
+        label="OpenAI",
+        purpose="OpenAI-backed cloud models — any role bound to `provider: openai` in a tier "
+        "(needs `pip install langchain-openai`)",
+        url="https://platform.openai.com/api-keys",
+        prefix="sk-",
         on_change=_reset_models,
     ),
 )

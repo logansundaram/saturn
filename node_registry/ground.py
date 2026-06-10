@@ -12,7 +12,7 @@ from stores.document_registry import (
 )
 
 """
-Grounding node (re-scoped from the old context_builder; see SATURDAY_MVP_PLAN.md §8).
+Grounding node (re-scoped from the old context_builder).
 
 Its ONLY job is to load the things that are NOT already available to the model:
   - the document + workspace manifests (so the planner knows what docs/files exist),

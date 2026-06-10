@@ -42,22 +42,23 @@ not a chatbot. Dense, fast, keyboard-first, low-noise, inspectable. The aestheti
     `Live`, the bar is torn down around the `»` prompt, the approval gate, and the final response,
     then restarted as the loop continues.
 
-The agent emits node/plan/state updates; this module is one subscriber that renders them
-(SATURDAY_MVP_PLAN.md §6). Swapping it for a Textual/Electron surface needs no graph change.
+The agent emits node/plan/state updates; this module is one subscriber that renders them.
+Swapping it for a Textual/Electron surface needs no graph change.
 Degrades to plain ASCII-ish output if `rich` is absent (still UTF-8: stdout is reconfigured in
 agent.py, so box-drawing glyphs are safe even on the no-color path).
 
 This is a package, split by screen concern: `_base` (console/palette/shared state/primitives),
-`statusbar`, `art`, `prompt`, `trace`, `plan`, `approval`, `response`, `readouts`. Callers use the
-flat `from tui import ui; ui.foo()` surface re-exported below — nothing imports the submodules
-directly.
+`statusbar`, `art`, `prompt`, `trace`, `plan`, `approval`, `response`, `readouts`, `listing`
+(the shared section-rule + aligned-table vocabulary every readout command renders through).
+Callers use the flat `from tui import ui; ui.foo()` surface re-exported below — nothing imports
+the submodules directly.
 """
 
 # Trace verbosity (state + accessors live in _base alongside the rest of the shared state).
 from ._base import set_verbosity, verbosity
 
 # Status bar + per-turn reset.
-from .statusbar import set_input_preview, reset_turn
+from .statusbar import set_input_preview, set_gate_off, reset_turn
 
 # Startup splash / animation.
 from .art import splash, play_animation
@@ -83,9 +84,12 @@ from .readouts import (
     note, warn, steer_note, echo_queued,
 )
 
+# Shared listing vocabulary (the section rule + aligned table every readout command uses).
+from .listing import section, table, risk_style
+
 __all__ = [
     "set_verbosity", "verbosity",
-    "set_input_preview", "reset_turn",
+    "set_input_preview", "set_gate_off", "reset_turn",
     "splash", "play_animation",
     "prompt", "banner", "ask",
     "show_node", "show_run", "show_llm_calls",
@@ -94,4 +98,5 @@ __all__ = [
     "response", "ResponseStream",
     "show_system_metrics", "show_context", "show_models",
     "note", "warn", "steer_note", "echo_queued",
+    "section", "table", "risk_style",
 ]

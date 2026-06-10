@@ -2,7 +2,7 @@
 Structured run trace -> SQLite (database/db.sqlite).
 
 Every turn becomes a row in `runs`; every node update streamed during that turn becomes a row
-in `events`. This is the transparency/observability layer (SATURDAY_MVP_PLAN.md §5): it makes
+in `events`. This is the transparency/observability layer: it makes
 every run inspectable after the fact and is the data source the frontend will render later.
 
 It supersedes the scattered `print(perf_counter)` lines — those now go to `diag.log()` (the file

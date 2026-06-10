@@ -28,6 +28,12 @@ def _autoapprove(ctx, args):
         _print(f"  usage: /autoapprove on|off   (currently {'on' if ctx.auto_approve else 'off'})")
         return
     ctx.auto_approve = new
+    try:
+        from tui import ui
+
+        ui.set_gate_off(new)  # keep the persistent status-bar label truthful, not just the banner
+    except Exception:
+        pass
     if new:
         _print("  ┏━ ⚠  AUTO-APPROVE ON ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
         _print("  ┃  the approval gate is DISABLED. every tool call —")

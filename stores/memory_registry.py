@@ -1,6 +1,5 @@
 """
-Persistent working-memory store (Phase 3) — the durable layer of the three-layer memory
-(SATURDAY_MVP_PLAN.md §3).
+Persistent working-memory store (Phase 3) — the durable layer of the three-layer memory.
 
 Session memory rides in the checkpointed message thread; the knowledge base lives in the RAG
 store. This module is the third layer: a small, append-only markdown file of durable facts the

@@ -10,7 +10,7 @@ driver (`agent.run_turn`) can hand it to the user, who inspects/edits the plan a
 resume the (possibly edited) plan is written back into state and execution continues from the
 current step with the corrected plan — or, if the user aborted, routing falls through to
 `synthesize`. This is what lets a hallucinated or wrong plan be fixed mid-flight instead of running
-to a bad conclusion (see SATURDAY_MVP_PLAN.md and the brittleness notes in CLAUDE.md).
+to a bad conclusion (see the brittleness notes in CLAUDE.md).
 
 Two independent trigger seams feed it, by design, so the *source* of a pause is modular:
   - external / async / between-turns: the shared `interrupts.PauseController` (the mid-turn Esc key,

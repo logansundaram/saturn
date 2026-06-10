@@ -1,3 +1,44 @@
+Metadata-Version: 2.4
+Name: saturn-agent
+Version: 0.1.0
+Summary: Saturn — a local-first, transparent AI agent for the terminal. AI agents should show their work.
+Author: Saturday.ai
+License-Expression: MIT
+Project-URL: Homepage, https://github.com/logansundaram/saturn
+Project-URL: Issues, https://github.com/logansundaram/saturn/issues
+Keywords: agent,llm,local-first,ollama,terminal,transparency
+Classifier: Development Status :: 4 - Beta
+Classifier: Environment :: Console
+Classifier: Intended Audience :: Developers
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Classifier: Programming Language :: Python :: 3.13
+Classifier: Topic :: Scientific/Engineering :: Artificial Intelligence
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: langgraph>=1.2.0
+Requires-Dist: langchain>=1.3.1
+Requires-Dist: langchain-core>=1.4.0
+Requires-Dist: langchain-ollama>=1.1.0
+Requires-Dist: langchain-text-splitters>=1.0.0
+Requires-Dist: langgraph-checkpoint-sqlite>=3.1.0
+Requires-Dist: ollama>=0.6.2
+Requires-Dist: pypdf>=6.12.2
+Requires-Dist: ddgs>=9.14.4
+Requires-Dist: trafilatura>=2.0.0
+Requires-Dist: httpx>=0.28.1
+Requires-Dist: tavily-python>=0.7.24
+Requires-Dist: pyyaml>=6.0.3
+Requires-Dist: python-dotenv>=1.2.2
+Requires-Dist: rich>=15.0.0
+Requires-Dist: prompt_toolkit>=3.0.52
+Requires-Dist: psutil>=7.2.2
+Provides-Extra: cloud
+Requires-Dist: langchain-anthropic>=1.0.0; extra == "cloud"
+Requires-Dist: langchain-openai>=1.0.0; extra == "cloud"
+Dynamic: license-file
+
 # Saturn
 
 > A **local-first, transparent, general-purpose** AI agent that runs on your own machine.
@@ -248,10 +289,9 @@ Type `/help` for the full list, or `/<command> --help` for details on any one. H
 | `/tools` | List the agent's tools and their risk tiers. |
 | `/memory` | See, add, or delete the facts the agent permanently remembers. |
 | `/risk` · `/allow` · `/autoapprove` | Tune the safety gate (persistable overrides + shell allowlist). |
-| `/privacy` | What can leave this machine right now — inference, web egress, keys, data locations. |
 | `/undo` | Revert the file changes of the last turn that wrote anything. |
 | `/init` | Survey the workspace and draft `SATURDAY.md` standing instructions. |
-| `/trace` | Inspect past runs, tool I/O, LLM calls, cost; `/trace export` writes a tamper-evident run record. |
+| `/trace` | Inspect past runs, tool I/O (`/trace calls`), LLM calls (`/trace invoke`), cost. |
 | `/save` · `/load` · `/resume` | Persist and restore conversations (autosave survives a crash). |
 | `/update` | Self-update: pull the latest Saturn (your data is never touched). |
 | `/clear` · `/quit` | Start a fresh conversation / exit. |
@@ -292,15 +332,11 @@ See **`CLAUDE.md`** for a deep architectural tour (including the roadmap).
 
 ## Benchmarking
 
-A query-suite harness exercises each capability, and a **graded trust benchmark** measures the
-trust stack itself: the grounding judge's catch rate (queries that bait a confabulated answer,
-graded on whether the agent looked the fact up or the judge caught the ungrounded draft) and
-approval-gate coverage (every non-read-only tool call must have faced the gate):
+A query-suite harness exercises each capability:
 
 ```bash
-python benchmark.py                                   # all suites + the trust benchmark
+python benchmark.py                                   # all suites
 python benchmark.py --suites calculator web_search    # just some
-python benchmark.py --no-trust                        # skip the graded trust suite
 ```
 
 Reports are written to `logging/benchmarks/`.

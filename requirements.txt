@@ -20,6 +20,10 @@ trafilatura>=2.0.0            # local page-content extraction
 httpx>=0.28.1
 tavily-python>=0.7.24         # OPTIONAL: premium web search/extract/research
 
+# --- cloud providers (OPTIONAL: only if a tier binds a role to a cloud provider) ---
+# langchain-anthropic>=1.0.0    # provider: anthropic (the cloud-hybrid tier)
+# langchain-openai>=1.0.0       # provider: openai
+
 # --- config / utilities ---
 pyyaml>=6.0.3
 python-dotenv>=1.2.2

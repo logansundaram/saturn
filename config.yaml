@@ -22,6 +22,8 @@ paths:
   memory: database/memory/memory.md   # persistent durable-facts store (remember/recall)
   db_sqlite: database/db.sqlite        # SqliteSaver checkpoints + trace
   sessions: database/sessions          # saved conversations (/save and /load)
+  snapshots: database/snapshots        # per-turn pre-write file snapshots (/undo)
+  permissions: database/permissions.json  # persisted /risk overrides + /allow shell prefixes
 
 # ---------------------------------------------------------------------------
 # Loop / safety runtime knobs (were the MAX_ITERATIONS constant + the gate policy).

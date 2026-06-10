@@ -9,7 +9,6 @@ from langchain.messages import HumanMessage
 
 from agent import build_agent, run_turn, _fresh_turn, _initial_state
 from registry import risk_of
-from state import AgentState
 
 # Query suites for the living-plan ReAct loop (ground -> plan -> agent -> approval ->
 # (tools -> update_plan -> agent)* -> synthesize). Each suite targets one capability of the
@@ -55,6 +54,19 @@ SUITES: dict[str, list[str]] = {
         "Create a file called notes.md in the workspace with a short note about Python lists.",
         "List the workspace files again to confirm test_output.txt was created.",
         "Read the file test_output.txt from the workspace and tell me what it says.",
+    ],
+    # Workspace navigation + targeted editing — the search_files/find_files/edit_file tools.
+    # Queries run in order (like the filesystem suite): the first two (re)create known files, so
+    # the suite is self-resetting across runs. Expected tool per query is noted for manual
+    # grading — the failure mode this suite watches for is the planner falling back to
+    # list_directory + read_file (navigation) or write_file (editing) instead of the new tools.
+    "workspace_nav": [
+        "Create a file called bench_nav.md in the workspace containing exactly these three lines: 'alpha one', 'TOKEN_X42 here', 'gamma three'.",  # write_file (setup)
+        "Create a file called bench_dup.txt in the workspace containing exactly this text: red red red",  # write_file (setup)
+        "Search the contents of the workspace files for TOKEN_X42 and tell me which file and line number it appears on.",  # search_files -> bench_nav.md line 2 (NOT read_file per file)
+        "Find all files in the workspace whose names end in .md and list their paths.",  # find_files (NOT list_directory)
+        "In the workspace file bench_nav.md, change the word 'alpha' to 'omega' and leave everything else unchanged.",  # edit_file, 1 occurrence (NOT write_file rewrite)
+        "In the workspace file bench_dup.txt, replace every occurrence of 'red' with 'blue'.",  # edit_file with replace_all (3 occurrences)
     ],
     # RAG retrieval — agent should call `search_knowledge_base` (read-only) and ground its
     # answer in the retrieved chunks. The corpus is the synthetic RAG test pack under
@@ -133,6 +145,28 @@ CONVERSATIONS: list[dict] = [
             },
         ],
     },
+    # Targeted edit against a cross-turn referent: turn 2's "the file you just created" must
+    # resolve through the retained scratchpad, and the change itself should land via edit_file
+    # (anchored replace) rather than a write_file rewrite. Turn 3 verifies the edit actually
+    # landed — `expect` checks the new word survives a read-back.
+    {
+        "name": "edit_chain",
+        "turns": [
+            {
+                "query": "Create a file called mt_edit.txt in the workspace containing exactly "
+                "this text: the quick brown fox",
+                "expect": None,
+            },
+            {
+                "query": "In the file you just created, change the word 'brown' to 'purple'.",
+                "expect": None,
+            },
+            {
+                "query": "Read that file and tell me its exact contents.",
+                "expect": "purple",
+            },
+        ],
+    },
     # The strongest isolator of the compaction bug: the list of results lives ONLY in turn 1's
     # tool scratchpad, never the prose answer — so if compaction drops it, turn 2 has nothing to
     # refer to and must re-search or fabricate. Non-deterministic (live web), so recorded, not
@@ -189,32 +223,8 @@ def run_conversation(graph, convo: dict) -> dict:
     return {"name": convo["name"], "turns": turn_results}
 
 
-def _fresh_state() -> AgentState:
-    # Must match agent._initial_state's shape: nodes read several of these via state[...] (e.g.
-    # synthesize reads context/current_query), so an omitted key KeyErrors here but not in the REPL.
-    return {
-        "messages": [],
-        "current_query": "",
-        "context": "",
-        "attachments": "",
-        "plan": [],
-        "iteration": 0,
-        "agent_nudges": 0,
-        "replans": 0,
-        "pause_requested": False,
-        "pause_reason": "",
-        "aborted": False,
-        "tools_called": [],
-        "tool_results": [],
-        "documents_retrieved": [],
-        "tool_events": [],
-        "tok_per_sec": 0.0,
-        "context_tokens": 0,
-    }
-
-
 def run_query(graph, query: str) -> dict:
-    state = _fresh_state()
+    state = _initial_state()
     state["messages"].append(HumanMessage(content=query))
     state["current_query"] = query
 
@@ -263,7 +273,7 @@ def run_suites(
     graph = build_agent()
 
     print("Warming up model...")
-    _warmup_state = _fresh_state()
+    _warmup_state = _initial_state()
     _warmup_state["messages"].append(HumanMessage(content="hi"))
     _warmup_state["current_query"] = "hi"
     # The graph is checkpointed, so even a bare invoke needs a thread_id in config.

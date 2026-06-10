@@ -18,9 +18,10 @@ from __future__ import annotations
 
 from langchain.tools import tool as _lc_tool
 
-# Risk tiers, low -> high. Mirrors config.RISK_ORDER; duplicated here only to keep this module
-# project-import-free (it must not import config). A tool runs without prompting iff its tier is at
-# or below the configured `runtime.auto_approve` tier (see node_registry/approval.py).
+# Risk tiers, low -> high. Mirrors config.RISK_ORDER; duplicated here only because BOTH modules
+# are project-import-free leaves (neither may import the other) — everything else imports the
+# tiers from one of the two (e.g. /risk reads this one). A tool runs without prompting iff its
+# tier is at or below the configured `runtime.auto_approve` tier (see node_registry/approval.py).
 RISK_TIERS = ("read_only", "side_effecting", "destructive")
 
 # Collected at import time as each tool module's @register_tool runs. registry.py re-exports these.

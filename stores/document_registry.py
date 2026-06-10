@@ -50,6 +50,13 @@ def register_workspace_file(file_path: str, content: str) -> None:
     _upsert(_workspace_manifest(), file_path, content, Path(file_path).suffix)
 
 
+def remove_workspace_file(file_path: str) -> None:
+    """Strip a workspace file's manifest entry. Called by /undo (stores/snapshots.py) when it
+    deletes a file the undone turn created, so the grounding manifest never lists a file that is
+    gone. The cached summary is left alone — it is keyed by content hash, so it is simply unused."""
+    _remove_entry(_workspace_manifest(), file_path)
+
+
 def register_rag_document(source: str, content: str) -> None:
     """Called by rag.sync for each new/changed document. `source` is the corpus-relative path;
     key the manifest + summary cache by it (not the basename) so e.g. teamA/report.md and

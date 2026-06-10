@@ -1,10 +1,28 @@
 from __future__ import annotations
 
-import json
 import sqlite3
+from contextlib import contextmanager
 from typing import Optional
 
 from commands._framework import command, _print
+from stores.trace import decode_json, parse_ts
+
+
+@contextmanager
+def _connect(db_path):
+    """The trace DB connection for one read, closed on exit."""
+    conn = sqlite3.connect(db_path)
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+
+def _clip(s, n: int) -> str:
+    """Collapse whitespace and truncate to `n` chars with an ellipsis — the one-line preview
+    every list view here renders."""
+    s = " ".join(str(s or "").split())
+    return s if len(s) <= n else s[: n - 1] + "…"
 
 
 def _fmt_secs(s: float) -> str:
@@ -34,21 +52,15 @@ def _calls(ctx, args):
         except ValueError:
             _print(f"  ignoring non-numeric count: {args[0]!r}")
 
-    conn = sqlite3.connect(ctx.db_path)
-    try:
+    with _connect(ctx.db_path) as conn:
         rows = conn.execute(
             "SELECT run_id, data FROM events WHERE node = 'tools' ORDER BY id DESC LIMIT ?",
             (n * 5,),
         ).fetchall()
-    finally:
-        conn.close()
 
     calls: list[tuple[int, dict, str]] = []
     for run_id, data in rows:
-        try:
-            delta = json.loads(data or "{}")
-        except (json.JSONDecodeError, TypeError):
-            continue
+        delta = decode_json(data, {})
         events = delta.get("tool_events") or []
         results = delta.get("tool_results") or []
         for i, ev in enumerate(events):
@@ -72,9 +84,7 @@ def _calls(ctx, args):
             call_repr = ev.get("name", "?")
             observation = ev.get("result", "")
         _print(f"    #{run_id:<4} {glyph} {dur_s:>6}  {call_repr}")
-        out = " ".join(str(observation).split())
-        if len(out) > _MAX_CALL_OUTPUT:
-            out = out[: _MAX_CALL_OUTPUT - 1] + "…"
+        out = _clip(observation, _MAX_CALL_OUTPUT)
         _print(f"             -> {out}" if out else "             -> (no output)")
 
 
@@ -82,8 +92,7 @@ def _cost(ctx, args):
     all_time = any(a.lower() in ("--all", "-a", "all") for a in args)
     scope = "" if all_time else (ctx.session_started_at or "")
 
-    conn = sqlite3.connect(ctx.db_path)
-    try:
+    with _connect(ctx.db_path) as conn:
         if scope:
             runs = conn.execute(
                 "SELECT run_id, query, started_at, ended_at, status FROM runs "
@@ -100,23 +109,13 @@ def _cost(ctx, args):
         ev_rows = conn.execute(
             "SELECT run_id, data FROM events WHERE run_id >= ?", (runs[0][0],)
         ).fetchall()
-    finally:
-        conn.close()
-
-    from datetime import datetime
-
-    def _parse(ts):
-        try:
-            return datetime.fromisoformat(ts) if ts else None
-        except (TypeError, ValueError):
-            return None
 
     total_wall = 0.0
     timed = 0
     slowest = (0.0, "")
     status_mix = {"ok": 0, "error": 0, "interrupted": 0, "other": 0}
     for _rid, query, started_at, ended_at, status in runs:
-        s, e = _parse(started_at), _parse(ended_at)
+        s, e = parse_ts(started_at), parse_ts(ended_at)
         if s and e:
             secs = (e - s).total_seconds()
             total_wall += secs
@@ -130,10 +129,7 @@ def _cost(ctx, args):
     peak_ctx = 0
     max_iter = {}
     for run_id, data in ev_rows:
-        try:
-            delta = json.loads(data or "{}")
-        except (json.JSONDecodeError, TypeError):
-            continue
+        delta = decode_json(data, {})
         total_tools += len(delta.get("tools_called") or [])
         ct = delta.get("context_tokens") or 0
         if ct:
@@ -162,10 +158,7 @@ def _cost(ctx, args):
         + (f"   (peak ctx {_fmt_count(peak_ctx)})" if peak_ctx else "")
     )
     if slowest[0]:
-        q = " ".join(str(slowest[1]).split())
-        if len(q) > 48:
-            q = q[:47] + "…"
-        _print(f"    slowest      {_fmt_secs(slowest[0])}  \"{q}\"")
+        _print(f"    slowest      {_fmt_secs(slowest[0])}  \"{_clip(slowest[1], 48)}\"")
     _print("")
 
 
@@ -300,8 +293,7 @@ def _trace(ctx, args):
     if bare is not None and not list_mode and run_id is None:
         run_id = bare
 
-    conn = sqlite3.connect(ctx.db_path)
-    try:
+    with _connect(ctx.db_path) as conn:
         if list_mode:
             rows = conn.execute(
                 "SELECT run_id, started_at, status, query, "
@@ -315,10 +307,7 @@ def _trace(ctx, args):
             _print(f"  last {len(rows)} run(s) — newest first  (/trace #<id> to expand one):")
             for rid, started_at, status, query, n_events in rows:
                 when = (started_at or "")[:19].replace("T", " ")
-                q = " ".join(str(query or "").split())
-                if len(q) > 56:
-                    q = q[:55] + "…"
-                _print(f"    #{rid:<4} {when}  {str(status):<7} {n_events:>2}ev  {q}")
+                _print(f"    #{rid:<4} {when}  {str(status):<7} {n_events:>2}ev  {_clip(query, 56)}")
             return
 
         if run_id is None:
@@ -338,8 +327,6 @@ def _trace(ctx, args):
             "SELECT seq, ts, node, summary, data FROM events WHERE run_id = ? ORDER BY seq, id",
             (run_id,),
         ).fetchall()
-    finally:
-        conn.close()
 
     ui.show_run(run, events)
 
@@ -373,8 +360,7 @@ def _show_llm_calls(ctx, args):
         else:
             _print(f"  ignoring unrecognized argument: {a!r}")
 
-    conn = sqlite3.connect(ctx.db_path)
-    try:
+    with _connect(ctx.db_path) as conn:
         # The llm_calls table is created by the Tracer at startup; guard anyway for a stale DB.
         has_table = conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='llm_calls'"
@@ -395,10 +381,7 @@ def _show_llm_calls(ctx, args):
                 return
             _print(f"  runs with LLM calls — newest first  (/trace invoke #<id> to expand one):")
             for rid, n, dur, query in rows:
-                q = " ".join(str(query or "").split())
-                if len(q) > 50:
-                    q = q[:49] + "…"
-                _print(f"    #{rid:<4} {n:>2} call(s)  {float(dur or 0):>6.1f}s  {q}")
+                _print(f"    #{rid:<4} {n:>2} call(s)  {float(dur or 0):>6.1f}s  {_clip(query, 50)}")
             return
 
         if run_id is None:
@@ -420,7 +403,5 @@ def _show_llm_calls(ctx, args):
             "FROM llm_calls WHERE run_id = ? ORDER BY seq, id",
             (run_id,),
         ).fetchall()
-    finally:
-        conn.close()
 
     ui.show_llm_calls(run, calls, full=full)

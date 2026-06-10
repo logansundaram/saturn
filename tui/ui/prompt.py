@@ -95,11 +95,15 @@ if _PTK:
     })
 
     # An `@mention` inside a normal (non-slash) line: `@` at a word boundary + a run of
-    # non-space/non-`@`. Highlighted live so the user sees which token will attach a file
-    # (mentions.expand resolves them for real at submit; see mentions.py).
+    # non-space/non-`@`, or a double-quoted run (`@"path with spaces"` — what dragging a file in
+    # after typing `@` produces; the close quote is optional so it highlights mid-type).
+    # Highlighted live so the user sees which token will attach a file (mentions.expand resolves
+    # them for real at submit; see mentions.py).
     import re as _re
-    _MENTION_LEX_RE = _re.compile(r"(?<!\S)@[^\s@]+")
-    # Same grammar but capturing just the path fragment up to the cursor, for Tab completion.
+    _MENTION_LEX_RE = _re.compile(r'(?<!\S)@(?:"[^"\n]*"?|[^\s@]+)')
+    # Same grammar but capturing just the path fragment up to the cursor, for Tab completion —
+    # the quoted form first (its fragment may contain spaces), then the bare form.
+    _AT_QUOTED_FRAGMENT_RE = _re.compile(r'(?:^|\s)@"([^"\n]*)$')
     _AT_FRAGMENT_RE = _re.compile(r"(?:^|\s)@([^\s@]*)$")
 
     def _mention_fragments(line: str):
@@ -188,7 +192,7 @@ if _PTK:
             # `@path` mention completion takes precedence: it can occur anywhere on the line,
             # including inside what would otherwise be a slash command's args.
             before = document.text_before_cursor
-            at = _AT_FRAGMENT_RE.search(before)
+            at = _AT_QUOTED_FRAGMENT_RE.search(before) or _AT_FRAGMENT_RE.search(before)
             if at is not None:
                 frag = at.group(1)  # the partial path typed after `@` (no `@`)
                 sub = _PTKDocument(frag, len(frag))

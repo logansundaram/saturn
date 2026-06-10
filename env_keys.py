@@ -58,12 +58,14 @@ def _reset_models() -> None:
 @dataclass(frozen=True)
 class ManagedKey:
     """A known API key the agent uses. `on_change` (optional) drops whatever cached the old value
-    so a set/unset takes effect live."""
+    so a set/unset takes effect live. `prefix` is the provider's recognizable value prefix
+    (e.g. "tvly-") — it lets a pasted secret be matched to its key without typing the env name."""
 
     name: str
     label: str
     purpose: str
     url: str = ""
+    prefix: str = ""
     on_change: Optional[Callable[[], None]] = None
 
 
@@ -75,6 +77,7 @@ KNOWN_KEYS: tuple[ManagedKey, ...] = (
         purpose="upgrades the web tools (search/extract/research); optional — they fall back "
         "to keyless DuckDuckGo + local extraction without it",
         url="https://app.tavily.com/home",
+        prefix="tvly-",
         on_change=_reset_web_clients,
     ),
     ManagedKey(
@@ -82,6 +85,7 @@ KNOWN_KEYS: tuple[ManagedKey, ...] = (
         label="Anthropic",
         purpose="cloud models for the cloud-hybrid tier (planner/synthesizer)",
         url="https://console.anthropic.com/settings/keys",
+        prefix="sk-ant-",
         on_change=_reset_models,
     ),
 )
@@ -92,6 +96,30 @@ def find(name: str) -> Optional[ManagedKey]:
     upper = name.upper()
     for key in KNOWN_KEYS:
         if key.name.upper() == upper:
+            return key
+    return None
+
+
+def resolve(token: str) -> Optional[ManagedKey]:
+    """Resolve loose user input to a managed key: the env-var name, the provider label, or a
+    unique substring of either, case-insensitively — so `tavily`, `TAVILY_API_KEY`, and `anthro`
+    all work. Returns None on a miss or an ambiguous match."""
+    t = (token or "").strip().lower()
+    if not t:
+        return None
+    for key in KNOWN_KEYS:
+        if t in (key.name.lower(), key.label.lower()):
+            return key
+    matches = [k for k in KNOWN_KEYS if t in k.name.lower() or t in k.label.lower()]
+    return matches[0] if len(matches) == 1 else None
+
+
+def detect(value: str) -> Optional[ManagedKey]:
+    """Guess which managed key a raw secret belongs to by its value prefix (tvly-… → Tavily),
+    so `/config key set <pasted-secret>` needs no name at all. None if no prefix matches."""
+    v = (value or "").strip()
+    for key in KNOWN_KEYS:
+        if key.prefix and v.startswith(key.prefix):
             return key
     return None
 

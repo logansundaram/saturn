@@ -13,9 +13,10 @@ from typing import Literal
 from langchain.messages import ToolMessage
 from langgraph.types import interrupt, Command
 
+import permissions
 from config import get_config
 from registry import risk_of
-from state import AgentState
+from state import AgentState, TERMINAL_STATUSES
 
 
 def _skip_rejected_steps(plan: list[dict], rejected_tools: list[str]) -> list[dict]:
@@ -38,7 +39,7 @@ def _skip_rejected_steps(plan: list[dict], rejected_tools: list[str]) -> list[di
     plan = [dict(s) for s in plan]
     remaining = Counter(rejected_tools)
     for step in plan:
-        if step.get("status") in ("done", "skipped"):
+        if step.get("status") in TERMINAL_STATUSES:
             continue
         tool = step.get("intended_tool")
         if tool and remaining.get(tool, 0) > 0:
@@ -48,7 +49,7 @@ def _skip_rejected_steps(plan: list[dict], rejected_tools: list[str]) -> list[di
     # the lockstep directive stops re-pointing the agent at the work it was just told not to do.
     if sum(remaining.values()) > 0:
         for step in plan:
-            if step.get("status") not in ("done", "skipped"):
+            if step.get("status") not in TERMINAL_STATUSES:
                 # Only skip a step that expected a tool. A no-intended_tool step (e.g. the generic
                 # "answer the request" fallback plan) shouldn't be retired just because an unplanned
                 # gated call was declined — the user declined one action, not the whole task.
@@ -72,7 +73,21 @@ def approval_node(state: AgentState) -> Command[Literal["tools", "agent"]]:
     last = state["messages"][-1]
     tool_calls = getattr(last, "tool_calls", None) or []
     cfg = get_config()
-    gated = [tc for tc in tool_calls if not cfg.auto_approves(risk_of(tc["name"]))]
+
+    def _allowlisted(tc) -> bool:
+        """A run_shell call whose command matches a user-persisted /allow prefix skips the gate
+        (permissions.shell_allowed is strict: token-boundary match, and never a command with
+        chaining/redirection metacharacters — those always face the human)."""
+        if tc["name"] != "run_shell":
+            return False
+        command = str((tc.get("args") or {}).get("command", ""))
+        return permissions.shell_allowed(command) is not None
+
+    gated = [
+        tc
+        for tc in tool_calls
+        if not cfg.auto_approves(risk_of(tc["name"])) and not _allowlisted(tc)
+    ]
 
     if not gated:
         return Command(goto="tools")

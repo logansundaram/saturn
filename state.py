@@ -15,6 +15,10 @@ from pydantic import BaseModel, Field
 
 StepStatus = Literal["pending", "active", "done", "skipped"]
 
+# A step in one of these statuses is retired — the multiset walkers (unrun_planned_tools here,
+# update_plan_node, approval._skip_rejected_steps) and active_step all key off the same pair.
+TERMINAL_STATUSES = ("done", "skipped")
+
 
 class PlanStep(BaseModel):
     step_id: int = Field(description="1-based position of the step in the plan")
@@ -83,7 +87,7 @@ def unrun_planned_tools(plan: List[dict], called) -> List[dict]:
     pending = []
     for step in plan or []:
         tool = step.get("intended_tool")
-        if step.get("status") in ("done", "skipped"):
+        if step.get("status") in TERMINAL_STATUSES:
             # Already ran — account for its call so it doesn't mask a later same-tool step.
             if tool and remaining.get(tool, 0) > 0:
                 remaining[tool] -= 1
@@ -102,7 +106,7 @@ def active_step(plan: List[dict]) -> Optional[dict]:
     execution (`agent_node` focuses the model on this one) and is surfaced in the plan-review
     interrupt so the user can see where execution is. None when the plan is complete/empty."""
     for step in plan or []:
-        if step.get("status") not in ("done", "skipped"):
+        if step.get("status") not in TERMINAL_STATUSES:
             return step
     return None
 

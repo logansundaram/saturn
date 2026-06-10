@@ -261,8 +261,8 @@ def _render_trace_messages(node: str, delta: dict, max_chars: int | None = None)
         content = " ".join(content.split())  # collapse to a compact one-block preview
         if not content:
             continue
-        if max_chars and len(content) > max_chars:
-            content = content[: max_chars - 1] + "…"
+        if max_chars:
+            content = _truncate(content, max_chars)
         _emit_message_leaf(_MSG_ROLE.get(kind, kind.lower() or "msg"), content)
 
 
@@ -278,7 +278,7 @@ def _enrich_results(events: list[dict], results: list, cap: int = 1200) -> list[
             _, _, obs = str(results[i]).partition(" -> ")
             obs = " ".join(obs.split())
             if obs:
-                ev["result"] = (obs[: cap - 1] + "…") if len(obs) > cap else obs
+                ev["result"] = _truncate(obs, cap)
         out.append(ev)
     return out
 
@@ -294,16 +294,9 @@ def show_run(run, events) -> None:
     `run` is the row `(run_id, query, started_at, ended_at, status, response)`; `events` are its
     `(seq, ts, node, summary, data)` rows in order. Step times are wall-clock deltas between event
     timestamps, so a tool step that waited on the approval gate honestly includes that pause."""
-    import json
-    from datetime import datetime
+    from stores.trace import decode_json, parse_ts
 
     run_id, query, started_at, ended_at, status, response_text = run
-
-    def _parse(ts):
-        try:
-            return datetime.fromisoformat(ts) if ts else None
-        except (TypeError, ValueError):
-            return None
 
     # header: run id · query · when / status / total wall time
     if _RICH:
@@ -316,7 +309,7 @@ def show_run(run, events) -> None:
         print(f"  ╶── run #{run_id} " + "─" * 40)
 
     q = " ".join(str(query or "").split()) or "(empty)"
-    start_dt, end_dt = _parse(started_at), _parse(ended_at)
+    start_dt, end_dt = parse_ts(started_at), parse_ts(ended_at)
     when = (started_at or "")[:19].replace("T", " ")
     total = _fmt_dur((end_dt - start_dt).total_seconds()).strip() if (start_dt and end_dt) else ""
     status_style = {"ok": "green", "error": "bold red", "running": "yellow"}.get(str(status), _DIM)
@@ -347,11 +340,8 @@ def show_run(run, events) -> None:
         for _seq, ts, node, _summary, data in events:
             if node == "plan_gate":
                 continue
-            try:
-                delta = json.loads(data or "{}")
-            except (json.JSONDecodeError, TypeError):
-                delta = {}
-            cur = _parse(ts)
+            delta = decode_json(data, {})
+            cur = parse_ts(ts)
             dur = (cur - prev).total_seconds() if (cur and prev) else 0.0
             if cur:
                 prev = cur
@@ -400,8 +390,8 @@ def _llm_leaf(tag: str, text: str, style: str, clip: int | None) -> None:
     import textwrap
 
     text = " ".join(str(text).split())
-    if clip and len(text) > clip:
-        text = text[: clip - 1] + "…"
+    if clip:
+        text = _truncate(text, clip)
     head = f"    {tag:<4} "
     rest = " " * len(head)
     avail = max(20, _term_width() - (4 + len(head)))
@@ -422,7 +412,7 @@ def show_llm_calls(run, calls, full: bool = False) -> None:
     see and say". `run` is (run_id, query, started_at, ended_at, status, response); `calls` are the
     (seq, ts, node, model, dur, prompt_tokens, output_tokens, input, output, status) rows in order.
     `full` lifts the per-message preview clip so the entire stored message text shows."""
-    import json
+    from stores.trace import decode_json
 
     run_id, query, *_rest = run
     clip = None if full else _LLM_PREVIEW_CHARS
@@ -468,11 +458,7 @@ def show_llm_calls(run, calls, full: bool = False) -> None:
             err = f"  ·  {status}" if status != "ok" else ""
             print(f"  {idx}. {node}  ·  {model}  ·  {_fmt_dur(dur or 0).strip()}{toks}{err}")
 
-        try:
-            messages = json.loads(inp or "[]")
-        except (json.JSONDecodeError, TypeError):
-            messages = []
-        for m in messages:
+        for m in decode_json(inp, []):
             tag = _LLM_ROLE.get(m.get("role", ""), (m.get("role") or "msg")[:4])
             body = m.get("content", "")
             tc = m.get("tool_calls")
@@ -483,10 +469,7 @@ def show_llm_calls(run, calls, full: bool = False) -> None:
                 body += f"  (+{m['truncated'] - _LLM_PREVIEW_CHARS} chars)" if not full else ""
             _llm_leaf(tag, body or "(empty)", _DIM, clip)
 
-        try:
-            out = json.loads(outp or "{}")
-        except (json.JSONDecodeError, TypeError):
-            out = {}
+        out = decode_json(outp, {})
         out_body = out.get("content", "")
         if out.get("tool_calls"):
             names = ", ".join(str(c.get("name")) for c in out["tool_calls"])

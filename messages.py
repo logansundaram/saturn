@@ -21,8 +21,13 @@ _PLANNER_TOOL_HINTS = {
     "deep_research": "heavyweight multi-source web research; slow and costly, use only when a "
     "single web_search clearly will not suffice.",
     "read_file": "read a file in the workspace.",
-    "write_file": "write content to a file in the workspace.",
+    "write_file": "write content to a file in the workspace (whole file; for new files).",
+    "edit_file": "make a targeted change inside an existing workspace file (preferred over "
+    "write_file for modifying part of a file).",
     "list_directory": "list the files in the workspace.",
+    "search_files": "search the CONTENTS of workspace files for a pattern (returns file:line "
+    "matches — use before reading whole files).",
+    "find_files": "find workspace files by NAME with a glob pattern (when the path is unknown).",
     "calculate": "evaluate a precise arithmetic expression.",
     "remember": "save a durable fact/preference about the user to persistent memory (across sessions).",
     "recall": "look up facts previously saved to persistent memory.",

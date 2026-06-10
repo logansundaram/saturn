@@ -15,6 +15,24 @@ from datetime import datetime
 from time import perf_counter
 
 
+# ── read-side helpers (shared by /trace in commands and the tui replay views) ──
+def decode_json(data, default):
+    """Decode a JSON blob stored by the tracer (an `events.data` delta or an `llm_calls`
+    input/output column), falling back to `default` on NULL or undecodable rows."""
+    try:
+        return json.loads(data) if data else default
+    except (json.JSONDecodeError, TypeError):
+        return default
+
+
+def parse_ts(ts):
+    """Parse a stored ISO timestamp back to a datetime; None for NULL/garbage rows."""
+    try:
+        return datetime.fromisoformat(ts) if ts else None
+    except (TypeError, ValueError):
+        return None
+
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS runs (
     run_id     INTEGER PRIMARY KEY AUTOINCREMENT,

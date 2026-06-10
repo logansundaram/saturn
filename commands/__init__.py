@@ -25,6 +25,7 @@ from commands._session import write_autosave
 import importlib as _importlib
 
 _COMMAND_MODULES = [
+    "allow",
     "autoapprove",
     "clear",
     "compact",
@@ -34,6 +35,7 @@ _COMMAND_MODULES = [
     "forget",
     "help",
     "ingest",
+    "init",
     "load",
     "memory",
     "models",
@@ -46,6 +48,8 @@ _COMMAND_MODULES = [
     "system",
     "tools",
     "trace",
+    "undo",
+    "update",
     "workspace",
 ]
 

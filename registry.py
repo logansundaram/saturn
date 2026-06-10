@@ -13,7 +13,14 @@ from toolspec import _TOOLS, _RISK, _RETRIEVAL  # collected as the imports below
 # Import order here is purely cosmetic — it sets the order the planner lists tools in.
 from tool_registry.calculator import calculate  # noqa: E402,F401
 from tool_registry.web import web_search, web_extract, deep_research  # noqa: E402,F401
-from tool_registry.files import read_file, write_file, list_directory  # noqa: E402,F401
+from tool_registry.files import (  # noqa: E402,F401
+    read_file,
+    write_file,
+    edit_file,
+    list_directory,
+    search_files,
+    find_files,
+)
 from tool_registry.knowledge import search_knowledge_base  # noqa: E402,F401
 from tool_registry.memory import remember, recall  # noqa: E402,F401
 from tool_registry.shell import run_shell  # noqa: E402,F401
@@ -23,6 +30,21 @@ tool = _TOOLS                      # the active tool list (bound to the agent, l
 tools_by_name = {t.name: t for t in tool}
 TOOL_RISK = _RISK                  # name -> risk tier; mutable — the /risk command edits this live
 RETRIEVAL_TOOLS = _RETRIEVAL       # names whose results are recorded as retrieved documents
+
+# The tiers as declared at definition time, frozen BEFORE the persisted overrides apply — this is
+# what `/risk <tool> reset` restores to.
+DECLARED_RISK = dict(_RISK)
+
+# Apply the user's persisted /risk overrides (permissions.py) over the declared tiers, so a
+# `/risk … --save` decision survives a restart. Stale names (a removed tool) and invalid tiers
+# are ignored — the declared tier, which fails closed, stays in effect.
+from toolspec import RISK_TIERS as _RISK_TIERS  # noqa: E402
+import permissions as _permissions  # noqa: E402
+
+for _name, _tier in _permissions.risk_overrides().items():
+    if _name in tools_by_name and _tier in _RISK_TIERS:
+        TOOL_RISK[_name] = _tier
+del _permissions, _RISK_TIERS
 
 
 # Risk tiers drive the approval gate (see node_registry/approval.py):

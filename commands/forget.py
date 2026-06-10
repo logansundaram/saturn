@@ -18,12 +18,15 @@ Example:
 """,
 )
 def _forget(ctx, args):
+    from pathlib import Path
+
     from stores.rag import forget_document
 
     if not args:
         _print("  usage: /forget <document-name>")
         return
-    name = " ".join(args)
+    # Accept a full (possibly quoted/dragged) path too — the corpus is keyed by basename.
+    name = Path(" ".join(args).strip().strip("\"'")).name
     if forget_document(name):
         _print(f"  removed {name} from the corpus — vectors + manifest entry dropped.")
     else:

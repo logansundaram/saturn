@@ -113,7 +113,10 @@ def _models(ctx, args):
 
     if sub == "tier":
         if len(args) < 2:
-            _print("  usage: /models tier <name>")
+            _print("  tiers (switch with /models tier <name>):")
+            for name in cfg.get("tiers", {}):
+                mark = "*" if name == cfg.active_tier else " "
+                _print(f"   {mark} {name}")
             return
         tier = args[1]
         if cfg.get(f"tiers.{tier}") is None:

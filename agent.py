@@ -10,6 +10,7 @@ if hasattr(sys.stderr, "reconfigure"):
 import sqlite3
 import uuid
 from datetime import datetime
+from pathlib import Path
 
 __version__ = "0.1.0"
 
@@ -33,8 +34,9 @@ from node_registry.approval import approval_node
 from node_registry.replan import replan_node
 from node_registry.plan_gate import plan_gate_node, route_after_gate
 
-# RAG ingest (reconciles the disk-cached vector store the search_knowledge_base tool reads)
-from stores.rag import sync
+# RAG ingest (reconciles the disk-cached vector store the search_knowledge_base tool reads);
+# SUPPORTED_EXTENSIONS gates the drag-and-drop ingest offer to file types the corpus accepts
+from stores.rag import sync, SUPPORTED_EXTENSIONS
 
 # transparency + safety UI
 from stores.trace import Tracer
@@ -298,6 +300,11 @@ def _fresh_turn(state: AgentState, user_input: str) -> AgentState:
     most recent turn's tool scratchpad is retained so a follow-up can refer back to it."""
     state["messages"] = _compact_history(state["messages"])
     state["messages"].append(HumanMessage(content=user_input))
+    # Arm a fresh snapshot batch for this turn (lazy — created only if a file tool mutates
+    # something), so /undo can reverse exactly the writes the turn that just ran made.
+    from stores.snapshots import begin_turn
+
+    begin_turn(user_input)
     state["current_query"] = user_input
     state["context"] = ""
     state["attachments"] = ""  # set by the loop after expanding @file mentions (mentions.expand)
@@ -518,8 +525,32 @@ def main():
             return queued
         return ui.prompt(commands.command_completions())
 
+    # Files dropped on the prompt and queued for the next turn (the drag-and-drop "[a]ttach"
+    # choice below); consumed and cleared when that turn starts.
+    pending_attachments: list[str] = []
+
     while True:
         user_input = _next_input()
+
+        # A line that is nothing but an existing file path is a drag-and-drop onto the terminal
+        # (the terminal pastes the path, quoted when it has spaces) — offer the two things a file
+        # gets dropped for instead of sending a bare path to the agent as a query. Checked before
+        # the slash-command intercept so an absolute POSIX path (which starts with `/`) isn't
+        # mistaken for a command. Enter falls through and the path runs as an ordinary message.
+        dropped = mentions.dropped_path(user_input)
+        if dropped:
+            label = mentions.display(dropped)
+            ingestable = Path(dropped).suffix.lower() in SUPPORTED_EXTENSIONS
+            choices = ("[i]ngest into knowledge base · " if ingestable else "") + \
+                "[a]ttach to next message · [Enter] send as-is"
+            choice = ui.ask(f"file dropped: {label} — {choices} » ").lower()
+            if choice.startswith("i") and ingestable:
+                commands.dispatch(f"/ingest {dropped}", cmd_ctx)
+                continue
+            if choice.startswith("a"):
+                pending_attachments.append(dropped)
+                ui.note(f"{label} will be attached to your next message.")
+                continue
 
         # `/`-prefixed lines are REPL meta-commands, not agent turns — intercept them here.
         if commands.is_command(user_input):
@@ -535,8 +566,10 @@ def main():
         state = _fresh_turn(state, user_input)
         # Expand @file mentions: read any files the user referenced as `@path` and stash their
         # contents on state for the grounding node to fold into context (so every node sees the
-        # file inline). The message text itself is left untouched — the @mention stays visible.
-        attach_block, attached = mentions.expand(user_input)
+        # file inline; dropped files queued via "[a]ttach" ride along as extra_paths). The message
+        # text itself is left untouched — the @mention stays visible.
+        attach_block, attached = mentions.expand(user_input, extra_paths=pending_attachments)
+        pending_attachments = []
         if attached:
             state["attachments"] = attach_block
             ui.note("attached " + ", ".join(mentions.display(p) for p in attached))

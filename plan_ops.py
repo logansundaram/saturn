@@ -29,11 +29,12 @@ def normalize(plan: Optional[list[dict]]) -> list[dict]:
     """Return a clean copy of the plan with every field present and `step_id`s renumbered 1..N."""
     out: list[dict] = []
     for i, step in enumerate(plan or [], start=1):
+        status = step.get("status")
         out.append(
             {
                 "step_id": i,
                 "label": str(step.get("label", "")).strip() or f"Step {i}",
-                "status": step.get("status") if step.get("status") in _VALID_STATUS else "pending",
+                "status": status if status in _VALID_STATUS else "pending",
                 "intended_tool": step.get("intended_tool") or None,
             }
         )

@@ -31,6 +31,25 @@ tool results — flows through `messages`, never this frozen grounding string.
 # Persistent profiles live alongside the workspace. Optional — missing files are fine.
 _PROFILE_FILES = ("user_profile.md", "agent_profile.md")
 
+# Per-workspace instructions (the CLAUDE.md/AGENTS.md equivalent): a SATURDAY.md at the workspace
+# root is loaded into context EVERY turn, so the user can durably steer how the agent treats this
+# workspace (conventions, goals, what matters) without re-typing it. Drafted by /init, hand-edited
+# freely. Capped so a runaway instructions file can't eat the context window.
+_INSTRUCTIONS_FILE = "SATURDAY.md"
+_INSTRUCTIONS_CAP = 6000
+
+
+def _read_instructions() -> str:
+    path = get_config().path("workspace") / _INSTRUCTIONS_FILE
+    if not path.exists():
+        return ""
+    # errors="replace" for the same reason as the profiles: a hand-edited file with a stray
+    # non-UTF-8 byte must not fail every turn at the first node.
+    text = path.read_text(encoding="utf-8", errors="replace").strip()
+    if len(text) > _INSTRUCTIONS_CAP:
+        text = text[:_INSTRUCTIONS_CAP] + "\n… (SATURDAY.md truncated — keep it concise)"
+    return text
+
 # How many prior Q&A exchanges to recap into context, and how much of each to keep. Small on
 # purpose: enough for the planner/synthesizer to resolve a follow-up ("do that for the other
 # file") without re-bloating context — the full prior turn already rides `messages`.
@@ -93,6 +112,13 @@ def grounding_node(state: AgentState) -> dict:
     profiles = _read_profiles()
     if profiles:
         sections.append("### Profiles\n" + profiles)
+
+    instructions = _read_instructions()
+    if instructions:
+        sections.append(
+            "### Workspace instructions (SATURDAY.md — the user's standing guidance "
+            "for this workspace; follow it)\n" + instructions
+        )
 
     memory = read_memory_block()
     if memory:

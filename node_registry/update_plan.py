@@ -1,7 +1,7 @@
 import time
 import diag
 from collections import Counter
-from state import AgentState
+from state import AgentState, TERMINAL_STATUSES
 
 """
 update_plan node (formerly reflect.py).
@@ -20,9 +20,6 @@ The LLM-driven counterpart that can also INSERT a step mid-loop lives in `node_r
 ungrounded answer to a web_search. Keeping the per-tool-round status bookkeeping here mechanical
 and the (rarer, more expensive) judgment call there keeps the common path fast and reliable.
 """
-
-_TERMINAL = ("done", "skipped")
-
 
 def update_plan_node(state: AgentState):
     start = time.perf_counter()
@@ -64,7 +61,7 @@ def update_plan_node(state: AgentState):
     #    exactly the one being worked, so this completes the right step.
     if called and not newly_marked:
         for step in plan:
-            if step["status"] not in _TERMINAL:
+            if step["status"] not in TERMINAL_STATUSES:
                 # Only advance a step that actually expected a tool (the intended_tool-mismatch
                 # case this fallback is for). A no-intended_tool step — notably the generic
                 # single-step fallback plan — must NOT be marked done off the first tool round, or

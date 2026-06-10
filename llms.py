@@ -180,6 +180,18 @@ def _looks_like_embedder(name: str, family: str, families) -> bool:
     return any(tok in hay for tok in ("embed", "bert", "e5", "bge", "gte"))
 
 
+def _field(obj, *names, default=None):
+    """First present field of `obj` among `names`, tolerating both attribute and mapping shapes
+    (the `ollama.list()` response has shipped as either across versions)."""
+    for n in names:
+        v = getattr(obj, n, None)
+        if v is None and isinstance(obj, dict):
+            v = obj.get(n)
+        if v is not None:
+            return v
+    return default
+
+
 def list_local_models() -> list[LocalModel]:
     """Return the models pulled into the local Ollama daemon (sorted by name).
 
@@ -198,28 +210,19 @@ def list_local_models() -> list[LocalModel]:
         raw = resp.get("models", [])
     out: list[LocalModel] = []
     for m in raw or []:
-        def field(obj, *names, default=None):
-            for n in names:
-                v = getattr(obj, n, None)
-                if v is None and isinstance(obj, dict):
-                    v = obj.get(n)
-                if v is not None:
-                    return v
-            return default
-
-        name = field(m, "model", "name", default="") or ""
+        name = _field(m, "model", "name", default="") or ""
         if not name:
             continue
-        details = field(m, "details", default=None)
-        family = field(details, "family", default="") or "" if details is not None else ""
-        families = field(details, "families", default=[]) if details is not None else []
+        details = _field(m, "details", default=None)
+        family = _field(details, "family", default="") or "" if details is not None else ""
+        families = _field(details, "families", default=[]) if details is not None else []
         out.append(
             LocalModel(
                 name=name,
-                size_bytes=int(field(m, "size", default=0) or 0),
-                parameter_size=(field(details, "parameter_size", default="") or "")
+                size_bytes=int(_field(m, "size", default=0) or 0),
+                parameter_size=(_field(details, "parameter_size", default="") or "")
                 if details is not None else "",
-                quantization=(field(details, "quantization_level", default="") or "")
+                quantization=(_field(details, "quantization_level", default="") or "")
                 if details is not None else "",
                 family=family,
                 is_embedding=_looks_like_embedder(name, family, families),

@@ -18,6 +18,9 @@ $BinDir     = if ($env:SATURDAY_BIN)    { $env:SATURDAY_BIN }    else { Join-Pat
 $Tier       = if ($env:SATURDAY_TIER)   { $env:SATURDAY_TIER }   else { 'laptop' }
 # Local models the laptop tier needs (small gemma4 chat model + the RAG embedder).
 $Models     = if ($env:SATURDAY_MODELS) { $env:SATURDAY_MODELS -split '\s+' } else { @('gemma4:e4b', 'qwen3-embedding:8b') }
+# Minimum Ollama daemon version. Older daemons can't pull the current model formats (the pull
+# fails or the model runs wrong), so we update below if the installed one is behind this.
+$MinOllama  = if ($env:SATURDAY_MIN_OLLAMA) { $env:SATURDAY_MIN_OLLAMA } else { '0.6.0' }
 
 # --- output helpers ----------------------------------------------------------------
 function Say  ($m) { Write-Host "==> $m" -ForegroundColor Cyan }
@@ -25,6 +28,18 @@ function Ok   ($m) { Write-Host "  ok $m" -ForegroundColor Green }
 function Warn ($m) { Write-Host " warn $m" -ForegroundColor Yellow }
 function Die  ($m) { Write-Host "error $m" -ForegroundColor Red; exit 1 }
 function Have ($c) { [bool](Get-Command $c -ErrorAction SilentlyContinue) }
+# True if dotted-numeric version $a is older than $b (e.g. VerLt '0.5.9' '0.6.0' -> $true).
+function VerLt ($a, $b) {
+  $av = @($a -split '\.' | ForEach-Object { [int]($_ -replace '\D', '') })
+  $bv = @($b -split '\.' | ForEach-Object { [int]($_ -replace '\D', '') })
+  for ($i = 0; $i -lt [math]::Max($av.Count, $bv.Count); $i++) {
+    $x = if ($i -lt $av.Count) { $av[$i] } else { 0 }
+    $y = if ($i -lt $bv.Count) { $bv[$i] } else { 0 }
+    if ($x -lt $y) { return $true }
+    if ($x -gt $y) { return $false }
+  }
+  return $false
+}
 
 # --- 1. prerequisites --------------------------------------------------------------
 Say 'Checking prerequisites'
@@ -37,7 +52,7 @@ foreach ($c in @('py', 'python', 'python3')) {
     if ($LASTEXITCODE -eq 0) { $Py = $c; break }
   }
 }
-if (-not $Py) { Die 'Python 3.10+ is required and was not found. Install it from https://python.org, then re-run.' }
+if (-not $Py) { Die 'Python 3.10+ is required (older versions cannot run Saturday). Install or update it from https://python.org, then re-run.' }
 Ok ("Python: " + (& $Py --version 2>&1))
 
 # --- 2. Ollama (local model runtime) ----------------------------------------------
@@ -52,6 +67,25 @@ if (Have ollama) {
     Die 'Ollama not found and winget is unavailable. Install Ollama from https://ollama.com/download, then re-run.'
   }
   if (-not (Have ollama)) { Die 'Ollama install did not complete. Install from https://ollama.com/download and re-run.' }
+}
+
+# Ollama must be recent enough to pull the current model formats - an old daemon fails the pull.
+$ollVer = ''
+try { if ((& ollama --version 2>&1) -match '(\d+\.\d+\.\d+)') { $ollVer = $matches[1] } } catch {}
+if ($ollVer -and (VerLt $ollVer $MinOllama)) {
+  Warn "Ollama $ollVer is older than $MinOllama and may fail to pull the local models."
+  if (Have winget) {
+    Say 'Updating Ollama'
+    winget upgrade --id Ollama.Ollama -e --silent --accept-source-agreements --accept-package-agreements
+    $ollVer = ''
+    try { if ((& ollama --version 2>&1) -match '(\d+\.\d+\.\d+)') { $ollVer = $matches[1] } } catch {}
+    if ($ollVer -and (VerLt $ollVer $MinOllama)) { Warn "Still on Ollama $ollVer - update manually from https://ollama.com/download if model pulls fail." }
+    elseif ($ollVer) { Ok "Ollama updated to $ollVer" }
+  } else {
+    Warn 'Update it from https://ollama.com/download before pulling models.'
+  }
+} elseif ($ollVer) {
+  Ok "Ollama $ollVer"
 }
 
 # Make sure the daemon answers before we pull.
@@ -78,12 +112,38 @@ if (Test-Path (Join-Path $InstallDir '.git')) {
 Ok 'Source ready'
 
 # --- 4. isolated environment + dependencies ----------------------------------------
-Say 'Creating virtual environment and installing dependencies'
+Say 'Creating virtual environment'
 $VenvPy = Join-Path $InstallDir '.venv\Scripts\python.exe'
 if (-not (Test-Path $VenvPy)) { & $Py -m venv (Join-Path $InstallDir '.venv') }
 & $VenvPy -m pip install --quiet --upgrade pip
-# Not --quiet: a swallowed dependency failure here is how a broken install slips through.
-& $VenvPy -m pip install -r (Join-Path $InstallDir 'requirements.txt')
+
+# Install requirements behind a compact progress bar instead of pip's full firehose. Everything
+# is still captured to $pipLog so a dependency failure is never silently swallowed.
+Say 'Installing dependencies'
+$reqFile = Join-Path $InstallDir 'requirements.txt'
+$pipLog  = Join-Path $InstallDir '.venv\pip-install.log'
+Remove-Item $pipLog -ErrorAction SilentlyContinue
+# Rough upper bound for the bar: declared requirements + headroom for transitive deps.
+$expected = [math]::Max(1, ((Get-Content $reqFile | Where-Object { $_ -match '^\s*[^#\s]' }).Count) * 3)
+$seen = 0
+& {
+  $ErrorActionPreference = 'Continue'   # pip writes progress/warnings to stderr; don't let that abort us
+  & $VenvPy -m pip install --no-input --progress-bar off -r $reqFile 2>&1
+} | ForEach-Object {
+  Add-Content -LiteralPath $pipLog -Value ([string]$_)
+  if ([string]$_ -match '^\s*Collecting\s+([^\s=<>!~;\[]+)') {
+    $seen++
+    $pct = [math]::Min(95, [int](($seen / $expected) * 100))
+    Write-Progress -Activity 'Installing dependencies' -Status $matches[1] -PercentComplete $pct
+  }
+}
+$pipExit = $LASTEXITCODE
+Write-Progress -Activity 'Installing dependencies' -Completed
+if ($pipExit -ne 0) {
+  Warn 'Dependency install failed - last lines of pip output:'
+  if (Test-Path $pipLog) { Get-Content $pipLog -Tail 30 | ForEach-Object { Write-Host "    $_" } }
+  Die "Could not install Python dependencies. Full log: $pipLog"
+}
 Ok 'Dependencies installed'
 
 # --- 4b. select the active tier (in-place, comment-preserving) ----------------------

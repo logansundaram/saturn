@@ -11,6 +11,7 @@ from typing import Optional
 
 from commands._framework import command, _print
 from stores.trace import decode_json, parse_ts
+from textutil import clip as _clip, fmt_args
 
 
 @contextmanager
@@ -21,13 +22,6 @@ def _connect(db_path):
         yield conn
     finally:
         conn.close()
-
-
-def _clip(s, n: int) -> str:
-    """Collapse whitespace and truncate to `n` chars with an ellipsis — the one-line preview
-    every list view here renders."""
-    s = " ".join(str(s or "").split())
-    return s if len(s) <= n else s[: n - 1] + "…"
 
 
 def _fmt_secs(s: float) -> str:
@@ -555,15 +549,7 @@ def _render_why(ui, run, events, calls):
 
 
 def _fmt_call_args(args) -> str:
-    if not isinstance(args, dict) or not args:
-        return ""
-    parts = []
-    for k, v in args.items():
-        r = repr(v)
-        if len(r) > 40:
-            r = r[:40] + "…"
-        parts.append(f"{k}={r}")
-    return ", ".join(parts)
+    return fmt_args(args, 41) if isinstance(args, dict) else ""
 
 
 def _state(ctx, args):
@@ -763,7 +749,7 @@ def _show_llm_calls(ctx, args):
             if not rows:
                 _print("  (no LLM calls recorded yet)")
                 return
-            _print(f"  runs with LLM calls — newest first  (/trace invoke #<id> to expand one):")
+            _print("  runs with LLM calls — newest first  (/trace invoke #<id> to expand one):")
             for rid, n, dur, query in rows:
                 _print(f"    #{rid:<4} {n:>2} call(s)  {float(dur or 0):>6.1f}s  {_clip(query, 50)}")
             return

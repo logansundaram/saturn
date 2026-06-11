@@ -14,6 +14,7 @@ from langchain.messages import ToolMessage
 from config import get_config
 from registry import tools_by_name, RETRIEVAL_TOOLS
 from state import AgentState
+from textutil import clip, fmt_args
 
 # Cap each argument's length so a big write_file payload doesn't bloat the trace/synthesis input.
 _MAX_ARG_REPR = 200
@@ -49,22 +50,13 @@ def _clamp_observation(observation: str) -> str:
 
 def _preview(observation: str) -> str:
     """Collapse a tool observation to a single capped line for the UI's tool-I/O tree."""
-    one_line = " ".join(observation.split())
-    if len(one_line) > _MAX_RESULT_PREVIEW:
-        one_line = one_line[: _MAX_RESULT_PREVIEW - 1] + "…"
-    return one_line
+    return clip(observation, _MAX_RESULT_PREVIEW)
 
 
 def _fmt_call(name: str, args: dict) -> str:
     """Render a tool call like  calculate(expression='847 * 293 + 12450')  for the trace and
     for synthesis, so results stay linked to the call that produced them."""
-    parts = []
-    for k, v in (args or {}).items():
-        r = repr(v)
-        if len(r) > _MAX_ARG_REPR:
-            r = r[:_MAX_ARG_REPR] + "…"
-        parts.append(f"{k}={r}")
-    return f"{name}({', '.join(parts)})"
+    return f"{name}({fmt_args(args, _MAX_ARG_REPR)})"
 
 
 def tool_node(state: AgentState):

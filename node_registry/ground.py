@@ -5,6 +5,7 @@ from langchain.messages import HumanMessage, AIMessage
 
 from state import AgentState
 from config import get_config
+from textutil import clip
 from stores.memory_registry import read_memory_block
 from stores.document_registry import (
     read_workspace_manifest,
@@ -88,13 +89,9 @@ def _recent_exchanges(messages: list) -> str:
     if not pairs:
         return ""
 
-    def _clip(s: str) -> str:
-        s = " ".join(s.split())
-        return s if len(s) <= _RECAP_CHARS else s[: _RECAP_CHARS - 1] + "…"
-
     lines = []
     for q, a in pairs[-_RECAP_EXCHANGES:]:
-        lines.append(f"- User: {_clip(q)}\n  You: {_clip(a)}")
+        lines.append(f"- User: {clip(q, _RECAP_CHARS)}\n  You: {clip(a, _RECAP_CHARS)}")
     return "\n".join(lines)
 
 

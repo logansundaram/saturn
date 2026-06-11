@@ -10,16 +10,10 @@ sees next turn, never the audit trail.
 
 from commands._framework import command, _print
 from commands._session import clear_autosave, write_autosave
+from textutil import clip
 
 # What one user message gets echoed back as in the confirmation line.
 _PREVIEW_CHARS = 70
-
-
-def _preview(text) -> str:
-    one_line = " ".join(str(text).split())
-    if len(one_line) > _PREVIEW_CHARS:
-        one_line = one_line[: _PREVIEW_CHARS - 1] + "…"
-    return one_line
 
 
 def drop_last_turn(ctx) -> "str | None":
@@ -96,7 +90,7 @@ def _rewind(ctx, args):
         _print("  nothing to rewind — the conversation is empty.")
         return
     n_dropped = n_before - len(ctx.state.get("messages", []))
-    _print(f'  rewound the last turn — dropped {n_dropped} message(s) ("{_preview(dropped)}").')
+    _print(f'  rewound the last turn — dropped {n_dropped} message(s) ("{clip(dropped, _PREVIEW_CHARS)}").')
     remaining = sum(
         1 for m in ctx.state.get("messages", []) if m.__class__.__name__ == "HumanMessage"
     )

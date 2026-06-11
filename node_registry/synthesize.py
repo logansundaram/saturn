@@ -1,9 +1,9 @@
 import re
-import time
 
 import budget
 from config import get_config
 from state import AgentState, unrun_planned_tools
+from textutil import clip
 from llms import (
     get_model,
     extract_tok_per_sec,
@@ -30,8 +30,7 @@ _DOC_SOURCE_RE = re.compile(r"\[source: ([^\]]+)\]")
 
 
 def _label_clamp(label: str, cap: int = _MAX_SOURCE_LABEL) -> str:
-    label = " ".join(str(label).split())
-    return label if len(label) <= cap else label[: cap - 1] + "…"
+    return clip(label, cap)
 
 
 def _tool_source_label(result) -> str:
@@ -101,7 +100,6 @@ def cancel_orphaned_calls(last) -> list:
 
 
 def synthesize_node(state: AgentState):
-    start = time.perf_counter()
     query = state["current_query"]
     context = state["context"]
     tool_results = state.get("tool_results", [])

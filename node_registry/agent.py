@@ -12,8 +12,6 @@ render_plan formats the plan as a checklist injected into the agent's context (t
 of ui.show_plan).
 """
 
-import time
-
 from langchain.messages import SystemMessage, AIMessage
 
 from llms import (
@@ -68,8 +66,6 @@ def agent_node(state: AgentState):
         answer while planned work remains), a pointed nudge naming the skipped step(s). The
         nudge is what makes the loop-back productive: re-invoking on the same inputs would just
         reproduce the same refusal, so we change the inputs."""
-    start = time.perf_counter()
-
     plan = state.get("plan", [])
     lockstep = get_config().lockstep
 

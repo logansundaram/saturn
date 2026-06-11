@@ -8,7 +8,7 @@ status bar, and in the live trace. None of these touch per-turn state.
 from ._base import (
     Text, _console, _RICH,
     _ACCENT, _DIM, _RAIL_GLYPH,
-    _emit, _meter_color, _mini_bar, _rail,
+    _emit, _meter_color, _mini_bar, _rail, _truncate,
 )
 from .listing import section
 
@@ -172,7 +172,7 @@ def steer_note(text: str) -> None:
     """Acknowledge a mid-turn steering correction the moment it's captured (Esc with typed text).
     The correction is injected into the running turn at the next step boundary (see plan_gate); this
     is the immediate feedback that it landed, printed above the live status bar."""
-    msg = text if len(text) <= 80 else text[:79] + "…"
+    msg = _truncate(text, 80)
     if _RICH:
         t = Text()
         t.append("  ↪ ", style=f"bold {_ACCENT}")

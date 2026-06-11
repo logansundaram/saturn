@@ -32,7 +32,6 @@ hard-coded here.
 """
 
 import os
-import time
 from urllib.parse import urlparse
 
 import diag
@@ -161,22 +160,18 @@ def web_search(query: str):
         return blocked
     egress.record("web_search", backend_host, query, provider=backend_host.split(".")[0],
                   n_bytes=len(query or ""))
-    start = time.perf_counter()
-    try:
-        if _use_tavily():
-            try:
-                return _client().search(query, max_results=_max_results())
-            except _TAVILY_FALLBACK_ERRORS as err:
-                _disable_tavily(err)  # dead key/quota — keyless for the rest of the session
-            except Exception as err:
-                # Any other Tavily failure (network blip, 5xx, odd response shape) falls back to
-                # the keyless backend for THIS call only — the key may be fine, so it isn't
-                # disabled for the session. A flaky Tavily must never cost an answer DuckDuckGo
-                # could have given.
-                diag.log(f"[web] Tavily search failed ({type(err).__name__}); DuckDuckGo fallback")
-        return _ddg_search(query, _max_results())
-    finally:
-        diag.log(f"web_search : {time.perf_counter() - start:.4f}s")
+    if _use_tavily():
+        try:
+            return _client().search(query, max_results=_max_results())
+        except _TAVILY_FALLBACK_ERRORS as err:
+            _disable_tavily(err)  # dead key/quota — keyless for the rest of the session
+        except Exception as err:
+            # Any other Tavily failure (network blip, 5xx, odd response shape) falls back to
+            # the keyless backend for THIS call only — the key may be fine, so it isn't
+            # disabled for the session. A flaky Tavily must never cost an answer DuckDuckGo
+            # could have given.
+            diag.log(f"[web] Tavily search failed ({type(err).__name__}); DuckDuckGo fallback")
+    return _ddg_search(query, _max_results())
 
 
 @register_tool("read_only")
@@ -190,25 +185,21 @@ def web_extract(url: str):
     if blocked:
         return blocked
     egress.record("web_extract", host, str(first_url), n_bytes=len(str(first_url)))
-    start = time.perf_counter()
-    try:
-        if _provider() == "tavily" and _use_tavily():
-            try:
-                return _client().extract(url)
-            except _TAVILY_FALLBACK_ERRORS as err:
-                _disable_tavily(err)
-            except Exception as err:
-                # Transient Tavily failure: degrade to the local extractor for this call only
-                # (mirrors web_search — the key may be fine, so don't disable it).
-                diag.log(f"[web] Tavily extract failed ({type(err).__name__}); local fallback")
-        # Local-first path: handle a single URL or a list of URLs.
-        urls = [u for u in (url if isinstance(url, (list, tuple)) else [url]) if u]
-        if not urls:
-            return "No URL provided to extract."
-        results = {u: _local_extract(u) for u in urls}
-        return results if len(results) > 1 else next(iter(results.values()))
-    finally:
-        diag.log(f"web_extract : {time.perf_counter() - start:.4f}s")
+    if _provider() == "tavily" and _use_tavily():
+        try:
+            return _client().extract(url)
+        except _TAVILY_FALLBACK_ERRORS as err:
+            _disable_tavily(err)
+        except Exception as err:
+            # Transient Tavily failure: degrade to the local extractor for this call only
+            # (mirrors web_search — the key may be fine, so don't disable it).
+            diag.log(f"[web] Tavily extract failed ({type(err).__name__}); local fallback")
+    # Local-first path: handle a single URL or a list of URLs.
+    urls = [u for u in (url if isinstance(url, (list, tuple)) else [url]) if u]
+    if not urls:
+        return "No URL provided to extract."
+    results = {u: _local_extract(u) for u in urls}
+    return results if len(results) > 1 else next(iter(results.values()))
 
 
 # Response content-types returned as text; anything else is summarized, not dumped — a binary
@@ -235,7 +226,7 @@ def http_request(url: str, method: str = "GET", headers: dict | None = None,
         timeout = float(get_config().get("web.request_timeout", 30))
     except (TypeError, ValueError):
         timeout = 30.0
-    start = time.perf_counter()
+    diag.log(f"http_request : {method} {url}")  # which endpoint, beyond the wrapper's timing line
     try:
         resp = httpx.request(
             method, url,
@@ -252,5 +243,3 @@ def http_request(url: str, method: str = "GET", headers: dict | None = None,
         return {"status": resp.status_code, "content_type": ctype, "body": payload}
     except httpx.HTTPError as err:
         return f"http_request failed: {type(err).__name__}: {err}"
-    finally:
-        diag.log(f"http_request : {method} {url} : {time.perf_counter() - start:.4f}s")

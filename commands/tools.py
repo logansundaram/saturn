@@ -1,4 +1,4 @@
-from commands._framework import command, _print
+from commands._framework import command
 from registry import tool as TOOLS, risk_of
 
 

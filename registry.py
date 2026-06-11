@@ -10,21 +10,16 @@
 from toolspec import _TOOLS, _RISK, _RETRIEVAL  # collected as the imports below run
 
 # Importing each module runs its @register_tool decorators, populating the toolspec collections.
-# Import order here is purely cosmetic — it sets the order the planner lists tools in.
-from tool_registry.calculator import calculate  # noqa: E402,F401
-from tool_registry.clock import current_time  # noqa: E402,F401
-from tool_registry.web import web_search, web_extract, http_request  # noqa: E402,F401
-from tool_registry.files import (  # noqa: E402,F401
-    read_file,
-    write_file,
-    edit_file,
-    list_directory,
-    search_files,
-    find_files,
-)
-from tool_registry.knowledge import search_knowledge_base  # noqa: E402,F401
-from tool_registry.memory import remember, recall  # noqa: E402,F401
-from tool_registry.shell import run_shell, check_shell_job, stop_shell_job  # noqa: E402,F401
+# Module imports on purpose (not per-name): registration needs the module to RUN, not its names,
+# so a new tool in an existing module truly requires no edit here. Import order is purely
+# cosmetic — it sets the order the planner lists tools in.
+import tool_registry.calculator  # noqa: E402,F401
+import tool_registry.clock  # noqa: E402,F401
+import tool_registry.web  # noqa: E402,F401
+import tool_registry.files  # noqa: E402,F401
+import tool_registry.knowledge  # noqa: E402,F401
+import tool_registry.memory  # noqa: E402,F401
+import tool_registry.shell  # noqa: E402,F401
 
 # Remote MCP tools (roadmap #12): connect the servers declared under `mcp.servers` in config.yaml
 # and register each remote tool through toolspec.register_tool_object, so they land in the same

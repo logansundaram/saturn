@@ -28,7 +28,7 @@ mcp_client, llms) can import it without a cycle.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 
 from config import get_config

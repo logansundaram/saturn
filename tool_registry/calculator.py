@@ -1,8 +1,6 @@
 import ast
 import operator
-import time
 
-import diag
 from toolspec import register_tool
 
 # Whitelisted AST evaluator — NOT eval(). eval with an empty __builtins__ dict is an escapable
@@ -83,7 +81,6 @@ def calculate(expression: str) -> str:
     Supports basic arithmetic (+, -, *, /), exponentiation (**), modulo (%),
     and standard math functions (abs, round, min, max, pow, sum).
     Input should be a valid Python math expression as a string, e.g. '2 + 3 * 4' or 'round(3.14159, 2)'."""
-    start = time.perf_counter()
     try:
         result = _safe_eval(expression)
         # Tame binary-float epsilon (672.3499999999999 -> 672.35) WITHOUT capping real precision:
@@ -103,5 +100,3 @@ def calculate(expression: str) -> str:
         return "Error: division by zero"
     except Exception as e:
         return f"Error: {e}"
-    finally:
-        diag.log(f"calculate : {time.perf_counter() - start:.4f}s")

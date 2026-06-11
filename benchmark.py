@@ -220,7 +220,7 @@ def run_trust_benchmark(graph) -> dict:
         },
     }
 
-    g, t = summary["grounding"], summary["gate"]
+    t = summary["gate"]
     catch = f"{caught}/{needed_net}" if needed_net else "n/a (every bait searched up front)"
     print(f"  grounding: {searched} searched up front · {caught} caught by judge · "
           f"{ungrounded} UNGROUNDED  (judge catch rate {catch})")

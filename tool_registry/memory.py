@@ -8,9 +8,6 @@ Remembered facts are also injected into the grounding context each turn, so `rec
 for searching a large memory or confirming a specific detail.
 """
 
-import time
-import diag
-
 from toolspec import register_tool
 
 from stores.memory_registry import add_memory, search_memory
@@ -24,11 +21,7 @@ def remember(fact: str, category: str = "general"):
     answers", "my timezone is PST"). `fact` is a single concise statement. `category` is an
     optional label such as preference, identity, or project. Do NOT use this for one-off,
     conversation-specific details."""
-    start = time.perf_counter()
-    try:
-        return add_memory(fact, category)
-    finally:
-        diag.log(f"remember : {time.perf_counter() - start:.4f}s")
+    return add_memory(fact, category)
 
 
 @register_tool("read_only")
@@ -38,11 +31,7 @@ def recall(query: str = ""):
     everything remembered. Use this to check what you already know about the user before asking
     them to repeat something. Note: remembered facts are also loaded into your context each
     turn, so use this mainly to search a large memory or confirm a specific detail."""
-    start = time.perf_counter()
-    try:
-        facts = search_memory(query)
-        if not facts:
-            return "No matching facts in persistent memory."
-        return "\n".join(f"- {f}" for f in facts)
-    finally:
-        diag.log(f"recall : {time.perf_counter() - start:.4f}s")
+    facts = search_memory(query)
+    if not facts:
+        return "No matching facts in persistent memory."
+    return "\n".join(f"- {f}" for f in facts)

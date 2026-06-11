@@ -5,7 +5,6 @@ import shutil
 from collections import Counter
 from pathlib import Path
 
-from langgraph.graph import StateGraph, START, END
 from langchain_core.vectorstores import InMemoryVectorStore
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.documents import Document
@@ -13,7 +12,6 @@ import pypdf
 
 from config import get_config
 from llms import get_embeddings
-from state import AgentState
 from stores.document_registry import register_rag_document, remove_rag_document
 
 
@@ -512,16 +510,3 @@ def forget_document(name: str) -> bool:
     target.unlink()
     sync(verbose=False)
     return True
-
-
-def build_retrieval():
-    def retrieve_docs(state: AgentState):
-        query = state["messages"][-1].content
-        docs = get_vector_store().similarity_search(query, k=retrieval_k())
-        return {"documents_retrieved": docs}
-
-    retrieval_builder = StateGraph(AgentState)
-    retrieval_builder.add_node("retrieve_docs", retrieve_docs)
-    retrieval_builder.add_edge(START, "retrieve_docs")
-    retrieval_builder.add_edge("retrieve_docs", END)
-    return retrieval_builder.compile()

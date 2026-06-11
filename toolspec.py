@@ -7,16 +7,25 @@ output is a retrieved document) in ONE place — its own module — instead of b
 then re-listed in three more (`registry.tool`, `registry.TOOL_RISK`, the retrieval set). Adding a
 tool is now a single edit; nothing in `registry.py` changes.
 
+Registration also wraps the function with per-call timing to `diag.log` — every tool used to
+hand-roll the same start/try/finally block; now it comes with the decorator.
+
 This lives apart from `registry.py` on purpose: `registry.py` imports the tool modules to trigger
 their registration, so if the decorator lived there the tool modules would import back into a
-half-initialised `registry` (a circular import). This module imports NOTHING from the project, so
-the tool modules can import it freely and the cycle never forms. `registry.py` then reads the
-collected views below and re-exports them under their established names.
+half-initialised `registry` (a circular import). This module imports nothing project-side except
+the `diag` leaf (which itself imports nothing), so the tool modules can import it freely and the
+cycle never forms. `registry.py` then reads the collected views below and re-exports them under
+their established names.
 """
 
 from __future__ import annotations
 
+import time
+from functools import wraps
+
 from langchain.tools import tool as _lc_tool
+
+import diag
 
 # Risk tiers, low -> high. Mirrors config.RISK_ORDER; duplicated here only because BOTH modules
 # are project-import-free leaves (neither may import the other) — everything else imports the
@@ -45,7 +54,17 @@ def register_tool(risk: str = "destructive", *, retrieval: bool = False):
         raise ValueError(f"unknown risk tier {risk!r}; expected one of {RISK_TIERS}")
 
     def decorate(fn):
-        t = _lc_tool(fn)
+        # functools.wraps keeps the name/docstring/signature, so the LangChain schema (and the
+        # model-facing tool description) is exactly what the undecorated function would produce.
+        @wraps(fn)
+        def timed(*args, **kwargs):
+            start = time.perf_counter()
+            try:
+                return fn(*args, **kwargs)
+            finally:
+                diag.log(f"{fn.__name__} : {time.perf_counter() - start:.4f}s")
+
+        t = _lc_tool(timed)
         _TOOLS.append(t)
         _RISK[t.name] = risk
         if retrieval:

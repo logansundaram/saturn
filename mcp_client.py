@@ -40,7 +40,7 @@ model instead of raising; nothing here can take the REPL down. `/mcp reload` is 
 (full reconnect + re-register); a call against a dropped connection also attempts one lazy
 reconnect on its own.
 
-Imports nothing project-side except leaf modules (config, diag, toolspec, env_keys), so
+Imports nothing project-side except leaf modules (config, diag, textutil, toolspec, env_keys), so
 registry.py can import it freely; reload() touches registry/llms/permissions lazily at call time,
 when they are fully initialised.
 """
@@ -63,6 +63,7 @@ from typing import Optional
 import diag
 import egress
 from config import get_config
+from textutil import truncate
 from toolspec import RISK_TIERS, register_tool_object
 
 # Fallbacks when config.yaml lacks the knobs (mirrors shell.py's local-helper style).
@@ -281,8 +282,7 @@ def _condense_exc(exc: BaseException) -> str:
     for leaf in leaves:
         if leaf not in seen:
             seen.append(leaf)
-    text = "; ".join(seen) or "unknown error"
-    return text if len(text) <= 300 else text[:299] + "…"
+    return truncate("; ".join(seen) or "unknown error", 300)
 
 
 # ── server lifecycle (runs on the background loop) ────────────────────────────

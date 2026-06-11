@@ -292,8 +292,7 @@ def ask_approval(value: dict) -> "bool | dict":
     _live_stop()  # the gate blocks on input(); the bar can't be live while it does
 
     def arg_repr(v) -> str:
-        r = repr(v)
-        return r if len(r) <= 80 else r[:79] + "…"
+        return _truncate(repr(v), 80)
 
     if _RICH:
         top = Text()

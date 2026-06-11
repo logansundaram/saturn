@@ -11,6 +11,8 @@ This module depends on nothing else in the package — it's the leaf the others 
 import os
 import shutil
 
+from textutil import fmt_args, truncate as _truncate
+
 try:
     from rich.console import Console
     from rich.text import Text
@@ -189,17 +191,7 @@ def _fmt_dur(seconds: float) -> str:
 
 
 def _fmt_args(args: dict, cap: int = 48) -> str:
-    parts = []
-    for k, v in (args or {}).items():
-        r = repr(v)
-        if len(r) > cap:
-            r = r[: cap - 1] + "…"
-        parts.append(f"{k}={r}")
-    return ", ".join(parts)
-
-
-def _truncate(s: str, n: int) -> str:
-    return s if len(s) <= n else s[: n - 1] + "…"
+    return fmt_args(args, cap)
 
 
 def _term_width(default: int = 80) -> int:

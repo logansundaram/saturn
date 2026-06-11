@@ -39,9 +39,8 @@ import sys
 import time
 from pathlib import Path
 
-import diag
-
 from config import get_config
+from textutil import truncate
 from toolspec import register_tool
 
 # Fallback when config.yaml has no `shell.timeout` (or an invalid one). Mirrors the local-helper
@@ -214,7 +213,6 @@ def _format(returncode: int, stdout: str, stderr: str) -> str:
 @register_tool("destructive")
 def run_shell(command: str, background: bool = False):
     """Runs a shell command on the host machine and returns its combined stdout+stderr plus the exit code. Use this for anything no other tool covers: running scripts or quick one-off code, build/test commands, git, package managers, inspecting the system. `command` is a single command line interpreted by the host's default shell (PowerShell on Windows, /bin/sh on Unix) — chain steps with the shell's own operators (`;`, `&&`, `|`). It runs inside the workspace directory by default. Set `background=true` for a long-running process (a server, a watcher, a long build): the call returns immediately with a job id, output is captured to a log file, and you check on or stop it later with check_shell_job / stop_shell_job — never run a server in the foreground, it will just time out. Background jobs are terminated when the session ends. This is a powerful, irreversible action and always requires user approval; do not assume it succeeded — check the returned exit code (or the job's status)."""
-    start = time.perf_counter()
     timeout = _timeout()
     try:
         workspace = get_config().path("workspace")
@@ -272,8 +270,6 @@ def run_shell(command: str, background: bool = False):
         return _format(proc.returncode, stdout, stderr)
     except Exception as exc:  # never let a shell failure kill the turn — report it to the agent
         return f"Shell execution failed: {exc}"
-    finally:
-        diag.log(f"run_shell : {time.perf_counter() - start:.4f}s")
 
 
 def _fmt_runtime(seconds: float) -> str:
@@ -287,7 +283,6 @@ def _fmt_runtime(seconds: float) -> str:
 @register_tool("read_only")
 def check_shell_job(job_id: int = 0):
     """Checks on background shell jobs started with run_shell(background=true). With a job_id, returns that job's status (running, or its exit code) plus the most recent output from its log. With job_id=0 (the default), lists every background job this session with its status. Read-only — looking never affects the job."""
-    start = time.perf_counter()
     try:
         if not _JOBS:
             return "No background jobs have been started this session."
@@ -295,10 +290,9 @@ def check_shell_job(job_id: int = 0):
             lines = ["Background jobs this session:"]
             for jid, job in sorted(_JOBS.items()):
                 runtime = _fmt_runtime(time.time() - job["started"])
-                cmd = job["command"]
-                if len(cmd) > 80:
-                    cmd = cmd[:79] + "…"
-                lines.append(f"  [job {jid}] {_job_status(job)} · {runtime} · {cmd}")
+                lines.append(
+                    f"  [job {jid}] {_job_status(job)} · {runtime} · {truncate(job['command'], 80)}"
+                )
             lines.append("Pass a job_id for that job's output.")
             return "\n".join(lines)
         job = _JOBS.get(int(job_id))
@@ -315,14 +309,11 @@ def check_shell_job(job_id: int = 0):
         )
     except Exception as exc:
         return f"check_shell_job failed: {exc}"
-    finally:
-        diag.log(f"check_shell_job : {time.perf_counter() - start:.4f}s")
 
 
 @register_tool("side_effecting")
 def stop_shell_job(job_id: int):
     """Stops a background shell job started with run_shell(background=true), killing its whole process tree (the job and anything it spawned). Use check_shell_job first to confirm which job to stop. The job's log file is kept for reading after the stop."""
-    start = time.perf_counter()
     try:
         job = _JOBS.get(int(job_id))
         if job is None:
@@ -340,5 +331,3 @@ def stop_shell_job(job_id: int):
         return f"[job {job_id}] stopped ({status}). Log kept at {job['log']}."
     except Exception as exc:
         return f"stop_shell_job failed: {exc}"
-    finally:
-        diag.log(f"stop_shell_job : {time.perf_counter() - start:.4f}s")

@@ -20,6 +20,8 @@ from __future__ import annotations
 import diag
 from langchain.messages import AIMessage, HumanMessage, ToolMessage
 
+from textutil import truncate
+
 # Tag marking the synthetic summary message. Kept on a HumanMessage so it rides through the
 # mechanical compaction (which keeps Human + final-AI) instead of being dropped.
 _SUMMARY_PREFIX = "[Earlier conversation, summarized]"
@@ -54,7 +56,7 @@ def _text(m, cap: int = 1000) -> str:
         tcs = getattr(m, "tool_calls", None)
         if tcs:
             content = "(calls: " + ", ".join(tc.get("name", "?") for tc in tcs) + ")"
-    return content if len(content) <= cap else content[: cap - 1] + "…"
+    return truncate(content, cap)
 
 
 def _transcript(messages) -> str:

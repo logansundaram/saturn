@@ -1,16 +1,12 @@
 from commands._framework import command, _print
 from commands._utils import _parse_toggle, _ROLES
 
+# One byte formatter for every trust surface (textutil.human_bytes) — the per-answer receipt and
+# these readouts must render the same byte count identically, or the "receipt echoes the ledger"
+# story quietly stops being true.
+from textutil import human_bytes as _human_bytes
+
 _REDACT_MODES = ("off", "warn", "redact")
-
-
-def _human_bytes(n: int) -> str:
-    n = int(n or 0)
-    if n < 1024:
-        return f"{n}B"
-    if n < 1024 * 1024:
-        return f"{n / 1024:.1f}K"
-    return f"{n / (1024 * 1024):.1f}M"
 
 
 @command(
@@ -31,7 +27,11 @@ seal, and the secret-stripper:
                            channel/host/bytes, plus every attempt BLOCKED by air-gap. Pair it
                            with a network monitor and the two agree.
     /privacy egress 20       just the last 20 events
-    /privacy egress clear    reset the ledger for this session
+    /privacy egress clear    reset the in-memory ledger for this session
+    /privacy egress log [n]  the DURABLE log: what left across ALL sessions (survives restarts,
+                             append-only, hash-chained) — the in-memory ledger's permanent twin
+    /privacy egress verify   walk the durable log's hash chain and prove no entry was edited,
+                             reordered, or deleted since it was written
 
   /privacy airgap          seal the boundary. With no argument, prints the enforcement posture
                            (what is open vs sealed right now). When ON: web tools refuse, remote
@@ -43,6 +43,11 @@ seal, and the secret-stripper:
     /privacy redact preview  scan the CURRENT context and report what WOULD be stripped — sends
                              nothing
     /privacy redact <mode> [--save]
+
+  /privacy report          the trust report: ONE signed document gathering every posture above —
+                           inference bindings, gate policy, air-gap/redaction, and what actually
+                           left (this session + the durable log) — into a portable attestation.
+    /privacy report -o <path>   write it as a signed JSON artifact (verify with /trace verify)
 
 Telemetry: none. There is nothing to configure off because nothing phones home.
 
@@ -59,7 +64,9 @@ def _privacy(ctx, args):
             return _airgap(ctx, args[1:])
         if sub in ("redact", "redaction"):
             return _redact(ctx, args[1:])
-        _print(f"  unknown subcommand: {sub} — usage: /privacy [egress|airgap|redact]")
+        if sub in ("report", "attest", "attestation"):
+            return _report(ctx, args[1:])
+        _print(f"  unknown subcommand: {sub} — usage: /privacy [egress|airgap|redact|report]")
         return
     _overview(ctx)
 
@@ -195,6 +202,11 @@ def _egress(ctx, args):
         _print("  egress ledger cleared for this session.")
         return
 
+    if args and args[0].lower() in ("log", "history", "durable"):
+        return _egress_log(ctx, args[1:])
+    if args and args[0].lower() in ("verify", "check", "audit"):
+        return _egress_verify(ctx)
+
     limit = None
     for a in args:
         if a.lstrip("+-").isdigit():
@@ -246,6 +258,72 @@ def _egress(ctx, args):
     if s["by_channel"]:
         mix = " · ".join(f"{v} {k}" for k, v in sorted(s["by_channel"].items()))
         _print(f"  by channel: {mix}")
+
+    _print("  durable record across sessions: /privacy egress log  ·  verify it: /privacy egress verify")
+
+
+def _egress_log(ctx, args):
+    """`/privacy egress log [n]` — the DURABLE, cross-session egress record (paths.egress_log),
+    the in-memory ledger's twin that survives restarts and is tamper-evident."""
+    import egress
+    from tui import ui
+
+    limit = None
+    for a in args:
+        if a.lstrip("+-").isdigit():
+            limit = max(1, int(a))
+
+    s = egress.log_summary()
+    if s["lines"] == 0:
+        ui.section("egress log", "the durable egress log is empty")
+        _print("  no egress has been recorded to disk yet (or runtime.egress_log is off).")
+        return
+
+    span = ""
+    if s["first"] and s["last"]:
+        span = f"  ·  {s['first'][:10]} → {s['last'][:10]}"
+    ui.section(
+        "egress log",
+        f"{s['sent']} event(s), {_human_bytes(s['bytes'])} sent across {len(s['sessions'])} "
+        f"session(s){span}",
+    )
+
+    rows = []
+    for r in egress.read_log(limit=limit or 30):
+        when = (r.get("ts") or "")[:19].replace("T", " ")
+        status = (
+            ("BLOCKED", ui.risk_style("destructive")) if r.get("status") == egress.BLOCKED
+            else (_human_bytes(r.get("n_bytes")), "dim")
+        )
+        rows.append((when, r.get("channel", "?"), r.get("host", "?"),
+                     str(r.get("detail", ""))[:48], status))
+    ui.table(rows, styles=["dim", "accent", None, None, None])
+    _print(f"  showing the last {len(rows)} of {s['lines']} line(s)  ·  /privacy egress verify "
+           "to check the chain is intact")
+
+
+def _egress_verify(ctx):
+    """`/privacy egress verify` — walk the durable log's hash chain and report whether any line was
+    edited, reordered, or removed."""
+    import egress
+    from tui import ui
+
+    v = egress.verify_log()
+    if not v.get("exists"):
+        ui.section("egress log", "no durable log to verify yet")
+        _print("  nothing has been written to paths.egress_log (or runtime.egress_log is off).")
+        return
+    if v["ok"]:
+        ui.section("egress log", f"✓ intact — {v['lines']} line(s), "
+                                 f"{len(v.get('sessions', []))} session(s)")
+        _print("  every entry's hash recomputes and links to its predecessor: no line in the")
+        _print("  middle of the log was edited, reordered, or deleted since it was written.")
+        _print("  (a truncated tail can't be proven against here — that's the signed /trace")
+        _print("   export's job for the run record.)")
+    else:
+        ui.section("egress log", f"⨯ BROKEN at line {v.get('broken_at')} of {v['lines']}")
+        _print("  the hash chain does not verify — a line was modified, reordered, or removed")
+        _print(f"  at or before entry #{v.get('broken_at')}. Treat the log as compromised.")
 
 
 # ── /privacy airgap — seal the boundary ──────────────────────────────────────────────────────
@@ -468,3 +546,94 @@ def _redact_preview(ctx, redaction, ui):
     else:
         _print("  mode is `off`: these would be sent UNMODIFIED — use /privacy redact redact")
         _print("  to strip them.")
+
+
+# ── /privacy report — the signed trust attestation ───────────────────────────────────────────
+
+
+def _report(ctx, args):
+    """`/privacy report [-o path]` — gather every trust surface into one document and (when a path
+    is given) write it as a signed, verifiable JSON artifact."""
+    import json
+    from pathlib import Path
+
+    import trust_report
+    from tui import ui
+
+    out_path = None
+    it = iter(args)
+    for a in it:
+        if a.lower() in ("-o", "--out", "--output"):
+            out_path = next(it, None)
+
+    report = trust_report.build_report()
+    inf = report["inference"]
+    verdict = ("all inference local — nothing leaves unless a web tool runs"
+               if inf["all_local"]
+               else f"cloud-bound roles send to: {', '.join(inf['cloud_providers'])}")
+    ui.section("trust report", verdict)
+
+    # Inference
+    _print("  inference")
+    ui.table([
+        (b["role"], b["model"],
+         ("local", ui.risk_style("read_only")) if b["locality"] == "local"
+         else (f"cloud — {b['provider']}", ui.risk_style("side_effecting")))
+        for b in inf["bindings"]
+    ])
+
+    # Policy / boundary posture
+    pol = report["policy"]
+    bnd = report["boundary"]
+    gate = "OPEN (gate off — nothing prompts)" if pol["gate_off"] else f"prompt above {pol['auto_approve']}"
+    _print("  posture")
+    ui.table([
+        ("approval gate", gate,
+         ("⚠", ui.risk_style("destructive")) if pol["gate_off"] else ("ok", ui.risk_style("read_only"))),
+        ("air-gap", "SEALED" if bnd["airgap"] else "open",
+         ("sealed", ui.risk_style("read_only")) if bnd["airgap"] else ("open", "dim")),
+        ("redaction", (bnd["redaction"], "dim")),
+        ("injection quarantine", (bnd["quarantine"], "dim")),
+        ("risk overrides", (f"{len(pol['risk_overrides'])} tool(s)", "dim")),
+        ("shell allowlist", (f"{len(pol['shell_allow'])} prefix(es)", "dim")),
+    ])
+
+    # Egress — session + durable
+    se = report["egress_session"]
+    du = report["egress_durable"]
+    _print("  egress")
+    chain = ("intact", ui.risk_style("read_only")) if du["chain_ok"] else \
+            (f"BROKEN @ {du['chain_broken_at']}", ui.risk_style("destructive"))
+    ui.table([
+        ("this session",
+         (f"{se['sent']} sent ({_human_bytes(se['bytes'])}), {se['blocked']} blocked", "dim")),
+        ("durable log",
+         (f"{du['sent']} sent over {du['sessions']} session(s), {_human_bytes(du['bytes'])}",
+          "dim")),
+        ("log integrity", "hash chain", chain),
+    ])
+
+    # Signing
+    sg = report["signing"]
+    if sg["available"]:
+        _print(f"  signed by ed25519 key {sg['key_id']}  (publish: /trace key)")
+    else:
+        _print("  unsigned — install `cryptography` to sign this report")
+
+    if out_path:
+        signed = trust_report.sign_report(report)
+        dest = Path(out_path).expanduser()
+        try:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_text(json.dumps(signed, ensure_ascii=False, indent=2), encoding="utf-8")
+        except OSError as e:
+            _print(f"  could not write {dest}: {e}")
+            return
+        _print("")
+        _print(f"  signed trust report written -> {dest}")
+        _print(f"    sha256 {signed['integrity']['digest']}")
+        if signed.get("signature"):
+            _print(f"    signed   ed25519 by key {signed['signature'].get('key_id', '?')}")
+    else:
+        _print("")
+        _print("  write a signed, portable copy with:  /privacy report -o trust.json")

@@ -25,7 +25,7 @@ from langchain_ollama import ChatOllama, OllamaEmbeddings
 
 import egress
 import redaction
-from config import get_config
+from config import MODEL_ROLES, get_config
 from registry import tool
 from state import Plan, ReplanVerdict
 
@@ -162,22 +162,29 @@ def model_id(role: str) -> str:
 
 
 def get_tool_model():
-    """The agent role's model with the tool registry bound natively (cached)."""
+    """The agent role's model with the tool registry bound natively (cached).
+
+    `get_model` runs first even on a derived-cache hit: its live air-gap guard is what stops a
+    cloud handle cached while the boundary was open from serving calls after it sealed (e.g. a
+    `/policy import` flipping runtime.airgap without anyone dropping the cache)."""
+    base = get_model("tool_caller")
     if "tool_caller" not in _DERIVED_CACHE:
         # Capability advisories surface at startup via check_models() — no mid-turn print here
         # (print collides with the rich.Live TUI; see the diag.log design rule).
-        _DERIVED_CACHE["tool_caller"] = get_model("tool_caller").bind_tools(tool)
+        _DERIVED_CACHE["tool_caller"] = base.bind_tools(tool)
     return _DERIVED_CACHE["tool_caller"]
 
 
 def get_plan_model():
-    """The planner role's model constrained to emit a structured Plan (cached).
+    """The planner role's model constrained to emit a structured Plan (cached; the unconditional
+    get_model call keeps the live air-gap guard in front of the derived cache — see
+    get_tool_model).
 
     Ollama is most reliable with method="json_schema" (constrains generation at the server);
     other providers use the default structured-output method."""
+    base = get_model("planner")
     if "planner" not in _DERIVED_CACHE:
         spec = get_config().model_for_role("planner")
-        base = get_model("planner")
         if spec.provider == "ollama":
             _DERIVED_CACHE["planner"] = base.with_structured_output(
                 Plan, method="json_schema"
@@ -193,8 +200,13 @@ def get_judge_model():
     Powers the in-loop replan node (node_registry/replan.py): the verifier/repair step that
     decides whether the agent's draft answer is grounded or needs an inserted web-search step.
     Mirrors get_plan_model — Ollama uses method="json_schema" for server-constrained generation."""
+    spec = get_config().model_for_role("judge")
+    if spec.provider != "ollama":
+        # Live air-gap guard even on a derived-cache hit (see get_tool_model). The local branch
+        # below builds its own temp-0 ChatOllama and never crosses the boundary, so only a
+        # cloud-bound judge needs the check.
+        get_model("judge")
     if "judge" not in _DERIVED_CACHE:
-        spec = get_config().model_for_role("judge")
         if spec.provider == "ollama":
             # A dedicated temperature-0 instance: groundedness is a classification, so we want a
             # stable verdict, not sampled variety (at the default temperature the same draft flips
@@ -355,7 +367,7 @@ def check_models() -> list[str]:
 
     need_ollama: list[str] = []
     cloud: dict[str, set[str]] = {}
-    for role in ("planner", "tool_caller", "synthesizer", "utility", "judge"):
+    for role in MODEL_ROLES:
         spec = cfg.model_for_role(role)
         if spec.provider == "ollama":
             need_ollama.append(spec.model)

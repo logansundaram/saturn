@@ -356,6 +356,13 @@ def run_conversation(graph, convo: dict) -> dict:
 
 
 def run_query(graph, query: str) -> dict:
+    import quarantine
+
+    # Per-turn quarantine state is reset by agent._fresh_turn in the real loop; this harness
+    # builds its state by hand, so reset explicitly — a gate escalation armed by one query's web
+    # results (e.g. a grounding bait's search) must not leak into the next query's gate probes
+    # and grade an escalated read-only prompt as coverage overreach.
+    quarantine.reset_turn()
     state = _initial_state()
     state["messages"].append(HumanMessage(content=query))
     state["current_query"] = query

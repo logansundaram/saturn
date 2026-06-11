@@ -198,6 +198,107 @@ def remove_shell_allow(token: str) -> "str | None":
     return removed
 
 
+# --- policy profiles (/policy export · /policy import · --policy) -------------------------
+# The whole gate posture as ONE shareable, versionable document: the auto-approve threshold, the
+# persisted risk overrides + shell allowlist, and the airgap/redaction modes. Exporting writes a
+# snapshot; importing REPLACES the durable policy file (permissions.json) and sets the session
+# knobs — a profile is a posture, not a patch. The caller (commands/policy.py, agent --policy)
+# syncs the live tool registry afterward; this module stays a leaf and never imports registry.
+
+PROFILE_VERSION = 1
+_REDACTION_MODES = ("off", "warn", "redact")
+
+
+def export_profile() -> dict:
+    """Snapshot the current policy posture as a plain dict (the /policy export payload)."""
+    cfg = get_config()
+    return {
+        "saturn_policy": PROFILE_VERSION,
+        "auto_approve": tier(),
+        "risk_overrides": risk_overrides(),
+        "shell_allow": shell_allow(),
+        "airgap": bool(cfg.get("runtime.airgap", False)),
+        "redaction": str(cfg.get("runtime.redaction", "off") or "off"),
+    }
+
+
+def apply_profile(profile: dict, save: bool = False) -> dict:
+    """Apply a policy profile: set the threshold + airgap/redaction knobs (session-scoped unless
+    `save`, which persists them to config.yaml) and REPLACE the durable permissions file with the
+    profile's risk overrides + shell allowlist. Returns the validated risk-override map so the
+    caller can sync the live registry (registry.TOOL_RISK). Raises ValueError on a payload that
+    isn't a Saturn policy profile OR carries an invalid threshold/redaction value — never
+    half-applies one. (A typo'd `auto_approve` must not silently leave whatever threshold the
+    machine happened to have — possibly a gate-open --yolo residue — in force while the rest of
+    the profile applies; an absent key is fine, an invalid value is a hard error.)"""
+    if not isinstance(profile, dict) or profile.get("saturn_policy") != PROFILE_VERSION:
+        raise ValueError(
+            "not a Saturn policy profile (expected a mapping with `saturn_policy: "
+            f"{PROFILE_VERSION}`)"
+        )
+
+    # Validate everything BEFORE applying anything, so a malformed profile changes nothing.
+    # An invalid tier is a HARD error like an invalid auto_approve — silently dropping the entry
+    # would let a typo'd override (often one meant to RAISE a tool's tier) vanish from a
+    # successfully-applied profile, leaving the gate weaker than the posture the operator
+    # believes is in force.
+    overrides: dict = {}
+    for name, t in (profile.get("risk_overrides") or {}).items():
+        if str(t) not in RISK_ORDER:
+            raise ValueError(
+                f"invalid risk tier {t!r} for tool {name!r} — expected one of: "
+                f"{', '.join(RISK_ORDER)}"
+            )
+        overrides[str(name)] = str(t)
+    allow = [
+        " ".join(str(p).split())
+        for p in (profile.get("shell_allow") or [])
+        if str(p).strip()
+    ]
+    threshold = profile.get("auto_approve")
+    if threshold is not None and threshold not in RISK_ORDER:
+        raise ValueError(
+            f"invalid auto_approve tier {threshold!r} — expected one of: {', '.join(RISK_ORDER)}"
+        )
+    redaction_mode = profile.get("redaction")
+    if redaction_mode is False:  # a hand-written bare `off` parses as YAML boolean False
+        redaction_mode = "off"
+    if redaction_mode is not None and redaction_mode not in _REDACTION_MODES:
+        raise ValueError(
+            f"invalid redaction mode {redaction_mode!r} — expected one of: "
+            f"{', '.join(_REDACTION_MODES)}"
+        )
+
+    # Apply in failure-likelihood order: the durable file FIRST (disk I/O is where an OSError
+    # lives), the in-memory knobs after — so a write failure aborts before any live posture moved
+    # and the profile really does apply all-or-nothing.
+    data = _load()
+    data["risk_overrides"] = overrides
+    data["shell_allow"] = allow
+    _save(data)
+
+    if threshold is not None:
+        set_tier(threshold, save=save)
+    cfg = get_config()
+    if "airgap" in profile:
+        cfg.set("runtime.airgap", bool(profile["airgap"]))
+        if save:
+            _persist_quiet("runtime.airgap")
+    if redaction_mode is not None:
+        cfg.set("runtime.redaction", redaction_mode)
+        if save:
+            _persist_quiet("runtime.redaction")
+    return overrides
+
+
+def _persist_quiet(dotted_key: str) -> None:
+    """Persist one knob to config.yaml, tolerating a key the user's file doesn't carry yet."""
+    try:
+        persist(dotted_key)
+    except (KeyError, OSError, ValueError):
+        pass
+
+
 def shell_allowed(command: str) -> "str | None":
     """The allowlisted prefix that exempts `command` from the gate, or None.
 

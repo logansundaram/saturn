@@ -236,5 +236,16 @@ def reset_turn() -> None:
     # Carry the last measured context fill across turns (it only grows; refreshed once the agent
     # runs) but re-read the window in case the model/tier changed since the last turn.
     _base._status = {"node": "", "iteration": 0, "tools": 0, "tok_per_sec": 0.0,
-                     "ctx_used": _base._status.get("ctx_used", 0), "ctx_window": _active_ctx_window()}
+                     "ctx_used": _base._status.get("ctx_used", 0), "ctx_window": _active_ctx_window(),
+                     "gates": 0}
+    # Mark the egress ledger so the trust receipt can summarize exactly this turn's slice.
+    # receipt.py owns the mark (receipt-domain state, not UI state); on failure the mark keeps
+    # its previous value rather than being forced to 0 — readers treat 0 as "unknown", and a
+    # forced 0 would make events_since(0) attribute the WHOLE session's egress to this turn.
+    try:
+        import receipt
+
+        receipt.reset_turn()
+    except Exception:
+        pass
     _live_start()

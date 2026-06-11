@@ -3,11 +3,11 @@ Session persistence helpers shared by /resume (autosave + named save/load/list) 
 """
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
+from textutil import safe_stem
+
 _SESSION_VERSION = 1
-_SAFE_NAME = re.compile(r"[^A-Za-z0-9._-]+")
 # Reserved slot that autosaves the live conversation so /resume can restore it.
 # Underscore-prefixed so it's hidden from /resume list and unreachable as a save name.
 _AUTOSAVE_NAME = "_autosave"
@@ -21,12 +21,9 @@ def _sessions_dir() -> Path:
 
 
 def _session_file(name: str) -> Path:
-    """Resolve a user-supplied name to a safe `<dir>/<stem>.json` path."""
-    stem = Path(name).name
-    if stem.lower().endswith(".json"):
-        stem = stem[:-5]
-    stem = _SAFE_NAME.sub("-", stem).strip("-_") or "session"
-    return _sessions_dir() / f"{stem}.json"
+    """Resolve a user-supplied name to a safe `<dir>/<stem>.json` path (textutil.safe_stem —
+    the same sanitizer recipes use, so the two stores can't drift onto different naming rules)."""
+    return _sessions_dir() / f"{safe_stem(name, 'session')}.json"
 
 
 def _autosave_file() -> Path:

@@ -197,6 +197,17 @@ def _render_tool_events(events: list[dict], *, always_show_results: bool = False
             _console.print(line)
         else:
             print(f"  {_RAIL_GLYPH}   {branch} {call:<{col_w}}   {dur}")
+        # Injection quarantine: an untrusted result that carried instruction-shaped content was
+        # flagged + fenced (quarantine.py) — surface that in the rail, always (it's signal, like
+        # an error leaf, never folded by verbosity).
+        q = ev.get("quarantine")
+        if q:
+            _emit_result_leaf(
+                cont,
+                f"⚠ embedded instructions detected ({', '.join(q)}) — content quarantined, "
+                "treated as data",
+                "yellow",
+            )
         if show_result:
             _emit_result_leaf(cont, result, _DIM if ok else "red")
 

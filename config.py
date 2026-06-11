@@ -70,6 +70,12 @@ _CONFIG_PATH = _resolve_config_path()
 # they deliberately import nothing project-side, so keep the three in step.)
 _REPO_ROOT = _CONFIG_PATH.parent
 
+# THE five model roles the loop binds (config.yaml `roles:`, llms.get_model's vocabulary). One
+# home so every surface that iterates roles (the readout commands, llms.check_models, the signed
+# trust report) walks the SAME tuple — a role added to one stale copy would silently vanish from
+# the others (the trust report would attest `all_local` without ever seeing the new binding).
+MODEL_ROLES = ("planner", "tool_caller", "synthesizer", "utility", "judge")
+
 
 @dataclass(frozen=True)
 class ModelSpec:

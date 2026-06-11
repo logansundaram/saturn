@@ -314,6 +314,11 @@ def _fresh_turn(state: AgentState, user_input: str) -> AgentState:
     from stores.snapshots import begin_turn
 
     begin_turn(user_input)
+    # Clear the prompt-injection quarantine's per-turn flags (a flag raised last turn must not
+    # escalate this turn's first tool batch).
+    import quarantine
+
+    quarantine.reset_turn()
     state["current_query"] = user_input
     state["context"] = ""
     state["attachments"] = ""  # set by the loop after expanding @file mentions (mentions.expand)
@@ -385,8 +390,32 @@ def main():
     _parser.add_argument("--json", action="store_true",
                          help="With -p: print a structured JSON result (answer, plan, tools, "
                               "tokens, timing) instead of the bare answer.")
+    _parser.add_argument("--policy", metavar="FILE", default=None,
+                         help="Apply a policy profile (/policy export format) at process start: "
+                              "gate threshold, risk overrides, shell allowlist, airgap/redaction "
+                              "— pin the exact safety posture a run executes under.")
+    _parser.add_argument("--replay", metavar="FILE", default=None,
+                         help="Replay an exported run record (/trace export) offline — integrity-"
+                              "checked, no database needed — then exit.")
     _parser.add_argument("--version", action="version", version=f"saturn {__version__}")
     _args, _ = _parser.parse_known_args()
+
+    # --- replay path: render an exported run record and exit (no graph, no models) -----
+    if _args.replay:
+        from commands.trace import render_export
+
+        sys.exit(0 if render_export(_args.replay) else 1)
+
+    # --- policy profile: pin the gate posture before anything runs ---------------------
+    if _args.policy:
+        from commands.policy import apply_policy_file
+
+        try:
+            _summary = apply_policy_file(_args.policy, save=False)
+        except Exception as exc:
+            print(f"error: could not apply policy profile {_args.policy}: {exc}", file=sys.stderr)
+            sys.exit(1)
+        print(_summary, file=sys.stderr) if _args.prompt else ui.note(_summary)
 
     # The slow startup loading (knowledge-base ingest + graph build) runs while the ring art
     # animates in interactive mode, or directly (no TUI) in headless mode.
@@ -431,18 +460,31 @@ def main():
             """Resolve interrupts with no human present. Gated tool calls are DENIED: the
             approval gate (the user seeing and approving the exact action) is the product's
             safety boundary, and headless mode silently approving a run_shell or write_file
-            would delete it. (--yolo opens the gate policy itself above, so under it no
-            approval interrupt fires at all.) The decline path is already honest — the agent
-            tells the user the action was not performed. Any other interrupt type (the
-            plan-review gate never arms headless) resumes unchanged via a bare True, which
-            plan_gate tolerates by design."""
+            would delete it. --yolo opens the gate policy itself above, so under it the only
+            interrupts that still fire are the quarantine/taint ESCALATIONS (they gate
+            independently of the policy threshold) — and those are approved here, because
+            --yolo is exactly the user pre-approving everything; denying them would make
+            '--yolo to allow them' a lie. The decline path is already honest — the agent tells
+            the user the action was not performed. Any other interrupt type (the plan-review
+            gate never arms headless) resumes unchanged via a bare True, which plan_gate
+            tolerates by design."""
             if isinstance(value, dict) and value.get("type") == "approval_request":
+                import policy
+
+                if policy.gate_off():
+                    return True
                 names = ", ".join(
                     tc.get("name", "?") for tc in value.get("tool_calls", [])
                 )
+                why = (
+                    " (escalated by the injection quarantine — a prior result looked "
+                    "instruction-shaped)"
+                    if value.get("quarantine")
+                    else ""
+                )
                 print(
-                    f"denied gated tool call(s): {names} — headless mode does not approve "
-                    "side-effecting actions; re-run with --yolo to allow them.",
+                    f"denied gated tool call(s): {names}{why} — headless mode does not "
+                    "approve gated actions; re-run with --yolo to allow them.",
                     file=sys.stderr,
                 )
                 return False
@@ -543,6 +585,12 @@ def main():
 
     for problem in mcp_client.problems():
         ui.warn(problem)
+    # User-defined slash-command templates that failed to load (collisions, empty files) — same
+    # treatment: warn now, never block. /commands shows the full status any time.
+    from commands.user_commands import problems as _user_cmd_problems
+
+    for problem in _user_cmd_problems():
+        ui.warn(f"user command: {problem}")
 
     # Carries the live session into slash-command handlers. `make_initial_state` lets
     # /reset rebuild state without commands.py importing back into agent.py.

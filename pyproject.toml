@@ -74,9 +74,10 @@ saturn = "agent:main"
 # The repo is deliberately flat (see CLAUDE.md): runtime modules at the root, a few
 # subpackages. Dev-only artifacts (benchmark.py, utilities/, tests/) are not shipped.
 py-modules = [
-    "agent", "budget", "compaction", "config", "diag", "env_keys", "interrupts",
-    "llms", "mcp_client", "mentions", "messages", "permissions", "plan_ops",
-    "registry", "state", "toolspec", "typeahead",
+    "agent", "budget", "compaction", "config", "diag", "egress", "env_keys",
+    "glassbox", "interrupts", "llms", "mcp_client", "mentions", "messages",
+    "plan_ops", "policy", "quarantine", "receipt", "redaction", "registry",
+    "signing", "state", "textutil", "toolspec", "trust_report", "typeahead",
 ]
 
 [tool.setuptools.packages.find]

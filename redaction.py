@@ -30,6 +30,7 @@ import re
 from dataclasses import dataclass
 
 from config import get_config
+from textutil import iter_strings
 
 _MODES = ("off", "warn", "redact")
 
@@ -97,6 +98,15 @@ def scan(text: str) -> list[Finding]:
         for m in pat.regex.finditer(text):
             out.append(Finding(kind=pat.kind, preview=_mask(m.group(0))))
     return out
+
+
+def scan_args(args) -> list[Finding]:
+    """Secret-like values anywhere inside a tool call's arguments. Used by the approval gate to
+    warn when the call the user is about to approve would carry a secret out (an http_request
+    body, a run_shell command with a token inline). Walks the args tree with the SAME
+    `textutil.iter_strings` the taint scan uses, so the secret and taint warnings can never
+    disagree about what counts as argument content. Display-safe findings only, like `scan`."""
+    return [f for s in iter_strings(args) for f in scan(s)]
 
 
 def redact(text: str) -> "tuple[str, list[Finding]]":

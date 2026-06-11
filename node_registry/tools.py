@@ -11,6 +11,7 @@ import time
 
 from langchain.messages import ToolMessage
 
+import quarantine
 from config import get_config
 from registry import tools_by_name, RETRIEVAL_TOOLS
 from state import AgentState
@@ -119,6 +120,22 @@ def tool_node(state: AgentState):
         # result can't overflow the context window; the UI preview is derived from the same
         # clamped text. The _preview cap above is just for the one-line tool-I/O tree.
         clamped = _clamp_observation(observation)
+        # Prompt-injection quarantine: an UNTRUSTED observation (web, http, MCP, ingested docs)
+        # that carries instruction-shaped content is flagged (rail warning + gate context — and,
+        # in `gate` mode, one fresh approval prompt for the next batch) and fenced between
+        # explicit data-not-instructions markers before the model sees it. Clean content passes
+        # through byte-identical. See quarantine.py.
+        q_kinds: list[str] = []
+        if ok and not dry_run and quarantine.active() and quarantine.is_untrusted(name):
+            # Register the untrusted result as a taint source (the data->action check the gate runs
+            # over later tool calls) BEFORE fencing — record the content the model will see, not our
+            # markers — then scan it for injection phrasing (the data-as-instructions check).
+            quarantine.record_untrusted(name, clamped)
+            findings = quarantine.scan(clamped)
+            if findings:
+                quarantine.flag(name, findings)
+                clamped = quarantine.wrap_observation(clamped, findings)
+                q_kinds = sorted({f.kind for f in findings})
         tool_messages.append(
             ToolMessage(content=clamped, tool_call_id=tool_call["id"], name=name)
         )
@@ -132,15 +149,16 @@ def tool_node(state: AgentState):
         else:
             tool_results.append(f"{_fmt_call(name, args)} -> {clamped}")
         # Structured per-call record for the UI's tool-I/O tree (args + result preview + timing).
-        tool_events.append(
-            {
-                "name": name,
-                "args": args,
-                "result": _preview(observation),
-                "dur": dur,
-                "ok": ok,
-            }
-        )
+        event = {
+            "name": name,
+            "args": args,
+            "result": _preview(observation),
+            "dur": dur,
+            "ok": ok,
+        }
+        if q_kinds:
+            event["quarantine"] = q_kinds
+        tool_events.append(event)
 
     return {
         "messages": tool_messages,

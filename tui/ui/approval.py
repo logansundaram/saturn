@@ -233,6 +233,93 @@ def _render_http_request(args: dict) -> None:
             print(f"  ┃       > {line}")
 
 
+def _frame_note(text: str, style: str = "yellow") -> None:
+    """One wrapped annotation line(s) inside the approval frame (`  ┃     <text>`), shared by the
+    secret-scan warning, the quarantine banner, and the explain view."""
+    width = max(20, _term_width() - 12)
+    for i, chunk in enumerate(textwrap.wrap(text, width) or [""]):
+        if _RICH:
+            row = Text()
+            row.append("  ┃ ", style="bold")
+            row.append(("    " if i == 0 else "      ") + chunk, style=style)
+            _console.print(row)
+        else:
+            print(f"  ┃     {chunk}" if i == 0 else f"  ┃       {chunk}")
+
+
+def _render_secret_warnings(args: dict) -> None:
+    """Warn when a gated call's arguments carry a secret-like value (an API key in an http_request
+    body, a token inline in a run_shell command): approving the call sends the secret wherever the
+    call goes. Reuses the redaction scanner; emails are excluded here (common, legitimate argument
+    content — this warning is about credentials). Best-effort: a scan failure never blocks the
+    gate."""
+    try:
+        import redaction
+
+        findings = [f for f in redaction.scan_args(args) if f.kind != "email"]
+    except Exception:
+        return
+    if not findings:
+        return
+    labels: list[str] = []
+    for f in findings:
+        label = f"{f.kind} ({f.preview})"
+        if label not in labels:
+            labels.append(label)
+    shown = ", ".join(labels[:3]) + (f" +{len(labels) - 3} more" if len(labels) > 3 else "")
+    _frame_note(f"⚠ argument carries a secret-like value: {shown} — approving sends it "
+                "wherever this call goes")
+
+
+def _render_taint_warning(tc: dict) -> None:
+    """When a call's arguments contain a span of text that arrived from an untrusted source this
+    turn (web page, HTTP response, remote MCP tool, ingested doc), say so right at the call — this
+    is the data->action channel: the agent may be acting on content an attacker planted in a page,
+    not on what the user actually asked for. The matched span is shown so the human can see exactly
+    what crossed."""
+    hits = tc.get("taint") or []
+    if not hits:
+        return
+    sources = ", ".join(sorted({h.get("source") for h in hits if h.get("source")}))
+    _frame_note(f"⚠ untrusted data → action: this call's arguments contain text from {sources} "
+                "— verify it reflects YOUR intent, not content the source planted")
+    for h in hits[:2]:
+        _frame_note(f"↳ matched span: {h.get('preview')}", style=_DIM)
+
+
+def _render_quarantine_banner(value: dict) -> None:
+    """When the batch follows a tool result flagged for embedded instructions, say so up front —
+    the calls below may have been steered by injected content, so the human should check the
+    arguments are what THEY intended, not what a web page asked for."""
+    q = value.get("quarantine") if isinstance(value, dict) else None
+    flags = (q or {}).get("flags") or []
+    if not flags:
+        return
+    detail = "; ".join(f"{f.get('tool')}: {', '.join(f.get('kinds') or [])}" for f in flags[:3])
+    _frame_note("⚠ injection quarantine: earlier tool output this turn contained "
+                f"instruction-like content ({detail}) — approve only if these calls are what "
+                "YOU intended")
+
+
+def _render_explain(value: dict) -> None:
+    """The `e(xplain)` answer: WHY the agent wants this batch — the plan step it is fulfilling and
+    its recorded pre-action reasoning (the same provenance /trace why reconstructs afterward,
+    shown at the moment of decision)."""
+    step = value.get("step") if isinstance(value, dict) else None
+    reasoning = " ".join(str((value or {}).get("reasoning") or "").split())
+    shown = False
+    if isinstance(step, dict) and step.get("label"):
+        tool = f"  [{step['intended_tool']}]" if step.get("intended_tool") else ""
+        _frame_note(f"↳ plan step {step.get('step_id')}: {step.get('label')}{tool}", style=_DIM)
+        shown = True
+    if reasoning:
+        _frame_note(f"↳ reasoning: {_truncate(reasoning, 600)}", style=_DIM)
+        shown = True
+    if not shown:
+        _frame_note("↳ no plan step or recorded reasoning for this batch — the model chose the "
+                    "call directly (full provenance after the turn: /trace why)", style=_DIM)
+
+
 def _always_allow(tool_calls: list) -> None:
     """The `a(lways)` answer: drop each gated tool to the auto-approved tier for THIS session —
     exactly what `/risk <tool> read_only` does, without making the user know the command. Session-
@@ -286,10 +373,17 @@ def ask_approval(value: dict) -> "bool | dict":
     trace rail. A write_file call additionally renders a colored unified diff of what it will
     change (gotcha #2: write_file overwrites by default). Answers: `y` approves the batch, `n`
     (default) rejects it, `s` decides per call, `a` approves AND auto-approves these tools for
-    the rest of the session. Returns True/False or {"approved_ids": [...]} for a partial batch."""
+    the rest of the session, `e` explains WHY the agent wants the batch (plan step + recorded
+    reasoning) and re-prompts. Arguments carrying secret-like values warn inline (redaction
+    scanner); a batch following quarantine-flagged tool output opens with a banner saying so.
+    Returns True/False or {"approved_ids": [...]} for a partial batch."""
     tool_calls = value.get("tool_calls", []) if isinstance(value, dict) else []
 
     _live_stop()  # the gate blocks on input(); the bar can't be live while it does
+
+    # Count the calls that faced the gate this turn — the trust receipt's `n gated` segment
+    # (receipt.py) is the permanent echo of this prompt having happened.
+    _base._status["gates"] = _base._status.get("gates", 0) + len(tool_calls)
 
     def arg_repr(v) -> str:
         return _truncate(repr(v), 80)
@@ -300,6 +394,7 @@ def ask_approval(value: dict) -> "bool | dict":
         top.append("approval required", style=f"bold {_ACCENT}")
         top.append(" " + "━" * 36, style="bold")
         _console.print(top)
+        _render_quarantine_banner(value)
         for tc in tool_calls:
             risk = str(tc.get("risk", "destructive"))
             risk_style = _RISK.get(risk, "bold red")
@@ -339,18 +434,27 @@ def ask_approval(value: dict) -> "bool | dict":
                 _render_shell_command(tc.get("args") or {})
             if is_http:
                 _render_http_request(tc.get("args") or {})
+            _render_secret_warnings(tc.get("args") or {})
+            _render_taint_warning(tc)
             hint = _RISK_HINT.get(risk)
             if hint:
                 hrow = Text()
                 hrow.append("  ┃ ", style="bold")
                 hrow.append(f"    ↳ {hint}", style=risk_style)
                 _console.print(hrow)
-        resp = _console.input(
-            "  [bold]┗━[/] approve? [bold]y[/]es / [bold]n[/]o / [bold]s[/]elect / [bold]a[/]lways » "
-        ).strip().lower()
-        decision = _resolve_decision(resp, tool_calls, _console.input)
+        while True:
+            resp = _console.input(
+                "  [bold]┗━[/] approve? [bold]y[/]es / [bold]n[/]o / [bold]s[/]elect / "
+                "[bold]a[/]lways / [bold]e[/]xplain » "
+            ).strip().lower()
+            if resp in ("e", "explain", "why", "?"):
+                _render_explain(value)
+                continue
+            decision = _resolve_decision(resp, tool_calls, _console.input)
+            break
     else:
         print("  ┏━ approval required " + "━" * 30)
+        _render_quarantine_banner(value)
         for tc in tool_calls:
             print(f"  ┃ [{tc.get('risk')}] {tc.get('name')}")
             is_write = tc.get("name") == "write_file"
@@ -375,11 +479,20 @@ def ask_approval(value: dict) -> "bool | dict":
                 _render_shell_command(tc.get("args") or {})
             if is_http:
                 _render_http_request(tc.get("args") or {})
+            _render_secret_warnings(tc.get("args") or {})
+            _render_taint_warning(tc)
             hint = _RISK_HINT.get(str(tc.get("risk")))
             if hint:
                 print(f"  ┃     -> {hint}")
-        resp = input("  ┗━ approve? [y]es / [n]o / [s]elect / [a]lways » ").strip().lower()
-        decision = _resolve_decision(resp, tool_calls, input)
+        while True:
+            resp = input(
+                "  ┗━ approve? [y]es / [n]o / [s]elect / [a]lways / [e]xplain » "
+            ).strip().lower()
+            if resp in ("e", "explain", "why", "?"):
+                _render_explain(value)
+                continue
+            decision = _resolve_decision(resp, tool_calls, input)
+            break
 
     _base._t_last = time.perf_counter()  # don't bill the human's decision time to the next node
     _live_start()  # the turn continues (tools -> agent -> …); re-pin the bar

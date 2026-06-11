@@ -43,6 +43,10 @@ def isolated_paths(tmp_path, monkeypatch):
         "permissions": tmp_path / "database" / "permissions.json",
         "exports": tmp_path / "logging" / "exports",
         "shell_jobs": tmp_path / "logging" / "shell",
+        "recipes": tmp_path / "database" / "recipes",
+        "user_commands": tmp_path / "database" / "commands",
+        "signing_key": tmp_path / "database" / "signing_key.json",
+        "egress_log": tmp_path / "database" / "egress.log",
     }
     for name, p in redirects.items():
         monkeypatch.setitem(cfg._data["paths"], name, str(p))

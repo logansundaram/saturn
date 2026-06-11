@@ -17,7 +17,10 @@ from .statusbar import _live_stop
 
 def _turn_summary_parts() -> list[str]:
     """The post-response receipt: a permanent one-line echo of the (transient) status bar's run
-    stats — the bar vanishes when the turn ends, so this is what survives in the scrollback."""
+    stats — the bar vanishes when the turn ends, so this is what survives in the scrollback.
+    With `runtime.receipt` on (default) it also carries the TRUST segment (receipt.py):
+    `local-only` or the turn's egress summary, blocked attempts, and how many calls faced the
+    approval gate — every answer proves the posture, not just /privacy egress on demand."""
     elapsed = time.perf_counter() - _base._turn_start if _base._turn_start else 0.0
     status = _base._status
     n = status["tools"]
@@ -28,6 +31,13 @@ def _turn_summary_parts() -> list[str]:
     window = status["ctx_window"]
     if window and status["ctx_used"]:
         parts.append(f"ctx {status['ctx_used'] / window * 100:.0f}%")
+    try:
+        import receipt
+
+        if receipt.enabled():
+            parts += receipt.turn_parts(receipt.turn_mark(), status.get("gates", 0))
+    except Exception:
+        pass  # the receipt is additive — it must never cost the stats line
     return parts
 
 

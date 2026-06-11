@@ -5,8 +5,9 @@ from __future__ import annotations
 
 from typing import Optional
 
-# All chat-model roles; used by /models, /context, and /config.
-_ROLES = ("planner", "tool_caller", "synthesizer", "utility", "judge")
+# All chat-model roles; used by /models, /context, and /config. The canonical tuple lives in
+# config.MODEL_ROLES (shared with llms.check_models and the signed trust report).
+from config import MODEL_ROLES as _ROLES  # noqa: E402
 
 
 def _parse_toggle(args: list[str], current: bool) -> Optional[bool]:

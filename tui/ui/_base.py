@@ -102,8 +102,9 @@ _trace_started = False  # False until the turn's first node line prints (gates o
 # handle + the metrics sampler stay private to statusbar.py — only these cross submodules.)
 _turn_start = None
 _status = {"node": "", "iteration": 0, "tools": 0, "tok_per_sec": 0.0,
-           "ctx_used": 0, "ctx_window": 0}
+           "ctx_used": 0, "ctx_window": 0, "gates": 0}
 _model = "unknown"
+# (The turn-start egress mark lives in receipt.py — receipt-domain state, not UI state.)
 
 
 # ── metric formatting (shared by the status bar and the readout commands) ─────

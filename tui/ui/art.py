@@ -1,8 +1,8 @@
 """
 The startup splash — the one ornamental moment. A tilted cyan ring draws itself out around a dark,
 banded gas-giant (Saturn, for the `saturn` launch word), plays once, and is fully skippable. Self-
-contained: the geometry, the in-place animation player, `splash` (the startup draw-out, optionally
-holding for a background `work` callable), and `play_animation` (loop until Ctrl+C) all live here.
+contained: the geometry, the in-place animation player, and `splash` (the startup draw-out,
+optionally holding for a background `work` callable) all live here.
 """
 
 import io
@@ -10,8 +10,7 @@ import math
 import os
 import time
 
-from ._base import Console, Text, _console, _RICH, _ACCENT, _DIM
-from .statusbar import _live_stop
+from ._base import Console, Text, _console, _RICH
 
 
 # ── geometry / shading constants ─────────────────────────────────────────────
@@ -317,39 +316,3 @@ def splash(work=None):
         real_out.write(spill if spill.endswith("\n") else spill + "\n")
         real_out.flush()
     return _finish()
-
-
-def play_animation() -> None:
-    """Loop the Saturn ring animation until the user presses Ctrl+C, then settle the resting frame."""
-    import sys
-
-    _live_stop()
-
-    if not _RICH or not _console.is_terminal or _console.size.width < _ART_C + 2:
-        if _RICH:
-            _console.print(_saturn_text(1.0, final=True))
-        else:
-            print(_saturn_plain())
-        return
-
-    hint = Text("  ")
-    hint.append("Ctrl+C", style=f"bold {_ACCENT}")
-    hint.append(" to stop", style=_DIM)
-    _console.print(hint)
-
-    out = sys.stdout
-    player = _InlinePlayer(out)
-    phase, step = 0.0, 2 * math.pi / 80
-    try:
-        while True:
-            player.draw(_saturn_anim_cells(phase))
-            time.sleep(0.022)
-            phase += step
-    except KeyboardInterrupt:
-        pass
-    finally:
-        try:
-            player.clear()
-        except Exception:
-            pass
-    _console.print(_saturn_text(1.0, final=True))

@@ -67,13 +67,29 @@ replay. The point isn't how much Saturn can do — it's that you can see and con
   can run **in the background** with their output captured to a log the agent can check and a
   job it can stop; anything still running when you quit is cleaned up.
 - **Cited answers** — answers that drew on tools or documents cite their sources inline (`[1]`)
-  and end with a Sources list mapping each number to the exact tool call or document behind it.
+  and end with a Sources list mapping each number to the exact tool call or document behind it;
+  `/source 3` shows the full material behind any citation.
 - **MCP servers** — plug in any [Model Context Protocol](https://modelcontextprotocol.io) server
   (stdio or remote HTTP/SSE) by declaring it in `config.yaml`; its tools join the agent behind
   the **same approval gate** as everything else. Remote tools always prompt until *you* lower
   their risk tier — a server's own "read-only" claim is never trusted. `/mcp` shows status.
 - **Human-in-the-loop planning** — pause and edit the agent's plan mid-run if it's heading the
-  wrong way, or type a correction and press Esc to steer the running turn.
+  wrong way, or type a correction and press Esc to steer the running turn. A plan that worked
+  can be saved as a **recipe** (`/plan save`) and re-run any time with fresh approvals.
+- **Prompt-injection quarantine** — web pages, API responses, and remote tool results are
+  untrusted input. Content that tries to steer the agent ("ignore your previous instructions",
+  "run this command") is detected, visibly flagged in the trace, fenced off as data the model
+  must not obey — and the next tool action faces your approval gate regardless of risk tier, so
+  a malicious page can't quietly redirect the agent.
+- **Trust receipt on every answer** — the stats line under each response also says what left
+  your machine that turn: `local-only`, or exactly how many bytes went to which host, plus how
+  many actions faced the approval gate. The privacy claim, proven per answer.
+- **Policy as a file** — your whole safety posture (approval threshold, per-tool risk levels,
+  shell allowlist, air-gap and redaction modes) exports to one shareable YAML profile
+  (`/policy export`) and applies anywhere — including headless runs (`saturn --policy ci.yaml`).
+- **User-defined commands** — drop a markdown template into `database/commands/` and it becomes
+  a slash command (`/brief notes.md`); `$ARGUMENTS` expands, and the template runs as a normal
+  gated, traced agent turn.
 - **Per-workspace instructions** — `/init` surveys your workspace and drafts `SATURDAY.md`,
   standing instructions loaded every turn (like a per-project system prompt).
 - **Headless mode** — `saturn -p "query"` runs one query and prints the answer; gated tools are
@@ -265,18 +281,21 @@ Type `/help` for the full list, or `/<command> --help` for details on any one. H
 | `/models` | List installed Ollama models; switch what drives each role. |
 | `/config` | View/edit settings and **API keys** (`/config key …`). |
 | `/context` | Runtime readout (context window + fill, CPU/RAM/GPU); resize the window. |
-| `/plan` | Show the plan; control review mode, mid-run pause, and lockstep. |
+| `/plan` | Show the plan; control review mode, mid-run pause, and lockstep; `save`/`run` plan recipes. |
 | `/docs` | The knowledge base: list documents, `add <path>`, `remove <name>`, `sync`. |
 | `/tools` | List the agent's tools and their risk tiers. |
 | `/mcp` | MCP server status + the remote tools they add; `reload` after a config edit. |
 | `/memory` | See, add, or delete the facts the agent permanently remembers. |
 | `/risk` · `/allow` · `/autoapprove` | Tune the safety gate (persistable overrides + shell allowlist). |
+| `/policy` | The whole safety posture as one object: show it, `export` it as a shareable YAML profile, `import` one (also `saturn --policy <file>`). |
+| `/source` | Show the full material behind a citation `[n]` of the last answer. |
+| `/commands` | List user-defined slash commands (markdown templates in `database/commands/`); `reload` after editing. |
 | `/privacy` | The privacy surface: what CAN leave (`/privacy`), what DID (`/privacy egress`), seal the boundary (`/privacy airgap`), strip secrets from cloud sends (`/privacy redact`). |
 | `/undo` | Revert the file changes of the last turn that wrote anything. |
 | `/rewind` | Drop the last exchange from the conversation (files untouched — that's `/undo`). |
 | `/retry` | Regenerate the last answer; `/retry full` re-runs the whole turn from scratch. |
 | `/init` | Survey the workspace and draft `SATURDAY.md` standing instructions. |
-| `/trace` | Inspect past runs, tool I/O, LLM calls, cost; `/trace why` explains a run's decisions; `/trace export` writes a tamper-evident run record. |
+| `/trace` | Inspect past runs, tool I/O, LLM calls, cost; `/trace why` explains a run's decisions; `/trace export` writes a tamper-evident run record; `/trace replay` re-renders an exported record anywhere — no database needed. |
 | `/resume` | Continue your last session (autosaved); `save`/`list`/`delete`/`rename`/`<name>` for named sessions. |
 | `/update` | Self-update: pull the latest Saturn (your data is never touched). |
 | `/clear` · `/quit` | Start a fresh conversation / exit. |

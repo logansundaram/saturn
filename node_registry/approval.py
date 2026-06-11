@@ -15,9 +15,10 @@ from langchain.messages import ToolMessage
 from langgraph.types import interrupt, Command
 
 import policy
+import quarantine
 from config import get_config
 from registry import risk_of
-from state import AgentState, TERMINAL_STATUSES
+from state import AgentState, TERMINAL_STATUSES, active_step
 
 
 def _skip_rejected_steps(
@@ -110,15 +111,47 @@ def approval_node(state: AgentState) -> Command[Literal["tools", "agent"]]:
     if bool(cfg.get("runtime.dry_run", False)):
         return Command(goto="tools")
 
+    # Quarantine escalation (runtime.quarantine = gate): a previous tool result this turn carried
+    # instruction-shaped content, so this batch's arguments may derive from injected text — every
+    # call in it faces the human ONCE regardless of risk tier. PEEK here, consume only after the
+    # interrupt resolves: LangGraph re-executes this node from the top on resume, so a consuming
+    # check would already be spent on the re-run, `gated` would recompute without the escalation,
+    # and the user's rejection of the batch would be silently discarded (an all-auto-approved
+    # batch would skip the interrupt entirely and run). The interrupt payload carries the flags so
+    # the prompt can say why a normally-silent call is suddenly asking.
+    escalated = quarantine.gate_pending() if tool_calls else False
+
+    # Per-call taint: untrusted content (web/http/MCP/corpus) recorded this turn now appearing
+    # inside a call's arguments — the data->action channel. Computed for display on every gated
+    # call so the human sees that the command/request echoes content a source planted; in `gate`
+    # mode a tainted call ALSO faces the human even when its tier would auto-approve (surfacing the
+    # channel is the whole point). It is a pure function of the recorded observations + the args —
+    # both stable across a node re-run — so unlike the one-shot injection escalation it needs no
+    # peek/consume dance: it simply recomputes the same way on resume.
+    taint_on = quarantine.active()
+    qgate = quarantine.mode() == "gate"
+    taint = (
+        {tc["id"]: quarantine.taint_scan(tc.get("args") or {}) for tc in tool_calls}
+        if taint_on
+        else {}
+    )
+
     gated = [
         tc
         for tc in tool_calls
-        if not policy.approves(tc["name"], risk_of(tc["name"]), tc.get("args"))
+        if escalated
+        or not policy.approves(tc["name"], risk_of(tc["name"]), tc.get("args"))
+        or (qgate and taint.get(tc["id"]))
     ]
 
     if not gated:
         return Command(goto="tools")
 
+    # Decision context for the gate's `e(xplain)` answer: the plan step this batch is fulfilling
+    # and the agent's pre-action reasoning (the text content of the tool-calling AIMessage) — the
+    # same provenance /trace why reconstructs later, surfaced at the moment of decision.
+    reasoning = getattr(last, "content", "") or ""
+    flags = quarantine.turn_flags()
     decision = interrupt(
         {
             "type": "approval_request",
@@ -128,9 +161,17 @@ def approval_node(state: AgentState) -> Command[Literal["tools", "agent"]]:
                     "name": tc["name"],
                     "args": tc["args"],
                     "risk": risk_of(tc["name"]),
+                    "taint": [
+                        {"source": h.source_tool, "preview": h.preview, "span_len": h.span_len}
+                        for h in taint.get(tc["id"], [])
+                    ]
+                    or None,
                 }
                 for tc in gated
             ],
+            "step": active_step(state.get("plan", [])),
+            "reasoning": reasoning if isinstance(reasoning, str) else str(reasoning),
+            "quarantine": {"flags": flags} if flags else None,
         }
     )
 
@@ -142,6 +183,15 @@ def approval_node(state: AgentState) -> Command[Literal["tools", "agent"]]:
         approved_ids = set(gated_ids)
     else:
         approved_ids = set()
+
+    # Past the interrupt: this runs exactly once, with the human's decision in hand. The one-shot
+    # escalation is spent only when the human LET SOMETHING THROUGH — a fully-rejected batch
+    # leaves it armed, so a re-issued copy of the call the human just declined (small local
+    # models do exactly this despite the decline message) faces the gate again instead of
+    # auto-approving right past their 'no'. Re-prompting is bounded by max_iterations and by
+    # _skip_rejected_steps retiring the planned work below.
+    if escalated and approved_ids:
+        quarantine.consume_gate()
 
     if approved_ids == gated_ids:
         return Command(goto="tools")

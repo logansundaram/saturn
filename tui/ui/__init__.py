@@ -61,14 +61,17 @@ from ._base import set_verbosity, verbosity
 # set_gate_off flag to keep in sync anymore.)
 from .statusbar import set_input_preview, reset_turn
 
-# Startup splash / animation.
-from .art import splash, play_animation
+# Startup splash.
+from .art import splash
 
 # Input prompt + banner.
 from .prompt import prompt, banner, ask
 
 # Execution trace + recorded replays.
 from .trace import show_node, show_run, show_llm_calls
+
+# The Glass Box — answer-level provenance.
+from .glass import show_glassbox
 
 # Plan rendering + the plan-review editor.
 from .plan import render_plan, show_plan, review_plan
@@ -91,9 +94,10 @@ from .listing import section, table, risk_style
 __all__ = [
     "set_verbosity", "verbosity",
     "set_input_preview", "reset_turn",
-    "splash", "play_animation",
+    "splash",
     "prompt", "banner", "ask",
     "show_node", "show_run", "show_llm_calls",
+    "show_glassbox",
     "render_plan", "show_plan", "review_plan",
     "ask_approval",
     "response", "ResponseStream",

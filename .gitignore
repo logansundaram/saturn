@@ -23,12 +23,20 @@ database/db.sqlite-shm
 database/.setup_done
 
 # User data that must survive /update (git pull): saved sessions (named /save files + the
-# /resume autosave slot), the persisted /risk + /allow decisions, and the /undo snapshots.
+# /resume autosave slot), the persisted /risk + /allow decisions, the /undo snapshots, saved
+# plan recipes, and user-defined slash-command templates.
 # Ignoring the whole paths means a future tracked file can never collide with a user's local
 # one and break the ff-only pull — user-generated artifacts live ONLY in ignored paths.
 database/sessions/
 database/permissions.json
 database/snapshots/
+database/recipes/
+database/commands/
+# ed25519 audit-signing PRIVATE key — must never be committed. (Comment on its own line: git
+# treats a trailing inline comment as part of the pattern, which would match NOTHING.)
+database/signing_key.json
+# durable cross-session egress audit log (also matched by *.log above; kept explicit)
+database/egress.log
 
 # Model cache
 models/
@@ -66,6 +74,8 @@ NOTES.md
 RESTRUCTURE.md
 SATURDAY_MVP_PLAN.md
 documentation.md
+repo-overview.md
+production-readiness.md
 
 # Generated dev artifacts: benchmark result dumps (benchmarks/*.json) and Mermaid/PNG graph
 # exports (graphs/). diag.log is already covered by *.log above; this catches the rest.

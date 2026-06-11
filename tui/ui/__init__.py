@@ -57,8 +57,9 @@ the submodules directly.
 # Trace verbosity (state + accessors live in _base alongside the rest of the shared state).
 from ._base import set_verbosity, verbosity
 
-# Status bar + per-turn reset.
-from .statusbar import set_input_preview, set_gate_off, reset_turn
+# Status bar + per-turn reset. (The gate indicator reads the live policy itself — there is no
+# set_gate_off flag to keep in sync anymore.)
+from .statusbar import set_input_preview, reset_turn
 
 # Startup splash / animation.
 from .art import splash, play_animation
@@ -89,7 +90,7 @@ from .listing import section, table, risk_style
 
 __all__ = [
     "set_verbosity", "verbosity",
-    "set_input_preview", "set_gate_off", "reset_turn",
+    "set_input_preview", "reset_turn",
     "splash", "play_animation",
     "prompt", "banner", "ask",
     "show_node", "show_run", "show_llm_calls",

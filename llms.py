@@ -23,9 +23,72 @@ from dataclasses import dataclass
 import httpx
 from langchain_ollama import ChatOllama, OllamaEmbeddings
 
+import egress
+import redaction
 from config import get_config
 from registry import tool
 from state import Plan, ReplanVerdict
+
+
+def _approx_bytes(messages) -> int:
+    """Approximate the size of what a model call sends off-machine — the char count of every
+    message's string content. Best-effort: a non-list / odd shape just reads as 0."""
+    if not isinstance(messages, list):
+        return 0
+    total = 0
+    for m in messages:
+        c = getattr(m, "content", None)
+        if isinstance(c, str):
+            total += len(c)
+    return total
+
+
+class _CloudBoundaryModel:
+    """Thin proxy around a cloud chat model that makes the network boundary observable + safe.
+
+    EVERY cloud model call (any node — planner, agent, judge, synthesizer) funnels through one of
+    these because `_build` wraps every non-Ollama model in it, so this is the single place to:
+      - record the egress to the ledger (`egress.record`) — what left, where to, how big; and
+      - run the outgoing messages through `redaction.process_messages` first, stripping secrets
+        when `runtime.redaction` is on.
+    Everything else (bind_tools, with_structured_output, attribute access) delegates to the inner
+    model and re-wraps any derived runnable so the boundary survives `.bind_tools(...)` /
+    `.with_structured_output(...)`. Local Ollama models are never wrapped — there is no boundary."""
+
+    def __init__(self, inner, provider: str, model: str):
+        self._inner = inner
+        self._provider = provider
+        self._model = model
+
+    def _outgoing(self, messages):
+        """Redact (per the mode) then record the egress; return the messages to actually send."""
+        to_send, redactions = redaction.process_messages(messages) if isinstance(messages, list) else (messages, 0)
+        egress.record(
+            "llm", f"{self._provider} API", self._model,
+            provider=self._provider, n_bytes=_approx_bytes(messages), redactions=redactions,
+        )
+        return to_send
+
+    def invoke(self, input, *args, **kwargs):
+        return self._inner.invoke(self._outgoing(input), *args, **kwargs)
+
+    def stream(self, input, *args, **kwargs):
+        return self._inner.stream(self._outgoing(input), *args, **kwargs)
+
+    async def ainvoke(self, input, *args, **kwargs):
+        return await self._inner.ainvoke(self._outgoing(input), *args, **kwargs)
+
+    def bind_tools(self, *args, **kwargs):
+        return _CloudBoundaryModel(self._inner.bind_tools(*args, **kwargs), self._provider, self._model)
+
+    def with_structured_output(self, *args, **kwargs):
+        return _CloudBoundaryModel(
+            self._inner.with_structured_output(*args, **kwargs), self._provider, self._model
+        )
+
+    def __getattr__(self, name):
+        # Anything we don't override (get_name, config_specs, etc.) defers to the inner model.
+        return getattr(self._inner, name)
 
 
 def _ollama_client_kwargs() -> dict:
@@ -55,15 +118,32 @@ def _build(provider: str, model: str):
             num_ctx=get_config().num_ctx_for(model),
             **_ollama_client_kwargs(),
         )
-    # Any other provider: lean on LangChain's universal initializer.
+    # Any other provider (cloud): lean on LangChain's universal initializer, then wrap it in the
+    # cloud boundary proxy so every call is redacted (per runtime.redaction) and recorded to the
+    # egress ledger. Local Ollama above is never wrapped — it never leaves the machine.
     from langchain.chat_models import init_chat_model
 
-    return init_chat_model(model, model_provider=provider)
+    return _CloudBoundaryModel(init_chat_model(model, model_provider=provider), provider, model)
 
 
 def get_model(role: str):
-    """Return the chat model bound to `role` under the active tier (cached)."""
+    """Return the chat model bound to `role` under the active tier (cached).
+
+    Air-gap enforcement for cloud roles lives here (not in a wrapper) because a cached cloud model
+    would otherwise sneak a call through after the gate engaged: when `runtime.airgap` is on and the
+    role is cloud-bound, refuse to hand back a model at all — the turn fails with an actionable
+    message instead of quietly reaching the network. `/privacy airgap` drops the cache so this
+    re-checks."""
     spec = get_config().model_for_role(role)
+    if spec.provider != "ollama" and egress.airgap_on():
+        egress.record("llm", f"{spec.provider} API", f"{role} → {spec.model}",
+                      provider=spec.provider, status=egress.BLOCKED)
+        raise RuntimeError(
+            f"Air-gap is ON — role '{role}' is bound to a cloud model "
+            f"({spec.provider}:{spec.model}), which cannot run with network egress blocked. "
+            f"Switch to a local tier (e.g. `/models tier workstation`) or turn it off with "
+            f"`/privacy airgap off`."
+        )
     key = (spec.provider, spec.model)
     if key not in _MODEL_CACHE:
         _MODEL_CACHE[key] = _build(spec.provider, spec.model)

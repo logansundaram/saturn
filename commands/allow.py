@@ -22,17 +22,20 @@ Matching is strict on purpose:
   - a command containing ; | & < > ` $ or a newline is NEVER exempt, even if its start
     matches — chaining/redirection can smuggle anything behind a trusted prefix, so those
     always face the human.
+  - a background run (run_shell with background=true — detached, no timeout) is NEVER exempt
+    either; the prefix covers bounded foreground runs only.
 
-Persisted to database/permissions.json (alongside /risk --save overrides), so it survives
-restarts. Allow narrow, read-only prefixes (`git status`, `git log`, `ls`) — not broad ones
+Persisted to the policy file database/permissions.json (alongside /risk --save overrides), so it
+survives restarts. /allow, /risk and /autoapprove are three views of one gate policy (policy.py).
+Allow narrow, read-only prefixes (`git status`, `git log`, `ls`) — not broad ones
 (`git`, `python`).
 """,
 )
 def _allow(ctx, args):
-    import permissions
+    import policy
 
     if not args:
-        prefixes = permissions.shell_allow()
+        prefixes = policy.shell_allow()
         if not prefixes:
             _print("  no allowlisted shell prefixes — add one with /allow <prefix words…>")
             _print("  e.g. /allow git status")
@@ -47,7 +50,7 @@ def _allow(ctx, args):
         if len(args) < 2:
             _print("  usage: /allow remove <n|prefix>")
             return
-        removed = permissions.remove_shell_allow(" ".join(args[1:]))
+        removed = policy.remove_shell_allow(" ".join(args[1:]))
         if removed is None:
             _print("  no such prefix — /allow lists them with their numbers.")
         else:
@@ -55,7 +58,7 @@ def _allow(ctx, args):
         return
 
     prefix = " ".join(args)
-    if permissions.add_shell_allow(prefix):
+    if policy.add_shell_allow(prefix):
         _print(f"  allowed: run_shell commands starting with `{prefix}` now skip the gate.")
         _print("  (persisted; undo with /allow remove. Chained/redirected commands still prompt.)")
     else:

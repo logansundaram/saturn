@@ -48,16 +48,16 @@ RETRIEVAL_TOOLS = _RETRIEVAL       # names whose results are recorded as retriev
 # what `/risk <tool> reset` restores to.
 DECLARED_RISK = dict(_RISK)
 
-# Apply the user's persisted /risk overrides (permissions.py) over the declared tiers, so a
-# `/risk … --save` decision survives a restart. Stale names (a removed tool) and invalid tiers
-# are ignored — the declared tier, which fails closed, stays in effect.
+# Apply the user's persisted /risk overrides (policy.py — the gate-policy object) over the
+# declared tiers, so a `/risk … --save` decision survives a restart. Stale names (a removed tool)
+# and invalid tiers are ignored — the declared tier, which fails closed, stays in effect.
 from toolspec import RISK_TIERS as _RISK_TIERS  # noqa: E402
-import permissions as _permissions  # noqa: E402
+import policy as _policy  # noqa: E402
 
-for _name, _tier in _permissions.risk_overrides().items():
+for _name, _tier in _policy.risk_overrides().items():
     if _name in tools_by_name and _tier in _RISK_TIERS:
         TOOL_RISK[_name] = _tier
-del _permissions, _RISK_TIERS
+del _policy, _RISK_TIERS
 
 
 # Risk tiers drive the approval gate (see node_registry/approval.py):

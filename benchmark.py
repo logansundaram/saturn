@@ -12,7 +12,19 @@ from agent import build_agent, run_turn, _fresh_turn, _initial_state
 from config import get_config
 from registry import risk_of
 
-# Query suites for the living-plan ReAct loop (ground -> plan -> agent -> approval ->
+# The benchmark harness, split by what it proves (June 2026):
+#
+#   python benchmark.py                 the TRUST BENCHMARK — the graded headline. Measures the
+#                                       trust stack itself (grounding-judge catch rate + approval-
+#                                       gate coverage) and writes logging/benchmarks/trust_<ts>.json.
+#   python benchmark.py --capability    the capability suites + multi-turn conversations — ungraded
+#                                       regression checks, writes benchmark_<ts>.json.
+#   python benchmark.py --all           both in one run/report.
+#
+# The trust numbers are the product's proof points; the capability suites only watch for
+# regressions in the loop's mechanics.
+
+# Capability query suites for the living-plan ReAct loop (ground -> plan -> agent -> approval ->
 # (tools -> update_plan -> agent)* -> synthesize). Each suite targets one capability of the
 # loop so regressions are easy to localize. The harness auto-approves the approval gate so it
 # measures capability, not human-in-the-loop latency.
@@ -183,7 +195,7 @@ def run_trust_benchmark(graph) -> dict:
     gated_calls = sum(len(e["gated_tools"]) for e in ok_probes)
     missed = [m for e in ok_probes for m in e["gate_missed"]]
     overreach = [m for e in ok_probes for m in e["read_only_prompted"]]
-    policy = get_config().auto_approve
+    gate_policy = get_config().auto_approve
 
     summary = {
         "grounding": {
@@ -196,8 +208,8 @@ def run_trust_benchmark(graph) -> dict:
             "judge_catch_rate": round(caught / needed_net, 3) if needed_net else None,
         },
         "gate": {
-            "policy": policy,
-            "policy_default": policy == "read_only",
+            "policy": gate_policy,
+            "policy_default": gate_policy == "read_only",
             "probes": len(gate_results),
             "errors": len(gate_results) - len(ok_probes),
             "gated_calls": gated_calls,
@@ -213,7 +225,7 @@ def run_trust_benchmark(graph) -> dict:
     print(f"  grounding: {searched} searched up front · {caught} caught by judge · "
           f"{ungrounded} UNGROUNDED  (judge catch rate {catch})")
     if not t["policy_default"]:
-        print(f"  gate: auto_approve={policy} — gate deliberately open, coverage not meaningful")
+        print(f"  gate: auto_approve={gate_policy} — gate deliberately open, coverage not meaningful")
     else:
         print(f"  gate: {gated_calls - len(missed)}/{gated_calls} gated calls prompted"
               + (f"  MISSED: {missed}" if missed else "")
@@ -398,12 +410,8 @@ def run_query(graph, query: str) -> dict:
         }
 
 
-def run_suites(
-    selected: list[str],
-    output_path: Path | None = None,
-    run_conversations: bool = True,
-    run_trust: bool = True,
-) -> Path:
+def _build_graph():
+    """Build the agent graph and warm the model up — shared by both benchmark modes."""
     print("Building agent...")
     graph = build_agent()
 
@@ -413,6 +421,47 @@ def run_suites(
     _warmup_state["current_query"] = "hi"
     # The graph is checkpointed, so even a bare invoke needs a thread_id in config.
     graph.invoke(_warmup_state, {"configurable": {"thread_id": str(uuid.uuid4())}})
+    return graph
+
+
+def _log_dir() -> Path:
+    log_dir = Path(__file__).parent / "logging" / "benchmarks"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    return log_dir
+
+
+def run_trust(output_path: Path | None = None) -> Path:
+    """The headline run: just the graded trust benchmark, written to its own report
+    (trust_<timestamp>.json). This is the artifact the product's claims are checked against —
+    judge catch rate, grounded rate, gate coverage — separate from the regression noise of the
+    capability suites."""
+    graph = _build_graph()
+    print(f"Running the trust benchmark: {len(GROUNDING_BAIT)} grounding baits + "
+          f"{len(GATE_PROBES)} gate probes\n")
+    trust = run_trust_benchmark(graph)
+
+    if output_path is None:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_path = _log_dir() / f"trust_{timestamp}.json"
+    payload = {
+        "timestamp": datetime.now().isoformat(),
+        "trust_summary": trust["summary"],
+        "trust": trust,
+    }
+    output_path.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
+    print(f"Trust report written to {output_path}")
+    return output_path
+
+
+def run_suites(
+    selected: list[str],
+    output_path: Path | None = None,
+    run_conversations: bool = True,
+    run_trust: bool = False,
+) -> Path:
+    """The regression run: ungraded capability suites (+ multi-turn conversations), with the
+    trust benchmark folded in only when asked (--all)."""
+    graph = _build_graph()
 
     total = sum(len(SUITES[s]) for s in selected)
     if run_conversations:
@@ -466,17 +515,15 @@ def run_suites(
         print(f"  conversation checks: {convo_summary['passed']}/{convo_summary['checked']} passed"
               f"  ({convo_summary['errors']} turn errors)\n")
 
-    # Trust benchmark: the graded suite — judge catch rate + gate coverage.
+    # Trust benchmark: the graded suite — judge catch rate + gate coverage (--all only; the
+    # default entry point runs it alone via run_trust above).
     trust: dict | None = None
     if run_trust:
         trust = run_trust_benchmark(graph)
 
-    log_dir = Path(__file__).parent / "logging" / "benchmarks"
-    log_dir.mkdir(parents=True, exist_ok=True)
-
     if output_path is None:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_path = log_dir / f"benchmark_{timestamp}.json"
+        output_path = _log_dir() / f"benchmark_{timestamp}.json"
 
     payload = {
         "timestamp": datetime.now().isoformat(),
@@ -506,9 +553,23 @@ def run_suites(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Benchmark the AI agent across query suites.",
+        description="Benchmark Saturn. Default: the graded TRUST benchmark (the headline "
+                    "artifact — judge catch rate + gate coverage). --capability runs the "
+                    "ungraded capability/regression suites instead; --all runs both.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=f"Available suites: {', '.join(SUITE_NAMES)}",
+        epilog=f"Available capability suites: {', '.join(SUITE_NAMES)}",
+    )
+    parser.add_argument(
+        "--capability",
+        action="store_true",
+        help="Run the ungraded capability suites + multi-turn conversations (regression "
+             "checks) instead of the trust benchmark.",
+    )
+    parser.add_argument(
+        "--all",
+        action="store_true",
+        help="Run everything — capability suites, conversations, and the trust benchmark — "
+             "in one combined report.",
     )
     parser.add_argument(
         "--suites",
@@ -516,35 +577,36 @@ def main():
         choices=SUITE_NAMES + ["all"],
         default=["all"],
         metavar="SUITE",
-        help=f"Suites to run: {{{', '.join(SUITE_NAMES + ['all'])}}} (default: all)",
+        help=f"With --capability/--all: which suites to run "
+             f"{{{', '.join(SUITE_NAMES + ['all'])}}} (default: all)",
     )
     parser.add_argument(
         "--no-conversations",
         action="store_true",
-        help="Skip the multi-turn conversation suite (cross-turn reference handling; on by default).",
-    )
-    parser.add_argument(
-        "--no-trust",
-        action="store_true",
-        help="Skip the graded trust benchmark (grounding-judge catch rate + approval-gate "
-             "coverage; on by default).",
+        help="With --capability/--all: skip the multi-turn conversation suite "
+             "(cross-turn reference handling; on by default).",
     )
     parser.add_argument(
         "--output",
         default=None,
         metavar="FILE",
-        help="Output JSON file path (default: logging/benchmarks/benchmark_<timestamp>.json)",
+        help="Output JSON file path (default: logging/benchmarks/trust_<timestamp>.json, or "
+             "benchmark_<timestamp>.json for --capability/--all)",
     )
     args = parser.parse_args()
 
-    selected = SUITE_NAMES if "all" in args.suites else args.suites
     output_path = Path(args.output) if args.output else None
 
+    if not args.capability and not args.all:
+        run_trust(output_path)
+        return
+
+    selected = SUITE_NAMES if "all" in args.suites else args.suites
     run_suites(
         selected,
         output_path,
         run_conversations=not args.no_conversations,
-        run_trust=not args.no_trust,
+        run_trust=args.all,
     )
 
 

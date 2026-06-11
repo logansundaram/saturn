@@ -54,8 +54,14 @@ def _retry(ctx, args):
 def _last_query(ctx) -> "str | None":
     from langchain.messages import HumanMessage
 
+    from compaction import is_summary
+    from state import is_steer_message
+
+    # Last REAL question: a standalone mid-turn steer note is a correction to a turn, not the
+    # turn's query (requeueing it would re-run the correction without the question), and a
+    # compaction summary is carried history.
     for m in reversed(ctx.state.get("messages", [])):
-        if isinstance(m, HumanMessage):
+        if isinstance(m, HumanMessage) and not is_steer_message(m) and not is_summary(m):
             return str(m.content)
     return None
 

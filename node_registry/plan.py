@@ -15,7 +15,7 @@ def plan_node(state: AgentState):
     start = time.perf_counter()
 
     prompt = [
-        planner_sys_msg,
+        planner_sys_msg(),  # built per call — the tool catalog tracks /mcp reload
         HumanMessage(
             content="Grounding context:\n"
             + state.get("context", "")

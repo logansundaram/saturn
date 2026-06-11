@@ -485,6 +485,16 @@ def ingest_file(src_path: str) -> dict:
     root.mkdir(parents=True, exist_ok=True)
     dest = root / p.name
     if p.resolve() != dest.resolve():
+        # Never silently clobber: the corpus keys documents by basename, so two different source
+        # files sharing a name would otherwise overwrite each other and sync() would report the
+        # data loss as an innocuous update. Identical bytes are a harmless re-add; anything else
+        # requires the user to remove the existing document explicitly first.
+        if dest.exists() and dest.read_bytes() != p.read_bytes():
+            raise FileExistsError(
+                f"a different document named '{p.name}' is already in the knowledge base — "
+                f"if this replaces it, run `/docs remove {p.name}` first; otherwise rename "
+                "the new file before adding it."
+            )
         shutil.copy2(p, dest)
     return sync(verbose=False)
 

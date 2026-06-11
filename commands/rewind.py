@@ -9,7 +9,7 @@ sees next turn, never the audit trail.
 """
 
 from commands._framework import command, _print
-from commands._session import write_autosave
+from commands._session import clear_autosave, write_autosave
 
 # What one user message gets echoed back as in the confirmation line.
 _PREVIEW_CHARS = 70
@@ -29,8 +29,18 @@ def drop_last_turn(ctx) -> "str | None":
     no turn to drop. Shared with /retry full (rewind + re-run)."""
     from langchain.messages import HumanMessage
 
+    from compaction import is_summary
+    from state import is_steer_message
+
     msgs = ctx.state.get("messages", [])
-    human_idxs = [i for i, m in enumerate(msgs) if isinstance(m, HumanMessage)]
+    # A turn starts at a REAL user message: a standalone mid-turn steer note belongs to the turn
+    # it corrected (slicing there would leave the question + half a scratchpad behind), and a
+    # compaction summary is carried history, not a turn.
+    human_idxs = [
+        i
+        for i, m in enumerate(msgs)
+        if isinstance(m, HumanMessage) and not is_steer_message(m) and not is_summary(m)
+    ]
     if not human_idxs:
         return None
     boundary = human_idxs[-1]
@@ -50,7 +60,13 @@ def drop_last_turn(ctx) -> "str | None":
     fresh["documents_retrieved"] = []
     fresh["tool_events"] = []
 
-    write_autosave(ctx.state)
+    # write_autosave skips an empty conversation by design (a fresh launch + quit must not wipe
+    # the previous session) — but rewinding the ONLY turn empties it deliberately, so clear the
+    # slot explicitly or a crash/quit + /resume would resurrect the turn that was just rewound.
+    if ctx.state["messages"]:
+        write_autosave(ctx.state)
+    else:
+        clear_autosave()
     return dropped_query
 
 

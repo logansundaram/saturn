@@ -1,8 +1,9 @@
 # Welcome to Saturn
 
-Saturn (Saturday.ai) is a **local-first, transparent, general-purpose agent** that runs on your own
-machine. You talk to it in a chat loop; it plans its work out loud, calls tools, and shows you exactly
-what it did. Nothing leaves your computer unless a tool you can see and approve sends it there.
+Saturn (Saturday.ai) is a **private, local-first agent** that runs on your own machine — every step
+it takes is visible, auditable, and yours to approve. You talk to it in a chat loop; it plans its work
+out loud, calls tools, and shows you exactly what it did. Nothing leaves your computer unless a tool
+you can see and approve sends it there.
 
 This document is part of Saturn's knowledge base — it's here so that asking *"what can Saturn do?"* or
 *"how do I add my own documents?"* returns a real answer on a fresh install. It's the only file Saturn
@@ -22,6 +23,9 @@ with your own corpus.
 - **In your control.** Risky actions (writing files, running shell commands) pause at an **approval
   gate** that shows you the exact change — a diff for file writes, the full command for the shell —
   before anything happens.
+- **Auditable.** Every run is recorded. `/trace` replays exactly what happened — each tool's inputs
+  and outputs, the model's reasoning, the cost — and `/trace export` writes a tamper-evident record
+  you can keep. Nothing about a past turn is lost or unverifiable.
 
 ## How a turn works
 

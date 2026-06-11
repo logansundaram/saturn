@@ -1,8 +1,9 @@
-"""The positional/multiset plan-accounting invariant (CLAUDE.md gotcha #6): `update_plan_node`
-and `state.unrun_planned_tools` must keep identical accounting — these tests pin both walkers
-and cross-check them on shared scenarios."""
+"""The positional/multiset plan-accounting invariant (CLAUDE.md gotcha #6): `update_plan_node`,
+`state.unrun_planned_tools`, and `approval._skip_rejected_steps` must keep identical accounting —
+these tests pin all three walkers and cross-check them on shared scenarios."""
 
 from state import unrun_planned_tools, active_step, steps_to_dicts, PlanStep
+from node_registry.approval import _skip_rejected_steps
 from node_registry.update_plan import update_plan_node
 
 
@@ -105,3 +106,65 @@ def test_walkers_agree_on_fully_credited_plan():
     called = ["web_search", "calculate"]
     out = update_plan_node({"plan": plan, "tools_called": called})
     assert unrun_planned_tools(out["plan"], called) == []
+
+
+# ── approval._skip_rejected_steps (the third walker) ──────────────────────────────────────────
+
+
+def test_skip_rejected_mixed_same_tool_batch_keeps_credit_aligned():
+    """approve c1 / reject c2 over [s1: web_search, s2: web_search]: the surviving call must
+    reserve s1 (update_plan will credit it), so the rejection skips s2 — not the inversion
+    where the executed step records skipped and the declined one records done."""
+    plan = [_step(1, "web_search"), _step(2, "web_search")]
+    out = _skip_rejected_steps(
+        plan, ["web_search"], executing_tools=["web_search"], called=[]
+    )
+    assert out[0]["status"] == "pending"
+    assert out[1]["status"] == "skipped"
+    # Cross-check: after the approved call executes, update_plan credits exactly s1, and the
+    # honesty-note walker agrees nothing planned is left dangling.
+    after = update_plan_node({"plan": out, "tools_called": ["web_search"]})["plan"]
+    assert after[0]["status"] == "done"
+    assert after[1]["status"] == "skipped"
+    assert unrun_planned_tools(after, ["web_search"]) == []
+
+
+def test_skip_rejected_full_rejection_skips_first_matching_step():
+    plan = [_step(1, "web_search"), _step(2, "web_search")]
+    out = _skip_rejected_steps(plan, ["web_search"], executing_tools=[], called=[])
+    assert out[0]["status"] == "skipped"
+    assert out[1]["status"] == "pending"
+
+
+def test_skip_rejected_accounts_for_prior_round_credit():
+    """A done step consumes its prior-round call from the reserve first (mirroring
+    update_plan's walk), so this batch's survivor reserves the RIGHT later step."""
+    plan = [
+        _step(1, "web_search", status="done"),
+        _step(2, "web_search"),
+        _step(3, "web_search"),
+    ]
+    out = _skip_rejected_steps(
+        plan, ["web_search"], executing_tools=["web_search"], called=["web_search"]
+    )
+    assert out[1]["status"] == "pending"  # reserved for this batch's surviving call
+    assert out[2]["status"] == "skipped"
+
+
+def test_skip_rejected_fallback_never_retires_a_reserved_step():
+    """An unmatched rejection (intended_tool mismatch) falls back to skipping a step — but not
+    one a surviving call is about to credit, and never a no-intended_tool step."""
+    plan = [_step(1, "web_search"), _step(2, "read_file")]
+    out = _skip_rejected_steps(plan, ["weird_tool"], executing_tools=["web_search"], called=[])
+    assert out[0]["status"] == "pending"
+    assert out[1]["status"] == "skipped"
+    # No-tool steps survive the fallback (the user declined one action, not the whole task).
+    plan = [_step(1, None)]
+    out = _skip_rejected_steps(plan, ["weird_tool"], executing_tools=[], called=[])
+    assert out[0]["status"] == "pending"
+
+
+def test_skip_rejected_does_not_mutate_input():
+    plan = [_step(1, "web_search")]
+    _skip_rejected_steps(plan, ["web_search"])
+    assert plan[0]["status"] == "pending"

@@ -63,14 +63,22 @@ def _recent_exchanges(messages: list) -> str:
     are blind to the conversation, so a follow-up turn gets planned/synthesized as if it arrived
     cold. Pairs each user question with the assistant's final (non-tool-call) answer; skips the
     current in-flight query (the trailing HumanMessage with no answer yet)."""
+    from compaction import is_summary
+    from state import is_steer_message
+
     pairs = []
     pending_q = None
     for m in messages:
         if isinstance(m, HumanMessage):
-            # First unanswered human turn wins, so a mid-turn steering HumanMessage injected after
-            # the real question doesn't overwrite it and get mis-paired with the answer.
+            # Not every HumanMessage is a question: a compaction summary is carried history and a
+            # standalone mid-turn steer note is a correction — pairing either with the next answer
+            # corrupts the recap. With those skipped, the LATEST question wins, so a question left
+            # unanswered by a failed turn is superseded instead of mis-pairing with the next
+            # turn's answer.
+            if is_summary(m) or is_steer_message(m):
+                continue
             text = str(m.content).strip()
-            if text and pending_q is None:
+            if text:
                 pending_q = text
         elif isinstance(m, AIMessage) and not getattr(m, "tool_calls", None):
             answer = str(m.content).strip()

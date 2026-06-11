@@ -58,8 +58,6 @@ from typeahead import InputQueue
 
 DB_PATH = str(get_config().path("db_sqlite"))
 
-from utilities.print_graph import print_graph
-
 
 def build_agent():
     """Assemble the living-plan ReAct loop with a human-in-the-loop approval gate AND a
@@ -224,12 +222,22 @@ def _compact_history(messages: list, keep_recent_turns: int = 1) -> list:
     (per-turn `tools_called`, reset each turn — so the nudge still correctly sees this turn's
     planned tools as un-run regardless of what's in the retained window).
 
-    A turn starts at a HumanMessage. Everything from the boundary onward is kept as-is (the
-    scratchpad is intact, so no orphaned tool calls); everything before it is reduced to
-    Human + non-empty final-AI messages (also orphan-free). Run only at the turn boundary.
+    A turn starts at a REAL user HumanMessage — not a standalone mid-turn steer note (that
+    belongs to the turn it corrected; treating it as a boundary would compact away the very
+    scratchpad this function promises to keep) and not a compaction summary (carried history).
+    Everything from the boundary onward is kept as-is (the scratchpad is intact, so no orphaned
+    tool calls); everything before it is reduced to Human + non-empty final-AI messages (also
+    orphan-free). Run only at the turn boundary.
 
     `keep_recent_turns=0` reproduces the old strip-everything behaviour."""
-    human_idxs = [i for i, m in enumerate(messages) if isinstance(m, HumanMessage)]
+    from compaction import is_summary
+    from state import is_steer_message
+
+    human_idxs = [
+        i
+        for i, m in enumerate(messages)
+        if isinstance(m, HumanMessage) and not is_steer_message(m) and not is_summary(m)
+    ]
     if keep_recent_turns > 0 and human_idxs:
         # Boundary = start of the Nth-from-last turn (clamped to the first turn).
         boundary = human_idxs[-min(keep_recent_turns, len(human_idxs))]
@@ -358,7 +366,8 @@ def main():
                             hold in every mode. Pass --yolo to auto-approve them instead.
                             Compatible with `saturn -p "..."` and shell pipelines.
       --yolo                With -p: auto-approve gated tool calls (file writes, shell commands)
-                            instead of denying them. Mirrors the /autoapprove command.
+                            instead of denying them. The same view of the gate policy as the
+                            /autoapprove command (policy.set_gate_off — threshold: destructive).
       --json                With -p: emit one machine-readable JSON object to stdout instead of
                             the plain answer — answer + plan + tools called + per-call events +
                             token/timing stats — so Saturn can be piped into scripts and other
@@ -394,6 +403,12 @@ def main():
 
     # --- headless path: one query, print answer, exit ---------------------------------
     if _args.prompt:
+        if _args.yolo:
+            # The headless view of the gate policy: open the gate up front (threshold ->
+            # destructive) so gated calls never interrupt; same mechanism as /autoapprove.
+            import policy
+
+            policy.set_gate_off(True)
         graph, ingest_warning = _startup_load()
         if ingest_warning:
             print(ingest_warning, file=sys.stderr)
@@ -413,16 +428,15 @@ def main():
         }
 
         def _headless_approver(value):
-            """Resolve interrupts with no human present. Gated tool calls are DENIED unless
-            --yolo was passed: the approval gate (the user seeing and approving the exact
-            action) is the product's safety boundary, and headless mode silently approving a
-            run_shell or write_file would delete it. The decline path is already honest — the
-            agent tells the user the action was not performed. Any other interrupt type (the
+            """Resolve interrupts with no human present. Gated tool calls are DENIED: the
+            approval gate (the user seeing and approving the exact action) is the product's
+            safety boundary, and headless mode silently approving a run_shell or write_file
+            would delete it. (--yolo opens the gate policy itself above, so under it no
+            approval interrupt fires at all.) The decline path is already honest — the agent
+            tells the user the action was not performed. Any other interrupt type (the
             plan-review gate never arms headless) resumes unchanged via a bare True, which
             plan_gate tolerates by design."""
             if isinstance(value, dict) and value.get("type") == "approval_request":
-                if _args.yolo:
-                    return True
                 names = ", ".join(
                     tc.get("name", "?") for tc in value.get("tool_calls", [])
                 )
@@ -567,7 +581,10 @@ def main():
     input_queue = InputQueue(on_change=ui.set_input_preview, on_steer=ui.steer_note)
     pause_controller = get_pause_controller()
 
-    # print_graph(graph=graph)
+    # Dev-only graph render. Import lazily here when enabling: utilities/ is deliberately not
+    # part of the installed wheel (pyproject.toml), so a module-level import would crash every
+    # pipx/uv-installed launch.
+    # from utilities.print_graph import print_graph; print_graph(graph=graph)
 
     def _next_input() -> str:
         """The next line to process: anything the user typed-ahead while the last turn ran is
@@ -660,14 +677,14 @@ def main():
         answer = ui.ResponseStream()
 
         # Resolve each interrupt by type: the plan-review gate -> the plan editor; the approval
-        # gate -> /autoapprove (always yes) or the approval prompt. Keeping this dispatch here lets
-        # run_turn stay interrupt-type-agnostic (it just feeds the result back as the resume value).
-        base_approver = (lambda _v: True) if cmd_ctx.auto_approve else ui.ask_approval
-
-        def on_interrupt(value, _approve=base_approver):
+        # gate -> the approval prompt. (/autoapprove no longer needs a branch here: it opens the
+        # gate policy itself, so the approval node stops interrupting at all.) Keeping this
+        # dispatch here lets run_turn stay interrupt-type-agnostic (it just feeds the result back
+        # as the resume value).
+        def on_interrupt(value):
             if isinstance(value, dict) and value.get("type") == "plan_review":
                 return ui.review_plan(value)
-            return _approve(value)
+            return ui.ask_approval(value)
 
         try:
             state = run_turn(
@@ -705,6 +722,18 @@ def main():
             # consumed by the gate's clear(), and would otherwise leak into the next, unrelated turn
             # and pause it. A `/plan pause` issued at the prompt is set after this point, so it
             # survives; review mode re-arms each turn — neither is affected.
+            # One exception: a STEER carries the user's typed correction — don't silently drop
+            # their words. Salvage it into the type-ahead queue so it runs as the next message
+            # (echoed when drained); the note explaining why prints after the answer renders,
+            # never here (printing inside finally could interleave with the live answer region).
+            late_req = pause_controller.peek()
+            late_steer = (
+                late_req.reason
+                if late_req is not None and late_req.source == "steer" and late_req.reason
+                else None
+            )
+            if late_steer:
+                input_queue.push(late_steer)
             pause_controller.clear()
             # Prune this turn's checkpoints. Each turn runs on a fresh thread_id and cross-turn
             # memory rides on the manually-carried `messages` (not the checkpointer), so once the
@@ -733,6 +762,16 @@ def main():
             answer.finish(final if isinstance(final, str) else None)
         else:
             ui.response(state["messages"][-1].content)
+
+        # A steering correction that landed after the turn's last step boundary was salvaged into
+        # the type-ahead queue (see the finally block above) — tell the user what happened to it.
+        # On the error/Ctrl-C paths this note is skipped, but the queued line still echoes when
+        # drained, so the correction is never invisible.
+        if late_steer:
+            ui.note(
+                "your steering correction arrived after the turn had finished — it could not be "
+                "applied mid-turn, so it will run as your next message instead."
+            )
 
         # Surface the session token budget (runtime.token_budget) when it bites. Once spent, every
         # turn force-lands at synthesize without new tool rounds (route_after_agent) — which would

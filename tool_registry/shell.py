@@ -2,9 +2,9 @@
 Shell / code-execution tools — `run_shell` (+ the background-job pair `check_shell_job` /
 `stop_shell_job`).
 
-The agent's general-purpose escape hatch (roadmap Tier 3 #10): the one tool that can do anything
-the host shell can — run scripts, build/test commands, git, package managers, a quick one-off bit
-of code. That reach is exactly why it is registered `destructive`, so it ALWAYS hits the approval
+The agent's escape hatch (roadmap Tier 3 #10): the one tool that can run anything the host shell
+can — scripts, build/test commands, git, package managers, a quick one-off bit of code. That reach
+is exactly why it is registered `destructive`, so it ALWAYS hits the approval
 gate. The gate — the user seeing the exact command + working directory and approving it — is the
 safety boundary here, NOT a path jail. This is the design the roadmap calls "a `destructive`
 run_shell safe-by-default": the risk tier does the guarding, the same way write_file's overwrite

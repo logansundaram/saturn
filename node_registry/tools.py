@@ -11,6 +11,7 @@ import time
 
 from langchain.messages import ToolMessage
 
+from config import get_config
 from registry import tools_by_name, RETRIEVAL_TOOLS
 from state import AgentState
 
@@ -85,6 +86,12 @@ def tool_node(state: AgentState):
         tc for tc in (getattr(last, "tool_calls", None) or []) if tc["id"] not in answered
     ]
 
+    # Dry-run: decide everything, execute nothing. Each pending call is stubbed with an explicit
+    # "would execute" observation (no side effects, no network, no file writes) so the agent can lay
+    # out its whole intended arc and synthesize can report it. The plan still advances mechanically
+    # (tools_called is recorded) so the loop progresses and terminates exactly as a real turn would.
+    dry_run = bool(get_config().get("runtime.dry_run", False))
+
     tool_messages = []
     tools_called = []
     tool_results = []
@@ -97,16 +104,22 @@ def tool_node(state: AgentState):
 
         ok = True
         start = time.perf_counter()
-        selected = tools_by_name.get(name)
-        if selected is None:
-            observation = f"Error: unknown tool '{name}'."
-            ok = False
+        if dry_run:
+            observation = (
+                f"[DRY RUN] would execute {_fmt_call(name, args)} — not run "
+                "(no side effects, no network, no files touched)."
+            )
         else:
-            try:
-                observation = selected.invoke(args)
-            except Exception as exc:  # surface tool errors to the model instead of crashing
-                observation = f"Error calling {name}: {exc}"
+            selected = tools_by_name.get(name)
+            if selected is None:
+                observation = f"Error: unknown tool '{name}'."
                 ok = False
+            else:
+                try:
+                    observation = selected.invoke(args)
+                except Exception as exc:  # surface tool errors to the model instead of crashing
+                    observation = f"Error calling {name}: {exc}"
+                    ok = False
         dur = time.perf_counter() - start
 
         observation = str(observation)

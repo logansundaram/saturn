@@ -1,6 +1,7 @@
-# Core test suite — the pure-logic invariants in tests/test_core.py (plan accounting, history
-# compaction, observation clamping, config persistence, approval skip logic). No Ollama, no
-# network: everything under test is offline by design, so this runs anywhere.
+# Offline unit suite — the WHOLE tests/ directory under pytest (gate policy, the three multiset
+# plan walkers, observation clamping, config persistence, sessions/rewind, RAG loaders, the
+# calculator evaluator, …), not just tests/test_core.py. No Ollama, no network, no embedder:
+# everything under test is offline by design (see tests/conftest.py), so this runs anywhere.
 name: tests
 
 on:
@@ -9,7 +10,7 @@ on:
   pull_request:
 
 jobs:
-  core:
+  unit:
     strategy:
       fail-fast: false
       matrix:
@@ -22,6 +23,6 @@ jobs:
           python-version: "3.11"
           cache: pip
       - name: Install dependencies
-        run: pip install -r requirements.txt
-      - name: Run core tests
-        run: python tests/test_core.py
+        run: pip install -r requirements.txt pytest
+      - name: Run unit suite
+        run: python -m pytest tests/ -q

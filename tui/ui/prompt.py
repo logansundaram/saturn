@@ -350,14 +350,14 @@ if _PTK:
         buf.text = doc.text[: m.start()] + full + doc.text[m.end():]
         buf.cursor_position = m.start() + len(full)
 
-    @_PTK_KB.add("s-tab")  # Shift+Tab: cycle runtime.auto_approve tier
+    @_PTK_KB.add("s-tab")  # Shift+Tab: cycle the gate policy's auto-approve threshold
     def _ptk_cycle_permission(event):
-        from config import get_config, RISK_ORDER
-        cfg = get_config()
-        current = cfg.auto_approve
+        from config import RISK_ORDER
+        import policy
+        current = policy.tier()
         idx = RISK_ORDER.index(current) if current in RISK_ORDER else 0
         next_tier = RISK_ORDER[(idx + 1) % len(RISK_ORDER)]
-        cfg.set("runtime.auto_approve", next_tier)
+        policy.set_tier(next_tier)
 
         def _notify():
             style = _RISK.get(next_tier, "default")

@@ -13,13 +13,13 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "saturn-agent"
 version = "0.1.0"  # keep in sync with __version__ in agent.py
-description = "Saturn — a local-first, transparent AI agent for the terminal. AI agents should show their work."
+description = "Saturn — a private, local-first AI agent for the terminal. Every step it takes is visible and auditable; nothing leaves your machine without your approval."
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.11"
 authors = [{ name = "Saturday.ai" }]
-keywords = ["agent", "llm", "local-first", "ollama", "terminal", "transparency"]
+keywords = ["agent", "llm", "local-first", "ollama", "terminal", "transparency", "privacy", "auditability"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Environment :: Console",

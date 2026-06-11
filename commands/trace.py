@@ -383,9 +383,9 @@ def _verbosity(ctx, args):
     from tui import ui
 
     arg = args[0].lower() if args else ""
-    if arg in ("off", "quiet", "compact", "false", "no", "0"):
+    if arg in ("off", "quiet", "compact", "false", "no"):
         ctx.show_ui = False
-    elif arg in ("on", "normal", "true", "yes", "1"):
+    elif arg in ("on", "normal", "true", "yes"):
         ctx.show_ui = True
         ui.set_verbosity("normal")
     elif arg in ("full", "verbose", "detailed", "all", "debug"):
@@ -407,6 +407,163 @@ def _verbosity(ctx, args):
             else "plan · agent · tools · synthesize (plumbing folded)"
         )
         _print(f"  live trace on — {level}: {detail}.")
+
+
+# --- /trace why — decision provenance ----------------------------------------------------------
+# /trace shows WHAT happened; this subview reconstructs WHY: the causal chain from the recorded
+# plan, per-step agent reasoning + chosen tool calls, the evidence relied on, the groundedness
+# verdict, and the cited sources. (Folded in from the old standalone /why, June 2026.)
+
+def _why(ctx, args):
+    from tui import ui
+
+    run_id: Optional[int] = None
+    for a in args:
+        rid = _to_int(a) if (a.startswith("#") or a.lstrip("+-").isdigit()) else None
+        if rid is not None:
+            run_id = rid
+
+    with _connect(ctx.db_path) as conn:
+        if run_id is None:
+            row = conn.execute("SELECT MAX(run_id) FROM runs").fetchone()
+            run_id = row[0] if row else None
+            if run_id is None:
+                _print("  (no runs recorded yet — ask something first)")
+                return
+        run = conn.execute(
+            "SELECT run_id, query, started_at, ended_at, status, response FROM runs WHERE run_id = ?",
+            (run_id,),
+        ).fetchone()
+        if not run:
+            _print(f"  no run #{run_id} — try /trace -l to list recorded runs.")
+            return
+        events = conn.execute(
+            "SELECT seq, node, summary, data FROM events WHERE run_id = ? ORDER BY seq, id",
+            (run_id,),
+        ).fetchall()
+        has_calls = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='llm_calls'"
+        ).fetchone()
+        calls = conn.execute(
+            "SELECT seq, node, output FROM llm_calls WHERE run_id = ? ORDER BY seq, id",
+            (run_id,),
+        ).fetchall() if has_calls else []
+
+    _render_why(ui, run, events, calls)
+
+
+def _final_plan(events) -> list:
+    """The plan as it stood at the end of the run — the last event delta that carried one."""
+    plan = []
+    for _seq, _node, _summary, data in events:
+        delta = decode_json(data, {})
+        if delta.get("plan"):
+            plan = delta["plan"]
+    return plan
+
+
+def _collect_tools(events):
+    """Flatten tools_called + tool_results across the run, in order."""
+    results = []
+    for _seq, node, _summary, data in events:
+        if node != "tools":
+            continue
+        delta = decode_json(data, {})
+        for r in delta.get("tool_results") or []:
+            results.append(str(r))
+        for d in delta.get("documents_retrieved") or []:
+            results.append("knowledge base: " + _clip(d, 80))
+    return results
+
+
+def _render_why(ui, run, events, calls):
+    run_id, query, _started, _ended, status, response = run
+    _GLYPH = {"pending": "○", "active": "▸", "done": "✓", "skipped": "—"}
+
+    ui.section(f"why · run #{run_id}", f"status: {status or '?'}")
+
+    _print("  the request")
+    _print(f"    {_clip(query, 120) or '(none)'}")
+    _print("")
+
+    # What it set out to do — the plan.
+    plan = _final_plan(events)
+    if plan:
+        _print("  what it set out to do")
+        for s in plan:
+            glyph = _GLYPH.get(s.get("status"), "○")
+            tool = f"  [{s['intended_tool']}]" if s.get("intended_tool") else ""
+            _print(f"    {glyph} {s.get('step_id')}. {s.get('label')}{tool}")
+        _print("")
+
+    # How it reasoned — the agent steps + the groundedness judge, from the recorded LLM I/O.
+    step = 0
+    judged = None
+    for _seq, node, output in calls:
+        out = decode_json(output, {})
+        if node == "agent":
+            step += 1
+            content = _clip(out.get("content", ""), 240)
+            tcs = out.get("tool_calls") or []
+            if step == 1:
+                _print("  how it reasoned")
+            if content:
+                _print(f"    step {step}: {content}")
+            if tcs:
+                names = ", ".join(
+                    f"{c.get('name')}({_fmt_call_args(c.get('args'))})" for c in tcs
+                )
+                _print(f"      → chose to call: {names}")
+            elif not content:
+                _print(f"    step {step}: (finished — no further action)")
+        elif node == "replan":
+            judged = out.get("content", "")
+    if step:
+        _print("")
+
+    # What it relied on — the evidence the answer was built from.
+    evidence = _collect_tools(events)
+    if evidence:
+        _print("  what it relied on")
+        for e in evidence[:12]:
+            _print(f"    • {_clip(e, 110)}")
+        if len(evidence) > 12:
+            _print(f"    … and {len(evidence) - 12} more (see /trace #%s)" % run_id)
+        _print("")
+    else:
+        _print("  what it relied on")
+        _print("    (no tools ran — answered from the model's own knowledge + context)")
+        _print("")
+
+    # Verification — did the groundedness judge weigh in?
+    if judged:
+        _print("  verification")
+        _print(f"    groundedness judge: {_clip(judged, 160)}")
+        _print("")
+
+    # Provenance footer of the answer, if the synthesizer attached one (the [n] → source map).
+    if response and "Sources:" in str(response):
+        tail = str(response).split("Sources:", 1)[1].strip()
+        if tail:
+            _print("  cited sources (from the answer)")
+            for line in tail.splitlines():
+                if line.strip():
+                    _print(f"    {line.strip()}")
+            _print("")
+
+    _print(f"  full step-by-step record: /trace #{run_id}   ·   model I/O: /trace invoke #{run_id}")
+
+
+def _fmt_call_args(args) -> str:
+    if not isinstance(args, dict) or not args:
+        return ""
+    parts = []
+    for k, v in args.items():
+        r = repr(v)
+        if len(r) > 40:
+            r = r[:40] + "…"
+        parts.append(f"{k}={r}")
+    return ", ".join(parts)
 
 
 def _state(ctx, args):
@@ -446,6 +603,10 @@ one:
 Every turn is one run. This is the durable record that survives restarts.
 Subviews:
 
+  /trace why [#id]     decision provenance: not WHAT happened but WHY — the plan it drafted, the
+                       model's recorded reasoning + tool choice at each step, the evidence the
+                       answer was built from, the groundedness judge's verdict, and the cited
+                       sources. Defaults to the last run.
   /trace invoke [#id]  the LLM calls of a run: each model call's INPUT messages + OUTPUT, with
                        timing + token counts. Defaults to the most recent run with LLM calls; add
                        --full to show whole messages, -l to list runs that have them.
@@ -470,6 +631,8 @@ Live trace verbosity (controls what scrolls during a turn; recording is always o
 def _trace(ctx, args):
     from tui import ui
 
+    if args and args[0].lower() in ("why", "--why"):
+        return _why(ctx, args[1:])
     if args and args[0].lower() in ("invoke", "--invoke", "llm", "--llm", "model", "models"):
         return _show_llm_calls(ctx, args[1:])
     if args and args[0].lower() in ("export", "--export"):
@@ -482,9 +645,11 @@ def _trace(ctx, args):
         return _cost(ctx, args[1:])
     if args and args[0].lower() in ("state", "--state"):
         return _state(ctx, args[1:])
+    # NOTE: no "0"/"1" verbosity aliases here — a bare digit is a RUN ID (`/trace 1` drills into
+    # run #1, same as `/trace #1`); the digit aliases used to eat it and toggle verbosity instead.
     if args and args[0].lower() in ("on", "off", "full", "normal", "quiet", "verbose",
                                      "detailed", "all", "debug", "compact",
-                                     "true", "false", "yes", "no", "0", "1"):
+                                     "true", "false", "yes", "no"):
         return _verbosity(ctx, args)
 
     list_mode = False

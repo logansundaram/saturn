@@ -1,4 +1,6 @@
-"""tool_registry/calculator.py — float-epsilon taming (gotcha #3) and the sandboxed eval."""
+"""tool_registry/calculator.py — float-epsilon taming (gotcha #3) and the whitelisted AST
+evaluator (a security surface: calculate is read_only, so anything it can execute bypasses
+the approval gate entirely)."""
 
 from tool_registry.calculator import calculate
 
@@ -41,3 +43,37 @@ def test_builtins_unreachable():
 def test_allowed_functions():
     assert _calc("round(3.14159, 2)") == "3.14"
     assert _calc("max(1, 5, 3)") == "5"
+    assert _calc("sum([1, 2, 3])") == "6"
+    assert _calc("round(3.14159, ndigits=2)") == "3.14"
+
+
+def test_dunder_traversal_escape_refused():
+    """The eval() escape the AST evaluator exists to close: dunder traversal from a literal up
+    to object subclasses (and from there to os/subprocess) must never execute."""
+    for expr in (
+        "().__class__.__bases__[0].__subclasses__()",
+        "(1).__class__.__mro__[1].__subclasses__()",
+        "abs.__self__",
+        "getattr(1, '__class__')",
+        "eval('1')",
+        "open('x')",
+    ):
+        assert _calc(expr).startswith("Error"), expr
+
+
+def test_huge_exponent_bounded():
+    """9**9**9**9 must error fast, not hang/OOM the turn."""
+    assert _calc("9**9**9**9").startswith("Error")
+    assert _calc("2**10**6").startswith("Error")
+    # Legitimate large-but-sane powers still work.
+    assert _calc("2**64") == "18446744073709551616"
+
+
+def test_non_numeric_operands_refused():
+    """Sequence repetition ([1] * 10**9, 'a' * 10**9) is a memory bomb, not math."""
+    assert _calc("[1, 2] * 1000000").startswith("Error")
+    assert _calc("'a' * 1000000").startswith("Error")
+
+
+def test_expression_length_capped():
+    assert _calc("1+" * 600 + "1").startswith("Error")

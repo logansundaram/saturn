@@ -8,8 +8,27 @@ from stores.rag import (
     _csv_to_text,
     _html_to_text,
     _load_file_docs,
+    ingest_file,
     iter_documents,
 )
+
+
+def test_ingest_refuses_basename_clobber(isolated_paths, tmp_path):
+    """Two different source files sharing a basename must not silently overwrite each other in
+    the corpus — the first document would be permanently gone with no warning."""
+    corpus = isolated_paths / "database" / "documents"
+    corpus.mkdir(parents=True, exist_ok=True)
+    (corpus / "report.md").write_text("project A report", encoding="utf-8")
+
+    other = tmp_path / "elsewhere"
+    other.mkdir()
+    clash = other / "report.md"
+    clash.write_text("project B report — different content", encoding="utf-8")
+
+    with pytest.raises(FileExistsError):
+        ingest_file(str(clash))
+    # The original document is untouched.
+    assert (corpus / "report.md").read_text(encoding="utf-8") == "project A report"
 
 
 def test_supported_extensions_cover_new_formats():

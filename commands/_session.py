@@ -66,9 +66,29 @@ def _swap_to_messages(ctx, messages) -> None:
     ctx.state = state
 
 
+def clear_autosave() -> bool:
+    """Drop the autosave slot. For callers that have deliberately emptied the conversation
+    (e.g. /rewind walking back the only turn) — write_autosave refuses to write an empty
+    message list (see below), so without this the slot would keep the rewound turn and a
+    crash/quit + /resume would resurrect it. Best-effort; True if a file was removed."""
+    import diag
+
+    try:
+        path = _autosave_file()
+        if path.exists():
+            path.unlink()
+            return True
+    except Exception as exc:
+        diag.log(f"autosave clear failed: {exc}")
+    return False
+
+
 def write_autosave(state: dict) -> bool:
     """Persist the live conversation to the reserved autosave slot so /resume can restore it.
-    Best-effort: a write failure must never break a turn or the quit. Returns True if it wrote."""
+    Best-effort: a write failure must never break a turn or the quit. Returns True if it wrote.
+    An empty message list is a no-op ON PURPOSE: launching the app and quitting before any turn
+    must not wipe the previous session's autosave — a caller that has deliberately emptied the
+    conversation uses clear_autosave() instead."""
     import json
     import diag
 

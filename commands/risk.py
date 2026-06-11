@@ -17,11 +17,13 @@ Tiers:
   side_effecting  writes / external actions; prompts for approval
   destructive     irreversible / dangerous; prompts for approval
 
-Persistence: by default a change lasts only this session. Add --save to write it to the
-permissions store (database/permissions.json) so it survives a restart. `/risk <tool> reset`
-restores the tool's declared tier and removes any persisted override. To skip prompting entirely,
-see /autoapprove; to allowlist specific shell COMMANDS rather than the whole run_shell tool,
-see /allow.
+Persistence: by default a change lasts only this session. Add --save to write it to the policy
+file (database/permissions.json) so it survives a restart. `/risk <tool> reset` restores the
+tool's declared tier and removes any persisted override.
+
+/risk, /allow and /autoapprove are three views of ONE gate policy (policy.py): /risk moves a
+tool's tier, /allow exempts exact shell-command prefixes, /autoapprove moves the auto-approve
+THRESHOLD itself (the same `runtime.auto_approve` knob Shift+Tab cycles).
 
 Tier names prefix-match: read / side / dest (or just r / s / d) all work.
 
@@ -33,11 +35,11 @@ Examples:
 """,
 )
 def _risk(ctx, args):
-    import permissions
+    import policy
     import registry
 
     if not args:
-        overrides = permissions.risk_overrides()
+        overrides = policy.risk_overrides()
         _print("  current risk tiers (* = persisted override):")
         for t in TOOLS:
             mark = "*" if t.name in overrides else " "
@@ -65,7 +67,7 @@ def _risk(ctx, args):
         declared = registry.DECLARED_RISK.get(name, "destructive")
         old = risk_of(name)
         registry.TOOL_RISK[name] = declared
-        had_override = permissions.clear_risk_override(name)
+        had_override = policy.clear_risk_override(name)
         forgot = " (persisted override removed)" if had_override else ""
         _print(f"  {name}: {old} -> {declared} (declared tier){forgot}.")
         return
@@ -80,7 +82,7 @@ def _risk(ctx, args):
     old = risk_of(name)
     registry.TOOL_RISK[name] = tier
     if save:
-        permissions.set_risk_override(name, tier)
+        policy.set_risk_override(name, tier)
         _print(f"  {name}: {old} -> {tier} (saved — survives restarts; undo with /risk {name} reset).")
     else:
         _print(f"  {name}: {old} -> {tier} (session only; add --save to persist).")

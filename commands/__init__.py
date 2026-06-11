@@ -32,6 +32,7 @@ _COMMAND_MODULES = [
     "config",
     "context",
     "docs",
+    "dryrun",
     "help",
     "init",
     "mcp",

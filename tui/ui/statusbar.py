@@ -70,20 +70,6 @@ def set_input_preview(buffer: str, queued: int) -> None:
     _live_refresh()
 
 
-# /autoapprove's session toggle bypasses the gate entirely — a different (and louder) mechanism
-# than the `runtime.auto_approve` tier the bar normally shows. "Auto-approval is an explicit,
-# loudly-labeled user choice": the banner /autoapprove prints scrolls away, so the persistent
-# indicator here must tell the truth for as long as the gate is open.
-_gate_off = False
-
-
-def set_gate_off(off: bool) -> None:
-    """Flag the status bar that the approval gate is disabled for the session (/autoapprove)."""
-    global _gate_off
-    _gate_off = bool(off)
-    _live_refresh()
-
-
 class _StatusBar:
     """Renderable for the pinned bar. `__rich__` is re-evaluated on every Live refresh, so the
     elapsed clock and the sampled system gauges tick even when no node update has fired. One
@@ -110,17 +96,33 @@ class _StatusBar:
         dot()
         bar.append(_active_model_short(), style="default")
         dot()
-        if _gate_off:
-            # The /autoapprove toggle trumps the tier display: the gate is not "at a tier",
-            # it's off, and the bar must say so for as long as that is true.
+        # The gate policy, read live (policy.py — /autoapprove, Shift+Tab and /config are all
+        # views of the same threshold). At `destructive` the gate is not "at a tier", it's OPEN,
+        # and the bar must say so loudly for as long as that is true — the /autoapprove banner
+        # scrolls away; this indicator doesn't.
+        try:
+            from config import get_config
+            _perm = get_config().auto_approve
+        except Exception:
+            _perm = "read_only"
+        if _perm == "destructive":
             bar.append("⚠ GATE OFF", style=f"bold {_RISK.get('destructive', 'red')}")
         else:
-            try:
-                from config import get_config
-                _perm = get_config().auto_approve
-            except Exception:
-                _perm = "read_only"
             bar.append(_perm, style=_RISK.get(_perm, _DIM))
+
+        # Mode flags — air-gap (network sealed) and dry-run (nothing executes). Both are loud,
+        # persistent states the user must be able to see at a glance for as long as they hold.
+        try:
+            from config import get_config as _gc
+            _cfg = _gc()
+            if bool(_cfg.get("runtime.airgap", False)):
+                dot()
+                bar.append("⛓ AIRGAP", style=f"bold {_ACCENT}")
+            if bool(_cfg.get("runtime.dry_run", False)):
+                dot()
+                bar.append("DRY-RUN", style=f"bold {_RISK.get('side_effecting', 'yellow')}")
+        except Exception:
+            pass
 
         # ── type-ahead ── only present while the user is queuing input mid-turn. Placed right after
         # identity (ahead of progress) so the line being typed is never the part trimmed by the
@@ -149,6 +151,19 @@ class _StatusBar:
         if tps > 0:
             dot()
             bar.append(f"{tps:.0f} tok/s", style="default")
+
+        # ── egress ── how many times anything has left the machine this session (the boundary
+        # counter). Only shown once non-zero, so a fully-local session stays calm; it's the live
+        # twin of /privacy egress, and the whole point of the privacy proof point being *visible*.
+        try:
+            import egress as _eg
+            _ne = _eg.count()
+        except Exception:
+            _ne = 0
+        if _ne:
+            zone()
+            bar.append("⇅ ", style=_DIM)
+            bar.append(f"{_ne} egress", style="default")
 
         # ── resources ── tertiary; ctx keeps its meter (it drives the agent), hardware is bare %.
         window = status["ctx_window"]

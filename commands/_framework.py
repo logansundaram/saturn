@@ -20,7 +20,6 @@ class CommandContext:
     make_initial_state: Callable[[], dict]
     db_path: str
     show_ui: bool = True
-    auto_approve: bool = False
     should_quit: bool = False
     # ISO timestamp of when THIS process's REPL started — the session boundary for /cost.
     session_started_at: str = ""
@@ -123,6 +122,12 @@ _RENAMED = {
     "sys": "context",
     "save": "resume save",
     "load": "resume",
+    # June 2026 trust-surface consolidation: the boundary commands fold into the /privacy front
+    # door; /why becomes a /trace subview (both read the same trace DB).
+    "egress": "privacy egress",
+    "airgap": "privacy airgap",
+    "redact": "privacy redact",
+    "why": "trace why",
 }
 
 

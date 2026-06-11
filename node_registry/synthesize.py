@@ -11,7 +11,7 @@ from llms import (
     extract_total_tokens,
 )
 from messages import synthesize_sys_msg
-from langchain.messages import HumanMessage, AIMessage
+from langchain.messages import HumanMessage, AIMessage, ToolMessage
 
 
 # ── answer provenance (runtime.citations, default on) ─────────────────────────────────────────
@@ -81,6 +81,25 @@ def sources_footer(sources) -> str:
     return "Sources:\n" + "\n".join(f"  [{n}] {label}" for n, label in sources)
 
 
+def cancel_orphaned_calls(last) -> list:
+    """Cancellation ToolMessages for a trailing AIMessage's unanswered tool_calls (empty when
+    there are none). Nothing can have answered a TRAILING message's calls, so every call gets
+    one. Pure helper so the orphan guard is testable without an LLM."""
+    if not isinstance(last, AIMessage):
+        return []
+    return [
+        ToolMessage(
+            content=(
+                "Not executed — the turn ended (iteration or token-budget limit) before this "
+                "call could run."
+            ),
+            tool_call_id=tc["id"],
+            name=tc.get("name", ""),
+        )
+        for tc in (getattr(last, "tool_calls", None) or [])
+    ]
+
+
 def synthesize_node(state: AgentState):
     start = time.perf_counter()
     query = state["current_query"]
@@ -134,6 +153,14 @@ def synthesize_node(state: AgentState):
     draft = ""
     if isinstance(last, AIMessage) and not getattr(last, "tool_calls", None):
         draft = str(last.content).strip()
+
+    # Forced landing mid-decision: the iteration cap or token budget routed here while the
+    # trailing AIMessage still carries unanswered tool_calls (route_after_agent checks those
+    # bounds before has_tool_calls, deliberately — the bound must stop NEW tool rounds). Close
+    # each orphaned call with a cancellation ToolMessage now, or the carried conversation (and
+    # its autosave) holds an assistant tool_use with no tool_result — a hard 400 on the next
+    # cloud-provider turn and a /resume that reproduces it.
+    cancelled = cancel_orphaned_calls(last)
     if draft:
         llm_input.append(
             HumanMessage(
@@ -158,6 +185,21 @@ def synthesize_node(state: AgentState):
                     "sufficient to answer, say plainly that you were unable to complete that "
                     "lookup — do NOT state that the information does not exist or that nothing "
                     "is available, since the lookup was not actually carried out."
+                )
+            )
+        )
+
+    # Dry-run: nothing was actually executed (tool_node stubbed every call). Tell the synthesizer
+    # to report the intended actions as a preview, not to answer as though they had run.
+    if bool(get_config().get("runtime.dry_run", False)):
+        llm_input.append(
+            HumanMessage(
+                content=(
+                    "DRY-RUN MODE: No tool was actually executed this turn — every tool result above "
+                    "is a `[DRY RUN] would execute …` placeholder. Do NOT answer as if the actions "
+                    "were performed or report their results as real. Instead, summarize for the user "
+                    "exactly what you WOULD do to answer their request: the plan and each tool call "
+                    "you intended to make (with its arguments), in order. Make clear nothing was run."
                 )
             )
         )
@@ -197,7 +239,7 @@ def synthesize_node(state: AgentState):
     llm_response = AIMessage(content=content, **msg_kwargs)
 
     return {
-        "messages": [llm_response],
+        "messages": [*cancelled, llm_response],
         "tok_per_sec": extract_tok_per_sec(aggregated),
         "context_tokens": extract_prompt_tokens(aggregated),
     }

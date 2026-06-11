@@ -1,16 +1,17 @@
 # Saturn
 
-> A **local-first, transparent, general-purpose** AI agent that runs on your own machine.
-> Built by **Saturday.ai**.
+> A **private, local-first AI agent** that runs on your own machine — every step it takes is
+> visible, auditable, and yours to approve. Built by **Saturday.ai**.
 
-Saturn is a personal copilot you run in your terminal. It can search the web, read and
-write your files, retrieve from your own document library, do math, and remember things across
-sessions — and it shows you **every step it takes** while doing it. Nothing is a black box: you
-watch the plan it draws up, the tools it calls, and you approve anything that touches the outside
-world before it happens.
+Saturn is a personal agent you run in your terminal — and the whole point is that you can see
+what it's doing. It plans its work in the open, then calls tools to search the web, read and
+write your files, query your own documents, run commands, and remember things across sessions —
+showing you **every step it takes** and pausing for your approval before anything touches the
+outside world. Nothing is a black box: you watch the plan it draws up and the tools it calls,
+and any run can be replayed afterward.
 
-It's built to run on **local models** (via [Ollama](https://ollama.com)) so your data stays on
-your machine by default, with optional cloud models when you want more horsepower.
+It runs on **local models** (via [Ollama](https://ollama.com)) by default, so your data stays on
+your machine; cloud models are an opt-in upgrade when you want more horsepower, never a requirement.
 
 ---
 
@@ -37,6 +38,10 @@ nodes are small registry-based modules; adding a capability is adding a file).
 
 ## What it can do
 
+Breadth, but behind one boundary: every capability below surfaces as a step in the plan you can
+watch, faces the same approval gate, runs locally where it can, and lands in a trace you can
+replay. The point isn't how much Saturn can do — it's that you can see and control all of it.
+
 - **Multi-step reasoning** — a living-plan ReAct loop: it drafts a plan, executes one step at a
   time, sees each tool result, and decides the next action. Multi-source research works this
   way too: search + read steps composed in a plan you can watch and edit, not an opaque
@@ -46,7 +51,7 @@ nodes are small registry-based modules; adding a capability is adding a file).
   search + local page extraction.
 - **Your APIs** — `http_request` talks to any REST endpoint or self-hosted service (Home
   Assistant, Gitea, Jellyfin, …), and shows you the exact request — method, URL, headers,
-  body — for approval before anything is sent. One tool instead of fifty integrations.
+  body — for approval before anything is sent. One auditable tool instead of fifty opaque integrations.
 - **Your files** — read, write, edit (anchored string replace), search (content regex + name
   glob), and list files in a sandboxed workspace — with pre-write snapshots, so `/undo` can
   revert any turn's file changes.
@@ -266,12 +271,12 @@ Type `/help` for the full list, or `/<command> --help` for details on any one. H
 | `/mcp` | MCP server status + the remote tools they add; `reload` after a config edit. |
 | `/memory` | See, add, or delete the facts the agent permanently remembers. |
 | `/risk` · `/allow` · `/autoapprove` | Tune the safety gate (persistable overrides + shell allowlist). |
-| `/privacy` | What can leave this machine right now — inference, web egress, keys, data locations. |
+| `/privacy` | The privacy surface: what CAN leave (`/privacy`), what DID (`/privacy egress`), seal the boundary (`/privacy airgap`), strip secrets from cloud sends (`/privacy redact`). |
 | `/undo` | Revert the file changes of the last turn that wrote anything. |
 | `/rewind` | Drop the last exchange from the conversation (files untouched — that's `/undo`). |
 | `/retry` | Regenerate the last answer; `/retry full` re-runs the whole turn from scratch. |
 | `/init` | Survey the workspace and draft `SATURDAY.md` standing instructions. |
-| `/trace` | Inspect past runs, tool I/O, LLM calls, cost; `/trace export` writes a tamper-evident run record. |
+| `/trace` | Inspect past runs, tool I/O, LLM calls, cost; `/trace why` explains a run's decisions; `/trace export` writes a tamper-evident run record. |
 | `/resume` | Continue your last session (autosaved); `save`/`list`/`delete`/`rename`/`<name>` for named sessions. |
 | `/update` | Self-update: pull the latest Saturn (your data is never touched). |
 | `/clear` · `/quit` | Start a fresh conversation / exit. |
@@ -311,26 +316,29 @@ See **`CLAUDE.md`** for a deep architectural tour (including the roadmap).
 
 ## Benchmarking
 
-A query-suite harness exercises each capability, and a **graded trust benchmark** measures the
-trust stack itself: the grounding judge's catch rate (queries that bait a confabulated answer,
-graded on whether the agent looked the fact up or the judge caught the ungrounded draft) and
-approval-gate coverage (every non-read-only tool call must have faced the gate):
+The headline is the **graded trust benchmark** — it measures the trust stack itself: the
+grounding judge's catch rate (queries that bait a confabulated answer, graded on whether the
+agent looked the fact up or the judge caught the ungrounded draft) and approval-gate coverage
+(every non-read-only tool call must have faced the gate). Ungraded capability suites exist too,
+as regression checks on the loop's mechanics:
 
 ```bash
-python benchmark.py                                   # all suites + the trust benchmark
-python benchmark.py --suites calculator web_search    # just some
-python benchmark.py --no-trust                        # skip the graded trust suite
+python benchmark.py                                   # the trust benchmark (the headline)
+python benchmark.py --capability                      # capability suites + conversations (regression)
+python benchmark.py --capability --suites rag web_search   # just some suites
+python benchmark.py --all                             # everything in one combined report
 ```
 
-Reports are written to `logging/benchmarks/`.
+Reports are written to `logging/benchmarks/` (`trust_<ts>.json` / `benchmark_<ts>.json`).
 
 ---
 
 ## Status
 
-Saturn (by Saturday.ai) is an actively developed, terminal-native agent. The terminal is the
-product — there is no GUI on the roadmap, by design, and no plans for consumer integrations
-(email/calendar/Drive). Current focus: first-run reliability across platforms, exportable
+Saturn (by Saturday.ai) is an actively developed, terminal-native agent — a trust-first agent
+built around privacy, local execution, and auditability, not a general-purpose assistant racing
+on breadth. The terminal is the product — there is no GUI on the roadmap, by design, and no plans
+for consumer integrations (email/calendar/Drive). Current focus: first-run reliability across platforms, exportable
 trace records (the seed of an audit layer), MCP client support behind the existing risk-tier
 approval system, and a public trust benchmark. Contributions and feedback welcome — file issues
 at the GitHub repo.

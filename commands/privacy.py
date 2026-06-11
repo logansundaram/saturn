@@ -1,33 +1,73 @@
 from commands._framework import command, _print
+from commands._utils import _parse_toggle, _ROLES
 
-# The roles the loop binds (see llms.get_model) — rendered in loop order.
-_ROLES = ("planner", "tool_caller", "synthesizer", "utility", "judge")
+_REDACT_MODES = ("off", "warn", "redact")
+
+
+def _human_bytes(n: int) -> str:
+    n = int(n or 0)
+    if n < 1024:
+        return f"{n}B"
+    if n < 1024 * 1024:
+        return f"{n / 1024:.1f}K"
+    return f"{n / (1024 * 1024):.1f}M"
 
 
 @command(
     "privacy",
-    "What can leave this machine right now — inference, web egress, keys, data locations.",
+    "The privacy surface: what CAN leave this machine, what DID, and the controls that seal it.",
+    usage="/privacy [egress [n|clear] | airgap [on|off] [--save] | redact [<mode>|preview] [--save]]",
     details="""
-Answers one question: what can leave this machine right now? The privacy claim is meant to be
-checked, not believed — this is the in-app readout of the things to check.
+One front door for the whole network boundary. Bare /privacy answers "what can leave this
+machine right now?"; the subcommands are its verifiable companions — what actually left, the
+seal, and the secret-stripper:
 
-  inference   which model serves each role, and whether it runs locally (Ollama) or is bound
-              to a cloud provider. Cloud-bound roles send your prompts and context off-machine;
-              that is an explicit opt-in, and this view is where it stays visible.
-  web egress  what the web tools send out when the agent uses them: the search query goes to
-              the search backend (Tavily with a key, keyless DuckDuckGo otherwise);
-              web_extract fetches pages directly from this machine. The exact query is always
-              visible in the live trace and /trace.
-  api keys    which provider keys are set (set keys enable the egress above; values masked).
-  your data   where everything Saturn stores actually lives on disk — all local paths.
+  /privacy                 the posture readout: which model serves each role (local vs cloud),
+                           what the web tools send out, which API keys are set, where your data
+                           lives on disk. The privacy claim is meant to be checked, not believed.
+
+  /privacy egress          the ledger: what ACTUALLY left this session — every web search, page
+                           fetch, http_request, remote MCP call, and cloud-model invocation, with
+                           channel/host/bytes, plus every attempt BLOCKED by air-gap. Pair it
+                           with a network monitor and the two agree.
+    /privacy egress 20       just the last 20 events
+    /privacy egress clear    reset the ledger for this session
+
+  /privacy airgap          seal the boundary. With no argument, prints the enforcement posture
+                           (what is open vs sealed right now). When ON: web tools refuse, remote
+                           MCP calls refuse, and a cloud-bound role refuses to run.
+    /privacy airgap on|off   toggle; add --save to persist to config.yaml
+
+  /privacy redact          strip secrets (API keys, tokens, private keys, JWTs, emails) from
+                           prompts before they reach a cloud model. Modes: off | warn | redact.
+    /privacy redact preview  scan the CURRENT context and report what WOULD be stripped — sends
+                             nothing
+    /privacy redact <mode> [--save]
 
 Telemetry: none. There is nothing to configure off because nothing phones home.
 
-Example:
-  /privacy
+Related: /dryrun (plan + decide everything, execute nothing) · /trace export (durable audit
+record with an integrity digest).
 """,
 )
 def _privacy(ctx, args):
+    if args:
+        sub = args[0].lower()
+        if sub in ("egress", "ledger"):
+            return _egress(ctx, args[1:])
+        if sub in ("airgap", "air-gap", "seal"):
+            return _airgap(ctx, args[1:])
+        if sub in ("redact", "redaction"):
+            return _redact(ctx, args[1:])
+        _print(f"  unknown subcommand: {sub} — usage: /privacy [egress|airgap|redact]")
+        return
+    _overview(ctx)
+
+
+# ── bare /privacy — the posture readout ──────────────────────────────────────────────────────
+
+
+def _overview(ctx):
     import env_keys
     from config import get_config
     from tui import ui
@@ -136,3 +176,295 @@ def _privacy(ctx, args):
     _print("  telemetry: none — no analytics, no crash reporting, no phone-home.")
     _print("  verify it: the source is MIT-licensed, and a network monitor will show only the")
     _print("  calls listed above.")
+
+    # This view is what CAN leave. The verifiable companions live behind the same front door.
+    _print("")
+    _print("  prove it:  /privacy egress (what actually left this session) · /privacy airgap")
+    _print("  (seal + verify the boundary) · /privacy redact (strip secrets before cloud sends)")
+
+
+# ── /privacy egress — the session ledger ─────────────────────────────────────────────────────
+
+
+def _egress(ctx, args):
+    import egress
+    from tui import ui
+
+    if args and args[0].lower() in ("clear", "reset"):
+        egress.clear()
+        _print("  egress ledger cleared for this session.")
+        return
+
+    limit = None
+    for a in args:
+        if a.lstrip("+-").isdigit():
+            limit = max(1, int(a))
+
+    evs = egress.events()
+    s = egress.summary()
+
+    airgap = ""
+    try:
+        from config import get_config
+        if bool(get_config().get("runtime.airgap", False)):
+            airgap = "  ·  air-gap ON"
+    except Exception:
+        pass
+
+    if not evs:
+        ui.section("egress", "nothing has left this machine this session" + airgap)
+        _print("  the boundary has stayed closed — no web, http, MCP, or cloud-model egress.")
+        return
+
+    hosts = s["hosts"]
+    headline = (
+        f"{s['sent']} egress event(s), {_human_bytes(s['bytes'])} sent to "
+        f"{len(hosts)} host(s)"
+        + (f", {s['blocked']} blocked" if s["blocked"] else "")
+        + (f", {s['redactions']} secret(s) redacted" if s["redactions"] else "")
+        + airgap
+    )
+    ui.section("egress", headline)
+
+    shown = evs[-limit:] if limit else evs
+    if limit and len(evs) > limit:
+        _print(f"  last {limit} of {len(evs)} event(s) — newest last:")
+
+    rows = []
+    for e in shown:
+        when = (e.ts or "")[11:19]
+        status = (
+            ("BLOCKED", ui.risk_style("destructive")) if e.status == egress.BLOCKED
+            else (_human_bytes(e.n_bytes), "dim")
+        )
+        detail = e.detail
+        if e.redactions:
+            detail += f"  ⟨{e.redactions} redacted⟩"
+        rows.append((when, e.channel, e.host, detail, status))
+    ui.table(rows, styles=["dim", "accent", None, None, None])
+
+    if s["by_channel"]:
+        mix = " · ".join(f"{v} {k}" for k, v in sorted(s["by_channel"].items()))
+        _print(f"  by channel: {mix}")
+
+
+# ── /privacy airgap — seal the boundary ──────────────────────────────────────────────────────
+
+
+def _airgap(ctx, args):
+    import egress
+    from config import get_config, persist
+    from tui import ui
+
+    cfg = get_config()
+    save = any(a.lower() in ("--save", "-s", "save") for a in args)
+    toggle_args = [a for a in args if a.lower() not in ("--save", "-s", "save")]
+
+    # No on/off -> just show the posture.
+    if not toggle_args and not save:
+        _show_posture(ctx, cfg, ui, egress)
+        return
+
+    new = _parse_toggle(toggle_args, bool(cfg.get("runtime.airgap", False)))
+    if new is None:
+        _print(f"  usage: /privacy airgap on|off [--save]   (currently "
+               f"{'on' if cfg.get('runtime.airgap', False) else 'off'})")
+        return
+
+    cfg.set("runtime.airgap", new)
+    # Drop the model cache so a cloud model built while air-gap was OFF can't keep serving calls —
+    # the next get_model rebuild re-checks the gate and refuses. Web tools / MCP check the gate live
+    # on every call, so they need nothing here.
+    try:
+        from llms import reset_models
+        reset_models()
+    except Exception:
+        pass
+
+    if save:
+        try:
+            persist("runtime.airgap")
+        except Exception as exc:
+            _print(f"  (could not persist to config.yaml: {exc})")
+
+    if new:
+        cloud = _cloud_roles(cfg)
+        _print("  ┏━ ⛓  AIR-GAP ON ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        _print("  ┃  the network boundary is SEALED. web tools, remote")
+        _print("  ┃  MCP calls, and cloud-bound roles are blocked and")
+        _print("  ┃  logged. /privacy airgap off to re-open ·")
+        _print("  ┃  /privacy egress to inspect.")
+        _print("  ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        if cloud:
+            roles = ", ".join(f"{r} ({p}:{m})" for r, p, m in cloud)
+            _print(f"  ⚠  cloud-bound role(s) will now FAIL: {roles}")
+            _print("     switch to a local tier first:  /models tier workstation")
+    else:
+        _print("  air-gap off — network access restored.")
+    if save:
+        _print("  saved runtime.airgap to config.yaml (survives restart).")
+
+
+def _cloud_roles(cfg):
+    """(role, provider, model) for every role bound to a non-Ollama (cloud) model."""
+    out = []
+    for role in _ROLES:
+        try:
+            spec = cfg.model_for_role(role)
+        except KeyError:
+            continue
+        if spec.provider != "ollama":
+            out.append((role, spec.provider, spec.model))
+    return out
+
+
+def _show_posture(ctx, cfg, ui, egress):
+    on = bool(cfg.get("runtime.airgap", False))
+    cloud = _cloud_roles(cfg)
+    if on:
+        verdict = "SEALED — web, remote MCP, and cloud-bound roles are blocked"
+    elif cloud:
+        verdict = "open — and cloud-bound role(s) are sending prompts off-machine right now"
+    else:
+        verdict = "open — but every role is local, so nothing leaves unless a web tool is used"
+    ui.section("air-gap", verdict)
+
+    sealed = lambda: ("sealed", ui.risk_style("read_only")) if on else ("open", ui.risk_style("destructive"))
+
+    rows = []
+    for role in _ROLES:
+        if not _safe_spec(cfg, role):
+            continue
+        spec = cfg.model_for_role(role)
+        if spec.provider == "ollama":
+            rows.append((role, spec.model, ("local", ui.risk_style("read_only"))))
+        else:
+            label = "BLOCKED — cloud" if on else f"cloud — {spec.provider}"
+            rows.append((role, spec.model, (label, ui.risk_style("destructive"))))
+    _print("  inference (cloud-bound roles refuse to run under air-gap)")
+    ui.table(rows)
+
+    _print("  egress paths")
+    ui.table(
+        [
+            ("web tools", "web_search / web_extract / http_request", sealed()),
+            ("remote MCP", "http/sse server calls (stdio = local process)", sealed()),
+            ("cloud models", "prompts + context to a cloud provider",
+             ("sealed", ui.risk_style("read_only")) if (on or not cloud)
+             else ("open", ui.risk_style("destructive"))),
+        ]
+    )
+
+    s = egress.summary()
+    _print(f"  this session: {s['sent']} egress event(s), {s['blocked']} blocked "
+           f"— full ledger in /privacy egress")
+    if not on:
+        _print("  seal it with  /privacy airgap on   (then re-run /privacy airgap to verify).")
+
+
+def _safe_spec(cfg, role) -> bool:
+    try:
+        cfg.model_for_role(role)
+        return True
+    except KeyError:
+        return False
+
+
+# ── /privacy redact — the cloud-boundary secret stripper ─────────────────────────────────────
+
+
+def _redact(ctx, args):
+    import redaction
+    from config import get_config, persist
+    from tui import ui
+
+    cfg = get_config()
+
+    if args and args[0].lower() in ("preview", "scan", "check", "test"):
+        return _redact_preview(ctx, redaction, ui)
+
+    save = any(a.lower() in ("--save", "-s", "save") for a in args)
+    mode_args = [a for a in args if a.lower() not in ("--save", "-s", "save")]
+
+    if not mode_args and not save:
+        _print(f"  redaction mode: {redaction.mode()}   (off | warn | redact)")
+        _print("  /privacy redact <mode> to change · /privacy redact preview to see what would")
+        _print("  be stripped now.")
+        return
+
+    if mode_args:
+        new = mode_args[0].lower()
+        if new not in _REDACT_MODES:
+            _print(f"  unknown mode {new!r} — use one of: {', '.join(_REDACT_MODES)}")
+            return
+        cfg.set("runtime.redaction", new)
+
+    if save:
+        try:
+            persist("runtime.redaction")
+        except Exception as exc:
+            _print(f"  (could not persist to config.yaml: {exc})")
+
+    m = redaction.mode()
+    explain = {
+        "off": "no scanning — outgoing text is sent as-is.",
+        "warn": "secrets are detected + counted (see /privacy egress) but sent unmodified.",
+        "redact": "secrets are replaced with [REDACTED:<kind>] before every cloud send.",
+    }[m]
+    _print(f"  redaction mode: {m} — {explain}")
+    if save:
+        _print("  saved runtime.redaction to config.yaml (survives restart).")
+    if m != "off":
+        cloud = _has_cloud_role(cfg)
+        if not cloud:
+            _print("  note: every role is local right now, so there is no cloud boundary to guard")
+            _print("        (redaction applies only when a role is bound to a cloud model).")
+
+
+def _has_cloud_role(cfg) -> bool:
+    for role in _ROLES:
+        try:
+            if cfg.model_for_role(role).provider != "ollama":
+                return True
+        except KeyError:
+            continue
+    return False
+
+
+def _redact_preview(ctx, redaction, ui):
+    """Scan the live turn context for secrets and report what WOULD be stripped — sends nothing."""
+    s = ctx.state or {}
+    sources = [
+        ("query", s.get("current_query", "")),
+        ("grounding context", s.get("context", "")),
+        ("attachments", s.get("attachments", "")),
+    ]
+    for i, m in enumerate(s.get("messages", []) or []):
+        content = getattr(m, "content", None)
+        if isinstance(content, str) and content.strip():
+            sources.append((f"message[{i}] {type(m).__name__}", content))
+
+    rows = []
+    total = 0
+    for label, text in sources:
+        for f in redaction.scan(text or ""):
+            total += 1
+            rows.append((label, f.kind, f.preview))
+
+    if not total:
+        ui.section("redaction preview", "no secrets detected in the current context")
+        _print("  nothing in your query, grounding, attachments, or scratchpad matches a secret")
+        _print("  pattern — a cloud send right now would carry no detectable credentials.")
+        return
+
+    ui.section("redaction preview", f"{total} secret-like value(s) in the current context")
+    ui.table(rows, styles=["dim", "accent", None])
+    mode = redaction.mode()
+    if mode == "redact":
+        _print("  these WOULD be replaced with [REDACTED:<kind>] on the next cloud send.")
+    elif mode == "warn":
+        _print("  mode is `warn`: these would be flagged + counted but SENT — use")
+        _print("  /privacy redact redact to strip.")
+    else:
+        _print("  mode is `off`: these would be sent UNMODIFIED — use /privacy redact redact")
+        _print("  to strip them.")

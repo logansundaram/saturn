@@ -45,3 +45,36 @@ def test_keep_zero_strips_everything():
 
 def test_empty_history():
     assert _compact_history([]) == []
+
+
+def test_steer_note_is_not_a_turn_boundary():
+    """A standalone mid-turn steer note (plan_gate's appended HumanMessage) must not be treated
+    as the most recent turn's start — that would compact away the real question's scratchpad
+    this function promises to keep."""
+    from state import STEER_PREFIX
+
+    msgs = _turn("old turn") + [
+        HumanMessage(content="recent question"),
+        AIMessage(content="", tool_calls=[{"name": "calculate", "args": {}, "id": "c1"}]),
+        ToolMessage(content="42", tool_call_id="c1"),
+        HumanMessage(content=f"{STEER_PREFIX} no, the OTHER file"),
+        AIMessage(content="steered answer"),
+    ]
+    out = _compact_history(msgs)
+    # The boundary is the real question: its full scratchpad (tool call + observation) survives.
+    boundary = next(i for i, m in enumerate(out) if m.content == "recent question")
+    assert any(isinstance(m, ToolMessage) for m in out[boundary:])
+    # The old turn still compacted to Q&A.
+    assert out[0].content == "old turn"
+
+
+def test_summary_is_not_a_turn_boundary():
+    from compaction import _SUMMARY_PREFIX
+
+    msgs = [HumanMessage(content=f"{_SUMMARY_PREFIX}:\nolder stuff")] + _turn(
+        "only", with_tools=True
+    )
+    out = _compact_history(msgs)
+    # The summary is carried history; the real turn behind it keeps its scratchpad.
+    assert str(out[0].content).startswith(_SUMMARY_PREFIX)
+    assert any(isinstance(m, ToolMessage) for m in out)

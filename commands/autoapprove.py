@@ -4,41 +4,40 @@ from commands._utils import _parse_toggle
 
 @command(
     "autoapprove",
-    "Toggle the approval gate (auto-approve side-effecting tools).",
+    "Open the approval gate — sets the auto-approve threshold to `destructive`.",
     aliases=("yolo",),
-    usage="/autoapprove on|off",
+    usage="/autoapprove [on|off]",
     details="""
-Disables (or re-enables) the human-in-the-loop approval gate for the session. When ON, every
-tool call — including side-effecting and destructive ones — runs WITHOUT prompting, and a loud
-banner is printed on enable.
+Opens (or closes) the human-in-the-loop approval gate for the session. This is not a separate
+switch: it is a view of the ONE gate policy (policy.py) — `on` raises the `runtime.auto_approve`
+threshold to `destructive` so every tier auto-approves; `off` restores the threshold that was in
+effect before. The status bar shows ⚠ GATE OFF for as long as the threshold sits there, however
+it got there (this command, Shift+Tab cycling, or config.yaml).
 
 ⚠  This removes the main safety check. Use it only when you trust the task and the tools.
-Prefer /risk to relax a single tool while keeping the gate on. With no argument, flips the
-current state.
+Prefer /risk to relax a single tool, or /allow to exempt specific shell commands, while keeping
+the gate on. With no argument, flips the current state. Session-only — it never persists.
 
 Examples:
   /autoapprove on
   /autoapprove off
-  /yolo            alias — same thing
+  /yolo            alias — same thing (mirrors the headless --yolo flag)
 """,
 )
 def _autoapprove(ctx, args):
-    new = _parse_toggle(args, ctx.auto_approve)
-    if new is None:
-        _print(f"  usage: /autoapprove on|off   (currently {'on' if ctx.auto_approve else 'off'})")
-        return
-    ctx.auto_approve = new
-    try:
-        from tui import ui
+    import policy
 
-        ui.set_gate_off(new)  # keep the persistent status-bar label truthful, not just the banner
-    except Exception:
-        pass
+    new = _parse_toggle(args, policy.gate_off())
+    if new is None:
+        _print(f"  usage: /autoapprove on|off   (currently {'on' if policy.gate_off() else 'off'})")
+        return
+    policy.set_gate_off(new)
     if new:
         _print("  ┏━ ⚠  AUTO-APPROVE ON ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-        _print("  ┃  the approval gate is DISABLED. every tool call —")
-        _print("  ┃  including side-effecting and destructive ones —")
-        _print("  ┃  will run WITHOUT asking. /autoapprove off to restore.")
+        _print("  ┃  the approval gate is OPEN: auto-approve threshold =")
+        _print("  ┃  destructive, so every tool call — including side-")
+        _print("  ┃  effecting and destructive ones — runs WITHOUT asking.")
+        _print("  ┃  /autoapprove off to restore the previous threshold.")
         _print("  ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
     else:
-        _print("  auto-approve off — the approval gate is back on.")
+        _print(f"  auto-approve off — gate threshold restored to `{policy.tier()}`.")

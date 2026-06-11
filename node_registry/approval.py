@@ -1,10 +1,11 @@
 """
 Approval node — the human-in-the-loop safety gate (Phase 2).
 
-Tool calls at or below the configured `runtime.auto_approve` risk tier pass straight through;
-anything riskier pauses via a LangGraph `interrupt` so the user can approve or reject the whole
-batch. The policy is read from config each call, so /config can loosen or tighten it live.
-Resuming with the user's decision is handled in agent.run_turn.
+Whether a call skips the human is ONE question asked of ONE object: `policy.approves(name,
+risk, args)` (the tier threshold + the /allow shell allowlist — see policy.py). Anything it
+doesn't approve pauses via a LangGraph `interrupt` so the user can decide per batch or per
+call. The policy is read live each call, so /config, /risk, /allow, /autoapprove and Shift+Tab
+all apply to the very next gate. Resuming with the user's decision is handled in agent.run_turn.
 """
 
 from collections import Counter
@@ -13,13 +14,18 @@ from typing import Literal
 from langchain.messages import ToolMessage
 from langgraph.types import interrupt, Command
 
-import permissions
+import policy
 from config import get_config
 from registry import risk_of
 from state import AgentState, TERMINAL_STATUSES
 
 
-def _skip_rejected_steps(plan: list[dict], rejected_tools: list[str]) -> list[dict]:
+def _skip_rejected_steps(
+    plan: list[dict],
+    rejected_tools: list[str],
+    executing_tools: "list[str] | None" = None,
+    called: "list[str] | None" = None,
+) -> list[dict]:
     """Mark the planned step(s) a rejected tool call was fulfilling as `skipped`.
 
     Without this, a rejected call leaves its planned step non-terminal: `active_step` keeps the
@@ -30,32 +36,55 @@ def _skip_rejected_steps(plan: list[dict], rejected_tools: list[str]) -> list[di
 
     Matching mirrors `update_plan`/`unrun_planned_tools`: each rejected tool name is consumed,
     positionally as a multiset, against the first non-terminal step that expects it (so two
-    same-tool steps don't both get skipped off one rejection). A rejected call whose tool matched no
-    planned step falls back to skipping the current active step — the planner's `intended_tool`
-    guess didn't match what the agent actually called, but that active step is still what lockstep
-    was driving, so it must advance too. Returns a fresh list; never mutates the input."""
+    same-tool steps don't both get skipped off one rejection) — BUT only after reserving the steps
+    that the batch's surviving calls (`executing_tools`, the approved + ungated calls about to run)
+    and prior rounds' calls (`called`) will credit. On a mixed approve/reject decision over a
+    same-tool batch this is what keeps skip and credit aligned with update_plan's walk: without the
+    reserve, the rejection would skip the FIRST matching step, the executed call's credit would
+    flow past it to the next one, and the plan would record the opposite of what happened.
+
+    A rejected call whose tool matched no planned step falls back to skipping the first
+    non-reserved step with an intended_tool — the planner's `intended_tool` guess didn't match what
+    the agent actually called, but that step is still what lockstep was driving, so it must advance
+    too. Returns a fresh list; never mutates the input."""
     if not plan:
         return plan
     plan = [dict(s) for s in plan]
+    # Calls that have already credited steps (prior rounds) or are about to (this batch's
+    # survivors). Done steps consume from this first, exactly like update_plan's walk.
+    reserve = Counter(called or []) + Counter(executing_tools or [])
     remaining = Counter(rejected_tools)
+    reserved_ids: set = set()
     for step in plan:
-        if step.get("status") in TERMINAL_STATUSES:
-            continue
         tool = step.get("intended_tool")
-        if tool and remaining.get(tool, 0) > 0:
+        status = step.get("status")
+        if status in TERMINAL_STATUSES:
+            if status == "done" and tool and reserve.get(tool, 0) > 0:
+                reserve[tool] -= 1
+            continue
+        if not tool:
+            continue
+        if reserve.get(tool, 0) > 0:
+            # An executed (or about-to-execute) call covers this step — leave it for update_plan
+            # to credit as done.
+            reserve[tool] -= 1
+            reserved_ids.add(id(step))
+            continue
+        if remaining.get(tool, 0) > 0:
             remaining[tool] -= 1
             step["status"] = "skipped"
-    # Fallback: a rejection didn't line up with any planned tool. Skip the current active step so
-    # the lockstep directive stops re-pointing the agent at the work it was just told not to do.
+    # Fallback: a rejection didn't line up with any planned tool. Skip the first un-reserved step
+    # so the lockstep directive stops re-pointing the agent at the work it was just told not to do.
     if sum(remaining.values()) > 0:
         for step in plan:
-            if step.get("status") not in TERMINAL_STATUSES:
-                # Only skip a step that expected a tool. A no-intended_tool step (e.g. the generic
-                # "answer the request" fallback plan) shouldn't be retired just because an unplanned
-                # gated call was declined — the user declined one action, not the whole task.
-                if step.get("intended_tool"):
-                    step["status"] = "skipped"
-                break
+            if step.get("status") in TERMINAL_STATUSES or id(step) in reserved_ids:
+                continue
+            # Only skip a step that expected a tool. A no-intended_tool step (e.g. the generic
+            # "answer the request" fallback plan) shouldn't be retired just because an unplanned
+            # gated call was declined — the user declined one action, not the whole task.
+            if step.get("intended_tool"):
+                step["status"] = "skipped"
+            break
     return plan
 
 
@@ -74,19 +103,17 @@ def approval_node(state: AgentState) -> Command[Literal["tools", "agent"]]:
     tool_calls = getattr(last, "tool_calls", None) or []
     cfg = get_config()
 
-    def _allowlisted(tc) -> bool:
-        """A run_shell call whose command matches a user-persisted /allow prefix skips the gate
-        (permissions.shell_allowed is strict: token-boundary match, and never a command with
-        chaining/redirection metacharacters — those always face the human)."""
-        if tc["name"] != "run_shell":
-            return False
-        command = str((tc.get("args") or {}).get("command", ""))
-        return permissions.shell_allowed(command) is not None
+    # Dry-run: nothing will actually execute (tool_node stubs every call), so there is no action to
+    # approve — pass straight through to the (stubbing) tool node. This is what lets a dry-run show
+    # the WHOLE intended arc, including gated calls, without prompting the human for actions that
+    # won't happen.
+    if bool(cfg.get("runtime.dry_run", False)):
+        return Command(goto="tools")
 
     gated = [
         tc
         for tc in tool_calls
-        if not cfg.auto_approves(risk_of(tc["name"])) and not _allowlisted(tc)
+        if not policy.approves(tc["name"], risk_of(tc["name"]), tc.get("args"))
     ]
 
     if not gated:
@@ -139,7 +166,15 @@ def approval_node(state: AgentState) -> Command[Literal["tools", "agent"]]:
     update = {"messages": decline}
     plan = state.get("plan", [])
     if plan:
-        update["plan"] = _skip_rejected_steps(plan, [tc["name"] for tc in rejected])
+        rejected_ids = {tc["id"] for tc in rejected}
+        update["plan"] = _skip_rejected_steps(
+            plan,
+            [tc["name"] for tc in rejected],
+            # The batch's survivors (approved gated + ungated calls) WILL run and be credited by
+            # update_plan — reserve their steps so a rejection doesn't skip the wrong one.
+            executing_tools=[tc["name"] for tc in tool_calls if tc["id"] not in rejected_ids],
+            called=state.get("tools_called", []),
+        )
 
     # Anything left to run (ungated or approved) still runs; a fully-rejected batch goes back to
     # the agent instead.

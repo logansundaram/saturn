@@ -33,7 +33,10 @@ hard-coded here.
 
 import os
 import time
+from urllib.parse import urlparse
+
 import diag
+import egress
 
 import httpx
 import trafilatura
@@ -68,6 +71,14 @@ def _provider() -> str:
 
 def _max_results() -> int:
     return int(get_config().get("web.max_results", 5))
+
+
+def _host(url: str) -> str:
+    """The hostname of a URL for the egress ledger (falls back to the raw value)."""
+    try:
+        return urlparse(url).hostname or str(url)
+    except Exception:
+        return str(url)
 
 
 def _use_tavily() -> bool:
@@ -144,6 +155,12 @@ def _local_extract(url: str) -> str:
 def web_search(query: str):
     """Execute a web search query. Uses Tavily when a key is configured, otherwise falls back
     to keyless DuckDuckGo automatically — no API key required."""
+    backend_host = "tavily.com" if _use_tavily() else "duckduckgo.com"
+    blocked = egress.check("web_search", backend_host, query)
+    if blocked:
+        return blocked
+    egress.record("web_search", backend_host, query, provider=backend_host.split(".")[0],
+                  n_bytes=len(query or ""))
     start = time.perf_counter()
     try:
         if _use_tavily():
@@ -167,6 +184,12 @@ def web_extract(url: str):
     """Extract the readable page content behind a URL. Use this to read a specific page that
     web_search surfaced. Runs locally (trafilatura) with no API key by default; only uses
     Tavily Extract when the web provider is explicitly forced to 'tavily'."""
+    first_url = url[0] if isinstance(url, (list, tuple)) and url else url
+    host = _host(str(first_url))
+    blocked = egress.check("web_extract", host, str(first_url))
+    if blocked:
+        return blocked
+    egress.record("web_extract", host, str(first_url), n_bytes=len(str(first_url)))
     start = time.perf_counter()
     try:
         if _provider() == "tavily" and _use_tavily():
@@ -202,6 +225,12 @@ def http_request(url: str, method: str = "GET", headers: dict | None = None,
     that). Every call is approved by the human first, who sees the exact method, URL, headers,
     and body before anything is sent."""
     method = (method or "GET").upper()
+    host = _host(url)
+    blocked = egress.check("http_request", host, f"{method} {url}")
+    if blocked:
+        return blocked
+    egress.record("http_request", host, f"{method} {url}",
+                  n_bytes=len(url or "") + len(body or ""))
     try:
         timeout = float(get_config().get("web.request_timeout", 30))
     except (TypeError, ValueError):

@@ -190,6 +190,49 @@ def _render_shell_command(args: dict) -> None:
         print(f"  ┃       {tip}")
 
 
+def _render_http_request(args: dict) -> None:
+    """Render a pending http_request in full — method + URL, every header, and the whole body
+    (wrapped, capped like the diff preview). The tool's contract is that the human sees the EXACT
+    request before anything is sent; the generic 80-char arg repr would hide the tail of a long
+    URL or payload — precisely the part that matters on a destructive outbound call."""
+    method = str(args.get("method", "GET") or "GET").upper()
+    url = str(args.get("url", ""))
+    headers = args.get("headers") or {}
+    body = args.get("body")
+
+    lines: list[str] = [f"{method} {url}"]
+    if isinstance(headers, dict):
+        lines += [f"{k}: {v}" for k, v in headers.items()]
+    else:
+        lines.append(f"headers: {headers!r}")
+    if body is not None:
+        body_lines = str(body).splitlines() or [""]
+        hidden = max(0, len(body_lines) - _MAX_DIFF_LINES)
+        lines.append("")  # blank line between head and body, like the wire format
+        lines += body_lines[:_MAX_DIFF_LINES]
+        if hidden:
+            lines.append(f"… {hidden} more body line(s)")
+
+    if _RICH:
+        head = Text()
+        head.append("  ┃ ", style="bold")
+        head.append("    ↳ request", style=_DIM)
+        _console.print(head)
+        width = max(20, _term_width() - 12)
+        for line in lines:
+            # Hard-wrap each logical line so nothing runs off the frame or gets silently clipped.
+            for chunk in textwrap.wrap(line, width) or [""]:
+                row = Text()
+                row.append("  ┃ ", style="bold")
+                row.append("      > ", style=_DIM)
+                row.append(chunk, style="default")
+                _console.print(row)
+    else:
+        print("  ┃     -> request")
+        for line in lines:
+            print(f"  ┃       > {line}")
+
+
 def _always_allow(tool_calls: list) -> None:
     """The `a(lways)` answer: drop each gated tool to the auto-approved tier for THIS session —
     exactly what `/risk <tool> read_only` does, without making the user know the command. Session-
@@ -269,16 +312,20 @@ def ask_approval(value: dict) -> "bool | dict":
             is_write = tc.get("name") == "write_file"
             is_edit = tc.get("name") == "edit_file"
             is_shell = tc.get("name") == "run_shell"
+            is_http = tc.get("name") == "http_request"
             for k, v in (tc.get("args") or {}).items():  # one line per argument — full clarity
                 # For write_file the `content` arg is shown as a diff below, for edit_file the
-                # old/new strings are shown as a diff, and for run_shell the `command` is shown in
-                # full below — not as a truncated repr. In each case that arg IS the safety
-                # surface, so the 80-char repr would hide the part that matters.
+                # old/new strings are shown as a diff, for run_shell the `command` is shown in
+                # full below, and for http_request the whole request is — not as a truncated
+                # repr. In each case that arg IS the safety surface, so the 80-char repr would
+                # hide the part that matters.
                 if is_write and k == "content":
                     continue
                 if is_edit and k in ("old_string", "new_string"):
                     continue
                 if is_shell and k == "command":
+                    continue
+                if is_http and k in ("url", "method", "headers", "body"):
                     continue
                 arow = Text()
                 arow.append("  ┃ ", style="bold")
@@ -291,6 +338,8 @@ def ask_approval(value: dict) -> "bool | dict":
                 _render_edit_diff(tc.get("args") or {})
             if is_shell:
                 _render_shell_command(tc.get("args") or {})
+            if is_http:
+                _render_http_request(tc.get("args") or {})
             hint = _RISK_HINT.get(risk)
             if hint:
                 hrow = Text()
@@ -308,12 +357,15 @@ def ask_approval(value: dict) -> "bool | dict":
             is_write = tc.get("name") == "write_file"
             is_edit = tc.get("name") == "edit_file"
             is_shell = tc.get("name") == "run_shell"
+            is_http = tc.get("name") == "http_request"
             for k, v in (tc.get("args") or {}).items():
                 if is_write and k == "content":
                     continue
                 if is_edit and k in ("old_string", "new_string"):
                     continue
                 if is_shell and k == "command":
+                    continue
+                if is_http and k in ("url", "method", "headers", "body"):
                     continue
                 print(f"  ┃     {k} = {arg_repr(v)}")
             if is_write:
@@ -322,6 +374,8 @@ def ask_approval(value: dict) -> "bool | dict":
                 _render_edit_diff(tc.get("args") or {})
             if is_shell:
                 _render_shell_command(tc.get("args") or {})
+            if is_http:
+                _render_http_request(tc.get("args") or {})
             hint = _RISK_HINT.get(str(tc.get("risk")))
             if hint:
                 print(f"  ┃     -> {hint}")

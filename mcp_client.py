@@ -61,6 +61,7 @@ from pathlib import Path
 from typing import Optional
 
 import diag
+import egress
 from config import get_config
 from toolspec import RISK_TIERS, register_tool_object
 
@@ -376,6 +377,16 @@ def _safe_name(name: str) -> str:
     return _NAME_OK.sub("_", name)[:_MAX_TOOL_NAME]
 
 
+def _host(url: str) -> str:
+    """Hostname of a server URL for the egress ledger (falls back to the raw value)."""
+    from urllib.parse import urlparse
+
+    try:
+        return urlparse(url).hostname or str(url)
+    except Exception:
+        return str(url)
+
+
 def _make_func(server: str, mcp_tool: str):
     """The sync callable behind one registered MCP tool — a closure so each StructuredTool binds
     its own (server, tool) pair."""
@@ -444,6 +455,20 @@ def call_tool(server: str, tool: str, args: dict) -> str:
     st = _SERVERS.get(server)
     if st is None:
         return f"Error: MCP server '{server}' is not configured."
+
+    # Network boundary: a remote (http/sse) server call leaves the machine — gate it on air-gap and
+    # record it to the egress ledger. A stdio server is a local child process (its own egress, if
+    # any, is shown in /privacy), so it isn't gated here.
+    if st.spec.transport in ("http", "sse"):
+        host = _host(st.spec.url)
+        gblocked = egress.check("mcp", host, f"{server}.{tool}")
+        if gblocked:
+            return gblocked
+        try:
+            n_bytes = len(json.dumps(args or {}, default=str))
+        except Exception:
+            n_bytes = 0
+        egress.record("mcp", host, f"{server}.{tool}", provider=server, n_bytes=n_bytes)
 
     # Lazy reconnect: a server that crashed or dropped (state error/disconnected) gets ONE fresh
     # connection attempt per call. /mcp reload remains the full recovery (re-lists + re-registers).
@@ -559,9 +584,9 @@ def reload() -> list[str]:
     tear down all connections, re-read `mcp:` from config, reconnect, re-register, re-apply the
     persisted /risk overrides, and rebind the tool model. Returns the new problem list.
 
-    Imports registry/llms/permissions lazily — they are fully initialised by the time a slash
+    Imports registry/llms/policy lazily — they are fully initialised by the time a slash
     command can run, and importing them at module level would be circular (registry imports us)."""
-    import permissions
+    import policy
     import registry
     from llms import reset_models
 
@@ -589,7 +614,7 @@ def reload() -> list[str]:
             if t.name in new:
                 registry.tools_by_name[t.name] = t
                 registry.DECLARED_RISK[t.name] = registry.TOOL_RISK[t.name]
-        for name, tier in permissions.risk_overrides().items():
+        for name, tier in policy.risk_overrides().items():
             if name in new and tier in RISK_TIERS:
                 registry.TOOL_RISK[name] = tier
 

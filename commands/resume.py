@@ -152,6 +152,11 @@ def _load_named(ctx, name: str):
         _print(f"  no saved session named {path.stem!r} (/resume list shows what's on disk).")
         return
     messages, saved_at = _read_session(path)
+    # Same guard as the bare-autosave path: an empty session must not wipe the live
+    # conversation — there is nothing to restore, so leave the current state alone.
+    if not messages:
+        _print(f"  session {path.stem!r} is empty — keeping the current conversation.")
+        return
     _swap_to_messages(ctx, messages)
     _print(f"  loaded {len(messages)} message(s) from {path.name} (saved {saved_at}).")
     _print("  fresh state — conversation history restored.")

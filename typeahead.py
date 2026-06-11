@@ -118,6 +118,19 @@ class InputQueue:
             self._buffer = ""
         self._notify()
 
+    def push(self, line: str) -> None:
+        """Append a complete line to the queue from OUTSIDE the reader thread. Used by the REPL
+        to salvage a steering correction that landed after the turn's last step boundary (no
+        plan_gate left to consume it) — the text runs as the next message instead of being
+        silently dropped. Works even when the reader can't poll the console (pop() is
+        availability-independent)."""
+        line = (line or "").strip()
+        if not line:
+            return
+        with self._lock:
+            self._queue.append(line)
+        self._notify()
+
     def pop(self) -> Optional[str]:
         """Pull the oldest queued line (FIFO), or None if nothing is queued. The REPL calls this
         between turns to run type-ahead before blocking on the prompt."""

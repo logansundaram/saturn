@@ -63,6 +63,25 @@ runtime:
   # synthesizer, ask it to cite the matching [n] inline, and append a mechanical "Sources" footer
   # mapping each number to the tool call/document behind it. false restores unadorned answers.
   citations: true
+  # Air-gap: when true, every network egress is blocked and recorded — web tools refuse, remote MCP
+  # calls refuse, and a cloud-bound role refuses to run (the turn fails with an actionable message).
+  # Privacy made enforceable + verifiable, not just asserted. Toggle live with `/privacy airgap
+  # on|off`; `/privacy airgap` (bare) proves the current posture. Every blocked attempt shows in
+  # `/privacy egress`.
+  airgap: false
+  # Dry-run: when true, the agent plans and decides exactly as normal but NO tool actually executes —
+  # tool_node stubs every call with `[DRY RUN] would execute …` and synthesize reports the intended
+  # actions rather than answering as if they ran. A true counterfactual: see the whole arc (plan +
+  # every intended call with its exact args) before approving anything. Toggle with `/dryrun on|off`.
+  dry_run: false
+  # Outbound redaction for cloud-bound roles (cloud-hybrid tier): strip secrets (API keys, tokens,
+  # private keys, JWTs, emails) from prompts+context before they reach a cloud model. One of:
+  #   off    no scan (default — a fully-local tier never leaves the machine anyway)
+  #   warn   detect + count (recorded to /privacy egress), but send unmodified
+  #   redact replace each secret with [REDACTED:<kind>] before sending
+  # Configure + preview with `/privacy redact`. Local (Ollama) calls are never scanned — there's
+  # no boundary.
+  redaction: off
 
 # ---------------------------------------------------------------------------
 # Web tools (tool_registry/web.py). Key-optional, local-first.

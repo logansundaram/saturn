@@ -1,9 +1,27 @@
 import operator
 from collections import Counter
 from typing import List, Any, Optional, Literal
+from langchain.messages import HumanMessage
 from langgraph.graph.message import add_messages
 from typing_extensions import TypedDict, Annotated
 from pydantic import BaseModel, Field
+
+
+# --- mid-turn steering tag ----------------------------------------------------------------
+# plan_gate injects a mid-turn steering correction as a HumanMessage. When it can't merge the
+# note into the trailing message it appends a STANDALONE HumanMessage carrying this prefix —
+# which is NOT a turn boundary. Everything that slices the conversation by "last HumanMessage"
+# (/rewind's drop_last_turn, /retry full's query lookup, agent._compact_history, the grounding
+# recap) must skip steer messages via is_steer_message, or a steered turn gets mis-sliced: the
+# steer note mistaken for the question, the real question compacted away.
+STEER_PREFIX = "[Steering correction from the user, mid-task — adjust your approach accordingly]:"
+
+
+def is_steer_message(m) -> bool:
+    """True if `m` is a standalone mid-turn steering note injected by plan_gate. The merged form
+    (note appended onto an existing HumanMessage's content) deliberately does NOT match — there
+    the underlying message is still the real turn boundary."""
+    return isinstance(m, HumanMessage) and str(m.content).startswith(STEER_PREFIX)
 
 
 # --- Living plan ------------------------------------------------------------

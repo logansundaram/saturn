@@ -57,16 +57,18 @@ def _tool_catalog() -> str:
 # produces are shown live to the user, and `intended_tool` is matched against the tools
 # actually called to advance step statuses (see node_registry/update_plan.py). The available-tools
 # section is generated from the registry (see _tool_catalog) so the names always match reality.
-planner_sys_msg = SystemMessage(
-    content="""
+# A FUNCTION, not a module-level constant: registry.tool changes mid-session (/mcp reload
+# adds/removes MCP tools in place), and a string baked at import time would keep planning
+# against the stale catalog — steps targeting tools that no longer exist, new tools invisible.
+_PLANNER_PROMPT_HEAD = """
 You are the planning step of a local AI agent. Given the user's request and the available
 grounding context, draft a SHORT, ordered plan of the steps needed to fully resolve it.
 
 ## Available tools
 A step may use one of these tools (set `intended_tool` to the exact name; otherwise leave it null):
 """
-    + _tool_catalog()
-    + """
+
+_PLANNER_PROMPT_TAIL = """
 
 ## Rules
 - Produce the fewest steps necessary. Trivial requests may need a single step.
@@ -93,7 +95,12 @@ A step may use one of these tools (set `intended_tool` to the exact name; otherw
   something, plan a `remember` step. Facts already saved are shown in the grounding context's
   "Persistent memory" section — do not re-remember what is already there.
 """
-)
+
+
+def planner_sys_msg() -> SystemMessage:
+    """The planner's system message, with the tool catalog rendered from the LIVE registry at
+    call time (see the note above _PLANNER_PROMPT_HEAD)."""
+    return SystemMessage(content=_PLANNER_PROMPT_HEAD + _tool_catalog() + _PLANNER_PROMPT_TAIL)
 
 
 # --- agent node ------------------------------------------------------------------------

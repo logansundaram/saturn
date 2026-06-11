@@ -32,7 +32,7 @@ the state flag doesn't change mid-node — so `should_pause` evaluates the same 
 from langchain.messages import HumanMessage
 from langgraph.types import interrupt
 
-from state import AgentState, active_step
+from state import AgentState, active_step, STEER_PREFIX
 from interrupts import get_pause_controller
 
 
@@ -46,10 +46,10 @@ def plan_gate_node(state: AgentState):
     req = controller.peek()
     if req is not None and req.source == "steer" and req.reason:
         controller.clear()
-        note = (
-            "\n[Steering correction from the user, mid-task — adjust your approach "
-            f"accordingly]: {req.reason}"
-        )
+        # Built from state.STEER_PREFIX so the standalone form below is recognizable by
+        # state.is_steer_message — the consumers that slice the conversation at HumanMessage
+        # boundaries (/rewind, /retry full, _compact_history, the grounding recap) skip it.
+        note = f"\n{STEER_PREFIX} {req.reason}"
         # Carry the correction on the LAST message rather than appending a fresh HumanMessage: after
         # a tool round (and at the first boundary) the trailing message is already user-role, and a
         # second consecutive user turn is rejected by providers that require role alternation (e.g.

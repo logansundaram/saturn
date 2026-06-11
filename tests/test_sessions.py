@@ -1,6 +1,8 @@
 """commands/_session.py + the /resume delete/rename surface — name sanitization (the autosave
 slot must be unreachable from user input), payload round-trips, and list/number resolution."""
 
+from types import SimpleNamespace
+
 from langchain.messages import AIMessage, HumanMessage
 
 from commands._session import (
@@ -8,9 +10,16 @@ from commands._session import (
     _read_session,
     _session_file,
     _session_payload,
+    clear_autosave,
     write_autosave,
 )
-from commands.resume import _delete_named, _named_sessions, _rename_named, _resolve_named
+from commands.resume import (
+    _delete_named,
+    _load_named,
+    _named_sessions,
+    _rename_named,
+    _resolve_named,
+)
 
 
 def test_session_file_sanitization(isolated_paths):
@@ -38,6 +47,25 @@ def test_autosave_skips_empty_and_writes_nonempty(isolated_paths):
     assert not write_autosave({"messages": []})
     assert write_autosave({"messages": [HumanMessage(content="q")]})
     assert _autosave_file().exists()
+
+
+def test_clear_autosave_drops_the_slot(isolated_paths):
+    """For callers that deliberately emptied the conversation (/rewind walking back the only
+    turn) — write_autosave's empty guard would otherwise leave the rewound turn restorable."""
+    write_autosave({"messages": [HumanMessage(content="q")]})
+    assert _autosave_file().exists()
+    assert clear_autosave()
+    assert not _autosave_file().exists()
+    assert not clear_autosave()  # already gone — best-effort, not an error
+
+
+def test_load_named_empty_session_keeps_live_conversation(isolated_paths):
+    """Restoring a session with no messages must not wipe the live conversation."""
+    _make("hollow")
+    live = [HumanMessage(content="precious context")]
+    ctx = SimpleNamespace(state={"messages": live}, make_initial_state=lambda: {"messages": []})
+    _load_named(ctx, "hollow")
+    assert ctx.state["messages"] is live  # untouched — not swapped to a fresh empty state
 
 
 def _make(name):

@@ -15,7 +15,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from commands._framework import command, _print
-from commands._utils import is_remove_verb, parse_toggle_status, split_save_flag
+from commands._utils import is_list_verb, is_remove_verb, parse_toggle_status, split_save_flag
 
 _PROFILE_HEADER = """\
 # Saturn policy profile — the whole gate posture as one shareable document.
@@ -140,20 +140,14 @@ def allow_handler(ctx, args):
     """`/policy allow` · `/allow` — the persisted run_shell prefix allowlist. `add <prefix>` is
     the unambiguous escape hatch (mirrors /docs add) because the shared REMOVE_VERBS vocabulary
     (remove/rm/delete/del/forget/drop) is also a set of common SHELL words: a removal verb routes
-    to removal ONLY when the target resolves to a stored entry — never a silent guess."""
+    to removal ONLY when the target resolves to a stored entry — never a silent guess. The shared
+    LIST_VERBS get the same care: a LONE `list`/`ls` is the listing (it must never silently
+    CREATE a gate exemption for the prefix `list`), while `ls -la`-style verb-plus-words stays an
+    add — `ls` is a real shell command, and listing never takes arguments."""
     from trust import policy
 
-    if not args:
-        prefixes = policy.shell_allow()
-        if not prefixes:
-            _print("  no allowlisted shell prefixes — add one with /policy allow <prefix words…>")
-            _print("  e.g. /policy allow git status")
-            return
-        _print("  run_shell commands starting with these run WITHOUT the approval gate:")
-        for i, p in enumerate(prefixes, 1):
-            _print(f"    {i}. {p}")
-        _print("  remove: /policy allow remove <n|prefix>   add: /policy allow add <prefix>")
-        return
+    if not args or (len(args) == 1 and is_list_verb(args[0])):
+        return _allow_list(policy)
 
     verb = args[0].lower()
 
@@ -186,6 +180,20 @@ def allow_handler(ctx, args):
         return
 
     _allow_add(policy, " ".join(args))
+
+
+def _allow_list(policy) -> None:
+    """The allowlist readout — the bare `/policy allow` view and its explicit `list`/`ls`
+    spellings (one renderer, so the spellings can't drift)."""
+    prefixes = policy.shell_allow()
+    if not prefixes:
+        _print("  no allowlisted shell prefixes — add one with /policy allow <prefix words…>")
+        _print("  e.g. /policy allow git status")
+        return
+    _print("  run_shell commands starting with these run WITHOUT the approval gate:")
+    for i, p in enumerate(prefixes, 1):
+        _print(f"    {i}. {p}")
+    _print("  remove: /policy allow remove <n|prefix>   add: /policy allow add <prefix>")
 
 
 def _allow_add(policy, prefix: str) -> None:
@@ -405,7 +413,7 @@ def _import(ctx, args):
     "policy",
     "The gate policy as one object: its levers, the blast radius, shareable profiles.",
     usage="/policy [risk <tool> [<tier>|reset] [--save] | "
-          "allow [<prefix> | add <prefix> | remove <n|prefix>] | "
+          "allow [list | <prefix> | add <prefix> | remove <n|prefix>] | "
           "open [on|off] | can | export [<path> | -o <path>] | import <path> [--save]]",
     details="""
 Every gate-relaxation mechanism (/risk, /allow, /autoapprove, runtime.auto_approve, --yolo) is a
@@ -420,8 +428,10 @@ radius, and its file form:
                               declared tier. (/risk is the same handler.)
   /policy allow [<prefix>]    allowlist a run_shell prefix that skips the gate (persisted;
                               token-boundary, case-insensitive, never with shell metacharacters);
+                              bare (or `allow list` / `ls`) shows the stored prefixes;
                               `allow add <prefix>` always ADDS — the escape hatch when the prefix
-                              itself starts with a removal word (`/policy allow add del *.tmp`);
+                              itself starts with a removal word (`/policy allow add del *.tmp`)
+                              or IS a lone reserved word (`/policy allow add ls`);
                               `allow remove <n|prefix>` revokes (rm/delete/del/forget/drop work
                               too, but only when the target is a stored number/prefix — anything
                               else is reported, never guessed). (/allow is the same handler.)
@@ -537,17 +547,19 @@ def _risk(ctx, args):
 @command(
     "allow",
     "Allowlist shell command prefixes that skip the approval gate (persisted).",
-    usage="/allow [<prefix words…> | add <prefix words…> | remove <n|prefix>]",
+    usage="/allow [list | <prefix words…> | add <prefix words…> | remove <n|prefix>]",
     details="""
 run_shell is `destructive`, so every command normally faces the approval gate. /allow stores
 command PREFIXES that you trust — a run_shell call whose command starts with one runs without
 prompting, so the gate stops training you to mash `y` on `git status` while still guarding
 everything else.
 
-  /allow                       list the stored prefixes
+  /allow                       list the stored prefixes (also: list, ls)
   /allow git status            allow `git status`, `git status --short`, …
   /allow add del *.tmp         explicit add — the spelling for a prefix whose FIRST word is
-                               itself a removal verb (rm/del/delete/drop/forget)
+                               itself a removal verb (rm/del/delete/drop/forget) or a lone
+                               reserved word (`/allow add ls` allowlists `ls` itself; a lone
+                               `list`/`ls` shows the list instead of granting it)
   /allow remove 2              remove a prefix by its list number
   /allow remove git status     …or by its exact text
                                (rm / delete / del / forget / drop work too — the shared
@@ -604,3 +616,59 @@ Examples:
 )
 def _autoapprove(ctx, args):
     open_handler(ctx, args)
+
+
+# ── /dryrun — execution control, registered here with the other control surfaces ─────────────
+# About execution, not egress (so it lives with the trust-&-control commands, not /privacy);
+# the trajectory-level control proof point above the reactive per-call gate.
+@command(
+    "dryrun",
+    "Counterfactual mode — plan and decide everything, execute nothing.",
+    aliases=("dry",),
+    usage="/dryrun [on|off]   (bare = status readout, never a flip)",
+    details="""
+When ON, the agent grounds, plans, and decides its tool calls exactly as it normally would — but
+NOTHING actually runs. Every tool call is stubbed (`[DRY RUN] would execute …`): no files touched,
+no shell, no network, no side effects. The final answer summarizes the whole intended arc — the
+plan plus every tool call it meant to make, with its exact arguments — so you can see what the
+agent WOULD do before approving any of it.
+
+This is the control proof point at the trajectory level: the approval gate decides one call at a
+time, reactively; a dry-run lets you inspect the entire plan up front. Run it on something you'd
+never let execute blind — "delete every log and email me the result" — and watch the plan + the
+exact `run_shell` / `http_request` it intended, with zero risk.
+
+  /dryrun on     enter dry-run (stays on until you turn it off — the status bar shows DRY-RUN)
+  /dryrun off    back to real execution
+  /dryrun        status readout — never flips (like every trust toggle, mutation is explicit)
+""",
+)
+def _dryrun(ctx, args):
+    from config import get_config
+    from tui import ui
+
+    cfg = get_config()
+    current = bool(cfg.get("runtime.dry_run", False))
+    new = parse_toggle_status(args)
+    if new is None:
+        _print(f"  dry-run: {'ON — nothing executes' if current else 'off'}   "
+               "(/dryrun on|off to change)")
+        return
+    if new == "invalid":
+        _print(f"  usage: /dryrun on|off   (currently {'on' if current else 'off'})")
+        return
+
+    cfg.set("runtime.dry_run", new)
+    try:
+        ui.set_input_preview  # noqa: B018 — ensure tui imports; the bar reads runtime.dry_run live
+    except Exception:
+        pass
+
+    if new:
+        _print("  ┏━ ◊  DRY-RUN ON ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        _print("  ┃  the agent will PLAN and DECIDE but execute nothing.")
+        _print("  ┃  every tool call is stubbed — no files, shell, or")
+        _print("  ┃  network. the answer reports what it WOULD do.")
+        _print("  ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    else:
+        _print("  dry-run off — tools execute for real again.")

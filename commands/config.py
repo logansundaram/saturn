@@ -1,5 +1,5 @@
 from commands._framework import command, _print
-from commands._utils import _resync_rag_after_model_change, is_remove_verb
+from commands._utils import _resync_rag_after_model_change, is_remove_verb, split_save_flag
 
 
 def _list_keys() -> None:
@@ -136,17 +136,18 @@ def _config_keys(ctx, args):
 @command(
     "config",
     "View or edit runtime config (config.yaml) and API keys (.env); --save persists to disk.",
-    usage="/config | /config <dotted.key> [value [--save]] | /config persist <key> | /config setup | /config key … | /config reload",
+    usage="/config | /config <dotted.key> [value] [--save] | /config persist <key> | /config setup | /config key … | /config reload",
     details="""
 With no args, prints the key runtime settings (active_tier, runtime.max_iterations,
 runtime.auto_approve), the resolved paths, and which API keys are set.
 
 With a dotted key, reads that value; with a key and a value, sets it for THIS SESSION. Append
---save to also write it back to config.yaml in place (comments and layout preserved) so it
-survives a restart:
+--save (-s, any position — the same flag every command uses) to also write it back to
+config.yaml in place (comments and layout preserved) so it survives a restart:
   /config runtime.max_iterations 12          set for this session
   /config runtime.max_iterations 12 --save   set AND persist to config.yaml
-  /config persist runtime.max_iterations     persist whatever the current value is
+  /config runtime.max_iterations --save      persist the CURRENT value unchanged
+  /config persist runtime.max_iterations     same thing, as a verb
 `/config reload` re-reads config.yaml from disk, discarding any unsaved session edits.
 
 /config setup (doctor, check) — first-run / health check: is the Ollama daemon up, are the
@@ -227,21 +228,33 @@ def _config(ctx, args):
         _resync_rag_after_model_change()
         return
 
-    key = args[0]
-    if len(args) == 1:
+    # The shared --save grammar (split_save_flag): --save / -s, case-insensitive, any position,
+    # exact token only — the bare words save/persist are no longer flags, same as every other
+    # command (the convention split_save_flag documents).
+    rest, save = split_save_flag(args)
+    if not rest:
+        _print("  usage: /config <dotted.key> [value] [--save]")
+        return
+    key = rest[0]
+    values = rest[1:]
+
+    if not values:
+        if save:
+            # `--save` with no value persists the CURRENT value (the shared convention —
+            # identical to /config persist <key>; it mutates nothing live).
+            _persist_key(cfg, key)
+            return
         _print(f"  {key} = {cfg.get(key)!r}")
         return
 
-    # A trailing --save / save / persist also writes the change back to config.yaml.
-    rest = args[1:]
-    save = rest[-1].lower() in ("--save", "-s", "save", "persist", "--persist")
-    if save:
-        rest = rest[:-1]
-    if not rest:
-        _print("  usage: /config <dotted.key> <value> [--save]")
+    # The old grammar took a trailing bare save/persist as the flag; storing it silently as
+    # value text now would corrupt the setting — refuse and point at the one spelling instead.
+    if values[-1].lower() in ("save", "persist", "--persist"):
+        _print(f"  did you mean --save? (the bare word {values[-1]!r} is not a persist flag; "
+               "use --save / -s, or /config persist <key>) — nothing set")
         return
 
-    value = " ".join(rest)
+    value = " ".join(values)
     cfg.set(key, value)
     if save:
         _persist_key(cfg, key)

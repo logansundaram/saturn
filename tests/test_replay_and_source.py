@@ -1,6 +1,6 @@
 """
 Trace replay (commands.trace.export_rows / render_export) and the /source citation drill-down
-(commands.source.lookup_source) — the pure halves of both features. Plus the two stdout-honesty
+(commands.trace.lookup_source) — the pure halves of both features. Plus the two stdout-honesty
 guards: the attestation caption tracks the verify VERDICT (a tampered export never prints a
 trust-affirming caption), and `/trace export -o` refuses a missing/flag-shaped path.
 """
@@ -12,7 +12,7 @@ from types import SimpleNamespace
 import pytest
 
 from trust import signing
-from commands.source import lookup_source
+from commands.trace import lookup_source
 from commands.trace import _canonical_digest, _export, export_rows, render_export
 
 

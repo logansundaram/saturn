@@ -1,5 +1,16 @@
+"""
+Deterministic local-compute tools — facts the model must never make up from memory.
+
+  calculate    — arithmetic via a whitelisted AST evaluator (never eval()).
+  current_time — time grounding from the machine's own clock.
+
+Both are read_only and pure-local: the answer is computed, not recalled, and nothing leaves
+the machine. (current_time lived in tools/clock.py until the 2026-06-11 leaf consolidation.)
+"""
+
 import ast
 import operator
+from datetime import datetime, timezone
 
 from tools.toolspec import register_tool
 
@@ -100,3 +111,21 @@ def calculate(expression: str) -> str:
         return "Error: division by zero"
     except Exception as e:
         return f"Error: {e}"
+
+
+# --- time grounding ---------------------------------------------------------------------------
+# `calculate` exists so the model never does arithmetic from memory; `current_time` is the same
+# idea applied to time. Local models confabulate dates constantly ("today" resolved against a
+# training cutoff), and without this tool the only cure was a pointless web_search.
+@register_tool("read_only")
+def current_time():
+    """The current local date and time, with timezone, UTC equivalent, and weekday. Use this
+    whenever the answer depends on 'today', 'now', or any relative date — never guess the
+    current date from memory."""
+    now = datetime.now().astimezone()
+    return {
+        "local": now.isoformat(timespec="seconds"),
+        "utc": now.astimezone(timezone.utc).isoformat(timespec="seconds"),
+        "timezone": str(now.tzinfo),
+        "weekday": now.strftime("%A"),
+    }

@@ -5,12 +5,13 @@ stream live (a transient, screen-bounded tail that always erases cleanly) then r
 answer once on finish. Both end on the same receipt — the permanent echo of the transient status bar.
 """
 
+import re
 import time
 
 from . import _base
 from ._base import (
     Live, Markdown, Text, _console, _RICH,
-    _ACCENT, _DIM, _fmt_dur,
+    _ACCENT, _DIM, _fmt_dur, _term_width,
 )
 from .statusbar import _live_stop
 
@@ -59,6 +60,129 @@ _TRUST_STYLE = {"local": "green", "sent": "yellow", "blocked": "bold red",
 _FIRST_ANSWER_HINT = ("see this run: /trace · answer provenance: /glass · "
                       "what left your machine: /privacy egress")
 _GLASS_HINT = "/glass: answer provenance"
+
+
+# ── per-turn answer provenance (the Glass Box, ambient) ───────────────────────────────────────
+# The loop hands the finished turn's state here (set_turn_provenance) just before the final
+# render; finish/response pop it to color the Sources footer by source trust and to call out a
+# tainted answer in red right under the receipt — the Glass Box's headline facts on every answer,
+# no /glass required. Pop-on-read: a stale box can never paint a later answer (error/Ctrl-C turns
+# never set one; a consumer that doesn't render still clears it).
+_turn_glass = None
+
+# A footer entry line as synthesize writes it: `  [n] label`.
+_SOURCE_LINE_RE = re.compile(r"^\s*\[(\d+)\]\s")
+
+
+def set_turn_provenance(state) -> None:
+    """Build the live Glass Box for the turn that just finished (trust.glassbox.build_live — the
+    same mark-guarded egress contract `/glass` applies) so the answer render can show source
+    trust and taint natively. Best-effort and additive: any failure leaves the answer rendering
+    exactly as it would without provenance."""
+    global _turn_glass
+    _turn_glass = None
+    try:
+        from trust import glassbox
+
+        gb = glassbox.build_live(state, gated=_base._status.get("gates", 0))
+        if gb.sources:
+            _turn_glass = gb
+    except Exception:
+        _turn_glass = None
+
+
+def _pop_turn_provenance():
+    global _turn_glass
+    gb, _turn_glass = _turn_glass, None
+    return gb
+
+
+def _split_sources(text: str) -> "tuple[str, list[str] | None]":
+    """Split a recorded answer into (prose, footer_lines) when it ends with the mechanical
+    `Sources:` block synthesize appends — a `Sources:` line followed only by `[n] label` lines.
+    Returns (text, None) for anything else, and the whole text renders exactly as before. The
+    recorded message is never altered; this only routes the footer to the trust-colored renderer
+    instead of the markdown one (which collapsed its lines into a single paragraph anyway)."""
+    i = text.rfind("\nSources:")
+    if i == -1:
+        return text, None
+    lines = [ln for ln in text[i + 1:].splitlines() if ln.strip()]
+    if not lines or lines[0].strip() != "Sources:":
+        return text, None
+    entries = lines[1:]
+    if not entries or not all(_SOURCE_LINE_RE.match(ln) for ln in entries):
+        return text, None
+    return text[:i].rstrip(), entries
+
+
+def _facet_annotation(facet) -> tuple[str, str, str]:
+    """(glyph, style, note) for one source's trust facet — the same green/yellow/red vocabulary
+    the Glass Box renders, compacted for the footer."""
+    if facet.tainted_span:
+        return "⛔", "bold red", "TAINTED → answer"
+    if facet.origin == "network" or not facet.trusted:
+        note = "web" if facet.origin == "network" else "untrusted origin"
+        if facet.injection_flagged:
+            note += " · injection-flagged"
+        return "◐", "yellow", note
+    return "✓", "green", "local"
+
+
+def _print_sources(entries: list[str], gb) -> None:
+    """The Sources footer, rendered natively with per-source trust coloring: green = local +
+    trusted, yellow = network / untrusted origin, red = a span of that source reached the answer
+    verbatim. The line text is identical to the recorded footer; only an annotation is appended.
+    Without provenance (e.g. a /retry re-render) the block prints dim — never colored by
+    guesswork."""
+    by_n = {s.n: s for s in (gb.sources if gb is not None else [])}
+    if _RICH:
+        _console.print()
+        _console.print(Text("Sources:", style=_DIM))
+        for ln in entries:
+            m = _SOURCE_LINE_RE.match(ln)
+            facet = by_n.get(int(m.group(1))) if m else None
+            if facet is None:
+                _console.print(Text(ln, style=_DIM))
+                continue
+            glyph, style, note = _facet_annotation(facet)
+            head, _, rest = ln.partition("]")
+            row = Text()
+            row.append(head + "]", style=style)
+            row.append(rest, style="default")
+            row.append(f"   {glyph} {note}", style=style)
+            _console.print(row)
+    else:
+        print()
+        print("Sources:")
+        for ln in entries:
+            m = _SOURCE_LINE_RE.match(ln)
+            facet = by_n.get(int(m.group(1))) if m else None
+            if facet is None:
+                print(ln)
+            else:
+                glyph, _style, note = _facet_annotation(facet)
+                print(f"{ln}   {glyph} {note}")
+
+
+def _print_taint_warning(gb) -> None:
+    """The headline answer-trust fact, surfaced natively: a span of an UNTRUSTED source appears
+    VERBATIM in the answer (the data→answer half of indirect injection — the Glass Box's red
+    facet). Loud, in red, right under the receipt — never parked behind /glass; the pointer is
+    for the full provenance view."""
+    if gb is None or not getattr(gb, "tainted", None):
+        return
+    import textwrap
+
+    width = max(20, _term_width() - 6)
+    for s in gb.tainted:
+        msg = (f"⚠ [{s.n}] untrusted content from {s.tool} reached the answer verbatim: "
+               f"\"{s.tainted_span}\" — /glass for provenance")
+        for i, ln in enumerate(textwrap.wrap(msg, width) or [msg]):
+            text = ("  " if i == 0 else "    ") + ln
+            if _RICH:
+                _console.print(Text(text, style="bold red"))
+            else:
+                print(text)
 
 
 def _print_receipt() -> None:
@@ -113,9 +237,12 @@ def _first_answer_hint() -> None:
 def response(text: str) -> None:
     """The payload. Leaves the trace rail behind a short labeled rule and renders the answer as
     real markdown — headings, bold, lists, and fenced code with syntax highlighting — so it reads
-    like a finished answer, not a log line. Falls back to plain text if markdown rendering raises
-    (arbitrary model output), and to plain print without rich."""
+    like a finished answer, not a log line. The mechanical Sources footer, when present, renders
+    through the trust-colored provenance block instead of the markdown body. Falls back to plain
+    text if markdown rendering raises (arbitrary model output), and to plain print without rich."""
     _live_stop()  # turn's over: drop the status bar before printing the answer
+    gb = _pop_turn_provenance()
+    prose, src_lines = _split_sources(text)
     if _RICH:
         _console.print()  # part the answer from the trace rail above it
         rule = Text()
@@ -124,16 +251,20 @@ def response(text: str) -> None:
         rule.append(" " + "─" * 40, style=_DIM)
         _console.print(rule)
         _console.print()  # let the answer breathe beneath its rule
+        body = prose if src_lines else text
         try:
             # Markdown parses markdown, not Rich console markup, so bracketed tokens like
             # `list[str]` or citations `[1]` are safe literal text here.
-            _console.print(Markdown(text))
+            _console.print(Markdown(body))
         except Exception:
             # Arbitrary model output can occasionally trip the markdown parser; never lose the
             # answer over formatting. markup=False so brackets aren't eaten as Rich tags.
-            _console.print(text, markup=False)
+            _console.print(body, markup=False)
+        if src_lines:
+            _print_sources(src_lines, gb)
         _console.print()  # let the answer breathe before the receipt
         _print_receipt()
+        _print_taint_warning(gb)
         _first_answer_hint()
         _console.print()  # trailing whitespace before the next prompt
     else:
@@ -143,6 +274,7 @@ def response(text: str) -> None:
         print(text)
         print()
         _print_receipt()
+        _print_taint_warning(gb)
         _first_answer_hint()
         print()
 
@@ -251,13 +383,19 @@ class ResponseStream:
         if self._live is not None:
             self._live.stop()  # transient: erases the streaming tail
             self._live = None
+        gb = _pop_turn_provenance()
         if _RICH:
+            prose, src_lines = _split_sources(text)
+            body = prose if src_lines else text
             try:
-                _console.print(Markdown(text))
+                _console.print(Markdown(body))
             except Exception:
-                _console.print(text, markup=False)
+                _console.print(body, markup=False)
+            if src_lines:
+                _print_sources(src_lines, gb)
             _console.print()
             _print_receipt()
+            _print_taint_warning(gb)
             _first_answer_hint()
             _console.print()
         else:
@@ -269,6 +407,7 @@ class ResponseStream:
                 print(text[len(streamed):].strip("\n"))
                 print()
             _print_receipt()
+            _print_taint_warning(gb)
             _first_answer_hint()
             print()
 

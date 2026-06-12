@@ -10,7 +10,7 @@ gone, and plan_node always drafts (no seed seam).
 import pytest
 
 from commands._framework import CommandContext
-from commands.context import _context
+from commands.runtime import _context
 from commands.plan import _plan
 
 

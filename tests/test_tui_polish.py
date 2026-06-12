@@ -12,7 +12,7 @@ import importlib
 import pytest
 
 from trust import receipt
-from core.interrupts import PauseController
+from core.plan_ops import PauseController
 from tui.typeahead import InputQueue
 
 

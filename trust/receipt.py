@@ -1,11 +1,15 @@
 """
-Trust receipt — the per-answer, ambient proof of the privacy/control posture.
+Trust receipt — the ambient trust surfaces: the per-answer receipt segment, the session-start
+posture line, and the one-time discovery hints.
 
 `/privacy egress` proves what left the machine on demand; the trust receipt proves it on EVERY
 answer: the one-line stats receipt under each response gains a trust segment — `local-only` when
 nothing left the machine this turn, or the bytes/host summary when something did, plus how many
 calls faced the approval gate. The privacy claim stops being something the user has to go check
-and becomes something every single answer carries.
+and becomes something every single answer carries. `posture_spans` is the session-level twin:
+the trust posture (gate tier, inference locality, boundary modes) as one line of spans rendered
+under the banner, so the posture is ambient from the first prompt instead of parked behind
+`/privacy` and `/policy`.
 
 Data sources: the egress ledger (`egress.py` — the turn's slice of it, marked at turn start) and
 the gated-call counter the approval UI increments. `trust_spans` is the pure builder (testable
@@ -116,6 +120,85 @@ def turn_spans(since_mark: int, gated_calls: int = 0) -> list[tuple[str, str]]:
 def turn_parts(since_mark: int, gated_calls: int = 0) -> list[str]:
     """Plain-text view of turn_spans (same unknown-mark guard)."""
     return [text for text, _ in turn_spans(since_mark, gated_calls)]
+
+
+# ── session posture line ───────────────────────────────────────────────────────────────────────
+# The startup twin of the per-answer receipt: one line under the banner stating the live trust
+# posture, so "what can this session do / where does inference run" is visible before the first
+# query rather than a /privacy invocation away. Same (text, kind) span shape as trust_spans so the
+# renderer colors semantically and the plain path prints identical words.
+
+
+def posture_spans() -> list[tuple[str, str]]:
+    """The session's live trust posture as (text, kind) spans — kind ∈ ok|warn|risk|accent|dim.
+    Loud states lead (gate open, air-gap, dry-run — the same flags the status bar and rprompt
+    carry); the calm facts follow (gate tier, inference locality, quarantine, redaction, egress
+    log). Every read is live and best-effort: a facet that can't be derived is OMITTED rather
+    than guessed — this line must never claim a posture it didn't read."""
+    spans: list[tuple[str, str]] = []
+    try:
+        cfg = get_config()
+    except Exception:
+        return spans
+
+    # Gate tier. At `destructive` the gate is not "at a tier", it's OPEN — same loud label the
+    # status bar uses for as long as that holds.
+    try:
+        from trust import policy
+
+        tier = policy.tier()
+        if tier == "destructive":
+            spans.append(("⚠ GATE OFF", "risk"))
+        else:
+            spans.append((f"gate {tier}", "ok" if tier == "read_only" else "warn"))
+    except Exception:
+        pass
+
+    # Boundary modes — shown only while active, like the status bar flags.
+    try:
+        if bool(cfg.get("runtime.airgap", False)):
+            spans.append(("⛓ airgap", "accent"))
+        if bool(cfg.get("runtime.dry_run", False)):
+            spans.append(("DRY-RUN", "warn"))
+    except Exception:
+        pass
+
+    # Inference locality — the headline privacy fact: where the words come from.
+    all_local = None
+    try:
+        from trust.trust_report import _inference  # the one locality classifier — never re-rolled
+
+        inf = _inference()
+        all_local = bool(inf.get("all_local"))
+        if all_local:
+            spans.append(("inference local", "ok"))
+        else:
+            cloud = ", ".join(inf.get("cloud_providers") or []) or "cloud"
+            spans.append((f"inference cloud: {cloud}", "warn"))
+    except Exception:
+        pass
+
+    # Quarantine / redaction / durable egress log — calm one-worders; a disabled guard warms up.
+    try:
+        q = str(cfg.get("runtime.quarantine", "gate"))
+        spans.append((f"quarantine {q}", "warn" if q == "off" else "dim"))
+    except Exception:
+        pass
+    try:
+        from trust import redaction
+
+        mode = redaction.mode()
+        # Redaction only matters when something cloud-bound exists to redact for.
+        spans.append((f"redaction {mode}",
+                      "warn" if (mode == "off" and all_local is False) else "dim"))
+    except Exception:
+        pass
+    try:
+        spans.append(("egress logged", "dim") if bool(cfg.get("runtime.egress_log", True))
+                     else ("egress log off", "warn"))
+    except Exception:
+        pass
+    return spans
 
 
 # ── one-time discovery hints ───────────────────────────────────────────────────────────────────

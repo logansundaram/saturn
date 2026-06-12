@@ -15,7 +15,7 @@ from commands._framework import (
     SlashCommand,
     dispatch,
 )
-from commands.help import _GATE_VIEWS, _GROUPS
+from commands.system import _GATE_VIEWS, _GROUPS
 from commands.user_commands import registered_names
 
 

@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from langchain.messages import AIMessage, HumanMessage, ToolMessage
 
 from commands._session import _autosave_file
-from commands.rewind import drop_last_turn
+from commands.conversation import drop_last_turn
 
 
 def _ctx(messages, **scratch):

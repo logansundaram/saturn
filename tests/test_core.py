@@ -273,7 +273,7 @@ def test_typeahead_blank_not_queued_and_backspace_edits():
 
 
 def test_escape_with_text_steers_empty_reviews():
-    from core import interrupts
+    from core import plan_ops as interrupts
     from tui import typeahead
 
     c = interrupts.get_pause_controller()
@@ -292,7 +292,7 @@ def test_escape_with_text_steers_empty_reviews():
 
 
 def test_plan_gate_injects_steer_and_consumes_request():
-    from core import interrupts
+    from core import plan_ops as interrupts
     from nodes.plan_gate import plan_gate_node
 
     c = interrupts.get_pause_controller()

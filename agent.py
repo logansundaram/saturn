@@ -50,7 +50,7 @@ import commands
 from core import mentions
 
 # Human-in-the-loop plan-review pause: the shared controller.
-from core.interrupts import get_pause_controller
+from core.plan_ops import get_pause_controller
 
 # Type-ahead: the single console reader during a turn — queues follow-up queries/commands the user
 # types while the agent works, and carries the Esc plan-review pause trigger.
@@ -784,6 +784,9 @@ def main():
     ui.banner(
         f"{cfg.active_tier}:{model_id('tool_caller')}", len(_tools), n_docs, DB_PATH
     )
+    # The session's trust posture, ambient from the first prompt: gate tier, inference locality,
+    # boundary modes — the no-command twin of /privacy + /policy (receipt.posture_spans).
+    ui.posture_line()
 
     # First-run sentinel, checked early: when it is absent, /config setup auto-runs just below
     # (once the command context exists) and reports every gap once, formatted — so the standalone
@@ -1022,6 +1025,10 @@ def main():
             commands.write_autosave(state)
 
         cmd_ctx.state = state  # keep the command context pointed at the latest state
+        # Hand the finished turn to the answer renderer as provenance (the live Glass Box slice):
+        # the Sources footer renders trust-colored and a tainted answer is called out in red under
+        # the receipt — the /glass headline facts, native on every answer. Best-effort inside ui.
+        ui.set_turn_provenance(state)
         # The answer streamed live during synthesize — close it out (final markdown render + receipt).
         # If nothing streamed (e.g. the model yielded no content, or the turn aborted at the plan
         # gate before synthesize produced text), fall back to rendering the recorded final message.

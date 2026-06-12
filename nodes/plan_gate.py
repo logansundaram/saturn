@@ -33,7 +33,7 @@ from langchain.messages import HumanMessage
 from langgraph.types import interrupt
 
 from core.state import AgentState, active_step, STEER_PREFIX
-from core.interrupts import get_pause_controller
+from core.plan_ops import get_pause_controller
 
 
 def plan_gate_node(state: AgentState):

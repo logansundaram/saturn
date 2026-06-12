@@ -18,7 +18,6 @@ from trust import policy
 # commands.policy registers the whole family, including the top-level /risk, /allow,
 # /autoapprove spellings (one file owns every view of the gate policy).
 import commands.policy  # noqa: F401
-import commands.dryrun  # noqa: F401
 import commands.privacy  # noqa: F401
 from commands._framework import CommandContext, dispatch
 
@@ -149,6 +148,34 @@ def test_allow_removal_verb_alone_points_at_add(gate, ctx, capsys):
     assert "usage" in out
     assert "/policy allow add del" in out  # how to allowlist the bare word itself
     assert policy.shell_allow() == []
+
+
+@pytest.mark.parametrize("verb", ("list", "ls"))
+def test_allow_lone_list_verb_lists_never_grants(gate, ctx, capsys, verb):
+    """`/policy allow list` used to silently CREATE a gate exemption for the prefix `list` —
+    a listing attempt becoming a security grant. A lone list verb is now the listing."""
+    dispatch("/policy allow git status", ctx)
+    capsys.readouterr()
+    dispatch(f"/policy allow {verb}", ctx)
+    out = capsys.readouterr().out
+    assert "git status" in out  # the listing rendered
+    assert policy.shell_allow() == ["git status"]  # nothing silently added
+
+    dispatch(f"/allow {verb}", ctx)  # the legacy spelling, same handler
+    assert policy.shell_allow() == ["git status"]
+
+
+def test_allow_add_escape_hatch_for_lone_reserved_word(gate, ctx, capsys):
+    """`add` allowlists a lone reserved word itself (`ls` is a real shell command)."""
+    dispatch("/policy allow add ls", ctx)
+    assert policy.shell_allow() == ["ls"]
+
+
+def test_allow_list_verb_with_words_still_adds(gate, ctx, capsys):
+    """A list verb FOLLOWED BY words stays an add — `ls -la` is a real command prefix, and
+    listing never takes arguments, so the form disambiguates itself."""
+    dispatch("/policy allow ls -la", ctx)
+    assert policy.shell_allow() == ["ls -la"]
 
 
 # ── /policy open · /autoapprove: bare = readout, mutation explicit ───────────────────────────

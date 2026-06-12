@@ -7,6 +7,8 @@ so a turn reads the same whether it's happening now or being inspected later.
 
 import time
 
+from textutil import human_bytes
+
 from . import _base
 from ._base import (
     Text, _console, _RICH,
@@ -106,6 +108,8 @@ def show_node(node: str, delta: dict | None = None) -> None:
     if delta.get("tool_events"):
         _render_tool_events(delta["tool_events"])
 
+    _render_trust_annotations(node, delta)
+
     _live_refresh()  # repaint the bar with the new node/iter/tools immediately
 
 
@@ -113,12 +117,27 @@ def show_node(node: str, delta: dict | None = None) -> None:
 _REASONING_CAP = 280
 
 
+def _node_leaf(text: str, style: str) -> None:
+    """One wrapped `└ …` annotation leaf directly under a node's rail line — the shared shape for
+    the agent's reasoning preview, the judge's verdict, and the gate-decision echo."""
+    import textwrap
+
+    avail = max(20, _term_width() - 10)
+    for i, ln in enumerate(textwrap.wrap(text, width=avail) or [text]):
+        prefix = f"{_TREE_LEAF} " if i == 0 else "  "
+        if _RICH:
+            row = _rail()
+            row.append(f"  {prefix}", style=_RAIL)
+            row.append(ln, style=style)
+            _emit(row)
+        else:
+            _emit(f"  {_RAIL_GLYPH}   {prefix}{ln}")
+
+
 def _render_agent_reasoning(messages: list) -> None:
     """Render the agent's pre-action reasoning (the text content of a tool-calling AIMessage) as
     dim, wrapped leaf lines under the agent's trace row. Quietly does nothing when the message
     has no text or no tool calls."""
-    import textwrap
-
     msg = messages[-1] if messages else None
     if msg is None or not getattr(msg, "tool_calls", None):
         return
@@ -126,17 +145,41 @@ def _render_agent_reasoning(messages: list) -> None:
     text = " ".join(text.split())
     if not text:
         return
-    text = _truncate(text, _REASONING_CAP)
-    avail = max(20, _term_width() - 10)
-    for i, ln in enumerate(textwrap.wrap(text, width=avail) or [text]):
-        prefix = f"{_TREE_LEAF} " if i == 0 else "  "
-        if _RICH:
-            row = _rail()
-            row.append(f"  {prefix}", style=_RAIL)
-            row.append(ln, style=_DIM)
-            _emit(row)
+    _node_leaf(_truncate(text, _REASONING_CAP), _DIM)
+
+
+def _render_trust_annotations(node: str, delta: dict) -> None:
+    """The trust-stack annotations a node's delta carries, rendered identically in the live rail
+    and the /trace replay — the moments that used to be invisible without a command:
+
+      - under `replan`, the judge's verdict: the delta carries `replans` only when the judge
+        found the draft UNGROUNDED and inserted a search (the grounded/skip path updates
+        nothing, so all the rail can honestly say there is "no escalation");
+      - under `approval`, the echo of each HUMAN gate decision (state["gate_events"]): the
+        interactive prompt scrolls away with the turn, so this leaf is the transcript's
+        permanent record of who allowed what — green for approved, red for rejected, with the
+        quarantine/taint escalation named when one forced the prompt."""
+    if node == "replan":
+        if delta.get("replans"):
+            _node_leaf("judge: draft answer ungrounded — inserted a web search step", "yellow")
         else:
-            _emit(f"  {_RAIL_GLYPH}   {prefix}{ln}")
+            _node_leaf("judge: draft answer accepted (no escalation)", _DIM)
+    for ev in delta.get("gate_events") or []:
+        if not isinstance(ev, dict):
+            continue
+        calls = [c for c in ev.get("calls") or [] if isinstance(c, dict)]
+        approved = [str(c.get("name") or "?") for c in calls if c.get("approved")]
+        rejected = [str(c.get("name") or "?") for c in calls if not c.get("approved")]
+        why = []
+        if ev.get("quarantine"):
+            why.append("quarantine escalation")
+        if ev.get("taint"):
+            why.append("tainted args")
+        suffix = f" ({', '.join(why)})" if why else ""
+        if approved:
+            _node_leaf("✓ you approved " + ", ".join(approved) + suffix, "green")
+        if rejected:
+            _node_leaf("✗ you rejected " + ", ".join(rejected) + suffix, "red")
 
 
 def _emit_result_leaf(cont: str, text: str, style: str) -> None:
@@ -197,6 +240,13 @@ def _render_tool_events(events: list[dict], *, always_show_results: bool = False
             _console.print(line)
         else:
             print(f"  {_RAIL_GLYPH}   {branch} {call:<{col_w}}   {dur}")
+        # Boundary events this call produced (tool_events[].egress, attached by tool_node): the
+        # moment something leaves the machine the rail says so — a send in yellow, an air-gap
+        # block in red. Signal, like an error leaf, never folded by verbosity.
+        for eg in ev.get("egress") or []:
+            if isinstance(eg, dict):
+                text, style = _egress_leaf(eg)
+                _emit_result_leaf(cont, text, style)
         # Injection quarantine: an untrusted result that carried instruction-shaped content was
         # flagged + fenced (quarantine.py) — surface that in the rail, always (it's signal, like
         # an error leaf, never folded by verbosity).
@@ -210,6 +260,29 @@ def _render_tool_events(events: list[dict], *, always_show_results: bool = False
             )
         if show_result:
             _emit_result_leaf(cont, result, _DIM if ok else "red")
+
+
+def _egress_leaf(eg: dict) -> tuple[str, str]:
+    """(text, style) for one per-call egress annotation (the dicts nodes/tools._egress_slice
+    attaches). A send names the host, size, channel and any redactions; a block names what the
+    air-gap refused. The `more` marker is the slice's own overflow cap."""
+    if "more" in eg:
+        n = eg.get("more")
+        return (f"⇅ +{n} more egress event{'s' if n != 1 else ''} — /privacy egress", "yellow")
+    host = str(eg.get("host") or "?")
+    channel = str(eg.get("channel") or "")
+    if eg.get("status") == "blocked":
+        return (f"⛔ air-gap blocked {channel or 'egress'} → {host} — nothing sent", "bold red")
+    parts = [f"⇅ sent → {host}"]
+    n = eg.get("n_bytes") or 0
+    if n:
+        parts.append(human_bytes(n))
+    if channel:
+        parts.append(channel)
+    r = eg.get("redactions") or 0
+    if r:
+        parts.append(f"{r} redaction{'s' if r != 1 else ''}")
+    return (" · ".join(parts), "yellow")
 
 
 _MSG_ROLE = {"AIMessage": "ai", "HumanMessage": "in", "SystemMessage": "sys"}
@@ -366,6 +439,8 @@ def show_run(run, events) -> None:
             if tev:
                 _render_tool_events(_enrich_results(tev, delta.get("tool_results") or []),
                                     always_show_results=True)
+            # judge verdicts + human gate decisions replay exactly as the live rail showed them
+            _render_trust_annotations(node, delta)
     finally:
         _base._plan_seen = saved_seen
 

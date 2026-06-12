@@ -225,11 +225,11 @@ tiers:
   workstation:
     provider: ollama
     roles:
-      planner: qwen3.5:9b
-      tool_caller: qwen3.5:9b
-      synthesizer: qwen3.5:9b
-      utility: qwen3.5:9b
-      judge: qwen3.5:9b
+      planner: "qwen3.6:27b"
+      tool_caller: "qwen3.6:27b"
+      synthesizer: "qwen3.6:27b"
+      utility: "qwen3.6:27b"
+      judge: "qwen3.6:27b"
     embedder: qwen3-embedding:8b
 
   # Heavy reasoning roles go to a cloud model; everything else stays local. Requires the

@@ -13,7 +13,7 @@ from commands._session import (
     clear_autosave,
     write_autosave,
 )
-from commands.resume import (
+from commands.conversation import (
     _delete_named,
     _load_named,
     _named_sessions,

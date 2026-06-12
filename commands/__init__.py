@@ -1,9 +1,10 @@
 """
 Slash-command layer for the interactive CLI loop (`agent.py`).
 
-Converted from a single file to a package: each command lives in its own module under
-commands/<name>.py, sharing the dispatch framework from commands._framework. Adding a new
-command is just adding a new file — nothing else changes.
+A package of themed modules (consolidated 2026-06-11 from one-file-per-command): each module
+under commands/ groups the commands of one /help theme and shares the dispatch framework from
+commands._framework. Adding a new command is one @command-decorated handler in the module whose
+theme fits (or a new module added to _COMMAND_MODULES below).
 
 Public API (unchanged from the old commands.py):
   CommandContext, is_command, dispatch, command_completions, write_autosave
@@ -25,29 +26,15 @@ from commands._session import write_autosave
 import importlib as _importlib
 
 _COMMAND_MODULES = [
-    "clear",
-    "compact",
-    "config",
-    "context",
-    "docs",
-    "dryrun",
-    "help",
-    "init",
-    "mcp",
-    "memory",
-    "models",
-    "plan",
-    "policy",  # also registers its top-level views: /risk, /allow, /autoapprove
-    "privacy",
-    "quit",
-    "resume",
-    "retry",
-    "rewind",
-    "source",
-    "tools",
-    "trace",  # also registers /glass (the front door for /trace answer)
-    "undo",
-    "update",
+    "config",        # /config (+ key, setup) — owns the persist seam others import
+    "conversation",  # /clear, /compact, /rewind, /retry, /resume
+    "knowledge",     # /docs, /memory, /init, /undo
+    "plan",          # /plan
+    "policy",        # /policy + its views /risk, /allow, /autoapprove; also /dryrun
+    "privacy",       # /privacy
+    "runtime",       # /tools, /models, /context, /mcp
+    "system",        # /help, /quit, /update
+    "trace",         # /trace; also /glass and /source (the provenance views)
     "user_commands",
 ]
 

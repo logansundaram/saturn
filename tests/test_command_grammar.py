@@ -3,20 +3,25 @@ The shared command grammar (June 2026 audit): every removal verb in commands/_ut
 works identically in /docs, /memory, /resume, and /config key (which also keeps unset/clear) —
 muscle memory transfers, so the audit's inversion ('/memory remove 3' failing while '/docs forget
 x' worked) is gone. Plus /models --save: every binding form persists the SAME dotted key(s) the
-session edit sets via config.persist, while no---save stays session-only. Offline: the RAG drop
-is stubbed, memory/sessions ride isolated_paths, .env is a tmp file, and config.persist is
-recorded instead of writing the real config.yaml.
+session edit sets via config.persist, while no---save stays session-only. The second audit pass
+added LIST_VERBS (`list`/`ls`, the `git stash list`/`docker ls` spelling) accepted identically by
+every enumerating command, /models --provider (the named-flag form of the bare positional), /mcp
+erroring on unknown subcommands, and /config riding the shared split_save_flag grammar (bare
+'save' is data — refused with a pointer, never silently stored). Offline: the RAG drop is
+stubbed, memory/sessions ride isolated_paths, .env is a tmp file, and config.persist is recorded
+instead of writing the real config.yaml.
 """
 
 import pytest
 
 from commands._framework import CommandContext
-from commands._utils import _ROLES, REMOVE_VERBS
+from commands._utils import _ROLES, LIST_VERBS, REMOVE_VERBS
 from commands.config import _config
-from commands.docs import _docs
-from commands.memory import _memory
-from commands.models import _models
-from commands.resume import _resume
+from commands.knowledge import _docs
+from commands.knowledge import _memory
+from commands.knowledge import _undo
+from commands.runtime import _mcp, _models
+from commands.conversation import _resume
 
 
 @pytest.fixture
@@ -39,7 +44,7 @@ def models_env(monkeypatch):
     """Keep /models side-effect-free: no model-cache rebuild, and the embedder→re-embed seam is
     recorded (returned list) rather than touching the RAG store."""
     from core import llms
-    from commands import models as models_mod
+    from commands import runtime as models_mod
 
     monkeypatch.setattr(llms, "reset_models", lambda: None)
     resyncs: list[bool] = []
@@ -204,3 +209,175 @@ def test_models_tier_save_persists_active_tier(ctx, capsys, monkeypatch, models_
     _models(ctx, ["tier", other, "--save"])
     assert cfg.active_tier == other
     assert recording_persist == ["active_tier"]
+
+
+# --- the shared listing-verb vocabulary (`git stash list` / `docker ls` style) ----------------
+
+@pytest.mark.parametrize("verb", LIST_VERBS)
+def test_docs_accepts_every_list_verb(ctx, monkeypatch, verb):
+    import commands.knowledge as knowledge
+
+    listed: list[bool] = []
+    monkeypatch.setattr(knowledge, "_list_docs", lambda: listed.append(True))
+    _docs(ctx, [verb])
+    assert listed == [True]
+
+
+@pytest.mark.parametrize("verb", LIST_VERBS)
+def test_memory_accepts_every_list_verb(ctx, capsys, isolated_paths, verb):
+    from stores.memory_registry import add_memory, list_memory
+
+    add_memory("the sky is blue")
+    _memory(ctx, [verb])
+    assert "the sky is blue" in _out(capsys)
+    assert len(list_memory()) == 1  # a listing never mutates the store
+
+
+@pytest.mark.parametrize("verb", LIST_VERBS)
+def test_resume_accepts_every_list_verb(ctx, capsys, isolated_paths, verb):
+    from commands._session import _session_file
+
+    _session_file("scratch").write_text('{"version": 1, "messages": []}', encoding="utf-8")
+    _resume(ctx, [verb])
+    assert "scratch" in _out(capsys)
+    assert _session_file("scratch").exists()  # listed, not loaded or deleted
+
+
+@pytest.mark.parametrize("verb", LIST_VERBS)
+def test_undo_accepts_every_list_verb(ctx, capsys, isolated_paths, verb):
+    _undo(ctx, [verb])
+    assert "no snapshots stored" in _out(capsys)  # the list view, not a restore attempt
+
+
+@pytest.mark.parametrize("verb", LIST_VERBS)
+def test_models_list_verb_is_noninteractive(ctx, monkeypatch, models_env, verb):
+    """`/models list` renders the table WITHOUT dropping into the picker (`ollama list` style) —
+    bare /models keeps the interactive flow."""
+    from core import llms
+    import commands.runtime as runtime_mod
+    from tui import ui
+
+    monkeypatch.setattr(llms, "list_local_models", lambda: [])
+    shown: list[bool] = []
+    monkeypatch.setattr(ui, "show_models", lambda *a, **k: shown.append(bool(k.get("numbered"))))
+    picked: list[bool] = []
+    monkeypatch.setattr(runtime_mod, "_models_picker", lambda *a, **k: picked.append(True))
+
+    _models(ctx, [verb])
+    assert shown == [False]  # rendered, without picker numbering
+    assert picked == []      # and never prompted
+
+
+@pytest.mark.parametrize("verb", LIST_VERBS)
+def test_mcp_accepts_every_list_verb(ctx, capsys, verb):
+    _mcp(ctx, [verb])
+    assert "unknown subcommand" not in _out(capsys)
+
+
+def test_mcp_unknown_subcommand_errors_instead_of_silent_status(ctx, capsys):
+    _mcp(ctx, ["relod"])  # the typo'd reload must not silently render status as if it reloaded
+    out = _out(capsys)
+    assert "unknown subcommand" in out and "/mcp [list | reload]" in out
+
+
+# --- /models --provider: the named-flag spelling of the bare positional ----------------------
+
+def test_models_provider_flag_binds_provider_form(ctx, capsys, monkeypatch, models_env,
+                                                  recording_persist):
+    from config import get_config
+
+    cfg = get_config()
+    roles = cfg._data["tiers"][cfg.active_tier]["roles"]
+    monkeypatch.setitem(roles, "planner", roles["planner"])
+
+    _models(ctx, ["planner", "claude-x", "--provider", "anthropic"])
+    assert cfg.get(f"tiers.{cfg.active_tier}.roles.planner") == {
+        "provider": "anthropic", "model": "claude-x",
+    }
+
+
+def test_models_provider_flag_and_positional_must_agree(ctx, capsys, monkeypatch, models_env,
+                                                        recording_persist):
+    from config import get_config
+
+    cfg = get_config()
+    roles = cfg._data["tiers"][cfg.active_tier]["roles"]
+    monkeypatch.setitem(roles, "planner", roles["planner"])
+    before = cfg.get(f"tiers.{cfg.active_tier}.roles.planner")
+
+    _models(ctx, ["planner", "claude-x", "openai", "--provider", "anthropic"])
+    assert "disagree" in _out(capsys)
+    assert cfg.get(f"tiers.{cfg.active_tier}.roles.planner") == before  # nothing bound
+
+
+def test_models_dangling_provider_flag_refuses(ctx, capsys, monkeypatch, models_env,
+                                               recording_persist):
+    from config import get_config
+
+    cfg = get_config()
+    roles = cfg._data["tiers"][cfg.active_tier]["roles"]
+    monkeypatch.setitem(roles, "planner", roles["planner"])
+    before = cfg.get(f"tiers.{cfg.active_tier}.roles.planner")
+
+    _models(ctx, ["planner", "claude-x", "--provider"])
+    assert "needs a value" in _out(capsys)
+    assert cfg.get(f"tiers.{cfg.active_tier}.roles.planner") == before
+
+
+def test_models_provider_flag_refused_on_tier_and_embedder(ctx, capsys, monkeypatch, models_env,
+                                                           recording_persist):
+    from config import get_config
+
+    cfg = get_config()
+    monkeypatch.setitem(cfg._data, "active_tier", cfg._data["active_tier"])
+
+    _models(ctx, ["tier", cfg.active_tier, "--provider", "anthropic"])
+    assert "--provider applies to role bindings" in _out(capsys)
+    assert recording_persist == []
+
+
+# --- /config rides the shared --save grammar (split_save_flag) -------------------------------
+
+@pytest.fixture
+def runtime_key(monkeypatch):
+    """Pin runtime.max_iterations so each test's session edit is restored after."""
+    from config import get_config
+
+    cfg = get_config()
+    runtime = cfg._data.setdefault("runtime", {})
+    monkeypatch.setitem(runtime, "max_iterations", runtime.get("max_iterations", 10))
+    return cfg
+
+
+def test_config_save_flag_any_position_case_insensitive(ctx, capsys, runtime_key,
+                                                        recording_persist):
+    _config(ctx, ["--SAVE", "runtime.max_iterations", "12"])
+    assert runtime_key.get("runtime.max_iterations") == 12
+    assert recording_persist == ["runtime.max_iterations"]
+
+
+def test_config_save_without_value_persists_current(ctx, capsys, runtime_key, recording_persist):
+    """`--save` with no value persists the CURRENT value (the shared convention — the same act
+    as /config persist <key>); it mutates nothing live."""
+    before = runtime_key.get("runtime.max_iterations")
+    _config(ctx, ["runtime.max_iterations", "--save"])
+    assert runtime_key.get("runtime.max_iterations") == before
+    assert recording_persist == ["runtime.max_iterations"]
+
+
+def test_config_bare_save_word_is_refused_not_stored(ctx, capsys, runtime_key, recording_persist):
+    """The old trailing bare-'save' flag form is gone (split_save_flag: only --save/-s count).
+    Storing 'save' silently as value text would corrupt the setting — refuse and point."""
+    before = runtime_key.get("runtime.max_iterations")
+    _config(ctx, ["runtime.max_iterations", "12", "save"])
+    out = _out(capsys)
+    assert "did you mean --save" in out
+    assert runtime_key.get("runtime.max_iterations") == before  # nothing set
+    assert recording_persist == []
+
+
+def test_config_set_without_save_stays_session_only(ctx, capsys, runtime_key, recording_persist):
+    _config(ctx, ["runtime.max_iterations", "12"])
+    assert runtime_key.get("runtime.max_iterations") == 12
+    assert recording_persist == []
+    assert "session only" in _out(capsys)

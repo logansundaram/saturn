@@ -123,6 +123,47 @@ def banner(model: str, n_tools: int, n_docs: int, db_path: str) -> None:
         print(f"{n_tools} tools  ·  {n_docs} docs{git}  ·  {cwd}      /help for commands")
 
 
+# kind -> style for the posture line's spans (receipt.posture_spans) — the same semantic palette
+# as the receipt and the Glass Box: green = safe default, yellow = caution, red = open gate.
+_POSTURE_LINE_STYLE = {
+    "ok": "green",
+    "warn": "yellow",
+    "risk": f"bold {_RISK.get('destructive', 'red')}",
+    "accent": f"bold {_ACCENT}",
+    "dim": _DIM,
+}
+
+
+def posture_line() -> None:
+    """One line under the banner stating the live trust posture (trust.receipt.posture_spans):
+    gate tier, inference locality, quarantine/redaction modes, egress log — the ambient,
+    no-command twin of `/privacy` + `/policy`, visible before the first query. Prints nothing if
+    the posture can't be read: a guessed posture is worse than none."""
+    try:
+        from trust import receipt
+
+        spans = receipt.posture_spans()
+    except Exception:
+        spans = []
+    if not spans:
+        return
+    if _RICH:
+        line = Text("  ")
+        for i, (text, kind) in enumerate(spans):
+            if i:
+                line.append(" · ", style=_DIM)
+            line.append(text, style=_POSTURE_LINE_STYLE.get(kind, _DIM))
+        line.append("      ", style=_DIM)
+        line.append("/privacy", style=_ACCENT)
+        line.append(" · ", style=_DIM)
+        line.append("/policy can", style=_ACCENT)
+        line.append(" for the full picture", style=_DIM)
+        _console.print(line)
+    else:
+        print("  " + " · ".join(t for t, _ in spans)
+              + "      /privacy · /policy can for the full picture")
+
+
 # ── input prompt ───────────────────────────────────────────────────────────────
 # Live highlight for the `»` line: a `/token` is colored by how it matches the command set, so
 # a typo never blends in with a real command. Valid -> cyan, a prefix of some command (mid-type)

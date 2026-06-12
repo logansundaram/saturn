@@ -64,8 +64,8 @@ from .statusbar import set_input_preview, reset_turn
 # Startup splash.
 from .art import splash
 
-# Input prompt + banner.
-from .prompt import prompt, banner, ask
+# Input prompt + banner (+ the session-start trust posture line).
+from .prompt import prompt, banner, ask, posture_line
 
 # Execution trace + recorded replays.
 from .trace import show_node, show_run, show_llm_calls
@@ -79,8 +79,8 @@ from .plan import render_plan, show_plan, review_plan
 # Approval gate (+ the diff helper the tests reach for).
 from .approval import ask_approval, _diff_lines
 
-# Final answer (streamed + non-streamed).
-from .response import response, ResponseStream
+# Final answer (streamed + non-streamed) + the per-turn provenance handoff.
+from .response import response, ResponseStream, set_turn_provenance
 
 # On-demand readouts + log lines.
 from .readouts import (
@@ -95,12 +95,12 @@ __all__ = [
     "set_verbosity", "verbosity",
     "set_input_preview", "reset_turn",
     "splash",
-    "prompt", "banner", "ask",
+    "prompt", "banner", "ask", "posture_line",
     "show_node", "show_run", "show_llm_calls",
     "show_glassbox",
     "render_plan", "show_plan", "review_plan",
     "ask_approval",
-    "response", "ResponseStream",
+    "response", "ResponseStream", "set_turn_provenance",
     "show_system_metrics", "show_context", "show_models",
     "note", "warn", "steer_note", "pause_note", "echo_queued",
     "section", "table", "risk_style",

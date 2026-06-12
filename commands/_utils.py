@@ -46,6 +46,18 @@ def is_remove_verb(token: str) -> bool:
     return token.lower() in REMOVE_VERBS
 
 
+# THE listing-verb vocabulary (`git stash list` / `docker ls` style), accepted identically by
+# every command that enumerates a collection (/docs, /memory, /resume, /models, /undo,
+# /policy allow, /config key, /trace). Bare <command> stays the listing default everywhere —
+# these are the explicit spellings, so neither habit errors. One set, like REMOVE_VERBS.
+LIST_VERBS = ("list", "ls")
+
+
+def is_list_verb(token: str) -> bool:
+    """True when `token` is one of the shared listing verbs (case-insensitive)."""
+    return token.lower() in LIST_VERBS
+
+
 def _resync_rag_after_model_change() -> None:
     """Re-embed the corpus if the embedder changed after a model/tier switch."""
     from stores.rag import sync_to_config

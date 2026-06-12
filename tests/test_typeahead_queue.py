@@ -2,7 +2,7 @@
 the late-steer salvage path (agent.main pushes an unconsumed steer correction at turn end so the
 user's typed words run as the next message instead of being silently dropped)."""
 
-from core.interrupts import PauseController
+from core.plan_ops import PauseController
 from tui.typeahead import InputQueue
 
 

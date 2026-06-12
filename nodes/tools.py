@@ -11,6 +11,7 @@ import time
 
 from langchain.messages import ToolMessage
 
+from trust import egress
 from trust import quarantine
 from config import get_config
 from tools.registry import tools_by_name, RETRIEVAL_TOOLS
@@ -57,6 +58,38 @@ def _fmt_call(name: str, args: dict) -> str:
     return f"{name}({fmt_args(args, _MAX_ARG_REPR)})"
 
 
+# Cap the per-call egress annotation carried in tool_events: a call rarely produces more than a
+# couple of boundary events, but a runaway one must not bloat every delta / trace row.
+_MAX_EGRESS_EVENTS = 4
+
+
+def _egress_slice(mark: int) -> list[dict]:
+    """The egress events THIS call produced (the ledger slice since `mark`, captured just before
+    the call ran), flattened to small JSON-safe dicts for the tool_events record. This is the
+    per-call attribution that lets the live rail — and every /trace replay, since tool_events
+    ride the deltas into the trace DB — show what left the machine at the moment it left, instead
+    of only in the turn-end receipt. Tools execute sequentially in tool_node's loop and nothing
+    else records egress while one runs, so the slice belongs to exactly this call. Best-effort:
+    an unreadable ledger yields no annotation, never an error."""
+    try:
+        events = egress.events_since(mark)
+    except Exception:
+        return []
+    out = [
+        {
+            "channel": e.channel,
+            "host": e.host,
+            "n_bytes": e.n_bytes,
+            "redactions": e.redactions,
+            "status": e.status,
+        }
+        for e in events
+    ]
+    if len(out) > _MAX_EGRESS_EVENTS:
+        out = out[:_MAX_EGRESS_EVENTS] + [{"more": len(out) - _MAX_EGRESS_EVENTS}]
+    return out
+
+
 def tool_node(state: AgentState):
     """Execute the pending tool calls and feed results back as ToolMessages.
 
@@ -93,6 +126,7 @@ def tool_node(state: AgentState):
         args = tool_call["args"]
 
         ok = True
+        egress_mark = egress.next_seq()  # anything recorded past this seq belongs to THIS call
         start = time.perf_counter()
         if dry_run:
             observation = (
@@ -155,6 +189,11 @@ def tool_node(state: AgentState):
         }
         if q_kinds:
             event["quarantine"] = q_kinds
+        # Per-call boundary record: what this call sent over the network (or what air-gap blocked),
+        # rendered live as a rail leaf and persisted with the event for /trace replays.
+        sent = _egress_slice(egress_mark)
+        if sent:
+            event["egress"] = sent
         tool_events.append(event)
 
     return {

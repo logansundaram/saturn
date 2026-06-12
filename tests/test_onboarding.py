@@ -167,7 +167,7 @@ def test_ingest_warning_empty_exception_names_the_class():
 # --- /init: success message orients the user -------------------------------------------------
 
 def test_init_success_prints_absolute_workspace_path(isolated_paths, capsys):
-    from commands.init import _init
+    from commands.knowledge import _init
     from config import get_config
 
     _init(None, [])  # empty isolated workspace -> template branch, no LLM call
@@ -179,7 +179,7 @@ def test_init_success_prints_absolute_workspace_path(isolated_paths, capsys):
 
 
 def test_init_existing_file_refusal_also_prints_the_path(isolated_paths, capsys):
-    from commands.init import _init
+    from commands.knowledge import _init
     from config import get_config
 
     workspace = get_config().path("workspace")

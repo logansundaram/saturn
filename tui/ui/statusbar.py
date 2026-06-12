@@ -12,7 +12,7 @@ from . import _base
 from ._base import (
     Live, Text, _console, _RICH,
     _ACCENT, _DIM, _RAIL, _RISK,
-    _active_ctx_window, _active_model_short, _fmt_dur, _meter_color, _mini_bar,
+    _active_ctx_window, _active_model_short, _fmt_dur, _human_tokens, _meter_color, _mini_bar,
 )
 
 
@@ -164,6 +164,25 @@ class _StatusBar:
             zone()
             bar.append("⇅ ", style=_DIM)
             bar.append(f"{_ne} egress", style="default")
+
+        # ── session spend ── tokens observed on this session's LLM calls (core.budget) — the
+        # ambient twin of /trace cost, and the live numerator of runtime.token_budget when one is
+        # set (load-colored by how much of the ceiling is spent). Hidden until the first call so
+        # a fresh session stays calm.
+        try:
+            from core import budget as _budget
+
+            _sp, _cap = _budget.spent(), _budget.limit()
+        except Exception:
+            _sp, _cap = 0, 0
+        if _sp:
+            zone()
+            bar.append("Σ ", style=_DIM)
+            if _cap:
+                bar.append(f"{_human_tokens(_sp)}/{_human_tokens(_cap)} tok",
+                           style=_meter_color(_sp / _cap * 100))
+            else:
+                bar.append(f"{_human_tokens(_sp)} tok", style="default")
 
         # ── resources ── tertiary; ctx keeps its meter (it drives the agent), hardware is bare %.
         window = status["ctx_window"]

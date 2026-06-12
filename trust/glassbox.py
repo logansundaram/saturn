@@ -301,6 +301,22 @@ def build_from_state(state, *, egress_events=None, gated=None) -> GlassBox:
     )
 
 
+def build_live(state, *, gated=None) -> GlassBox:
+    """Glass Box for the live last turn with the EXACT egress slice when (and only when) it is
+    trustworthy. The turn-mark guard lives HERE so every live consumer — the `/glass` command and
+    the native post-answer provenance — applies the identical contract instead of re-rolling it:
+    the slice is passed only when a turn mark was recorded (receipt.reset_turn ran) AND no
+    `/privacy egress clear` wiped events past it; otherwise egress_events=None (UNKNOWN — an
+    empty-because-cleared slice must never render as 'local-only this turn')."""
+    from trust import receipt  # leaf importing leaf; lazy keeps import-time cost off the tools path
+
+    mark = receipt.turn_mark()
+    ev = None
+    if mark > 0 and not egress.cleared_since(mark):
+        ev = egress.events_since(mark)
+    return build_from_state(state, egress_events=ev, gated=gated)
+
+
 def build_from_record(query, response, deltas, *, gated=None, complete=True) -> GlassBox:
     """Glass Box reconstructed from a recorded/exported run. `deltas` is the per-event delta dicts
     (decoded) in order — the accumulators are summed across them exactly as the loop summed them.

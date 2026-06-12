@@ -13,12 +13,10 @@ from tools.toolspec import _TOOLS, _RISK, _RETRIEVAL  # collected as the imports
 # Module imports on purpose (not per-name): registration needs the module to RUN, not its names,
 # so a new tool in an existing module truly requires no edit here. Import order is purely
 # cosmetic — it sets the order the planner lists tools in.
-import tools.calculator  # noqa: E402,F401
-import tools.clock  # noqa: E402,F401
+import tools.calculator  # noqa: E402,F401  (calculate + current_time)
 import tools.web  # noqa: E402,F401
 import tools.files  # noqa: E402,F401
-import tools.knowledge  # noqa: E402,F401
-import tools.memory  # noqa: E402,F401
+import tools.knowledge  # noqa: E402,F401  (search_knowledge_base + remember/recall)
 import tools.shell  # noqa: E402,F401
 
 # Remote MCP tools (roadmap #12): connect the servers declared under `mcp.servers` in config.yaml

@@ -88,7 +88,7 @@ def _plan(ctx, args):
         return
 
     if sub == "pause":
-        from core.interrupts import get_pause_controller
+        from core.plan_ops import get_pause_controller
         get_pause_controller().request("user", "one-shot: review the plan before it runs")
         _print("  armed — the next turn will pause at its first step boundary for plan review.")
         _print("  (during a running turn: Esc on an empty line pauses for review at the next step;")

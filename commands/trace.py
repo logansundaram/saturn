@@ -819,7 +819,6 @@ def _fmt_call_args(args) -> str:
 
 def _answer(ctx, args):
     from tui import ui
-    from trust import egress
     from trust import glassbox
 
     run_id: Optional[int] = None
@@ -836,20 +835,13 @@ def _answer(ctx, args):
     # sources last session. Such turns reconstruct from the recorded run below instead.
     live = bool(state.get("tool_results") or state.get("documents_retrieved")
                 or state.get("tool_events") or state.get("current_query"))
-    # Bare + a live last turn → the live Glass Box (exact egress slice + gate count from the UI).
+    # Bare + a live last turn → the live Glass Box. glassbox.build_live owns the turn-mark guard
+    # (the exact egress slice passes only when trustworthy — the same contract the native
+    # post-answer provenance applies), so this path can't drift from it.
     if run_id is None and live:
-        from trust import receipt
         from tui.ui import _base
-        mark = receipt.turn_mark()
         gated = _base._status.get("gates", 0) if isinstance(_base._status, dict) else 0
-        # The exact slice is trustworthy only when a turn mark was recorded AND no
-        # `/privacy egress clear` wiped events past it. Otherwise pass None (unknown): an
-        # empty-because-cleared slice must never render as 'local-only this turn'.
-        ev = None
-        if mark > 0 and not egress.cleared_since(mark):
-            ev = egress.events_since(mark)
-        gb = glassbox.build_from_state(state, egress_events=ev, gated=gated)
-        ui.show_glassbox(gb)
+        ui.show_glassbox(glassbox.build_live(state, gated=gated))
         return
 
     # Otherwise reconstruct from the recorded run (last, or the requested #id).
@@ -1005,7 +997,7 @@ def _trace(ctx, args):
     it = iter(args)
     for a in it:
         low = a.lower()
-        if low in ("-l", "--list", "list"):
+        if low in ("-l", "--list", "list", "ls"):
             list_mode = True
         elif low in ("-r", "--run"):
             rid = _to_int(next(it, ""))
@@ -1076,7 +1068,7 @@ def _show_llm_calls(ctx, args):
         low = a.lower()
         if low in ("--full", "-f", "full"):
             full = True
-        elif low in ("-l", "--list", "list"):
+        elif low in ("-l", "--list", "list", "ls"):
             list_mode = True
         elif low in ("-r", "--run"):
             rid = _to_int(next(it, ""))
@@ -1168,3 +1160,88 @@ here; /glass is whether to trust a source, /source is what it actually said.
 )
 def _glass(ctx, args):
     return _answer(ctx, args)
+
+
+# ── /source — the raw material behind a citation, registered with the other provenance views ──
+# The citations footer maps each inline [n] to a one-line label; this shows the FULL tool
+# result / retrieved passage behind that number, rebuilt with the same numbering the synthesizer
+# saw (nodes.synthesize.build_sources over the turn's accumulators), so [3] here is exactly the
+# [3] in the answer. Closes the provenance loop in one keystroke instead of a /trace drill-down.
+
+
+def lookup_source(state: dict, n: int) -> "tuple[str, str] | None":
+    """(label, full_text) for citation number `n` of the last turn, or None when out of range.
+    Pure over the state accumulators so it's testable without a turn."""
+    from nodes.synthesize import build_sources
+
+    tool_results = (state or {}).get("tool_results") or []
+    docs = (state or {}).get("documents_retrieved") or []
+    numbered_tools, numbered_docs, sources = build_sources(tool_results, docs)
+    entries = numbered_tools + numbered_docs
+    if not (1 <= n <= len(entries)):
+        return None
+    label = sources[n - 1][1]
+    # Strip the `[n] ` numbering prefix build_sources added for the prompt.
+    text = entries[n - 1]
+    prefix = f"[{n}] "
+    if text.startswith(prefix):
+        text = text[len(prefix):]
+    return label, text
+
+
+@command(
+    "source",
+    "Show the full material behind a citation [n] of the last answer.",
+    aliases=("sources",),
+    usage="/source [n]",
+    details="""
+Answers cite their evidence inline ([1], [2], …) with a Sources footer mapping each number to the
+tool call or document behind it. This command shows the FULL text behind a number — the complete
+tool observation or retrieved passage the synthesizer actually read — using the same numbering
+the answer used.
+
+  /source        list the last answer's sources (numbered labels)
+  /source 3      print everything behind citation [3]
+
+Scope: the most recent turn (the accumulators reset when a new turn starts; /clear empties them).
+For older runs, /trace #<id> replays the full tool I/O of any recorded run.
+
+Companion: /glass shows the trust/provenance facets of these SAME citations (origin · trust ·
+tainted spans) under the same numbering — /source is the raw material, /glass is whether to
+trust it.
+""",
+)
+def _source(ctx, args):
+    from nodes.synthesize import build_sources
+
+    state = ctx.state or {}
+    tool_results = state.get("tool_results") or []
+    docs = state.get("documents_retrieved") or []
+    _, _, sources = build_sources(tool_results, docs)
+
+    if not sources:
+        _print("  (the last answer drew on no gathered sources — nothing to cite)")
+        return
+
+    if not args:
+        _print("  sources of the last answer  (/source <n> for the full text):")
+        for n, label in sources:
+            _print(f"    [{n}] {label}")
+        return
+
+    try:
+        n = int(args[0].lstrip("[").rstrip("]"))
+    except ValueError:
+        _print(f"  usage: /source [n]   (n is a citation number, 1–{len(sources)})")
+        return
+
+    found = lookup_source(state, n)
+    if found is None:
+        _print(f"  no source [{n}] — the last answer has {len(sources)} source(s); /source lists them.")
+        return
+    label, text = found
+    _print(f"  [{n}] {label}")
+    _print("")
+    for line in text.splitlines() or [""]:
+        _print(f"  {line}")
+    _print("")

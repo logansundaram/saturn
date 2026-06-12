@@ -10,7 +10,7 @@ tools, stores, commands, or the TUI.
 from __future__ import annotations
 
 import re
-from pathlib import PurePath
+from pathlib import PureWindowsPath
 
 _SAFE_STEM = re.compile(r"[^A-Za-z0-9._-]+")
 
@@ -89,7 +89,9 @@ def safe_stem(name, fallback: str) -> str:
     character collapsed to `-`. THE one sanitizer for user-named JSON artifacts (sessions
     today; any future user-named store) — drifted copies would enforce different naming
     rules per store."""
-    stem = PurePath(str(name)).name
+    # PureWindowsPath, not PurePath: it splits on BOTH `/` and `\`, so `..\..\evil` loses its
+    # path bits on every platform (PurePosixPath keeps backslashes as filename characters).
+    stem = PureWindowsPath(str(name)).name
     if stem.lower().endswith(".json"):
         stem = stem[:-5]
     return _SAFE_STEM.sub("-", stem).strip("-_") or fallback

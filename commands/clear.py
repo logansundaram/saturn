@@ -11,8 +11,8 @@ per-turn field (plan, iteration, accumulators) — AND clears the visible termin
 the session header. One command for a clean slate.
 
 What is NOT touched: config, model/tier bindings, the RAG corpus, the durable memory store
-(remember/recall), and the on-disk trace. The trace survives, so /trace and /calls still show
-past runs after a clear.
+(remember/recall), and the on-disk trace. The trace survives, so /trace and /trace calls still
+show past runs after a clear.
 
 Pass --screen (-s) to ONLY repaint the terminal, leaving the conversation intact.
 
@@ -46,8 +46,8 @@ def _reprint_banner(ctx) -> None:
     Best-effort: a failure here must never undo the reset that already happened."""
     try:
         from config import get_config
-        from llms import model_id
-        from registry import tool as _tools
+        from core.llms import model_id
+        from tools.registry import tool as _tools
         from stores.rag import iter_documents
         from tui import ui
 

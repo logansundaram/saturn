@@ -2,7 +2,7 @@
 
 import pytest
 
-import budget
+from core import budget
 from config import get_config
 
 

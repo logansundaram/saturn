@@ -19,21 +19,21 @@ from langgraph.types import Command
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langchain.messages import HumanMessage, AIMessage, AIMessageChunk
 
-import budget
+from core import budget
 import diag
 from config import get_config
-from state import AgentState
+from core.state import AgentState
 
 # loop nodes
-from node_registry.ground import grounding_node
-from node_registry.plan import plan_node
-from node_registry.synthesize import synthesize_node
-from node_registry.update_plan import update_plan_node
-from node_registry.agent import agent_node, route_after_agent
-from node_registry.tools import tool_node
-from node_registry.approval import approval_node
-from node_registry.replan import replan_node
-from node_registry.plan_gate import plan_gate_node, route_after_gate
+from nodes.ground import grounding_node
+from nodes.plan import plan_node
+from nodes.synthesize import synthesize_node
+from nodes.update_plan import update_plan_node
+from nodes.agent import agent_node, route_after_agent
+from nodes.tools import tool_node
+from nodes.approval import approval_node
+from nodes.replan import replan_node
+from nodes.plan_gate import plan_gate_node, route_after_gate
 
 # RAG ingest (reconciles the disk-cached vector store the search_knowledge_base tool reads);
 # SUPPORTED_EXTENSIONS gates the drag-and-drop ingest offer to file types the corpus accepts
@@ -47,14 +47,14 @@ from tui import ui
 import commands
 
 # `@file` mention expansion (pull a referenced file's contents into the turn's context)
-import mentions
+from core import mentions
 
 # Human-in-the-loop plan-review pause: the shared controller.
-from interrupts import get_pause_controller
+from core.interrupts import get_pause_controller
 
 # Type-ahead: the single console reader during a turn — queues follow-up queries/commands the user
 # types while the agent works, and carries the Esc plan-review pause trigger.
-from typeahead import InputQueue
+from tui.typeahead import InputQueue
 
 DB_PATH = str(get_config().path("db_sqlite"))
 
@@ -73,11 +73,11 @@ def build_agent():
     When the agent finishes with no tool calls and no planned gathering step is left to nudge
     toward, `replan` (the `judge` role) verifies the draft answer is grounded; if it leans on
     facts that were never looked up it inserts a web_search step and loops back to `agent`
-    (bounded by REPLAN_BUDGET). See node_registry/replan.py.
+    (bounded by REPLAN_BUDGET). See nodes/replan.py.
 
     `plan_gate` runs at every step boundary: a pass-through unless a pause has been requested, in
     which case it `interrupt()`s so the user can inspect/edit the plan and resume (see
-    node_registry/plan_gate.py). Compiled with a SqliteSaver checkpointer, which both persists
+    nodes/plan_gate.py). Compiled with a SqliteSaver checkpointer, which both persists
     sessions and is what lets the approval / plan-review `interrupt`s pause and resume.
     """
     builder = StateGraph(AgentState)
@@ -230,8 +230,8 @@ def _compact_history(messages: list, keep_recent_turns: int = 1) -> list:
     orphan-free). Run only at the turn boundary.
 
     `keep_recent_turns=0` reproduces the old strip-everything behaviour."""
-    from compaction import is_summary
-    from state import is_steer_message
+    from core.compaction import is_summary
+    from core.state import is_steer_message
 
     human_idxs = [
         i
@@ -271,7 +271,7 @@ def _maybe_autocompact(state: AgentState) -> AgentState:
     if not cfg.get("runtime.auto_compact", True):
         return state
     used = int(state.get("context_tokens", 0) or 0)
-    from llms import active_context_window
+    from core.llms import active_context_window
 
     window = active_context_window()
     if not window or used <= 0:
@@ -280,7 +280,7 @@ def _maybe_autocompact(state: AgentState) -> AgentState:
     if used / window < threshold:
         return state
 
-    from compaction import summarize_messages
+    from core.compaction import summarize_messages
 
     new_msgs, stats = summarize_messages(state["messages"])
     if stats["summarized_turns"] > 0 and stats["after"] < stats["before"]:
@@ -316,7 +316,7 @@ def _fresh_turn(state: AgentState, user_input: str) -> AgentState:
     begin_turn(user_input)
     # Clear the prompt-injection quarantine's per-turn flags (a flag raised last turn must not
     # escalate this turn's first tool batch).
-    import quarantine
+    from trust import quarantine
 
     quarantine.reset_turn()
     state["current_query"] = user_input
@@ -333,6 +333,7 @@ def _fresh_turn(state: AgentState, user_input: str) -> AgentState:
     state["tool_results"] = []
     state["documents_retrieved"] = []
     state["tool_events"] = []
+    state["gate_events"] = []
     state["tok_per_sec"] = 0.0
     # context_tokens persists across turns (the context only grows; overwritten on next LLM call).
     return state
@@ -355,50 +356,223 @@ def _initial_state() -> AgentState:
         "tool_results": [],
         "documents_retrieved": [],
         "tool_events": [],
+        "gate_events": [],
         "tok_per_sec": 0.0,
         "context_tokens": 0,
     }
 
 
-def main():
-    """CLI entry point: ingest the knowledge base, build the graph, run the REPL loop.
-
-    Flags:
-      -p / --prompt QUERY   Run one query headlessly, print the answer to stdout, and exit.
-                            No TUI, no interactive prompts. Read-only tools run freely; gated
-                            (side-effecting/destructive) tool calls are DENIED by default —
-                            there is no human at the approval gate, and safe-by-default must
-                            hold in every mode. Pass --yolo to auto-approve them instead.
-                            Compatible with `saturn -p "..."` and shell pipelines.
-      --yolo                With -p: auto-approve gated tool calls (file writes, shell commands)
-                            instead of denying them. The same view of the gate policy as the
-                            /autoapprove command (policy.set_gate_off — threshold: destructive).
-      --json                With -p: emit one machine-readable JSON object to stdout instead of
-                            the plain answer — answer + plan + tools called + per-call events +
-                            token/timing stats — so Saturn can be piped into scripts and other
-                            programs. Errors also emit JSON (status: "error") and still exit 1.
-      --version             Print the version and exit.
-    """
+def _build_parser():
+    """The saturn CLI parser — strict (an unknown flag exits 2 instead of silently launching the
+    TUI). The flag reference lives here, in --help, not in main()'s docstring."""
     import argparse
 
-    _parser = argparse.ArgumentParser(prog="saturn", add_help=False)
-    _parser.add_argument("-p", "--prompt", metavar="QUERY", default=None,
-                         help="Run a single query headlessly and print the answer to stdout.")
-    _parser.add_argument("--yolo", action="store_true",
-                         help="With -p: auto-approve side-effecting/destructive tool calls "
-                              "(denied by default in headless mode).")
-    _parser.add_argument("--json", action="store_true",
-                         help="With -p: print a structured JSON result (answer, plan, tools, "
-                              "tokens, timing) instead of the bare answer.")
-    _parser.add_argument("--policy", metavar="FILE", default=None,
-                         help="Apply a policy profile (/policy export format) at process start: "
-                              "gate threshold, risk overrides, shell allowlist, airgap/redaction "
-                              "— pin the exact safety posture a run executes under.")
-    _parser.add_argument("--replay", metavar="FILE", default=None,
-                         help="Replay an exported run record (/trace export) offline — integrity-"
-                              "checked, no database needed — then exit.")
-    _parser.add_argument("--version", action="version", version=f"saturn {__version__}")
-    _args, _ = _parser.parse_known_args()
+    parser = argparse.ArgumentParser(
+        prog="saturn",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description=(
+            "Saturday.ai — local-first, transparent agent.\n"
+            "\n"
+            "Run with no arguments for the interactive chat loop (/help lists commands,\n"
+            "/quit exits). The flags below are the headless/automation surface."
+        ),
+        epilog=(
+            "verbs:\n"
+            "  saturn verify <file>  verify a signed Saturn artifact offline — a /trace export\n"
+            "                        or a /privacy report: recomputes the sha256 integrity\n"
+            "                        digest and checks the ed25519 signature. exit 0 = intact\n"
+            "                        (an unsigned-but-intact artifact prints 'unsigned' and\n"
+            "                        still passes), 1 = digest mismatch, invalid signature, or\n"
+            "                        a signature that cannot be checked here (cryptography not\n"
+            "                        installed — use utilities/saturn_verify.py instead),\n"
+            "                        2 = unreadable / not a Saturn artifact.\n"
+            "\n"
+            "headless mode (-p):\n"
+            "  Read-only tools run freely; gated (side-effecting/destructive) tool calls are\n"
+            "  DENIED by default — there is no human at the approval gate, and safe-by-default\n"
+            "  must hold in every mode. Pass --yolo to auto-approve them. Piped stdin attaches\n"
+            "  to the turn:\n"
+            "    git diff | saturn -p \"review this change\"\n"
+        ),
+    )
+    parser.add_argument("-p", "--prompt", metavar="QUERY", default=None,
+                               help="Run a single query headlessly and print the answer to "
+                                    "stdout (no TUI, no interactive prompts).")
+    parser.add_argument("--yolo", action="store_true",
+                               help="Open the approval gate for the whole run — auto-approve "
+                                    "side-effecting/destructive tool calls, headless or "
+                                    "interactive. The same view of the gate policy as "
+                                    "/autoapprove (policy.set_gate_off — threshold: destructive).")
+    parser.add_argument("--json", action="store_true",
+                               help="With -p: print a structured JSON result (answer, plan, "
+                                    "tools, tokens, timing) instead of the bare answer. Errors "
+                                    "also emit JSON (status: \"error\") and still exit 1.")
+    parser.add_argument("--export", metavar="FILE", default=None,
+                               help="With -p: after the turn completes, write the run's complete "
+                                    "export record — signed when runtime.sign_exports is on — to "
+                                    "FILE (the same artifact /trace export writes).")
+    parser.add_argument("--policy", metavar="FILE", default=None,
+                               help="Apply a policy profile (/policy export format) at process "
+                                    "start: gate threshold, risk overrides, shell allowlist, "
+                                    "airgap/redaction — pin the exact safety posture a run "
+                                    "executes under.")
+    parser.add_argument("--replay", metavar="FILE", default=None,
+                               help="Replay an exported run record (/trace export) offline — "
+                                    "integrity-checked, no database needed — then exit.")
+    parser.add_argument("--version", action="version", version=f"saturn {__version__}")
+    return parser
+
+
+def _parse_cli(argv=None):
+    """Parse + validate the CLI line. Strict by design: argparse exits 2 on an unknown flag, and
+    the cross-flag rules below exit 2 through parser.error — a typo'd invocation must never
+    silently fall through to the interactive TUI."""
+    parser = _build_parser()
+    args = parser.parse_args(argv)
+    # -p "" (present but blank) is an invocation mistake, distinct from -p absent (interactive).
+    if args.prompt is not None and not args.prompt.strip():
+        parser.error("empty prompt")
+    if args.prompt is not None and args.replay:
+        parser.error("--replay renders an export offline and cannot be combined with -p/--prompt")
+    if args.export and args.prompt is None:
+        parser.error("--export only applies to a headless turn — use it with -p/--prompt")
+    return args
+
+
+def _verify_artifact(path_str) -> int:
+    """`saturn verify <file>` — offline verification of a Saturn audit artifact (a /trace export
+    or a /privacy report; signing.verify_payload accepts both). Mirrors /trace verify's semantics
+    with shell-friendly exit codes: 0 = digest intact AND signature (when present) valid — an
+    unsigned-but-intact artifact prints 'unsigned' and still passes; 1 = digest mismatch, invalid
+    signature, or a signature that CANNOT be checked here (`cryptography` absent — fail closed: a
+    forged record with a recomputed digest and stale signature must never pass the 0-intact /
+    1-tampered contract just because the checker is missing); 2 = usage/read errors. Results
+    print to stdout, errors to stderr."""
+    import json
+
+    from trust import signing
+
+    if not path_str:
+        print("usage: saturn verify <file>", file=sys.stderr)
+        return 2
+    path = Path(path_str.strip('"')).expanduser()
+    try:
+        # utf-8-sig: a BOM (PowerShell 5.1 redirection writes one) must not fail the read.
+        payload = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError) as e:
+        print(f"error: could not read {path}: {e}", file=sys.stderr)
+        return 2
+    is_export = isinstance(payload, dict) and payload.get("saturn_trace_export") == 1
+    is_report = isinstance(payload, dict) and payload.get("saturn_trust_report") is not None
+    if not is_export and not is_report:
+        print(f"error: {path.name} is not a Saturn trace export or trust report.",
+              file=sys.stderr)
+        return 2
+
+    v = signing.verify_payload(payload)
+    kind = "trace export" if is_export else "trust report"
+    if not v["has_integrity"]:
+        print(f"error: {path.name} carries no integrity digest — nothing to verify "
+              "(only JSON exports carry one).", file=sys.stderr)
+        return 1
+    ok = True
+    if v["digest_ok"]:
+        print(f"{path.name}: digest ok ({kind}) — sha256 {v['stored_digest']}")
+    else:
+        ok = False
+        print(f"{path.name}: digest MISMATCH — the record was modified after export.")
+        print(f"  stored   {v['stored_digest']}")
+        print(f"  computed {v['computed_digest']}")
+    if v["signed"]:
+        if not signing.available():
+            # Fail closed: a signature we cannot check is an UNVERIFIED claim — exiting 0 here
+            # would let a forged record (body edited, digest recomputed, stale signature kept)
+            # pass the documented 0-intact / 1-tampered contract.
+            ok = False
+            print("signature present — could NOT be verified here (`cryptography` not "
+                  "installed). Install cryptography, or verify with utilities/saturn_verify.py "
+                  "(its built-in fallback always checks signatures).")
+        elif v.get("signature_ok"):
+            mine = " (this machine's key)" if v.get("signer_is_local") else ""
+            print(f"signature valid — ed25519 key {v.get('key_id', '?')}{mine}")
+        else:
+            ok = False
+            print(f"signature INVALID — does not match the embedded key {v.get('key_id', '?')} "
+                  "(forged, corrupted, or the digest was altered).")
+    else:
+        print("unsigned — sha256 integrity digest only (no signature block).")
+    return 0 if ok else 1
+
+
+def _ingest_warning(exc: Exception, *, reachable: "bool | None" = None,
+                    interactive: bool = True) -> str:
+    """One readable line for a failed startup knowledge-base ingest (non-fatal: the agent runs on
+    without RAG). The common first-launch cause is the Ollama daemon being down — the embedder
+    can't run — and the model health check that prints moments later already explains exactly
+    that, so this line says it plainly and defers to it instead of dumping a multi-line httpx
+    ConnectError repr right above the clean explanation of the same root cause. Headless (-p)
+    prints no health check, so the deferral clause is dropped there. Any other failure keeps its
+    exception, collapsed to one line. `reachable` overrides the live llms.ollama_reachable()
+    probe (offline tests)."""
+    if reachable is None:
+        from core.llms import ollama_reachable
+
+        reachable = ollama_reachable()
+    if not reachable:
+        return "knowledge-base ingest skipped (Ollama not reachable" + (
+            " — the model check below explains)" if interactive else ")"
+        )
+    from textutil import clip
+
+    detail = clip(exc, 300) or exc.__class__.__name__
+    return f"knowledge-base ingest failed, continuing without RAG: {detail}"
+
+
+def _read_piped_stdin() -> str:
+    """Piped stdin content for a headless turn, or "" when stdin is a TTY / closed / empty.
+    Read as BYTES (sys.stdin.buffer) and decoded as UTF-8 with errors='replace': Windows opens a
+    piped text-mode stdin as STRICT cp1252, so `git diff | saturn -p ...` would either mojibake
+    the diff or raise UnicodeDecodeError on the first non-cp1252 byte — and a blanket except
+    would then silently drop the whole pipe. A genuine OS read failure may still return "", but
+    a decode can never empty the input. Clamped to the same per-attachment budget as an @file
+    mention (mentions._MAX_FILE_CHARS — the one cap an attachment block honors), with the same
+    head-only truncation marker."""
+    try:
+        stdin = sys.stdin
+        if stdin is None or stdin.closed or stdin.isatty():
+            return ""
+        buffer = getattr(stdin, "buffer", None)
+        if buffer is not None:
+            # +1 past the budget detects truncation; ×4 because the budget is CHARS and UTF-8
+            # spends up to 4 bytes per char — reading only budget+1 BYTES could under-read a
+            # multi-byte stream and drop its tail without the truncation marker.
+            raw = buffer.read((mentions._MAX_FILE_CHARS + 1) * 4)
+            data = raw.decode("utf-8", errors="replace")
+        else:
+            # A replaced stdin with no byte layer (embedders, tests): already-decoded text,
+            # so there is no strict-decode hazard left to guard.
+            data = stdin.read(mentions._MAX_FILE_CHARS + 1)
+    except (OSError, ValueError, AttributeError):
+        return ""
+    if not data.strip():
+        return ""
+    if len(data) > mentions._MAX_FILE_CHARS:
+        data = data[: mentions._MAX_FILE_CHARS] + (
+            f"\n… [truncated — piped stdin exceeds {mentions._MAX_FILE_CHARS} chars]"
+        )
+    return data
+
+
+def main():
+    """CLI entry point: parse the command line, then route — the `verify` verb / --replay /
+    headless -p / the interactive TUI loop. The flag reference lives in `saturn --help`
+    (see _build_parser)."""
+    # `saturn verify <file>` is a VERB, not a flag — intercepted before argparse so the bare
+    # no-args invocation can stay "launch the TUI" without a positional colliding with it.
+    if len(sys.argv) > 1 and sys.argv[1] == "verify":
+        sys.exit(_verify_artifact(" ".join(sys.argv[2:])))
+
+    _args = _parse_cli()
 
     # --- replay path: render an exported run record and exit (no graph, no models) -----
     if _args.replay:
@@ -417,28 +591,33 @@ def main():
             sys.exit(1)
         print(_summary, file=sys.stderr) if _args.prompt else ui.note(_summary)
 
+    # --yolo: the CLI view of the gate policy — open the gate up front (threshold ->
+    # destructive) so gated calls never interrupt; same mechanism as /autoapprove. Honored in
+    # BOTH modes (after --policy, so an explicit per-run --yolo wins over a profile's
+    # threshold): interactively the status bar derives ⚠ GATE OFF straight from the live
+    # threshold, so no extra UI wiring is needed.
+    if _args.yolo:
+        from trust import policy
+
+        policy.set_gate_off(True)
+
     # The slow startup loading (knowledge-base ingest + graph build) runs while the ring art
     # animates in interactive mode, or directly (no TUI) in headless mode.
-    def _startup_load():
+    def _startup_load(interactive: bool = True):
         warn = None
         # Reconcile the knowledge base against the disk cache at startup: only new/changed
         # documents are embedded, the rest load from the persisted store. Non-fatal if it fails
-        # (e.g. embedding model not pulled) — search_knowledge_base just returns "no documents".
+        # (e.g. embedding model not pulled) — search_knowledge_base just returns "no documents";
+        # the warning is shaped by _ingest_warning (one line, daemon-down stated plainly).
         try:
             sync(verbose=False)
         except Exception as exc:
-            warn = f"knowledge-base ingest failed, continuing without RAG: {exc}"
+            warn = _ingest_warning(exc, interactive=interactive)
         return build_agent(), warn
 
     # --- headless path: one query, print answer, exit ---------------------------------
-    if _args.prompt:
-        if _args.yolo:
-            # The headless view of the gate policy: open the gate up front (threshold ->
-            # destructive) so gated calls never interrupt; same mechanism as /autoapprove.
-            import policy
-
-            policy.set_gate_off(True)
-        graph, ingest_warning = _startup_load()
+    if _args.prompt is not None:
+        graph, ingest_warning = _startup_load(interactive=False)
         if ingest_warning:
             print(ingest_warning, file=sys.stderr)
         tracer = Tracer(DB_PATH)
@@ -449,6 +628,17 @@ def main():
         attach_block, attached = mentions.expand(_args.prompt)
         if attached:
             state["attachments"] = attach_block
+        # Piped stdin is the other headless attachment channel (`git diff | saturn -p
+        # "review this change"`): clamped like an @file and appended as its own clearly-labeled
+        # block. A TTY / closed / empty stdin attaches nothing (see _read_piped_stdin).
+        piped = _read_piped_stdin()
+        if piped:
+            stdin_block = "### Piped input (stdin)\n```\n" + piped + "\n```"
+            state["attachments"] = (
+                state["attachments"] + "\n" + stdin_block
+                if state["attachments"]
+                else stdin_block
+            )
         thread_id = str(uuid.uuid4())
         run_id = tracer.start_run(thread_id, _args.prompt)
         config = {
@@ -469,7 +659,7 @@ def main():
             gate never arms headless) resumes unchanged via a bare True, which plan_gate
             tolerates by design."""
             if isinstance(value, dict) and value.get("type") == "approval_request":
-                import policy
+                from trust import policy
 
                 if policy.gate_off():
                     return True
@@ -496,6 +686,8 @@ def main():
         import json as _json
         import time as _time
 
+        from core.state import summarize_gates
+
         def _emit_json(payload: dict) -> None:
             print(_json.dumps(payload, ensure_ascii=False, default=str))
 
@@ -519,6 +711,11 @@ def main():
                         "plan": state.get("plan", []),
                         "tools_called": state.get("tools_called", []),
                         "tool_events": state.get("tool_events", []),
+                        # Human-gate record: how many calls were prompted + which tools were
+                        # denied (headless denies gated calls by default, so this is the record
+                        # of what the run was NOT allowed to do). Derived from the structured
+                        # gate_events accumulator — the same record /glass and exports read.
+                        "gates": summarize_gates(state.get("gate_events", [])),
                         "documents_retrieved": len(state.get("documents_retrieved", [])),
                         "iterations": state.get("iteration", 0),
                         "context_tokens": state.get("context_tokens", 0),
@@ -552,6 +749,20 @@ def main():
                 graph.checkpointer.delete_thread(thread_id)
             except Exception:
                 pass
+        # --export: write the run's audit export (signed when runtime.sign_exports is on) only
+        # AFTER the answer is out — a failed write must never cost the user the answer the turn
+        # already produced (error to stderr, exit 1; stdout stays the answer/JSON contract).
+        if _args.export:
+            from commands.trace import export_run
+
+            try:
+                dest, _payload = export_run(
+                    DB_PATH, run_id, dest=Path(_args.export).expanduser()
+                )
+                print(f"run #{run_id} exported -> {dest}", file=sys.stderr)
+            except Exception as exc:
+                print(f"error: could not write export {_args.export}: {exc}", file=sys.stderr)
+                sys.exit(1)
         return
 
     # --- interactive path -------------------------------------------------------------
@@ -564,8 +775,8 @@ def main():
     state = _initial_state()
 
     # Startup header — tier/model / tool count / corpus size, like a tool's first line.
-    from llms import model_id, check_models
-    from registry import tool as _tools
+    from core.llms import model_id, check_models
+    from tools.registry import tool as _tools
     from stores.rag import iter_documents
 
     cfg = get_config()
@@ -574,19 +785,28 @@ def main():
         f"{cfg.active_tier}:{model_id('tool_caller')}", len(_tools), n_docs, DB_PATH
     )
 
+    # First-run sentinel, checked early: when it is absent, /config setup auto-runs just below
+    # (once the command context exists) and reports every gap once, formatted — so the standalone
+    # warning pass here is SKIPPED on first launch (the same problems would otherwise print twice
+    # on the install's very first screen). The sentinel lives in the database directory so
+    # deleting the database also resets first-run (a full reinstall should re-check).
+    _setup_sentinel = get_config().path("database") / ".setup_done"
+    _first_run = not _setup_sentinel.exists()
+
     # Health-check the active tier up front: a down daemon / un-pulled model / missing cloud key is
     # surfaced now with an actionable fix, rather than as a generic turn failure on the first query.
     # Non-fatal — the REPL still starts (commands work; an affected turn fails cleanly).
-    for problem in check_models():
-        ui.warn(problem)
+    if not _first_run:
+        for problem in check_models():
+            ui.warn(problem)
     # MCP servers connected (or failed) while registry imported — surface any problems with the
     # rest of the startup health report. /mcp shows the full status any time.
-    import mcp_client
+    from tools import mcp_client
 
     for problem in mcp_client.problems():
         ui.warn(problem)
     # User-defined slash-command templates that failed to load (collisions, empty files) — same
-    # treatment: warn now, never block. /commands shows the full status any time.
+    # treatment: warn now, never block. /help lists the templates that did load.
     from commands.user_commands import problems as _user_cmd_problems
 
     for problem in _user_cmd_problems():
@@ -601,13 +821,12 @@ def main():
         session_started_at=datetime.now().isoformat(),  # session boundary for /cost
     )
 
-    # First-run setup check: if the sentinel hasn't been written yet, auto-run /config setup so a
-    # fresh install surfaces any gaps (Ollama down, models not pulled, keys missing) before the
-    # user's first query, rather than as a confusing turn failure. Non-fatal: a dispatch error
-    # mustn't prevent the REPL from starting. The sentinel lives in the database directory so
-    # deleting the database also resets first-run (a full reinstall should re-check).
-    _setup_sentinel = get_config().path("database") / ".setup_done"
-    if not _setup_sentinel.exists():
+    # First-run setup check: if the sentinel hasn't been written yet (checked above, where it
+    # also suppresses the duplicate warning pass), auto-run /config setup so a fresh install
+    # surfaces any gaps (Ollama down, models not pulled, keys missing) before the user's first
+    # query, rather than as a confusing turn failure. Non-fatal: a dispatch error mustn't
+    # prevent the REPL from starting.
+    if _first_run:
         ui.note("First launch — running /config setup (won't repeat; re-run any time with /config setup).")
         try:
             commands.dispatch("/config setup", cmd_ctx)
@@ -623,10 +842,13 @@ def main():
     # queue follow-up queries / slash commands without waiting (drained between turns below). The Esc
     # key acts on whatever is typed: with text, it's a mid-turn steering correction (injected into
     # the running turn at the next step boundary via plan_gate, acknowledged by ui.steer_note); with
-    # an empty line, it asks the plan_gate to pause for plan review. The in-progress line + queue
-    # depth render live in the status bar (on_change -> ui). No-ops cleanly off-TTY (see
-    # typeahead.InputQueue).
-    input_queue = InputQueue(on_change=ui.set_input_preview, on_steer=ui.steer_note)
+    # an empty line, it asks the plan_gate to pause for plan review (acknowledged immediately by
+    # ui.pause_note — the gate itself may be many seconds away on a local model). The in-progress
+    # line + queue depth render live in the status bar (on_change -> ui). No-ops cleanly off-TTY
+    # (see typeahead.InputQueue).
+    input_queue = InputQueue(
+        on_change=ui.set_input_preview, on_steer=ui.steer_note, on_pause=ui.pause_note
+    )
     pause_controller = get_pause_controller()
 
     # Dev-only graph render. Import lazily here when enabling: utilities/ is deliberately not

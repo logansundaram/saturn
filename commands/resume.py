@@ -1,4 +1,5 @@
 from commands._framework import command, _print
+from commands._utils import is_remove_verb
 from commands._session import (
     _autosave_file,
     _read_session,
@@ -28,7 +29,8 @@ one command, not three.)
                             per-turn scratch (plan, iteration, tool results) is rebuilt fresh.
   /resume list              list the named sessions on disk (numbered).
   /resume delete <name|n>   delete a named session — by name or its /resume list number.
-                            (aliases: rm, del. The autosave slot can't be deleted from here.)
+                            (any removal verb works: delete/del/rm/remove/forget/drop. The
+                            autosave slot can't be deleted from here.)
   /resume rename <old> <new>  rename a named session.
 
 Restoring rebuilds a fresh state seeded with the saved messages — config, model bindings, and
@@ -47,7 +49,7 @@ def _resume(ctx, args):
         return _save_named(ctx, args[1:])
     if args and args[0].lower() in ("list", "--list", "-l"):
         return _list_saved()
-    if args and args[0].lower() in ("delete", "del", "rm", "remove", "--delete"):
+    if args and (is_remove_verb(args[0]) or args[0].lower() == "--delete"):
         return _delete_named(args[1:])
     if args and args[0].lower() in ("rename", "mv", "--rename"):
         return _rename_named(args[1:])

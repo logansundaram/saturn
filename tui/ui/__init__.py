@@ -20,8 +20,8 @@ not a chatbot. Dense, fast, keyboard-first, low-noise, inspectable. The aestheti
   - The `tools` node renders a **tool-I/O sub-tree** under its header: one `├─ name(args)  dur`
     branch per call, the call repr sized to the terminal width and durations column-aligned. Raw
     result previews are **hidden** by default (noisy JSON) — a failed call still shows its error
-    inline (wrapped under the rail with a hanging indent), and `/calls` or `/trace full` surfaces
-    full outputs on demand.
+    inline (wrapped under the rail with a hanging indent), and `/trace calls` or `/trace full`
+    surfaces full outputs on demand.
   - LLM nodes annotate their trace line with the live **metrics for that step** (iteration,
     context tokens ingested, tok/s) — rendered **dim**: metrics are tertiary and must never
     out-shout the trace they ride on, let alone the response. The eye flows response → trace →
@@ -85,7 +85,7 @@ from .response import response, ResponseStream
 # On-demand readouts + log lines.
 from .readouts import (
     show_system_metrics, show_context, show_models,
-    note, warn, steer_note, echo_queued,
+    note, warn, steer_note, pause_note, echo_queued,
 )
 
 # Shared listing vocabulary (the section rule + aligned table every readout command uses).
@@ -102,6 +102,6 @@ __all__ = [
     "ask_approval",
     "response", "ResponseStream",
     "show_system_metrics", "show_context", "show_models",
-    "note", "warn", "steer_note", "echo_queued",
+    "note", "warn", "steer_note", "pause_note", "echo_queued",
     "section", "table", "risk_style",
 ]

@@ -73,9 +73,15 @@ def _workspace_listing(workspace: Path) -> list[str]:
     "Survey the workspace and draft SATURDAY.md (standing per-workspace instructions).",
     usage="/init [--force]",
     details="""
-Creates SATURDAY.md at the workspace root — the per-workspace instructions file (the CLAUDE.md
-equivalent). The grounding node loads it into context EVERY turn, so whatever it says is standing
-guidance for the agent: what this workspace is for, its layout, your conventions.
+The workspace is Saturn's sandboxed working area — the directory the file tools read and write,
+at paths.workspace in config.yaml (database/workspace under the install by default). It is NOT
+the directory you launched Saturn from, and /init never touches your current directory. To get
+real files into Saturn's view: ingest them into the knowledge base with /docs add <path>, drop a
+file onto the prompt (drag-and-drop offers ingest/attach), or copy them into the workspace.
+
+/init creates SATURDAY.md at that workspace root — the per-workspace instructions file (the
+CLAUDE.md equivalent). The grounding node loads it into context EVERY turn, so whatever it says
+is standing guidance for the agent: what this workspace is for, its layout, your conventions.
 
 /init surveys the workspace (file listing + the manifest's file summaries) and drafts the file
 with the utility model; if the workspace is empty or the model is unavailable, it writes a
@@ -92,7 +98,8 @@ def _init(ctx, args):
     workspace.mkdir(parents=True, exist_ok=True)
     target = workspace / "SATURDAY.md"
     if target.exists() and not force:
-        _print("  SATURDAY.md already exists — edit it directly, or re-draft with /init --force.")
+        _print(f"  SATURDAY.md already exists at {target} — edit it directly, or re-draft "
+               "with /init --force.")
         return
 
     listing = _workspace_listing(workspace)
@@ -102,7 +109,7 @@ def _init(ctx, args):
     if [e for e in listing if e != "SATURDAY.md"]:
         try:
             from langchain.messages import HumanMessage
-            from llms import get_model
+            from core.llms import get_model
             from stores.document_registry import read_workspace_manifest
 
             _print("  surveying the workspace and drafting SATURDAY.md…")
@@ -126,5 +133,9 @@ def _init(ctx, args):
 
     target.write_text(content or _TEMPLATE, encoding="utf-8")
     kind = "drafted from the workspace contents" if content else "template"
-    _print(f"  wrote {target.name} ({kind}).")
+    # Full absolute path on purpose: the workspace is Saturn's sandboxed area, not the cwd a
+    # terminal user expects — a bare basename here left people unable to find the file they
+    # were just told to edit.
+    _print(f"  wrote {target} ({kind}).")
+    _print("  this is Saturn's sandboxed workspace, not your current directory.")
     _print("  it now loads into context every turn — open it and make it yours.")

@@ -142,11 +142,11 @@ def _saturn_cells(progress: float, final: bool):
 
 # Continuous loop: a fixed-length lit arc (with a bright comet head) chases a travelling gap
 # around the ring, so it reads as the ring perpetually drawing itself out — seamless, no snap
-# back to empty. `tail` lets the closing beat fill the gap to a complete ring.
+# back to empty.
 _ANIM_TAIL = 2 * math.pi * 0.80
 
 
-def _saturn_anim_cells(phase: float, tail: float = _ANIM_TAIL):
+def _saturn_anim_cells(phase: float):
     head = phase % (2 * math.pi)
 
     def behind(t):                           # angular distance back from the head, in [0, 2π)
@@ -154,14 +154,14 @@ def _saturn_anim_cells(phase: float, tail: float = _ANIM_TAIL):
 
     def main_style(t):
         d = behind(t)
-        if d > tail:                         # the travelling, un-drawn gap
+        if d > _ANIM_TAIL:                   # the travelling, un-drawn gap
             return None
         if d < 0.22:                         # bright comet head
             return "bold white"
         return "bold bright_cyan"
 
     def guide_vis(i, t):
-        return behind(t) <= tail and i % 7 < 4
+        return behind(t) <= _ANIM_TAIL and i % 7 < 4
 
     return _saturn_grid(main_style, guide_vis)
 
@@ -290,16 +290,12 @@ def splash(work=None):
     try:
         sys.stdout = sys.stderr = captured
         worker.start()
-        # Loop the draw-out until the work is done (or, with no work, a couple of laps).
+        # Loop the draw-out until the work is done (or, with no work, a couple of laps). No
+        # closing beat after that: once loading finishes, the settled full ring below lands
+        # immediately rather than holding the launch for an ornamental fill.
         while worker.is_alive() or (work is None and phase < 4 * math.pi):
             player.draw(_saturn_anim_cells(phase))
             time.sleep(0.022)
-            phase += step
-        # Closing beat: fill the travelling gap so the ring completes to a whole circle.
-        for k in range(20):
-            tail = _ANIM_TAIL + (2 * math.pi - _ANIM_TAIL) * (k + 1) / 20
-            player.draw(_saturn_anim_cells(phase, tail=tail))
-            time.sleep(0.018)
             phase += step
     except Exception:
         pass  # a half-drawn splash must never break startup; fall through to the still frame

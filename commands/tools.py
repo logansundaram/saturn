@@ -1,5 +1,5 @@
 from commands._framework import command
-from registry import tool as TOOLS, risk_of
+from tools.registry import tool as TOOLS, risk_of
 
 
 @command(

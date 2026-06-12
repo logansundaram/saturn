@@ -41,8 +41,8 @@ Examples:
 """,
 )
 def _mcp(ctx, args):
-    import mcp_client
-    from registry import risk_of
+    from tools import mcp_client
+    from tools.registry import risk_of
     from tui import ui
 
     if args and args[0].lower() in ("reload", "reconnect", "refresh"):

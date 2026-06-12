@@ -23,6 +23,7 @@ def _ctx(messages, **scratch):
         "tool_results": ["web_search(q) -> r"],
         "documents_retrieved": ["d"],
         "tool_events": [{"name": "web_search"}],
+        "gate_events": [{"decision": "approved", "mode": "prompt"}],
     }
     return SimpleNamespace(state=state)
 
@@ -49,6 +50,9 @@ def test_drop_last_turn_clears_per_turn_scratch(isolated_paths):
     assert s["current_query"] == ""
     assert s["plan"] == [] and s["tools_called"] == [] and s["tool_results"] == []
     assert s["documents_retrieved"] == [] and s["tool_events"] == []
+    # The human-gate record goes too: "gate_events empty" must always mean "never asked" — a
+    # rewound turn's decisions can't linger for /glass or an export to misread.
+    assert s["gate_events"] == []
     assert s["iteration"] == 0 and s["agent_nudges"] == 0 and s["replans"] == 0
 
 
@@ -69,8 +73,8 @@ def test_drop_last_turn_skips_steer_and_summary_boundaries(isolated_paths):
     """A standalone mid-turn steer note and a compaction summary are HumanMessages but NOT turn
     boundaries: rewinding a steered turn must drop the whole turn from its real question, and a
     summary must never be mistaken for a turn to drop."""
-    from compaction import _SUMMARY_PREFIX
-    from state import STEER_PREFIX
+    from core.compaction import _SUMMARY_PREFIX
+    from core.state import STEER_PREFIX
 
     msgs = [
         HumanMessage(content=f"{_SUMMARY_PREFIX}:\nolder turns, summarized"),

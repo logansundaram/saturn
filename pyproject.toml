@@ -71,18 +71,13 @@ Issues = "https://github.com/logansundaram/saturn/issues"
 saturn = "agent:main"
 
 [tool.setuptools]
-# The repo is deliberately flat (see CLAUDE.md): runtime modules at the root, a few
-# subpackages. Dev-only artifacts (benchmark.py, utilities/, tests/) are not shipped.
-py-modules = [
-    "agent", "budget", "compaction", "config", "diag", "egress", "env_keys",
-    "glassbox", "interrupts", "llms", "mcp_client", "mentions", "messages",
-    "plan_ops", "policy", "quarantine", "receipt", "redaction", "registry",
-    "signing", "state", "textutil", "toolspec", "trust_report", "typeahead",
-]
+# Root holds only entry points + foundations (see CLAUDE.md); everything else lives in the
+# functional packages below. Dev-only artifacts (benchmark.py, utilities/, tests/) are not shipped.
+py-modules = ["agent", "config", "diag", "env_keys", "textutil"]
 
 [tool.setuptools.packages.find]
-include = ["commands*", "node_registry*", "stores*", "tool_registry*", "tui*"]
-namespaces = true  # node_registry/stores/tool_registry/tui are implicit namespace packages
+include = ["commands*", "core*", "trust*", "tools*", "nodes*", "stores*", "tui*"]
+namespaces = true  # stores/tui are implicit namespace packages (no __init__.py)
 
 [tool.setuptools.data-files]
 # Lands at <venv>/share/saturn/ — config.py seeds SATURDAY_HOME/config.yaml from it on first run.

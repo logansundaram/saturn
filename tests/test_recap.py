@@ -1,12 +1,12 @@
-"""node_registry/ground._recent_exchanges — the Q&A recap the planner/synthesizer (which read
+"""nodes/ground._recent_exchanges — the Q&A recap the planner/synthesizer (which read
 `context`, not raw `messages`) resolve follow-ups against. Pairing the wrong question with the
 latest answer corrupts every downstream node, so the boundary rules are pinned here."""
 
 from langchain.messages import AIMessage, HumanMessage
 
-from compaction import _SUMMARY_PREFIX
-from node_registry.ground import _recent_exchanges
-from state import STEER_PREFIX
+from core.compaction import _SUMMARY_PREFIX
+from nodes.ground import _recent_exchanges
+from core.state import STEER_PREFIX
 
 
 def test_pairs_questions_with_final_answers():

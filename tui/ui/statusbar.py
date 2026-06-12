@@ -156,7 +156,7 @@ class _StatusBar:
         # counter). Only shown once non-zero, so a fully-local session stays calm; it's the live
         # twin of /privacy egress, and the whole point of the privacy proof point being *visible*.
         try:
-            import egress as _eg
+            from trust import egress as _eg
             _ne = _eg.count()
         except Exception:
             _ne = 0
@@ -185,6 +185,12 @@ class _StatusBar:
             if m.vram_used_gb is not None and m.total_vram_gb:
                 bar.append("  ", style=_DIM)
                 _append_meter(bar, "vram", m.vram_used_gb / m.total_vram_gb * 100)
+
+        # ── key legend ── the turn-time keys, taught ambiently while they're usable. Trails the
+        # whole line ON PURPOSE: the bar trims from the right edge on a narrow terminal (no-wrap
+        # + ellipsis), so the hint is the first thing sacrificed — never the progress or gauges.
+        zone()
+        bar.append("esc pause · ctrl-c cancel", style=_DIM)
         return bar
 
 
@@ -243,7 +249,7 @@ def reset_turn() -> None:
     # its previous value rather than being forced to 0 — readers treat 0 as "unknown", and a
     # forced 0 would make events_since(0) attribute the WHOLE session's egress to this turn.
     try:
-        import receipt
+        from trust import receipt
 
         receipt.reset_turn()
     except Exception:

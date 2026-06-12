@@ -19,14 +19,17 @@ database/db.sqlite
 database/db.sqlite-wal
 database/db.sqlite-shm
 
-# First-run setup sentinel — runtime state written on first launch; not source.
+# First-run / first-use sentinels — runtime state written on first launch/use; not source.
 database/.setup_done
+database/.gate_seen
+database/.hint_*
 
 # User data that must survive /update (git pull): saved sessions (named /save files + the
-# /resume autosave slot), the persisted /risk + /allow decisions, the /undo snapshots, saved
-# plan recipes, and user-defined slash-command templates.
+# /resume autosave slot), the persisted policy decisions (/policy risk --save + /policy allow),
+# the /undo snapshots, and user-defined slash-command templates.
 # Ignoring the whole paths means a future tracked file can never collide with a user's local
 # one and break the ff-only pull — user-generated artifacts live ONLY in ignored paths.
+# (database/recipes/ kept ignored for installs that predate the plan-recipes cut.)
 database/sessions/
 database/permissions.json
 database/snapshots/

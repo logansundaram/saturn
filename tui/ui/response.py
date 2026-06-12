@@ -15,12 +15,9 @@ from ._base import (
 from .statusbar import _live_stop
 
 
-def _turn_summary_parts() -> list[str]:
-    """The post-response receipt: a permanent one-line echo of the (transient) status bar's run
-    stats — the bar vanishes when the turn ends, so this is what survives in the scrollback.
-    With `runtime.receipt` on (default) it also carries the TRUST segment (receipt.py):
-    `local-only` or the turn's egress summary, blocked attempts, and how many calls faced the
-    approval gate — every answer proves the posture, not just /privacy egress on demand."""
+def _stats_parts() -> list[str]:
+    """The run-stats half of the receipt: a permanent echo of the (transient) status bar — the
+    bar vanishes when the turn ends, so this is what survives in the scrollback. Always dim."""
     elapsed = time.perf_counter() - _base._turn_start if _base._turn_start else 0.0
     status = _base._status
     n = status["tools"]
@@ -31,14 +28,86 @@ def _turn_summary_parts() -> list[str]:
     window = status["ctx_window"]
     if window and status["ctx_used"]:
         parts.append(f"ctx {status['ctx_used'] / window * 100:.0f}%")
+    return parts
+
+
+def _trust_spans() -> list:
+    """The trust half of the receipt (`runtime.receipt`, default on): `local-only` or the turn's
+    egress summary, blocked attempts, and how many calls faced the approval gate, as tagged
+    `(text, kind)` spans (receipt.turn_spans — which also guards an unusable turn mark by
+    rendering the honest unknown, never 'local-only' over a slice that may be missing sends)."""
     try:
-        import receipt
+        from trust import receipt
 
         if receipt.enabled():
-            parts += receipt.turn_parts(receipt.turn_mark(), status.get("gates", 0))
+            return receipt.turn_spans(receipt.turn_mark(), _base._status.get("gates", 0))
     except Exception:
         pass  # the receipt is additive — it must never cost the stats line
-    return parts
+    return []
+
+
+# Trust-span kind -> semantic style: the same green/yellow/red vocabulary the Glass Box colors
+# the identical facts with — the flagship per-answer claim must not render with the weight of a
+# tok/s gauge. `gated` stays dim (a count, not a signal — the human already approved those);
+# `unknown` is yellow (the slice may hide a send, like the Glass Box's truncated-record caveat).
+_TRUST_STYLE = {"local": "green", "sent": "yellow", "blocked": "bold red",
+                "gated": _DIM, "unknown": "yellow"}
+
+# One-time discovery hints (receipt.take_hint — sentinel-backed, once per install):
+# the post-first-answer line teaching the inspection surfaces, and the receipt tail pointing at
+# the Glass Box the first time a receipt actually shows egress or a gated count.
+_FIRST_ANSWER_HINT = ("see this run: /trace · answer provenance: /glass · "
+                      "what left your machine: /privacy egress")
+_GLASS_HINT = "/glass: answer provenance"
+
+
+def _print_receipt() -> None:
+    """The one-line receipt under every answer: the dim run stats, then the trust segment as
+    semantically-colored spans. The plain (no-rich) path prints the identical text, unstyled.
+    The first time the trust segment shows egress or a gated count, a dim `/glass` pointer is
+    appended once per install."""
+    stats = _stats_parts()
+    spans = _trust_spans()
+    tail = None
+    if any(kind in ("sent", "blocked", "gated") for _, kind in spans):
+        try:
+            from trust import receipt
+
+            if receipt.take_hint("glass"):
+                tail = _GLASS_HINT
+        except Exception:
+            pass
+    if _RICH:
+        line = Text("  ╶ " + " · ".join(stats), style=_DIM)
+        for text, kind in spans:
+            line.append(" · ", style=_DIM)
+            line.append(text, style=_TRUST_STYLE.get(kind, _DIM))
+        if tail:
+            line.append(" · " + tail, style=_DIM)
+        _console.print(line)
+    else:
+        parts = stats + [text for text, _ in spans] + ([tail] if tail else [])
+        print("  ╶ " + " · ".join(parts))
+
+
+def _first_answer_hint() -> None:
+    """After the very first answer of an install, one dim discovery line under the receipt
+    pointing at the inspection surfaces. Never repeats (sentinel via receipt.take_hint)."""
+    try:
+        from trust import receipt
+
+        due = receipt.take_hint("first_answer")
+    except Exception:
+        due = False
+    if not due:
+        return
+    if _RICH:
+        t = Text()
+        t.append("  · ", style=_DIM)
+        t.append(_FIRST_ANSWER_HINT, style=_DIM)
+        _console.print(t)
+    else:
+        print(f"  · {_FIRST_ANSWER_HINT}")
 
 
 def response(text: str) -> None:
@@ -64,7 +133,8 @@ def response(text: str) -> None:
             # answer over formatting. markup=False so brackets aren't eaten as Rich tags.
             _console.print(text, markup=False)
         _console.print()  # let the answer breathe before the receipt
-        _console.print(Text("  ╶ " + " · ".join(_turn_summary_parts()), style=_DIM))
+        _print_receipt()
+        _first_answer_hint()
         _console.print()  # trailing whitespace before the next prompt
     else:
         print()
@@ -72,7 +142,8 @@ def response(text: str) -> None:
         print()
         print(text)
         print()
-        print("  ╶ " + " · ".join(_turn_summary_parts()))
+        _print_receipt()
+        _first_answer_hint()
         print()
 
 
@@ -186,7 +257,8 @@ class ResponseStream:
             except Exception:
                 _console.print(text, markup=False)
             _console.print()
-            _console.print(Text("  ╶ " + " · ".join(_turn_summary_parts()), style=_DIM))
+            _print_receipt()
+            _first_answer_hint()
             _console.print()
         else:
             print()  # close the typed-out line
@@ -196,7 +268,8 @@ class ResponseStream:
             if text.rstrip() != streamed and text.startswith(streamed):
                 print(text[len(streamed):].strip("\n"))
                 print()
-            print("  ╶ " + " · ".join(_turn_summary_parts()))
+            _print_receipt()
+            _first_answer_hint()
             print()
 
     def abort(self) -> None:

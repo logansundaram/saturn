@@ -18,14 +18,15 @@ demand, now.
 
 Lossy by nature — it trades transcript detail for space. Facts, decisions, your stated
 preferences, and open threads are preserved; verbatim phrasing and tool-output detail are not. The
-durable trace (/trace, /calls) is untouched. To clear the conversation entirely instead, use /reset.
+durable trace (/trace, /trace calls) is untouched. To clear the conversation entirely instead,
+use /reset.
 
 Example:
   /compact
 """,
 )
 def _compact(ctx, args):
-    from compaction import summarize_messages
+    from core.compaction import summarize_messages
 
     msgs = ctx.state.get("messages", [])
     if len(msgs) < 2:

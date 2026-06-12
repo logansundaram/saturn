@@ -2,7 +2,7 @@
 
 import pytest
 
-import redaction
+from trust import redaction
 from config import get_config
 
 

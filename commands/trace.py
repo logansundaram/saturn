@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import sys
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-import signing
+from trust import signing
 from commands._framework import command, _print
 from stores.trace import decode_json, parse_ts
 from textutil import clip as _clip, fmt_args
@@ -179,10 +180,46 @@ _saturn_version = signing.saturn_version
 _canonical_digest = signing.canonical_digest
 
 
+def _answer_attestation(run, events) -> dict:
+    """Glass Box v2 — the answer attestation: this run's answer-level provenance (per-source
+    origin/trust/injection/taint, the human gate decisions, groundedness escalations) as a plain
+    dict, embedded INSIDE the signed body so the export's digest + signature COMMIT it.
+    Reconstructed from the SAME rows the export carries, exactly the way /glass #id does
+    (glassbox.build_from_record) — and when a recorded delta failed to decode (the trace's
+    _DATA_CAP truncation) it carries complete:false, the same honesty the live surface renders.
+    Best-effort: an attestation failure must never cost the user the export itself — it degrades
+    to an explicit error marker (complete:false), never a silent omission."""
+    from trust import glassbox
+
+    _rid, query, _started, _ended, _status, response = run
+    deltas = []
+    truncated = False
+    for _seq, _ts, _node, _summary, data in events:
+        d = decode_json(data, None)
+        if d is None and data:
+            truncated = True
+            continue
+        if isinstance(d, dict):
+            deltas.append(d)
+    try:
+        gb = glassbox.build_from_record(query, response, deltas, complete=not truncated)
+        return gb.to_dict()
+    except Exception as exc:
+        import diag
+
+        diag.log(f"export answer_attestation failed: {exc}")
+        return {"error": f"attestation could not be built: {exc}", "complete": False}
+
+
 def _export_payload(run, events, calls) -> dict:
+    from trust import egress
+
     run_id, query, started_at, ended_at, status, response = run
-    return {
+    payload = {
         "saturn_trace_export": 1,
+        # The versioned artifact-format marker the standalone verify spec pins
+        # (utilities/VERIFY_SPEC.md); verify flows accept exports with and without it.
+        "format": signing.ARTIFACT_FORMAT,
         "saturn_version": _saturn_version(),
         "exported_at": datetime.now().astimezone().isoformat(timespec="seconds"),
         "run": {
@@ -219,7 +256,19 @@ def _export_payload(run, events, calls) -> dict:
             }
             for seq, ts, node, model, dur, p_tok, o_tok, inp, out, call_status in calls
         ],
+        # Inside the body ON PURPOSE: the integrity digest (and signature) are computed over the
+        # whole payload below, so tampering with the attestation breaks verification.
+        "answer_attestation": _answer_attestation(run, events),
     }
+    # Egress-chain anchor: the durable egress log's chain head at export time, INSIDE the signed
+    # body — the export's digest + signature commit the tip, so a later tail-truncation of
+    # egress.log (the one tamper the self-contained chain can't expose) contradicts this artifact:
+    # a verifier confirms the anchored tip still appears in the chain (saturn_verify.py
+    # --expect-tip). Absent — never a fake value — when there is no durable log / the knob is off.
+    anchor = egress.log_tip()
+    if anchor:
+        payload["egress_anchor"] = anchor
+    return payload
 
 
 def _export_markdown(payload: dict) -> str:
@@ -256,42 +305,30 @@ def _export_markdown(payload: dict) -> str:
     return "\n".join(lines)
 
 
-def _export(ctx, args):
-    fmt_md = False
-    run_id: Optional[int] = None
-    out_path: Optional[str] = None
-    it = iter(args)
-    for a in it:
-        low = a.lower()
-        if low in ("--md", "-m", "md", "markdown"):
-            fmt_md = True
-        elif low in ("-o", "--out", "--output"):
-            out_path = next(it, None)
-        elif low in ("-r", "--run"):
-            rid = _to_int(next(it, ""))
-            if rid is not None:
-                run_id = rid
-        elif a.startswith("#") or a.lstrip("+-").isdigit():
-            rid = _to_int(a)
-            if rid is not None:
-                run_id = rid
-        else:
-            _print(f"  ignoring unrecognized argument: {a!r}")
-
-    with _connect(ctx.db_path) as conn:
+def export_run(
+    db_path,
+    run_id: Optional[int] = None,
+    dest: Optional[Path] = None,
+    fmt_md: bool = False,
+) -> "tuple[Path, dict]":
+    """THE one export-payload builder + writer — shared by the /trace export handler and the
+    headless `saturn -p ... --export FILE` flag, so the two surfaces can never drift onto
+    different payloads. `run_id=None` exports the latest run; `dest=None` writes the default
+    logging/exports/run_<id>.<ext>. Returns (path written, payload as written). Raises
+    LookupError (no such run) / OSError (write failed) — each caller renders those its own
+    way (REPL note vs. stderr + exit code)."""
+    with _connect(db_path) as conn:
         if run_id is None:
             row = conn.execute("SELECT MAX(run_id) FROM runs").fetchone()
             run_id = row[0] if row else None
             if run_id is None:
-                _print("  (no runs recorded yet)")
-                return
+                raise LookupError("(no runs recorded yet)")
         run = conn.execute(
             "SELECT run_id, query, started_at, ended_at, status, response FROM runs WHERE run_id = ?",
             (run_id,),
         ).fetchone()
         if not run:
-            _print(f"  no run #{run_id} — try /trace -l to list recorded runs.")
-            return
+            raise LookupError(f"no run #{run_id} — try /trace -l to list recorded runs.")
         events = conn.execute(
             "SELECT seq, ts, node, summary, data FROM events WHERE run_id = ? ORDER BY seq, id",
             (run_id,),
@@ -309,41 +346,91 @@ def _export(ctx, args):
 
     from config import get_config
 
-    if out_path:
-        dest = Path(out_path).expanduser()
-    else:
+    if dest is None:
         ext = "md" if fmt_md else "json"
         dest = get_config().path("exports") / f"run_{run_id}.{ext}"
-    try:
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        if fmt_md:
-            dest.write_text(_export_markdown(payload), encoding="utf-8")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if fmt_md:
+        dest.write_text(_export_markdown(payload), encoding="utf-8")
+    else:
+        digest = _canonical_digest(payload)
+        payload["integrity"] = {"algorithm": "sha256", "digest": digest}
+        # Sign the digest (provenance, on top of the digest's tamper-evidence). The signature
+        # block is NOT part of the canonical bytes the digest covers — it's added after — so
+        # /trace verify recomputes the same digest, then checks the signature over it.
+        if bool(get_config().get("runtime.sign_exports", True)):
+            signed = signing.sign_digest(digest)
+            if signed:
+                payload["signature"] = signed
+            elif signing.available():
+                # Signing was POSSIBLE here but FAILED (unreadable key file etc. — sign_digest
+                # already diag-logged why). Say so in ONE line: silence would let a CI pipeline
+                # treat a should-have-been-signed artifact as merely-unsigned and "verify" it
+                # green. stderr, so a headless --export keeps stdout to the answer/JSON contract.
+                print("  export written UNSIGNED — signing failed; see diag.log",
+                      file=sys.stderr)
+        dest.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+    return dest, payload
+
+
+def _export(ctx, args):
+    fmt_md = False
+    run_id: Optional[int] = None
+    out_path: Optional[str] = None
+    it = iter(args)
+    for a in it:
+        low = a.lower()
+        if low in ("--md", "-m", "md", "markdown"):
+            fmt_md = True
+        elif low in ("-o", "--out", "--output"):
+            out_path = next(it, None)
+            # Same guard as /privacy report and /policy export: a dangling -o must not silently
+            # write the default, and a flag-shaped "path" (-o --md) is a swallowed flag, not a
+            # destination — refuse both before any DB/file work.
+            if out_path is None or out_path.startswith("-"):
+                _print("  usage: /trace export [#id] [--md] [-o <path>] — -o needs a path; "
+                       "nothing written")
+                return
+        elif low in ("-r", "--run"):
+            rid = _to_int(next(it, ""))
+            if rid is not None:
+                run_id = rid
+        elif a.startswith("#") or a.lstrip("+-").isdigit():
+            rid = _to_int(a)
+            if rid is not None:
+                run_id = rid
         else:
-            digest = _canonical_digest(payload)
-            payload["integrity"] = {"algorithm": "sha256", "digest": digest}
-            # Sign the digest (provenance, on top of the digest's tamper-evidence). The signature
-            # block is NOT part of the canonical bytes the digest covers — it's added after — so
-            # /trace verify recomputes the same digest, then checks the signature over it.
-            signed = None
-            if bool(get_config().get("runtime.sign_exports", True)):
-                signed = signing.sign_digest(digest)
-                if signed:
-                    payload["signature"] = signed
-            dest.write_text(
-                json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
-            )
+            _print(f"  ignoring unrecognized argument: {a!r}")
+
+    try:
+        dest, payload = export_run(
+            ctx.db_path,
+            run_id,
+            dest=Path(out_path).expanduser() if out_path else None,
+            fmt_md=fmt_md,
+        )
+    except LookupError as e:
+        _print(f"  {e}")
+        return
     except OSError as e:
-        _print(f"  could not write {dest}: {e}")
+        _print(f"  could not write export: {e}")
         return
 
+    run_id = payload["run"]["run_id"]
     _print(f"  run #{run_id} exported -> {dest}")
     _print(f"    {len(payload['events'])} event(s), {len(payload['llm_calls'])} LLM call(s)")
     if not fmt_md:
         _print(f"    sha256 {payload['integrity']['digest']}")
         if payload.get("signature"):
             _print(f"    signed   ed25519 by key {payload['signature'].get('key_id', '?')}")
-            _print("    (anyone can verify content + signer offline: /trace verify <file>)")
+            _print("    (anyone can verify content + signer offline, WITHOUT Saturn:")
+            _print("     python utilities/saturn_verify.py <file> — spec: utilities/VERIFY_SPEC.md;")
+            _print("     or here: /trace verify <file>)")
         else:
+            from config import get_config
+
             _print("    (anyone can re-check it later: /trace verify <file>)")
             if bool(get_config().get("runtime.sign_exports", True)) and not signing.available():
                 _print("    (unsigned — install `cryptography` to sign exports: pip install cryptography)")
@@ -374,18 +461,23 @@ def export_rows(payload: dict):
 
 def render_export(path_str: str) -> bool:
     """Load an exported run record, verify its digest, and replay it via ui.show_run. Used by
-    `/trace replay <file>` and the `saturn --replay <file>` CLI flag. Returns False on a file
-    that can't be rendered (the CLI exits non-zero on it)."""
+    `/trace replay <file>` and the `saturn --replay <file>` CLI flag. Diagnostics (unreadable
+    file, not an export, the integrity/signature failure banners) go to STDERR so a piped
+    stdout stays the rendered run; returns False on a file that can't be rendered (the CLI
+    exits non-zero on it). Strict pass/fail lives in `saturn verify`, not here — a failed
+    digest still renders, loudly."""
     from tui import ui
 
     path = Path(path_str.strip('"')).expanduser()
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        # utf-8-sig: a BOM (PowerShell 5.1 redirection writes one) must not fail the read.
+        payload = json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError) as e:
-        _print(f"  could not read {path}: {e}")
+        print(f"  could not read {path}: {e}", file=sys.stderr)
         return False
     if not isinstance(payload, dict) or payload.get("saturn_trace_export") != 1:
-        _print(f"  {path.name} is not a Saturn trace export (see /trace export).")
+        print(f"  {path.name} is not a Saturn trace export (see /trace export).",
+              file=sys.stderr)
         return False
 
     # Integrity first — a replay states up front whether the record it renders is intact. A
@@ -397,15 +489,16 @@ def render_export(path_str: str) -> bool:
         if v["digest_ok"]:
             _print(f"  ✓ integrity verified — sha256 {v['computed_digest'][:16]}…")
         else:
-            _print(f"  ⨯ INTEGRITY FAILURE — {path.name} was modified after export "
-                   "(rendering anyway; do not treat it as an authentic record).")
+            print(f"  ⨯ INTEGRITY FAILURE — {path.name} was modified after export "
+                  "(rendering anyway; do not treat it as an authentic record).",
+                  file=sys.stderr)
         if v["signed"]:
             if v.get("signature_ok"):
                 mine = " (this machine)" if v.get("signer_is_local") else ""
                 _print(f"  ✓ signed — ed25519 key {v.get('key_id', '?')}{mine}")
             else:
-                _print(f"  ⨯ SIGNATURE INVALID — key {v.get('key_id', '?')} does not "
-                       "verify this record.")
+                print(f"  ⨯ SIGNATURE INVALID — key {v.get('key_id', '?')} does not "
+                      "verify this record.", file=sys.stderr)
     else:
         _print("  (no integrity digest — an unverifiable record; JSON exports carry one)")
 
@@ -414,6 +507,31 @@ def render_export(path_str: str) -> bool:
            f"(saturn {payload.get('saturn_version', '?')}, exported {payload.get('exported_at', '?')})")
     _print("")
     ui.show_run(run_tuple, rows)
+
+    # The answer attestation (Glass Box v2), rendered through the same glass view the live
+    # surface uses. The caption tracks the VERDICT computed above, never mere block presence:
+    # the failure banners go to STDERR, so a piped stdout transcript of a tampered export would
+    # otherwise carry only a trust-affirming header — the one false assurance this surface must
+    # never print. The block still renders (render-anyway is the replay philosophy), just never
+    # under a trust-affirming caption. A signature that cannot be checked (no digest to verify
+    # it over, or it does not verify) downgrades too — fail-closed, like the INCOMPLETE warning.
+    att = payload.get("answer_attestation")
+    if isinstance(att, dict):
+        from trust import glassbox
+
+        _print("")
+        verify_failed = (v["has_integrity"] and not v["digest_ok"]) or (
+            v["signed"] and not v.get("signature_ok", False))
+        if verify_failed:
+            _print("  ⚠ UNVERIFIED answer attestation — this export FAILED verification "
+                   "(digest mismatch/signature invalid); do not trust these claims")
+        elif v["digest_ok"] and v["signed"]:
+            _print("  (signed answer attestation — committed by this export's digest + signature)")
+        elif v["digest_ok"]:
+            _print("  (answer attestation — committed by this export's integrity digest; unsigned)")
+        else:
+            _print("  (answer attestation — UNVERIFIED: this export carries no integrity digest)")
+        ui.show_glassbox(glassbox.from_dict(att))
     return True
 
 
@@ -430,7 +548,8 @@ def _verify(ctx, args):
         return
     path = Path(" ".join(args).strip('"')).expanduser()
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        # utf-8-sig: a BOM (PowerShell 5.1 redirection writes one) must not fail the read.
+        payload = json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError) as e:
         _print(f"  could not read {path}: {e}")
         return
@@ -500,6 +619,13 @@ def _key(ctx, args):
     _print("  the PUBLIC key above is safe to publish — share it so anyone can confirm a signed")
     _print("  export came from you (/trace verify reports the signer's fingerprint).")
     _print("  the private key never leaves this machine and is never embedded in an export.")
+    _print("")
+    _print("  verify a signed artifact anywhere, without Saturn (the 4-step recipe):")
+    _print("    1. pop `integrity` + `signature` off a copy of the artifact JSON")
+    _print("    2. sha256 the copy as json.dumps(sort_keys=True, ensure_ascii=False, separators=(\",\",\":\")) in utf-8")
+    _print("    3. compare: the hex digest must equal integrity.digest (content unchanged)")
+    _print("    4. ed25519-verify signature.signature over the digest HEX string (utf-8 bytes) with signature.public_key")
+    _print("  no-Saturn verifier: utilities/saturn_verify.py (spec: utilities/VERIFY_SPEC.md)")
 
 
 def _verbosity(ctx, args):
@@ -658,11 +784,15 @@ def _render_why(ui, run, events, calls):
         _print("    (no tools ran — answered from the model's own knowledge + context)")
         _print("")
 
-    # Verification — did the groundedness judge weigh in?
+    # Verification — ALWAYS printed: the negative case is information too (the Glass Box renders
+    # it, and why must match). Silence here used to read as "maybe checked, maybe not" — a trust
+    # surface can't leave that ambiguous.
+    _print("  verification")
     if judged:
-        _print("  verification")
         _print(f"    groundedness judge: {_clip(judged, 160)}")
-        _print("")
+    else:
+        _print("    groundedness judge did not run — no ungrounded draft was caught.")
+    _print("")
 
     # Provenance footer of the answer, if the synthesizer attached one (the [n] → source map).
     if response and "Sources:" in str(response):
@@ -689,8 +819,8 @@ def _fmt_call_args(args) -> str:
 
 def _answer(ctx, args):
     from tui import ui
-    import egress
-    import glassbox
+    from trust import egress
+    from trust import glassbox
 
     run_id: Optional[int] = None
     for a in args:
@@ -708,7 +838,7 @@ def _answer(ctx, args):
                 or state.get("tool_events") or state.get("current_query"))
     # Bare + a live last turn → the live Glass Box (exact egress slice + gate count from the UI).
     if run_id is None and live:
-        import receipt
+        from trust import receipt
         from tui.ui import _base
         mark = receipt.turn_mark()
         gated = _base._status.get("gates", 0) if isinstance(_base._status, dict) else 0
@@ -775,7 +905,8 @@ def _state(ctx, args):
 @command(
     "trace",
     "Observability hub: drill-down of recorded runs + live trace control.",
-    usage="/trace [#id | -r id | -l [n] | on | off | full]",
+    usage="/trace [#id | -l [n] | why | answer | invoke | calls | cost | state"
+          " | export | verify | replay | key | on|off|full]",
     details="""
 Expands one recorded run from the trace database (database/db.sqlite) into the full replay the
 live trace abbreviates: the query, every node with its step time and metrics, the plan as it
@@ -803,7 +934,7 @@ Subviews:
                        origin (local vs network) and trust, what left the machine, and whether a
                        span of an untrusted source bled verbatim into the answer (the data→answer
                        channel, colored red inline). Bare = the live last turn; #id reconstructs a
-                       recorded run.
+                       recorded run. (/source <n> prints the full text behind citation [n].)
   /trace invoke [#id]  the LLM calls of a run: each model call's INPUT messages + OUTPUT, with
                        timing + token counts. Defaults to the most recent run with LLM calls; add
                        --full to show whole messages, -l to list runs that have them.
@@ -816,9 +947,13 @@ Subviews:
                        digest AND (when `cryptography` is installed) an ed25519 signature proving
                        it came from this machine's key; --md for a readable markdown report;
                        -o <path> to choose the destination. The audit record you can hand to
-                       someone else.
+                       someone else (also: saturn -p "..." --export <file> writes the same
+                       artifact after a headless turn).
   /trace verify <file> recompute an exported record's digest (content unchanged?) and check its
-                       signature (signed by which key?) — a modified or forged record fails loudly.
+                       signature (signed by which key?) — a modified or forged record fails
+                       loudly. Accepts trace exports AND /privacy report artifacts (also:
+                       saturn verify <file> straight from the shell, with script-friendly
+                       exit codes: 0 intact, 1 tampered/forged, 2 unreadable).
   /trace key           show this machine's audit-signing public key + fingerprint — the value you
                        publish so others can confirm a signed export is yours. The private key
                        never leaves this machine.
@@ -1001,3 +1136,35 @@ def _show_llm_calls(ctx, args):
         ).fetchall()
 
     ui.show_llm_calls(run, calls, full=full)
+
+
+# ── /glass — the brandable front door for /trace answer ──────────────────────────────────────
+# A flagship surface (trust the ANSWER, the companion to /trace's trust-the-PROCESS), so it gets
+# its own top-level name; all the logic lives in _answer above.
+
+
+@command(
+    "glass",
+    "The Glass Box: answer-level provenance (origin · trust · what left · tainted spans).",
+    aliases=("glassbox",),
+    usage="/glass [#id]",
+    details="""
+The answer-level companion to /trace. For one answer it shows, per cited source: where it came
+from (local disk vs the network), whether its origin is trusted, and — the headline — whether a
+span of an untrusted source appears VERBATIM in the answer (the data→answer channel, colored red
+inline). Plus the trust label: how many sources, what left the machine this turn, whether the
+groundedness judge weighed in, and how many calls faced the approval gate.
+
+  /glass         the live last turn (exact egress slice)
+  /glass #7      reconstruct run #7 from the trace record
+
+Identical to `/trace answer`. Scope: bare reads the live last turn (the accumulators reset when a
+new turn starts); #id reconstructs any recorded run (egress is inferred from the source tools, the
+one facet history can't carry exactly).
+
+Companion: /source <n> prints the FULL text behind citation [n] — same numbering as the facets
+here; /glass is whether to trust a source, /source is what it actually said.
+""",
+)
+def _glass(ctx, args):
+    return _answer(ctx, args)

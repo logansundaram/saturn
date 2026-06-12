@@ -23,8 +23,8 @@ def drop_last_turn(ctx) -> "str | None":
     no turn to drop. Shared with /retry full (rewind + re-run)."""
     from langchain.messages import HumanMessage
 
-    from compaction import is_summary
-    from state import is_steer_message
+    from core.compaction import is_summary
+    from core.state import is_steer_message
 
     msgs = ctx.state.get("messages", [])
     # A turn starts at a REAL user message: a standalone mid-turn steer note belongs to the turn
@@ -53,6 +53,9 @@ def drop_last_turn(ctx) -> "str | None":
     fresh["tool_results"] = []
     fresh["documents_retrieved"] = []
     fresh["tool_events"] = []
+    # Gate decisions belong to the dropped turn too — a lingering record would violate the
+    # "gate_events empty means the human was never asked" invariant /glass and exports rely on.
+    fresh["gate_events"] = []
 
     # write_autosave skips an empty conversation by design (a fresh launch + quit must not wipe
     # the previous session) — but rewinding the ONLY turn empties it deliberately, so clear the

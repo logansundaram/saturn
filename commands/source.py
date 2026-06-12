@@ -3,7 +3,7 @@
 
 The citations footer maps each inline [n] to a one-line label; this shows the FULL tool result /
 retrieved passage behind that number, rebuilt with the same numbering the synthesizer saw
-(node_registry.synthesize.build_sources over the turn's accumulators), so [3] here is exactly the
+(nodes.synthesize.build_sources over the turn's accumulators), so [3] here is exactly the
 [3] in the answer. Closes the provenance loop in one keystroke instead of a /trace drill-down.
 """
 
@@ -15,7 +15,7 @@ from commands._framework import command, _print
 def lookup_source(state: dict, n: int) -> "tuple[str, str] | None":
     """(label, full_text) for citation number `n` of the last turn, or None when out of range.
     Pure over the state accumulators so it's testable without a turn."""
-    from node_registry.synthesize import build_sources
+    from nodes.synthesize import build_sources
 
     tool_results = (state or {}).get("tool_results") or []
     docs = (state or {}).get("documents_retrieved") or []
@@ -48,10 +48,14 @@ the answer used.
 
 Scope: the most recent turn (the accumulators reset when a new turn starts; /clear empties them).
 For older runs, /trace #<id> replays the full tool I/O of any recorded run.
+
+Companion: /glass shows the trust/provenance facets of these SAME citations (origin · trust ·
+tainted spans) under the same numbering — /source is the raw material, /glass is whether to
+trust it.
 """,
 )
 def _source(ctx, args):
-    from node_registry.synthesize import build_sources
+    from nodes.synthesize import build_sources
 
     state = ctx.state or {}
     tool_results = state.get("tool_results") or []

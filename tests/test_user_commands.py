@@ -1,9 +1,10 @@
 """
 User-defined slash commands (commands/user_commands.py) — template parsing, $ARGUMENTS
-expansion, the load/reload cycle, and built-in collision protection.
+expansion, the load/reload cycle, built-in collision protection, and the dispatch-miss
+auto-rescan (the old /commands reload, now automatic).
 """
 
-from commands._framework import COMMANDS, CommandContext
+from commands._framework import COMMANDS, CommandContext, dispatch
 from commands.user_commands import (
     expand_arguments,
     load_user_commands,
@@ -111,3 +112,57 @@ def test_empty_template_reported(isolated_paths):
     finally:
         (d / "blank.md").unlink()
         load_user_commands()
+
+
+# --- dispatch-miss auto-rescan ----------------------------------------------------------------
+
+def _ctx():
+    return CommandContext(state={}, make_initial_state=dict, db_path="")
+
+
+def test_dispatch_miss_rescans_and_runs_new_template(isolated_paths):
+    # A template dropped into the directory MID-SESSION (after the startup load) must become
+    # /name on first use — dispatch rescans once on the unknown name and retries the lookup.
+    from config import get_config
+
+    d = get_config().path("database").parent / "database" / "commands"
+    _write_template(d, "fresh", "---\nsummary: Fresh\n---\nRun $ARGUMENTS now")
+    try:
+        assert "fresh" not in COMMANDS  # not loaded yet — this is the mid-session drop
+        ctx = _ctx()
+        dispatch("/fresh stuff", ctx)
+        assert ctx.requeue == "Run stuff now"
+        assert "fresh" in COMMANDS
+    finally:
+        (d / "fresh.md").unlink()
+        load_user_commands()
+
+
+def test_dispatch_miss_unknown_errors_after_exactly_one_rescan(isolated_paths, capsys, monkeypatch):
+    import commands.user_commands as uc
+
+    calls = []
+    real = uc.load_user_commands
+
+    def counting():
+        calls.append(1)
+        return real()
+
+    monkeypatch.setattr(uc, "load_user_commands", counting)
+    dispatch("/definitely-not-a-command", _ctx())
+    out = capsys.readouterr().out
+    assert "unknown command" in out
+    assert len(calls) == 1  # at most one rescan per dispatch call
+
+
+def test_dispatch_rescan_failure_does_not_mask_unknown(isolated_paths, capsys, monkeypatch):
+    import commands.user_commands as uc
+
+    def boom():
+        raise RuntimeError("scan exploded")
+
+    monkeypatch.setattr(uc, "load_user_commands", boom)
+    dispatch("/nope-never-registered", _ctx())
+    out = capsys.readouterr().out
+    assert "unknown command" in out
+    assert "scan exploded" not in out  # the failure is diag-logged, never printed over the message

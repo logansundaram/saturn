@@ -155,7 +155,7 @@ def _summarize(content: str, filename: str) -> str:
     try:
         # Import here to avoid circular import at module load time. Summaries are a cheap
         # background task -> the `utility` role.
-        from llms import get_model
+        from core.llms import get_model
 
         start = time.perf_counter()
         msg = HumanMessage(

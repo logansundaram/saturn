@@ -1,12 +1,12 @@
 from commands._framework import command, _print
-from commands._utils import _parse_toggle
+from commands._utils import parse_toggle_status
 
 
 @command(
     "dryrun",
     "Counterfactual mode — plan and decide everything, execute nothing.",
     aliases=("dry",),
-    usage="/dryrun [on|off]",
+    usage="/dryrun [on|off]   (bare = status readout, never a flip)",
     details="""
 When ON, the agent grounds, plans, and decides its tool calls exactly as it normally would — but
 NOTHING actually runs. Every tool call is stubbed (`[DRY RUN] would execute …`): no files touched,
@@ -21,7 +21,7 @@ exact `run_shell` / `http_request` it intended, with zero risk.
 
   /dryrun on     enter dry-run (stays on until you turn it off — the status bar shows DRY-RUN)
   /dryrun off    back to real execution
-  /dryrun        flip the current state
+  /dryrun        status readout — never flips (like every trust toggle, mutation is explicit)
 """,
 )
 def _dryrun(ctx, args):
@@ -30,8 +30,12 @@ def _dryrun(ctx, args):
 
     cfg = get_config()
     current = bool(cfg.get("runtime.dry_run", False))
-    new = _parse_toggle(args, current)
+    new = parse_toggle_status(args)
     if new is None:
+        _print(f"  dry-run: {'ON — nothing executes' if current else 'off'}   "
+               "(/dryrun on|off to change)")
+        return
+    if new == "invalid":
         _print(f"  usage: /dryrun on|off   (currently {'on' if current else 'off'})")
         return
 

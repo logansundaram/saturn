@@ -7,7 +7,7 @@ line breaks the chain), the disable toggle, and the cross-session summary aggreg
 
 import json
 
-import egress
+from trust import egress
 
 
 def _reset():
@@ -185,6 +185,48 @@ def test_read_log_limit_reads_tail(isolated_paths):
     rows = egress.read_log(3)
     assert [r["host"] for r in rows] == [
         "h17.example.com", "h18.example.com", "h19.example.com"]
+
+
+def test_log_tip_matches_chain_walk(isolated_paths, monkeypatch):
+    # log_tip is the anchor source for signed artifacts: its tip must be exactly the last
+    # line's `h` (the same chain head verify_log's walk ends on) and its count the raw line
+    # count — whether served from the append cache or a fresh tail read.
+    _reset()
+    for i in range(4):
+        egress.record("web_search", f"h{i}.example.com")
+    tip = egress.log_tip()
+    rows = egress.read_log()
+    assert tip == {"tip_hash": rows[-1]["h"], "line_count": 4}
+    v = egress.verify_log()
+    assert v["ok"] is True and v["lines"] == tip["line_count"]
+    # Drop the append cache — the tail-read path must agree with the cached one.
+    monkeypatch.setattr(egress, "_TIP_CACHE", None)
+    assert egress.log_tip() == tip
+
+
+def test_log_tip_absent_cases(isolated_paths):
+    # No durable log / knob off → None: the anchor field must be ABSENT, never a fake value.
+    _reset()
+    assert egress.log_tip() is None  # no log file yet in this fresh tree
+    from config import get_config
+
+    egress.record("web_search", "a.example.com")
+    get_config().set("runtime.egress_log", False)
+    try:
+        assert egress.log_tip() is None  # knob off — even though a file exists
+    finally:
+        get_config().set("runtime.egress_log", True)
+    assert egress.log_tip() is not None
+
+
+def test_log_tip_never_fakes_a_garbled_tail(isolated_paths):
+    # An unreadable tail line yields NO tip — an anchor must only commit a real chain head.
+    _reset()
+    egress.record("web_search", "a.example.com")
+    path = isolated_paths / "database" / "egress.log"
+    with open(path, "ab") as fh:
+        fh.write(b"garbage not json\n")
+    assert egress.log_tip() is None
 
 
 def test_summarize_events_shared_accounting():

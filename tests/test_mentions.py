@@ -1,7 +1,7 @@
 """mentions.py — @file resolution (quoted paths, trailing punctuation), the drag-and-drop
 detector, and the clamped read that keeps one @file from blowing the context window."""
 
-import mentions
+from core import mentions
 
 
 def test_find_mentions_resolves_existing_file(tmp_path):

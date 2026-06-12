@@ -16,7 +16,9 @@ from ._base import (
 from .statusbar import _live_start, _live_stop
 
 
-def _plan_line(step: dict, *, show_tool: bool) -> "Text | str":
+def _plan_line_bare(step: dict, *, show_tool: bool) -> "Text | str":
+    """One plan row WITHOUT the trace-rail prefix — for hosts that draw their own gutter (the
+    review frame's `┃`), where the railed variant would render a doubled gutter."""
     status = step.get("status", "pending")
     glyph, style = _PLAN.get(status, _PLAN["pending"])
     sid = step.get("step_id", "?")
@@ -29,15 +31,24 @@ def _plan_line(step: dict, *, show_tool: bool) -> "Text | str":
     label = _truncate(str(step.get("label", "")), max(20, tw - 14 - len(tag)))
 
     if _RICH:
-        line = _rail()
-        line.append("  ", style=_RAIL)  # nest steps under the node
+        line = Text()
+        line.append("  ", style=_RAIL)  # nest steps under the node / frame edge
         line.append(f"{glyph} ", style=style)
         line.append(f"{str(sid):>2}  ", style=_DIM)
         line.append(label, style=style if status in ("active", "skipped") else "default")
         if tag:
             line.append(tag, style=_FAINT)  # the most incidental annotation — faintest
         return line
-    return f"  {_RAIL_GLYPH}   {glyph} {str(sid):>2}  {label}{tag}"
+    return f"  {glyph} {str(sid):>2}  {label}{tag}"
+
+
+def _plan_line(step: dict, *, show_tool: bool) -> "Text | str":
+    bare = _plan_line_bare(step, show_tool=show_tool)
+    if _RICH:
+        line = _rail()
+        line.append_text(bare)
+        return line
+    return f"  {_RAIL_GLYPH} {bare}"
 
 
 def render_plan(plan) -> None:
@@ -105,7 +116,8 @@ def _render_review_plan(plan: list[dict], active_id) -> None:
         _review_emit("  ┃   (empty plan — add steps with `add <label>`)")
         return
     for step in plan:
-        line = _plan_line(step, show_tool=True)
+        # Bare rows: the review frame's `┃` IS the gutter — the railed variant would double it.
+        line = _plan_line_bare(step, show_tool=True)
         marker = "  ← current" if step.get("step_id") == active_id else ""
         if _RICH:
             row = Text()
@@ -119,13 +131,13 @@ def _render_review_plan(plan: list[dict], active_id) -> None:
 
 
 def _review_help() -> None:
-    import plan_ops
+    from core import plan_ops
 
     _review_emit("  ┃ edit the plan, then `go` to run it (or `abort` to stop):")
     for h in plan_ops.COMMAND_HELP:
         _review_emit(f"  ┃     {h}")
     _review_emit("  ┃     go / <enter>          run the (edited) plan")
-    _review_emit("  ┃     abort                 stop this turn")
+    _review_emit("  ┃     abort / Ctrl-C        stop this turn")
     _review_emit("  ┃     show · help           reprint the plan · this help")
 
 
@@ -148,8 +160,9 @@ def _review_input() -> str:
 def review_plan(value: dict) -> dict:
     """Handle a plan-review interrupt. Returns `{"action": "continue"|"abort", "plan": <edited>}`
     — the resume value the plan_gate node applies. The edited plan is normalized + renumbered by
-    plan_ops, so step ids the user typed always match what's rendered."""
-    import plan_ops
+    plan_ops, so step ids the user typed always match what's rendered. Bare Enter (or `go`)
+    continues; Ctrl-C/EOF aborts — an interrupted review must never run the plan."""
+    from core import plan_ops
 
     plan = plan_ops.normalize(value.get("plan") or [])
     reason = value.get("reason", "")
@@ -167,7 +180,10 @@ def review_plan(value: dict) -> dict:
         try:
             raw = _review_input()
         except (EOFError, KeyboardInterrupt):
-            raw = ""  # treat as "continue" — never strand the turn on an empty read
+            # Ctrl-C / a closed stdin at a control point must fail closed: abort the turn,
+            # never run a plan the user was interrupting their review of.
+            action = "abort"
+            break
         cmd = raw.strip()
         low = cmd.lower()
         if low in ("", "go", "c", "continue", "run", "resume"):

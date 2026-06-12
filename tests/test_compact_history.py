@@ -51,7 +51,7 @@ def test_steer_note_is_not_a_turn_boundary():
     """A standalone mid-turn steer note (plan_gate's appended HumanMessage) must not be treated
     as the most recent turn's start — that would compact away the real question's scratchpad
     this function promises to keep."""
-    from state import STEER_PREFIX
+    from core.state import STEER_PREFIX
 
     msgs = _turn("old turn") + [
         HumanMessage(content="recent question"),
@@ -69,7 +69,7 @@ def test_steer_note_is_not_a_turn_boundary():
 
 
 def test_summary_is_not_a_turn_boundary():
-    from compaction import _SUMMARY_PREFIX
+    from core.compaction import _SUMMARY_PREFIX
 
     msgs = [HumanMessage(content=f"{_SUMMARY_PREFIX}:\nolder stuff")] + _turn(
         "only", with_tools=True

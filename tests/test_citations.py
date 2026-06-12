@@ -1,7 +1,7 @@
-"""node_registry/synthesize.py provenance helpers — the numbering the synthesizer cites against
+"""nodes/synthesize.py provenance helpers — the numbering the synthesizer cites against
 and the mechanical Sources footer appended to the answer (runtime.citations)."""
 
-from node_registry.synthesize import (
+from nodes.synthesize import (
     build_sources,
     sources_footer,
     _tool_source_label,

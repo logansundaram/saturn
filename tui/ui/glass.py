@@ -74,6 +74,19 @@ def _render_label(gb) -> None:
     else:
         _kv("composed by", f"{composer}  (inference location not recorded for past runs)", _DIM)
 
+    # Local-inference attestation — rendered ONLY when PROVEN (live exact egress slice with zero
+    # llm events + every chat role bound local). None means unknown: say NOTHING — silence must
+    # never imply local. False needs no extra line; the cloud composed-by line above already
+    # states it.
+    li = getattr(gb, "local_inference", None)
+    if isinstance(li, dict) and li.get("local"):
+        models = ", ".join(dict.fromkeys(
+            str(b.get("model"))
+            for b in li.get("models") or []
+            if isinstance(b, dict) and b.get("model") and b.get("role") != "embedder"
+        )) or "local models"
+        _kv("inference", f"✓ computed entirely on this machine ({models})", _GREEN)
+
     # What left the machine this turn.
     if gb.sent_known:
         if gb.sent_bytes or gb.sent_hosts:
@@ -98,9 +111,25 @@ def _render_label(gb) -> None:
         _kv("grounded", "no ungrounded draft caught (judge ruled it grounded, or wasn't needed)",
             _DIM)
 
-    # Gated calls (live turns only) + the taint headline.
+    # Gated calls + the taint headline. The count renders wherever it is KNOWN (live turn, or a
+    # record carrying structured gate events); None = unknown stays silent.
     if gb.gated is not None:
         _kv("gated calls", str(gb.gated), _DIM if gb.gated == 0 else _YELLOW)
+    # The human decisions themselves — the chain-of-custody line: a signed export carrying this
+    # block can show an auditor that a PERSON approved the run_shell it contains. Renders in both
+    # live and reconstructed views; nothing prints when no gate prompted (or none was recorded).
+    gs = getattr(gb, "gate_summary", None) or []
+    approved = [str(c.get("name") or "?") for c in gs if isinstance(c, dict) and c.get("approved")]
+    rejected = [str(c.get("name") or "?") for c in gs
+                if isinstance(c, dict) and not c.get("approved")]
+    if approved:
+        _kv("human gate",
+            f"you approved {len(approved)} call{'s' if len(approved) != 1 else ''} "
+            f"({', '.join(approved)})", _GREEN)
+    if rejected:
+        _kv("human gate",
+            f"you rejected {len(rejected)} call{'s' if len(rejected) != 1 else ''} "
+            f"({', '.join(rejected)})", _YELLOW)
     tainted = gb.tainted
     if tainted:
         _kv("taint", f"⚠ {len(tainted)} untrusted span(s) reached the answer", _RED)

@@ -24,7 +24,6 @@ paths:
   permissions: database/permissions.json  # persisted /risk overrides + /allow shell prefixes
   exports: logging/exports             # /trace export run records (audit artifacts)
   shell_jobs: logging/shell            # background run_shell job logs (check_shell_job reads them)
-  recipes: database/recipes            # saved plan recipes (/plan save · /plan run)
   user_commands: database/commands     # user-defined slash-command templates (<name>.md -> /name)
   signing_key: database/signing_key.json  # this machine's ed25519 audit-signing key (signing.py)
   egress_log: database/egress.log      # append-only, hash-chained cross-session egress log (egress.py)
@@ -115,7 +114,7 @@ runtime:
   receipt: true
 
 # ---------------------------------------------------------------------------
-# Web tools (tool_registry/web.py). Key-optional, local-first.
+# Web tools (tools/web.py). Key-optional, local-first.
 #   provider: which search backend to use.
 #     auto       -> prefer Tavily when TAVILY_API_KEY is present, else keyless DuckDuckGo;
 #                   also falls back to DuckDuckGo automatically on a Tavily quota/key error.
@@ -143,7 +142,7 @@ rag:
   k: 6
 
 # ---------------------------------------------------------------------------
-# MCP servers (mcp_client.py) — remote Model Context Protocol tools, registered at startup
+# MCP servers (tools/mcp_client.py) — remote Model Context Protocol tools, registered at startup
 # behind the SAME risk-tier approval gate as local tools. Check status with /mcp; apply config
 # edits with /mcp reload (or restart).
 #
@@ -179,7 +178,7 @@ mcp:
   servers: {}
 
 # ---------------------------------------------------------------------------
-# Shell / code-execution tool (tool_registry/shell.py).
+# Shell / code-execution tool (tools/shell.py).
 #   run_shell is registered `destructive`, so it ALWAYS hits the approval gate — the gate (the
 #   user seeing + approving the exact command), not a path jail, is the safety boundary.
 #   timeout: seconds before a running command is killed, so a hung or interactive command can't
@@ -189,6 +188,8 @@ mcp:
 # ---------------------------------------------------------------------------
 shell:
   timeout: 60
+  # Background jobs (run_shell(background=true) + check_shell_job/stop_shell_job): off by default — when off, run_shell refuses to detach and the job tools aren't registered (flip + restart to enable).
+  background: false
 
 # ---------------------------------------------------------------------------
 # Hardware-tier presets. Each maps the agent's roles -> concrete models.

@@ -54,8 +54,8 @@ def _retry(ctx, args):
 def _last_query(ctx) -> "str | None":
     from langchain.messages import HumanMessage
 
-    from compaction import is_summary
-    from state import is_steer_message
+    from core.compaction import is_summary
+    from core.state import is_steer_message
 
     # Last REAL question: a standalone mid-turn steer note is a correction to a turn, not the
     # turn's query (requeueing it would re-run the correction without the question), and a
@@ -100,7 +100,7 @@ def _retry_synthesize(ctx):
     popped = msgs.pop()
     _print("  regenerating the answer from the last turn's gathered results…")
     try:
-        from node_registry.synthesize import synthesize_node
+        from nodes.synthesize import synthesize_node
 
         out = synthesize_node(state)
     except Exception:

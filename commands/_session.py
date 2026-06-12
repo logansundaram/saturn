@@ -22,7 +22,7 @@ def _sessions_dir() -> Path:
 
 def _session_file(name: str) -> Path:
     """Resolve a user-supplied name to a safe `<dir>/<stem>.json` path (textutil.safe_stem —
-    the same sanitizer recipes use, so the two stores can't drift onto different naming rules)."""
+    THE shared sanitizer, so a future user-named store can't drift onto different naming rules)."""
     return _sessions_dir() / f"{safe_stem(name, 'session')}.json"
 
 

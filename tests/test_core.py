@@ -23,9 +23,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from langchain.messages import HumanMessage, AIMessage, ToolMessage
 
-from state import unrun_planned_tools
-from node_registry.update_plan import update_plan_node
-from node_registry.tools import _clamp_observation, _MAX_OBSERVATION
+from core.state import unrun_planned_tools
+from nodes.update_plan import update_plan_node
+from nodes.tools import _clamp_observation, _MAX_OBSERVATION
 
 
 def _step(step_id, status, tool):
@@ -75,7 +75,7 @@ def test_update_plan_fallback_advances_active_when_no_match():
 
 # --- reject -> skip the rejected step so the plan can't re-demand it (no re-approve loop) --------
 def test_rejected_step_is_skipped_so_plan_advances():
-    from node_registry.approval import _skip_rejected_steps
+    from nodes.approval import _skip_rejected_steps
 
     plan = [_step(1, "active", "write_file"), _step(2, "pending", "web_search")]
     out = _skip_rejected_steps(plan, ["write_file"])
@@ -86,7 +86,7 @@ def test_rejected_step_is_skipped_so_plan_advances():
 
 
 def test_rejected_step_skip_is_positional_for_same_tool():
-    from node_registry.approval import _skip_rejected_steps
+    from nodes.approval import _skip_rejected_steps
 
     # Two same-tool steps, one rejection -> only the first non-terminal one retires.
     plan = [_step(1, "active", "write_file"), _step(2, "pending", "write_file")]
@@ -95,7 +95,7 @@ def test_rejected_step_skip_is_positional_for_same_tool():
 
 
 def test_rejected_step_skip_falls_back_to_active_when_no_tool_match():
-    from node_registry.approval import _skip_rejected_steps
+    from nodes.approval import _skip_rejected_steps
 
     # The agent called a tool the planner didn't anticipate; skip the active step it was driving.
     plan = [_step(1, "active", "write_file"), _step(2, "pending", None)]
@@ -104,7 +104,7 @@ def test_rejected_step_skip_falls_back_to_active_when_no_tool_match():
 
 
 def test_rejected_step_skip_does_not_mutate_input():
-    from node_registry.approval import _skip_rejected_steps
+    from nodes.approval import _skip_rejected_steps
 
     plan = [_step(1, "active", "write_file")]
     before = [dict(s) for s in plan]
@@ -151,8 +151,8 @@ def test_clamp_long_observation_truncated_with_marker():
 
 # --- planner catalog stays in sync with the live registry -----------------------------------
 def test_planner_catalog_lists_every_registered_tool():
-    import messages
-    import registry
+    from core import messages
+    from tools import registry
 
     catalog = messages._tool_catalog()
     for t in registry.tool:
@@ -161,13 +161,13 @@ def test_planner_catalog_lists_every_registered_tool():
 
 # --- #5: registration decorator keeps the registry views consistent -------------------------
 def test_registry_views_consistent():
-    import registry
+    from tools import registry
 
     # Every registered tool has a risk tier, and tools_by_name covers the whole list.
     assert {t.name for t in registry.tool} == set(registry.tools_by_name)
     assert all(t.name in registry.TOOL_RISK for t in registry.tool)
     # Risk tiers are valid, and unknown tools fail safe to the strictest tier.
-    from toolspec import RISK_TIERS
+    from tools.toolspec import RISK_TIERS
 
     assert all(v in RISK_TIERS for v in registry.TOOL_RISK.values())
     assert registry.risk_of("a-tool-that-does-not-exist") == "destructive"
@@ -177,7 +177,7 @@ def test_registry_views_consistent():
 
 # --- #8: model-presence normalization for the startup health check --------------------------
 def test_model_present_normalizes_latest_tag():
-    from llms import _model_present
+    from core.llms import _model_present
 
     assert _model_present("qwen3.5:9b", {"qwen3.5:9b"})
     assert _model_present("foo", {"foo:latest"})        # implicit :latest
@@ -187,7 +187,7 @@ def test_model_present_normalizes_latest_tag():
 
 # --- #3: calculate tames float epsilon without capping real precision -----------------------
 def test_calculate_tames_epsilon_keeps_precision():
-    from tool_registry.calculator import calculate
+    from tools.calculator import calculate
 
     call = lambda e: calculate.invoke({"expression": e})
     assert call("672.34999999999999 + 0") == "672.35"   # epsilon artifact removed
@@ -198,7 +198,7 @@ def test_calculate_tames_epsilon_keeps_precision():
 
 # --- Tier 2 #7: LLM compaction folds old turns, keeps the recent one, and fails safe -----------
 def test_compaction_folds_old_keeps_recent_turn():
-    import compaction
+    from core import compaction
 
     orig = compaction._llm_summary
     compaction._llm_summary = lambda older: f"SUMMARY({len(older)})"  # stub: offline + deterministic
@@ -224,7 +224,7 @@ def test_compaction_folds_old_keeps_recent_turn():
 
 
 def test_compaction_llm_failure_leaves_history_intact():
-    import compaction
+    from core import compaction
 
     orig = compaction._llm_summary
 
@@ -242,7 +242,7 @@ def test_compaction_llm_failure_leaves_history_intact():
 
 # --- Tier 2 #6: type-ahead queue + Esc steering (InputQueue char handling, no console) ----------
 def test_typeahead_queues_enter_terminated_lines_fifo():
-    import typeahead
+    from tui import typeahead
 
     q = typeahead.InputQueue()
     for ch in "first":
@@ -257,7 +257,7 @@ def test_typeahead_queues_enter_terminated_lines_fifo():
 
 
 def test_typeahead_blank_not_queued_and_backspace_edits():
-    import typeahead
+    from tui import typeahead
 
     q = typeahead.InputQueue()
     for ch in "   ":
@@ -273,8 +273,8 @@ def test_typeahead_blank_not_queued_and_backspace_edits():
 
 
 def test_escape_with_text_steers_empty_reviews():
-    import interrupts
-    import typeahead
+    from core import interrupts
+    from tui import typeahead
 
     c = interrupts.get_pause_controller()
     c.clear()
@@ -292,8 +292,8 @@ def test_escape_with_text_steers_empty_reviews():
 
 
 def test_plan_gate_injects_steer_and_consumes_request():
-    import interrupts
-    from node_registry.plan_gate import plan_gate_node
+    from core import interrupts
+    from nodes.plan_gate import plan_gate_node
 
     c = interrupts.get_pause_controller()
     c.clear()

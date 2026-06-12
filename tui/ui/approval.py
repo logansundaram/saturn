@@ -8,6 +8,8 @@ human approving the exact diff/command — not a path jail — is the safety bou
 import textwrap
 import time
 
+from textutil import head_tail
+
 from . import _base
 from ._base import (
     Text, _console, _RICH,
@@ -20,6 +22,37 @@ from .statusbar import _live_start, _live_stop
 # Cap the diff preview so a huge rewrite can't flood the gate; the agent still sees the full
 # content, this is just the human-facing safety preview.
 _MAX_DIFF_LINES = 60
+
+
+# ── first-gate teaching preamble ──────────────────────────────────────────────
+# Two dim lines before the first gate a user ever sees, so the prompt reads as a feature, not an
+# error. Once per install via receipt.take_hint — THE one-shot discovery-hint mechanism (a
+# `database/.hint_<name>` sentinel, so deleting the database resets discovery along with
+# first-run; fails safe to at-most-once-per-session when the sentinel can't be read or written).
+_GATE_PREAMBLE = (
+    "This is the approval gate — Saturn never acts without you.",
+    "Nothing below runs unless you approve it; e explains why it is asking.",
+)
+
+
+def _preamble_due() -> bool:
+    """Whether the first-gate preamble should print, marking it shown as a side effect (one call
+    decides AND records, so a failure between the two can't double-print). Delegates to
+    receipt.take_hint — the one sentinel mechanism, not a second copy of it (receipt is a leaf;
+    no cycle from the TUI)."""
+    from trust import receipt
+
+    return receipt.take_hint("gate_seen")
+
+
+def _show_preamble_if_due() -> None:
+    if not _preamble_due():
+        return
+    for line in _GATE_PREAMBLE:
+        if _RICH:
+            _console.print(Text(f"  {line}", style=_DIM))
+        else:
+            print(f"  {line}")
 
 
 def _workspace_old_text(file_path: str) -> "tuple[str, bool]":
@@ -157,6 +190,18 @@ def _render_edit_diff(args: dict) -> None:
             print(f"  ┃        ! {note}")
 
 
+def _wrap_exact(line: str, width: int) -> "list[str]":
+    """Byte-faithful hard wrap of one logical line: plain width-slicing, NO whitespace mutation.
+    textwrap.wrap would rewrite the very characters the human is approving — tabs become spaces,
+    runs of spaces collapse at wrap boundaries, continuation indentation drops, a whitespace-only
+    line vanishes. The arguments (and the shell command, and the HTTP request) ARE the safety
+    surface, so the only transformation allowed is the line break itself; joining the chunks
+    reproduces the input exactly. An empty line renders as itself, never as nothing."""
+    if not line:
+        return [""]
+    return [line[i:i + width] for i in range(0, len(line), width)]
+
+
 def _render_shell_command(args: dict) -> None:
     """Render a pending run_shell call's full command inside the approval frame. run_shell is
     `destructive` and the command is the entire safety surface, so — like write_file's diff — it is
@@ -164,7 +209,7 @@ def _render_shell_command(args: dict) -> None:
     one-liner)."""
     command = str(args.get("command", ""))
     lines = command.splitlines() or [""]
-    tip = "tip: /allow <prefix> auto-approves trusted commands like `git status`"
+    tip = "tip: /policy allow <prefix> auto-approves trusted commands like `git status`"
     if _RICH:
         head = Text()
         head.append("  ┃ ", style="bold")
@@ -172,8 +217,9 @@ def _render_shell_command(args: dict) -> None:
         _console.print(head)
         width = max(20, _term_width() - 12)
         for line in lines:
-            # Hard-wrap each logical line so nothing runs off the frame or gets silently clipped.
-            for chunk in textwrap.wrap(line, width) or [""]:
+            # Hard-wrap each logical line byte-faithfully (no whitespace rewriting) so nothing
+            # runs off the frame or gets silently clipped — or silently altered.
+            for chunk in _wrap_exact(line, width):
                 row = Text()
                 row.append("  ┃ ", style="bold")
                 row.append("      $ ", style=_DIM)
@@ -220,8 +266,9 @@ def _render_http_request(args: dict) -> None:
         _console.print(head)
         width = max(20, _term_width() - 12)
         for line in lines:
-            # Hard-wrap each logical line so nothing runs off the frame or gets silently clipped.
-            for chunk in textwrap.wrap(line, width) or [""]:
+            # Hard-wrap each logical line byte-faithfully (no whitespace rewriting) so nothing
+            # runs off the frame or gets silently clipped — or silently altered.
+            for chunk in _wrap_exact(line, width):
                 row = Text()
                 row.append("  ┃ ", style="bold")
                 row.append("      > ", style=_DIM)
@@ -231,6 +278,62 @@ def _render_http_request(args: dict) -> None:
         print("  ┃     -> request")
         for line in lines:
             print(f"  ┃       > {line}")
+
+
+# Tools with a bespoke full-surface renderer above — their decisive argument is already shown in
+# full there, so the generic full-width view would duplicate it.
+_BESPOKE_RENDERED = ("write_file", "edit_file", "run_shell", "http_request")
+
+# Per-value cap for the full-width argument view: big enough to read a whole API payload, small
+# enough that one fat value can't flood the gate.
+_MAX_ARG_VALUE = 2000
+
+
+def _full_width_args(name, risk: str) -> bool:
+    """Whether a gated call renders each argument full-width (wrapped + head/tail-clamped) instead
+    of the compact 80-char repr. Every side_effecting/destructive call WITHOUT a bespoke renderer
+    qualifies — notably all mcp_* tools, which fail closed to destructive precisely because
+    they're untrusted, so hiding the tail of their arguments behind a truncated repr is exactly
+    backwards. read_only calls (reaching the gate only via a quarantine/taint escalation) keep
+    the compact form."""
+    return risk in ("side_effecting", "destructive") and name not in _BESPOKE_RENDERED
+
+
+def _clamp_value(text: str, cap: int = _MAX_ARG_VALUE) -> str:
+    """Bound one argument value for the full-width view: textutil.head_tail at gate scale (head +
+    tail with an explicit elision marker) — the start carries the intent, the tail is where a long
+    payload hides the part that matters, so neither is silently cut. Delegates to THE one home of
+    the head+tail idiom, never a third hand-rolled copy."""
+    return head_tail(text, cap)
+
+
+def _render_full_args(args: dict) -> None:
+    """Render every argument of a gated call full-width inside the approval frame — hard-wrapped
+    like the run_shell command view, never the 80-char repr. For a tool with no bespoke safety
+    surface the arguments ARE the safety surface."""
+    width = max(20, _term_width() - 12)
+    for k, v in (args or {}).items():
+        value = v if isinstance(v, str) else repr(v)
+        lines = _clamp_value(value).splitlines() or [""]
+        if _RICH:
+            head = Text()
+            head.append("  ┃ ", style="bold")
+            head.append(f"    {k} =", style=_DIM)
+            _console.print(head)
+            for line in lines:
+                # Hard-wrap each logical line byte-faithfully (no whitespace rewriting): tabs,
+                # space runs, and indentation in the argument reach the human exactly as the tool
+                # would receive them — textwrap.wrap would rewrite the safety surface itself.
+                for chunk in _wrap_exact(line, width):
+                    row = Text()
+                    row.append("  ┃ ", style="bold")
+                    row.append("      ", style=_DIM)
+                    row.append(chunk, style="default")
+                    _console.print(row)
+        else:
+            print(f"  ┃     {k} =")
+            for line in lines:
+                print(f"  ┃       {line}")
 
 
 def _frame_note(text: str, style: str = "yellow") -> None:
@@ -254,7 +357,7 @@ def _render_secret_warnings(args: dict) -> None:
     content — this warning is about credentials). Best-effort: a scan failure never blocks the
     gate."""
     try:
-        import redaction
+        from trust import redaction
 
         findings = [f for f in redaction.scan_args(args) if f.kind != "email"]
     except Exception:
@@ -320,24 +423,104 @@ def _render_explain(value: dict) -> None:
                     "call directly (full provenance after the turn: /trace why)", style=_DIM)
 
 
-def _always_allow(tool_calls: list) -> None:
+def _grant_note(msg: str) -> None:
+    """Disclosure line for an always-grant — yellow, not dim: widening the gate is exactly the
+    line the user must not skim past."""
+    if _RICH:
+        _console.print(Text(f"  {msg}", style="yellow"))
+    else:
+        print(f"  {msg}")
+
+
+def _propose_shell_prefix(command: str) -> "str | None":
+    """The /allow-style prefix to offer when `a(lways)` covers a run_shell call: the FULL command
+    (whitespace-normalized) — the narrowest grant that covers exactly what the human just
+    reviewed. Proposing the bare leading token would let one confirmation un-gate every future
+    `git …` (including `git push --force`) — exactly the broad grant /allow's own help warns
+    against; a shorter prefix stays available, but only by the user TYPING it deliberately. None
+    when no prefix could ever exempt this command — empty, or carrying shell metacharacters
+    (policy.shell_allowed refuses those wholesale, so offering a prefix would teach a false
+    rule). Asks policy's own public screen (shell_prefix_rejects), never a second copy of its
+    rule."""
+    from trust import policy
+
+    if policy.shell_prefix_rejects(command):
+        return None
+    return " ".join(command.split()) or None
+
+
+def _grant_shell_prefix(prefix: str, command: str) -> "tuple[bool, str]":
+    """Validate + persist one run_shell prefix grant through the policy module — the same store
+    and matcher behind /allow, never a second mechanism. The prefix is added, then verified with
+    policy.shell_allowed(command): a grant the one matcher won't honor for this command
+    (metacharacters, not a token-boundary prefix of it) is rolled back and refused. Returns
+    (command now exempt?, disclosure message)."""
+    from trust import policy
+
+    prefix = " ".join(str(prefix).split())
+    if not prefix:
+        return False, "run_shell: no prefix granted — it keeps prompting"
+    was_new = policy.add_shell_allow(prefix)
+    matched = policy.shell_allowed(command)
+    if matched is None:
+        if was_new:
+            policy.remove_shell_allow(prefix)
+        return False, (f'run_shell: prefix "{prefix}" would not exempt this command '
+                       "(token boundary, no shell metacharacters) — no grant, it keeps prompting")
+    if matched.lower() != prefix.lower():
+        # An already-stored prefix covers this command; the new one adds nothing for it — drop
+        # the redundant entry rather than stack grants the user would have to audit later.
+        if was_new:
+            policy.remove_shell_allow(prefix)
+        return True, f'run_shell: already covered by allowlisted prefix "{matched}"'
+    return True, (f'run_shell: always-allowing commands starting "{prefix}" '
+                  "(persisted to the allowlist; undo: /policy allow remove)")
+
+
+def _always_allow(tool_calls: list, ask) -> None:
     """The `a(lways)` answer: drop each gated tool to the auto-approved tier for THIS session —
     exactly what `/risk <tool> read_only` does, without making the user know the command. Session-
-    only by design (registry.TOOL_RISK is in-memory); the declared tiers return on restart."""
-    import registry
+    only by design (registry.TOOL_RISK is in-memory); the declared tiers return on restart.
+    run_shell is the exception: read_only would un-gate EVERY future shell command from one
+    keypress, so it gets a SCOPED grant instead — the FULL command offered as an /allow-style
+    prefix (the narrowest grant covering exactly what was reviewed; a shorter/broader prefix only
+    by the user typing it), validated + persisted through the one policy store. Declining or
+    failing validation leaves run_shell gated; the rest of the batch still gets its normal
+    grant."""
+    from tools import registry
 
     names = sorted({tc.get("name", "") for tc in tool_calls if tc.get("name")})
-    for name in names:
+    granted = [n for n in names if n != "run_shell"]
+    for name in granted:
         registry.TOOL_RISK[name] = "read_only"
-    listing = ", ".join(names)
-    msg = (
-        f"  always-allowing this session: {listing}  "
-        "(undo: /risk <tool> <tier> · persist: /risk <tool> read_only --save)"
-    )
-    if _RICH:
-        _console.print(Text(msg, style=_DIM))
-    else:
-        print(msg)
+    if granted:
+        listing = ", ".join(granted)
+        _grant_note(f"always-allowing this session: {listing}  "
+                    "(undo: /policy risk <tool> <tier> · persist: /policy risk <tool> "
+                    "read_only --save)")
+
+    if "run_shell" not in names:
+        return
+    commands = list(dict.fromkeys(
+        str((tc.get("args") or {}).get("command", ""))
+        for tc in tool_calls if tc.get("name") == "run_shell"
+    ))
+    for command in commands:
+        proposal = _propose_shell_prefix(command)
+        if proposal is None:
+            _grant_note("run_shell: no prefix could cover this command (shell metacharacters "
+                        "always face the gate) — it keeps prompting")
+            continue
+        resp = ask(f'      always-allow this exact command as a prefix? "{proposal}"  '
+                   "y / N / or type a shorter prefix  (Enter = no) » ").strip()
+        if resp.lower() in ("y", "yes"):
+            chosen = proposal
+        elif resp and resp.lower() not in ("n", "no"):
+            chosen = resp
+        else:
+            _grant_note("run_shell: no prefix granted — it keeps prompting")
+            continue
+        _grant_note(_grant_shell_prefix(chosen, command)[1])
 
 
 def _select_calls(tool_calls: list, ask) -> "bool | dict":
@@ -345,7 +528,7 @@ def _select_calls(tool_calls: list, ask) -> "bool | dict":
     the answers were unanimous; otherwise returns the partial-approval dict the gate understands."""
     approved = []
     for tc in tool_calls:
-        r = ask(f"      allow {tc.get('name')}? y/n » ").strip().lower()
+        r = ask(f"      allow {tc.get('name')}? y / N  (Enter = no) » ").strip().lower()
         if r in ("y", "yes"):
             approved.append(tc.get("id"))
     if len(approved) == len(tool_calls):
@@ -361,7 +544,7 @@ def _resolve_decision(resp: str, tool_calls: list, ask) -> "bool | dict":
     if resp in ("y", "yes"):
         return True
     if resp in ("a", "always"):
-        _always_allow(tool_calls)
+        _always_allow(tool_calls, ask)
         return True
     if resp in ("s", "select", "sel"):
         return _select_calls(tool_calls, ask)
@@ -371,15 +554,20 @@ def _resolve_decision(resp: str, tool_calls: list, ask) -> "bool | dict":
 def ask_approval(value: dict) -> "bool | dict":
     """Compact, high-signal gate. Heavy rule + risk-colored tier so it breaks out of the dim
     trace rail. A write_file call additionally renders a colored unified diff of what it will
-    change (gotcha #2: write_file overwrites by default). Answers: `y` approves the batch, `n`
-    (default) rejects it, `s` decides per call, `a` approves AND auto-approves these tools for
-    the rest of the session, `e` explains WHY the agent wants the batch (plan step + recorded
-    reasoning) and re-prompts. Arguments carrying secret-like values warn inline (redaction
-    scanner); a batch following quarantine-flagged tool output opens with a banner saying so.
-    Returns True/False or {"approved_ids": [...]} for a partial batch."""
+    change (gotcha #2: write_file overwrites by default); any other gated side_effecting/
+    destructive call renders its arguments full-width (`_render_full_args`). Answers: `y`
+    approves the batch, `N` (the default — bare Enter or anything unrecognized) rejects it, `s`
+    decides per call, `a` approves AND auto-approves these tools for the rest of the session
+    (run_shell instead gets a scoped /allow-style prefix grant), `e` explains WHY the agent wants
+    the batch (plan step + recorded reasoning) and re-prompts. Arguments carrying secret-like
+    values warn inline (redaction scanner); a batch following quarantine-flagged tool output
+    opens with a banner saying so. Returns True/False or {"approved_ids": [...]} for a partial
+    batch."""
     tool_calls = value.get("tool_calls", []) if isinstance(value, dict) else []
 
     _live_stop()  # the gate blocks on input(); the bar can't be live while it does
+
+    _show_preamble_if_due()  # first gate ever: two lines saying what this prompt IS
 
     # Count the calls that faced the gate this turn — the trust receipt's `n gated` segment
     # (receipt.py) is the permanent echo of this prompt having happened.
@@ -403,29 +591,34 @@ def ask_approval(value: dict) -> "bool | dict":
             head.append(f"{risk:<14} ", style=risk_style)  # tier chip, risk-colored
             head.append(f"{tc.get('name')}", style="default")
             _console.print(head)
-            is_write = tc.get("name") == "write_file"
-            is_edit = tc.get("name") == "edit_file"
-            is_shell = tc.get("name") == "run_shell"
-            is_http = tc.get("name") == "http_request"
-            for k, v in (tc.get("args") or {}).items():  # one line per argument — full clarity
-                # For write_file the `content` arg is shown as a diff below, for edit_file the
-                # old/new strings are shown as a diff, for run_shell the `command` is shown in
-                # full below, and for http_request the whole request is — not as a truncated
-                # repr. In each case that arg IS the safety surface, so the 80-char repr would
-                # hide the part that matters.
-                if is_write and k == "content":
-                    continue
-                if is_edit and k in ("old_string", "new_string"):
-                    continue
-                if is_shell and k == "command":
-                    continue
-                if is_http and k in ("url", "method", "headers", "body"):
-                    continue
-                arow = Text()
-                arow.append("  ┃ ", style="bold")
-                arow.append(f"    {k} = ", style=_DIM)
-                arow.append(arg_repr(v), style="default")
-                _console.print(arow)
+            name = tc.get("name")
+            is_write = name == "write_file"
+            is_edit = name == "edit_file"
+            is_shell = name == "run_shell"
+            is_http = name == "http_request"
+            args = tc.get("args") or {}
+            if _full_width_args(name, risk):
+                _render_full_args(args)
+            else:
+                for k, v in args.items():  # one line per argument — full clarity
+                    # For write_file the `content` arg is shown as a diff below, for edit_file
+                    # the old/new strings are shown as a diff, for run_shell the `command` is
+                    # shown in full below, and for http_request the whole request is — not as a
+                    # truncated repr. In each case that arg IS the safety surface, so the 80-char
+                    # repr would hide the part that matters.
+                    if is_write and k == "content":
+                        continue
+                    if is_edit and k in ("old_string", "new_string"):
+                        continue
+                    if is_shell and k == "command":
+                        continue
+                    if is_http and k in ("url", "method", "headers", "body"):
+                        continue
+                    arow = Text()
+                    arow.append("  ┃ ", style="bold")
+                    arow.append(f"    {k} = ", style=_DIM)
+                    arow.append(arg_repr(v), style="default")
+                    _console.print(arow)
             if is_write:
                 _render_write_diff(tc.get("args") or {})
             if is_edit:
@@ -443,9 +636,10 @@ def ask_approval(value: dict) -> "bool | dict":
                 hrow.append(f"    ↳ {hint}", style=risk_style)
                 _console.print(hrow)
         while True:
+            # The bold capital N marks the fail-closed default: bare Enter (or anything
+            # unrecognized) rejects the batch.
             resp = _console.input(
-                "  [bold]┗━[/] approve? [bold]y[/]es / [bold]n[/]o / [bold]s[/]elect / "
-                "[bold]a[/]lways / [bold]e[/]xplain » "
+                "  [bold]┗━[/] approve? y / [bold]N[/] / s / a / e  (Enter = no) » "
             ).strip().lower()
             if resp in ("e", "explain", "why", "?"):
                 _render_explain(value)
@@ -456,21 +650,27 @@ def ask_approval(value: dict) -> "bool | dict":
         print("  ┏━ approval required " + "━" * 30)
         _render_quarantine_banner(value)
         for tc in tool_calls:
-            print(f"  ┃ [{tc.get('risk')}] {tc.get('name')}")
-            is_write = tc.get("name") == "write_file"
-            is_edit = tc.get("name") == "edit_file"
-            is_shell = tc.get("name") == "run_shell"
-            is_http = tc.get("name") == "http_request"
-            for k, v in (tc.get("args") or {}).items():
-                if is_write and k == "content":
-                    continue
-                if is_edit and k in ("old_string", "new_string"):
-                    continue
-                if is_shell and k == "command":
-                    continue
-                if is_http and k in ("url", "method", "headers", "body"):
-                    continue
-                print(f"  ┃     {k} = {arg_repr(v)}")
+            risk = str(tc.get("risk", "destructive"))
+            print(f"  ┃ [{risk}] {tc.get('name')}")
+            name = tc.get("name")
+            is_write = name == "write_file"
+            is_edit = name == "edit_file"
+            is_shell = name == "run_shell"
+            is_http = name == "http_request"
+            args = tc.get("args") or {}
+            if _full_width_args(name, risk):
+                _render_full_args(args)
+            else:
+                for k, v in args.items():
+                    if is_write and k == "content":
+                        continue
+                    if is_edit and k in ("old_string", "new_string"):
+                        continue
+                    if is_shell and k == "command":
+                        continue
+                    if is_http and k in ("url", "method", "headers", "body"):
+                        continue
+                    print(f"  ┃     {k} = {arg_repr(v)}")
             if is_write:
                 _render_write_diff(tc.get("args") or {})
             if is_edit:
@@ -481,12 +681,12 @@ def ask_approval(value: dict) -> "bool | dict":
                 _render_http_request(tc.get("args") or {})
             _render_secret_warnings(tc.get("args") or {})
             _render_taint_warning(tc)
-            hint = _RISK_HINT.get(str(tc.get("risk")))
+            hint = _RISK_HINT.get(risk)
             if hint:
                 print(f"  ┃     -> {hint}")
         while True:
             resp = input(
-                "  ┗━ approve? [y]es / [n]o / [s]elect / [a]lways / [e]xplain » "
+                "  ┗━ approve? y / N / s / a / e  (Enter = no) » "
             ).strip().lower()
             if resp in ("e", "explain", "why", "?"):
                 _render_explain(value)

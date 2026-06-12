@@ -2,9 +2,9 @@
 `state.unrun_planned_tools`, and `approval._skip_rejected_steps` must keep identical accounting —
 these tests pin all three walkers and cross-check them on shared scenarios."""
 
-from state import unrun_planned_tools, active_step, steps_to_dicts, PlanStep
-from node_registry.approval import _skip_rejected_steps
-from node_registry.update_plan import update_plan_node
+from core.state import unrun_planned_tools, active_step, steps_to_dicts, PlanStep
+from nodes.approval import _skip_rejected_steps
+from nodes.update_plan import update_plan_node
 
 
 def _step(step_id, tool=None, status="pending", label=None):
@@ -65,7 +65,7 @@ def test_steps_to_dicts_renumbers_and_resets_status():
     assert out[0]["intended_tool"] == "web_search"
 
 
-# ── node_registry.update_plan ─────────────────────────────────────────────────────────────────
+# ── nodes.update_plan ─────────────────────────────────────────────────────────────────
 
 
 def test_update_plan_positional_credit():

@@ -15,6 +15,47 @@ your machine; cloud models are an opt-in upgrade when you want more horsepower, 
 
 ---
 
+## Prove it in 60 seconds
+
+Don't take the claims on faith — run one loop and check each one yourself:
+
+```
+» what changed in local LLMs this week?
+```
+
+1. **Watch it work.** The plan renders live; each `web_search`/`web_extract` call shows in the
+   rail as it runs.
+2. **Read the receipt.** The stats line under the answer carries the trust segment — here it
+   shows `⇅ N sends · <bytes> → <host>` in yellow, because something *did* leave your machine,
+   and the receipt says so instead of hiding it.
+3. **`/glass`** — answer-level provenance: each cited source's origin (local vs network) and
+   trust, and whether any untrusted text bled verbatim into the answer (red, inline).
+4. **`/privacy egress`** — the per-event ledger: exactly what left, channel / host / bytes.
+5. **Make it ask.** `» save a two-line summary to notes.md` — the approval gate shows the exact
+   file diff and waits; bare Enter rejects (the default is always *no*).
+6. **Hold the record.** `/trace export` writes the run's complete record as JSON with a sha256
+   digest and (with `cryptography` installed) an ed25519 signature. Then, from your shell:
+
+   ```bash
+   saturn verify logging/exports/run_1.json    # exit 0 intact · 1 tampered/forged · 2 unreadable
+   ```
+
+   No `cryptography` installed? A *signed* export exits 1 — fail closed: a signature it can't
+   check is an unverified claim. Install `cryptography`, or use the standalone verifier in the
+   next step, which always checks signatures. (Unsigned-but-intact still exits 0.)
+
+7. **Hand it to someone without Saturn.** Send them the export plus
+   `utilities/saturn_verify.py` (stdlib-only; spec in `utilities/VERIFY_SPEC.md`):
+
+   ```bash
+   python saturn_verify.py run_1.json
+   ```
+
+   They verify the digest and signature with no Saturn install — the transparency claims are
+   third-party-checkable, not screenshots.
+
+---
+
 ## Why Saturn?
 
 **AI agents should show their work.** Most assistants are a black box in front of a remote
@@ -65,7 +106,9 @@ replay. The point isn't how much Saturn can do — it's that you can see and con
   in the sandboxed workspace. Uses PowerShell on Windows and `/bin/sh` on macOS/Linux — write
   commands in your platform's native syntax. Long-running processes (a dev server, a watcher)
   can run **in the background** with their output captured to a log the agent can check and a
-  job it can stop; anything still running when you quit is cleaned up.
+  job it can stop; anything still running when you quit is cleaned up. Background jobs are
+  **opt-in** (`shell.background: true` in `config.yaml`) — a default install exposes no
+  detached-process surface at all.
 - **Cited answers** — answers that drew on tools or documents cite their sources inline (`[1]`)
   and end with a Sources list mapping each number to the exact tool call or document behind it;
   `/source 3` shows the full material behind any citation.
@@ -74,8 +117,7 @@ replay. The point isn't how much Saturn can do — it's that you can see and con
   the **same approval gate** as everything else. Remote tools always prompt until *you* lower
   their risk tier — a server's own "read-only" claim is never trusted. `/mcp` shows status.
 - **Human-in-the-loop planning** — pause and edit the agent's plan mid-run if it's heading the
-  wrong way, or type a correction and press Esc to steer the running turn. A plan that worked
-  can be saved as a **recipe** (`/plan save`) and re-run any time with fresh approvals.
+  wrong way, or type a correction and press Esc to steer the running turn.
 - **Prompt-injection quarantine** — web pages, API responses, and remote tool results are
   untrusted input. Content that tries to steer the agent ("ignore your previous instructions",
   "run this command") is detected, visibly flagged in the trace, fenced off as data the model
@@ -89,12 +131,19 @@ replay. The point isn't how much Saturn can do — it's that you can see and con
   (`/policy export`) and applies anywhere — including headless runs (`saturn --policy ci.yaml`).
 - **User-defined commands** — drop a markdown template into `database/commands/` and it becomes
   a slash command (`/brief notes.md`); `$ARGUMENTS` expands, and the template runs as a normal
-  gated, traced agent turn.
+  gated, traced agent turn. Templates are picked up automatically (no reload command) and listed
+  in `/help`.
 - **Per-workspace instructions** — `/init` surveys your workspace and drafts `SATURDAY.md`,
   standing instructions loaded every turn (like a per-project system prompt).
-- **Headless mode** — `saturn -p "query"` runs one query and prints the answer; gated tools are
-  denied by default (no human at the gate) unless you pass `--yolo`. Add `--json` for a
-  machine-readable result (answer, plan, tools, tokens, timing) you can pipe into scripts.
+- **Headless mode** — `saturn -p "query"` runs one query and prints the answer; piped stdin
+  attaches to the turn (`git diff | saturn -p "review this change"`). Gated tools are denied by
+  default (no human at the gate) unless you pass `--yolo`. Add `--json` for a machine-readable
+  result (answer, plan, tools, tokens, timing, plus a `gates` record of which calls were
+  prompted and denied); `--export <file>` writes the run's signed audit record after the turn;
+  `saturn verify <file>` checks any exported artifact from the shell (exit 0 intact /
+  1 tampered, forged, or carrying a signature that can't be checked here — fail closed /
+  2 unreadable). The CLI is strict: unknown flags exit 2 instead of silently launching the
+  chat loop.
 
 ---
 
@@ -157,8 +206,10 @@ uv tool install git+https://github.com/logansundaram/saturn
 ```
 
 Then run `saturn`. You still need [Ollama](https://ollama.com/download) running and the tier
-models pulled (the quick installer above does both for you; `/config setup` reports what's
-missing). Installed this way, your data and `config.yaml` live in `~/.saturday` (override with
+models pulled — for the `laptop` tier that's `ollama pull gemma4:e4b` and
+`ollama pull qwen3-embedding:8b` (multi-GB downloads; Ollama prints each one's exact size as the
+pull starts). The quick installer above does both for you, and `/config setup` reports what's
+missing — when models are missing it offers to run the pulls for you (y/N, default no). Installed this way, your data and `config.yaml` live in `~/.saturday` (override with
 `SATURDAY_HOME`), and you upgrade with `pipx upgrade saturn-agent` / `uv tool upgrade
 saturn-agent` instead of `/update`.
 
@@ -169,15 +220,17 @@ saturn-agent` instead of `/update`.
 - **Python 3.11+**
 - **[Ollama](https://ollama.com/download)** installed and running locally.
 - The local models pulled. The default (`workstation`) tier uses one ~9B model for everything
-  plus an embedding model:
+  plus an embedding model — both multi-GB downloads (Ollama prints each one's exact size as the
+  pull starts):
 
   ```bash
-  ollama pull qwen3.5:9b
-  ollama pull qwen3-embedding:8b
+  ollama pull qwen3.5:9b           # all five roles (~9B)
+  ollama pull qwen3-embedding:8b   # the embedder (RAG)
   ```
 
-  > Lighter on hardware? Edit `active_tier` in `config.yaml` to `laptop` and pull `gemma4:e4b`
-  > instead. (Small models are less reliable at tool-calling — see the gotchas in `CLAUDE.md`.)
+  > Lighter on hardware? Edit `active_tier` in `config.yaml` to `laptop` and pull the smaller
+  > `gemma4:e4b` instead (same embedder). (Small models are less reliable at tool-calling — see
+  > the gotchas in `CLAUDE.md`; `/config setup` will say so too.)
 
 ### 2. Clone and install
 
@@ -226,6 +279,10 @@ everything else is a turn for the agent.
 ```
 
 > **Shortcut launchers**
+>
+> Both launchers prefer the repo's own `.venv` interpreter when one exists, and no longer `cd`
+> into the repo — relative paths in your arguments resolve against *your* directory, and nothing
+> leaks a directory change into your shell.
 >
 > **Windows:** `saturn.cmd` launches from anywhere. Wire a `saturn` function into your PowerShell
 > profile to type just `saturn`.
@@ -277,28 +334,34 @@ Type `/help` for the full list, or `/<command> --help` for details on any one. H
 
 | Command | What it does |
 |---|---|
-| `/help` | List all commands (or detail one). |
-| `/models` | List installed Ollama models; switch what drives each role. |
-| `/config` | View/edit settings and **API keys** (`/config key …`). |
-| `/context` | Runtime readout (context window + fill, CPU/RAM/GPU); resize the window. |
-| `/plan` | Show the plan; control review mode, mid-run pause, and lockstep; `save`/`run` plan recipes. |
+| `/help` | The grouped command list, opening with the trust-stack map (posture · activity · proof); `/help <cmd>` details one. |
+| `/models` | List installed Ollama models; switch what drives each role (`--save` persists a binding to `config.yaml`). |
+| `/config` | View/edit settings and **API keys** (`/config key …`); `/config setup` is the health check. |
+| `/context` | Runtime readout (context window + fill, CPU/RAM/GPU); resize the window (`--save` persists). |
+| `/plan` | Show the plan; control review mode, mid-run pause, and lockstep (bare subcommands report status; `--save` persists lockstep). |
 | `/docs` | The knowledge base: list documents, `add <path>`, `remove <name>`, `sync`. |
 | `/tools` | List the agent's tools and their risk tiers. |
 | `/mcp` | MCP server status + the remote tools they add; `reload` after a config edit. |
 | `/memory` | See, add, or delete the facts the agent permanently remembers. |
-| `/risk` · `/allow` · `/autoapprove` | Tune the safety gate (persistable overrides + shell allowlist). |
-| `/policy` | The whole safety posture as one object: show it, `export` it as a shareable YAML profile, `import` one (also `saturn --policy <file>`). |
+| `/policy` | The whole safety posture as one object: bare = status; `risk`/`allow`/`open` are its levers (bare forms report, changing is always explicit); `can` shows the live blast radius — what runs WITHOUT asking, what needs YOUR approval, what CANNOT happen right now; `export`/`import` shareable YAML profiles (also `saturn --policy <file>`). |
+| `/risk` · `/allow` · `/autoapprove` | Kept for muscle memory — thin views of `/policy` (`risk` / `allow` / `open`), same handlers, zero drift. |
+| `/dryrun` | Plan + decide everything, execute nothing — tool calls stubbed (bare = status readout). |
 | `/source` | Show the full material behind a citation `[n]` of the last answer. |
-| `/commands` | List user-defined slash commands (markdown templates in `database/commands/`); `reload` after editing. |
-| `/privacy` | The privacy surface: what CAN leave (`/privacy`), what DID (`/privacy egress`), seal the boundary (`/privacy airgap`), strip secrets from cloud sends (`/privacy redact`). |
+| `/glass` | **The Glass Box**: answer-level provenance — each cited source's origin + trust, the human gate decisions, and whether untrusted text reached the answer (also `/trace answer`; `#id` for past runs). |
+| `/privacy` | The privacy surface: what CAN leave (`/privacy`), what DID (`/privacy egress`, incl. the durable hash-chained `log` + `verify`), seal the boundary (`/privacy airgap`), strip secrets from cloud sends (`/privacy redact`), and `report` — the signed trust attestation. |
 | `/undo` | Revert the file changes of the last turn that wrote anything. |
 | `/rewind` | Drop the last exchange from the conversation (files untouched — that's `/undo`). |
 | `/retry` | Regenerate the last answer; `/retry full` re-runs the whole turn from scratch. |
 | `/init` | Survey the workspace and draft `SATURDAY.md` standing instructions. |
-| `/trace` | Inspect past runs, tool I/O, LLM calls, cost; `/trace why` explains a run's decisions; `/trace export` writes a tamper-evident run record; `/trace replay` re-renders an exported record anywhere — no database needed. |
+| `/trace` | Inspect past runs, tool I/O, LLM calls, cost; `/trace why` explains a run's decisions; `/trace export` writes a signed, tamper-evident run record (with the answer attestation inside); `/trace verify` checks exports AND trust reports; `/trace replay` re-renders an exported record anywhere — no database needed. |
+| `saturn verify <file>` | (shell verb, not a slash command) offline artifact check — digest + signature; exit 0 intact / 1 tampered, forged, or signed-but-uncheckable (no `cryptography` here — fail closed; `utilities/saturn_verify.py` always checks) / 2 unreadable. |
 | `/resume` | Continue your last session (autosaved); `save`/`list`/`delete`/`rename`/`<name>` for named sessions. |
 | `/update` | Self-update: pull the latest Saturn (your data is never touched). |
 | `/clear` · `/quit` | Start a fresh conversation / exit. |
+
+Every command takes `--help` as its first or last argument (mid-position it's ordinary data, so
+`/memory add …` can store a fact that mentions it), and removal verbs are interchangeable
+everywhere (`remove`/`rm`/`delete`/`del`/`forget`/`drop`).
 
 ---
 
@@ -321,9 +384,13 @@ the plan rail, every call traced — rather than hiding them inside a monolithic
 ```
 agent.py            # entry point: builds the graph + runs the interactive loop
 config.yaml         # all settings: models, paths, safety, web provider
+core/               # the engine: state, model factory, prompts, budget, compaction
+trust/              # the trust stack: gate policy, egress ledger, quarantine, signing,
+                    #   trust receipt/report, the Glass Box
+tools/              # the agent's tools (web, files, shell, calculator, knowledge, memory)
+                    #   + the registry and MCP client
+nodes/              # the graph's nodes (ground, plan, agent, tools, synthesize, …)
 commands/           # slash commands (one module per command)
-node_registry/      # the graph's nodes (ground, plan, agent, tools, synthesize, …)
-tool_registry/      # the agent's tools (web, files, shell, calculator, knowledge, memory)
 stores/             # persistence: RAG, document manifests, durable memory, trace
 tui/                # the terminal UI / live trace rail
 database/           # your data: documents/, workspace/, memory/, caches, trace DB
@@ -343,6 +410,7 @@ as regression checks on the loop's mechanics:
 
 ```bash
 python benchmark.py                                   # the trust benchmark (the headline)
+python benchmark.py --strict                          # …and exit 1 on any graded FAIL (CI-friendly)
 python benchmark.py --capability                      # capability suites + conversations (regression)
 python benchmark.py --capability --suites rag web_search   # just some suites
 python benchmark.py --all                             # everything in one combined report

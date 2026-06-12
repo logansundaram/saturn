@@ -1,5 +1,5 @@
 from commands._framework import command, _print
-from commands._utils import _resync_rag_after_model_change
+from commands._utils import _resync_rag_after_model_change, is_remove_verb
 
 
 def _list_keys() -> None:
@@ -104,7 +104,7 @@ def _config_keys(ctx, args):
         _set_key(args[1:])
         return
 
-    if sub in ("unset", "clear", "remove", "rm"):
+    if sub in ("unset", "clear") or is_remove_verb(sub):
         if len(args) < 2:
             _print("  usage: /config key unset <name>")
             return
@@ -150,15 +150,18 @@ survives a restart:
 `/config reload` re-reads config.yaml from disk, discarding any unsaved session edits.
 
 /config setup (doctor, check) — first-run / health check: is the Ollama daemon up, are the
-active tier's models pulled, and are the needed API keys set, with the exact command to fix each
-gap. Runs automatically on first launch; re-run any time with /config setup.
+active tier's models pulled, and are the keys the tier needs set, with the exact command to fix
+each genuine gap (keys the tier doesn't need are just labeled optional). When models are missing
+and the daemon is up, it offers — y/N, default no — to run the `ollama pull`s for you inline with
+live progress. Runs automatically on first launch; re-run any time with /config setup.
 
 API keys live in .env, not config.yaml, so they have their own subcommand (already persistent):
   /config key                       list known keys and whether each is set (masked)
   /config key set                   pick a key from the list, then paste its value
   /config key tavily <value>        set by fuzzy name (label, env var, or unique substring)
   /config key set tvly-abc123       a pasted secret picks its own key by prefix
-  /config key unset <name>          remove a key from .env and the environment
+  /config key unset <name>          remove a key from .env and the environment (clear, or any
+                                    removal verb — remove/rm/delete/del/forget/drop — works)
   /config key tavily                show one key (masked)
 
 Known keys: TAVILY_API_KEY (web tools; optional — they fall back to keyless search without it),
@@ -218,7 +221,7 @@ def _config(ctx, args):
 
     if args[0] == "reload":
         reload()
-        from llms import reset_models
+        from core.llms import reset_models
         reset_models()
         _print("  config.yaml reloaded from disk (any session edits discarded).")
         _resync_rag_after_model_change()
@@ -247,12 +250,12 @@ def _config(ctx, args):
             f"  {key} = {cfg.get(key)!r}  (session only; add --save or run /config persist {key})"
         )
     if key.startswith("tiers.") or key == "active_tier":
-        from llms import reset_models
+        from core.llms import reset_models
         reset_models()
         _print("  (models will rebuild on next use)")
         _resync_rag_after_model_change()
     elif key == "runtime.num_ctx":
-        from llms import reset_models
+        from core.llms import reset_models
         reset_models()
         _print("  (models will rebuild with the new context window on next use)")
 
@@ -270,11 +273,134 @@ def _persist_key(cfg, key: str) -> None:
         _print(f"  set for this session, but persist failed: {exc}")
 
 
+# Why a missing OPTIONAL key is fine, per key (default: the active tier simply doesn't bind the
+# provider). Display notes only — which keys are REQUIRED is derived live in _required_keys.
+_OPTIONAL_KEY_NOTES = {"TAVILY_API_KEY": "keyless fallback active"}
+
+
+def _required_keys(cfg) -> set[str]:
+    """The env keys the ACTIVE tier genuinely needs: one per cloud provider bound to a role.
+    Everything else is optional — Tavily has a keyless fallback, and an unused provider's key
+    unlocks nothing the current tier runs."""
+    from config import MODEL_ROLES
+    from core.llms import _PROVIDER_KEY
+
+    needed: set[str] = set()
+    for role in MODEL_ROLES:
+        key = _PROVIDER_KEY.get(cfg.model_for_role(role).provider)
+        if key:
+            needed.add(key)
+    return needed
+
+
+def _key_line(name: str, is_set: bool, required) -> str:
+    """One api-key status line for the doctor (ASCII-only; the caller indents). The fix arrow
+    (`->`) is reserved for keys the active tier genuinely needs: an unset OPTIONAL key is labeled
+    optional with why that's fine, so a privacy-pitched product's first screen never reads as a
+    list of API keys to go get."""
+    if is_set:
+        return f"ok       {name:<18} set"
+    if name in required:
+        return f"MISSING  {name:<18} -> /config key set {name} <value>"
+    note = _OPTIONAL_KEY_NOTES.get(name, "not needed by the active tier")
+    return f"optional {name:<18} ({note})"
+
+
+def _tier_honesty_line(cfg) -> "str | None":
+    """The doctor's closing tier-honesty line, when the active tier is the smallest preset
+    configured (the quick-install default): the smallest local models are fine for trying Saturn
+    but measurably less reliable at structured plans and tool calls, and the first screen should
+    say so instead of leaving it to be discovered. Convention: config.yaml's `tiers:` mapping is
+    written smallest -> largest (YAML mapping order is preserved), so the FIRST declared tier IS
+    the smallest — declaration order, never a size heuristic (summing context windows ranks
+    capacity, not model size: a 4B/128k model outsums a 32B/32k one). None when the active tier
+    isn't the first-declared preset, or only one tier exists (nothing to upgrade to)."""
+    tiers = cfg.get("tiers", {}) or {}
+    names = list(tiers)
+    if len(names) < 2 or cfg.active_tier != names[0]:
+        return None
+    model = cfg.model_for_role("tool_caller").model
+    return (f"you are on the smallest model tier ({model}) - fine for trying Saturn; "
+            "/models to upgrade if your hardware allows.")
+
+
+def _should_offer_pull(missing: list, daemon_up: bool, interactive: bool) -> bool:
+    """Whether the doctor ends with the inline `ollama pull` offer: something to pull, a
+    reachable daemon to pull into, and a human at a TTY to ask — off-TTY/headless never
+    prompts."""
+    return bool(missing) and daemon_up and interactive
+
+
+def _stdin_is_tty() -> bool:
+    import sys
+
+    try:
+        return sys.stdin is not None and sys.stdin.isatty()
+    except (AttributeError, ValueError):
+        return False
+
+
+def _offer_pull(missing: list[str]) -> None:
+    """Offer to run the `ollama pull`s the doctor just prescribed, inline, instead of telling the
+    user to go run them elsewhere at the exact moment they can't do anything else. Plain prompt
+    (ui.ask tears down any live bar first — input never runs under a rich.Live — and answers no
+    on Ctrl-C/EOF), default NO. The pulls run as ordinary foreground subprocesses with live
+    output (ollama prints each download's size and progress) — the same trust boundary as the
+    installer pulling the default models — and are Ctrl-C-able; a failure stops the batch with
+    the copy-paste commands still on screen above."""
+    from tui import ui
+
+    # ASCII-only like the rest of the doctor (no » glyph) — see _config_doctor.
+    reply = ui.ask(
+        f"[y] pull {len(missing)} missing model(s) now? "
+        "(sizes shown as each pull starts)  [y/N] "
+    ).lower()
+    if reply not in ("y", "yes"):
+        _print("  ok - pull when ready:")
+        for m in missing:
+            _print(f"    ollama pull {m}")
+        _print("")
+        return
+
+    import subprocess
+
+    for m in missing:
+        _print(f"  pulling {m} ...")
+        try:
+            rc = subprocess.run(["ollama", "pull", m]).returncode
+        except KeyboardInterrupt:
+            _print("")
+            _print(f"  pull cancelled - finish later with `ollama pull {m}`.")
+            _print("")
+            return
+        except OSError as exc:
+            _print(f"  could not run `ollama pull {m}`: {exc}")
+            _print("")
+            return
+        if rc != 0:
+            _print(f"  `ollama pull {m}` exited with code {rc} - fix and re-run /config setup.")
+            _print("")
+            return
+
+    from core.llms import check_models
+
+    remaining = check_models()
+    if remaining:
+        _print(f"  models pulled - {len(remaining)} other thing(s) still to fix "
+               "(re-run /config setup for details).")
+    else:
+        _print("  models pulled - the active tier is ready to run.")
+    _print("")
+
+
 def _config_doctor(ctx) -> None:
-    """First-run / health view: Ollama up? active-tier models pulled? required API keys set? — each
-    gap paired with the exact fix. A read-only diagnostic; it changes nothing."""
+    """First-run / health view: Ollama up? active-tier models pulled? needed API keys set? Each
+    GENUINE gap is paired with the exact fix; optional keys are labeled optional (an unset one is
+    not a thing to fix). When local models are missing, the daemon is reachable, and a human is
+    at a TTY, it ends with a y/N offer to run the `ollama pull`s inline — the one consented
+    action it can take; otherwise it remains a read-only diagnostic."""
     from config import get_config
-    from llms import check_models, list_local_models, model_id, ollama_reachable
+    from core.llms import check_models, list_local_models, ollama_reachable
     from commands._utils import _ROLES
     import env_keys
 
@@ -290,30 +416,36 @@ def _config_doctor(ctx) -> None:
     if not up:
         _print("        -> install from https://ollama.com, then run `ollama serve`")
 
-    # Models bound by the active tier (+ embedder), and whether each is pulled.
+    # Local (Ollama-served) models the active tier binds (+ the embedder), and whether each is
+    # pulled. Cloud-bound roles don't belong in this list: their gaps (key, package) surface via
+    # check_models below, and `ollama pull` could never fix them.
     have = {m.name for m in list_local_models()} if up else set()
-    bound = {model_id(r) for r in _ROLES}
+    bound = {
+        spec.model
+        for spec in (cfg.model_for_role(r) for r in _ROLES)
+        if spec.provider == "ollama"
+    }
     bound.add(cfg.embedder_model)
     _print("    models")
-    from llms import _model_present
+    from core.llms import _model_present
+    missing: list[str] = []
     for m in sorted(bound):
         if not up:
             _print(f"        ?        {m}")
         elif _model_present(m, have):
             _print(f"        ok       {m}")
         else:
+            missing.append(m)
             _print(f"        MISSING  {m}   -> run `ollama pull {m}`")
 
-    # API keys.
+    # API keys — the fix arrow only for keys the active tier genuinely needs (see _key_line).
     _print("    api keys (.env)")
+    required = _required_keys(cfg)
     for k in env_keys.KNOWN_KEYS:
-        if env_keys.is_set(k.name):
-            _print(f"        ok       {k.name:<18} set")
-        else:
-            _print(f"        not set  {k.name:<18} -> /config key set {k.name} <value>")
+        _print(f"        {_key_line(k.name, env_keys.is_set(k.name), required)}")
 
     # MCP servers (only when any are configured — most installs have none).
-    import mcp_client
+    from tools import mcp_client
     statuses = mcp_client.status()
     if statuses:
         _print("    mcp servers")
@@ -333,4 +465,10 @@ def _config_doctor(ctx) -> None:
             _print(f"    - {p}")
     else:
         _print("  all set - the active tier is ready to run.")
+    honesty = _tier_honesty_line(cfg)
+    if honesty:
+        _print(f"  {honesty}")
     _print("")
+
+    if _should_offer_pull(missing, up, _stdin_is_tty()):
+        _offer_pull(missing)

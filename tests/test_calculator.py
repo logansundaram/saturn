@@ -1,8 +1,8 @@
-"""tool_registry/calculator.py — float-epsilon taming (gotcha #3) and the whitelisted AST
+"""tools/calculator.py — float-epsilon taming (gotcha #3) and the whitelisted AST
 evaluator (a security surface: calculate is read_only, so anything it can execute bypasses
 the approval gate entirely)."""
 
-from tool_registry.calculator import calculate
+from tools.calculator import calculate
 
 
 def _calc(expr: str) -> str:

@@ -54,13 +54,13 @@ _ENV_PATH = _resolve_env_path()
 # --- on_change hooks -------------------------------------------------------
 # Lazy imports so this module stays dependency-free at import time and dodges circular imports.
 def _reset_web_clients() -> None:
-    from tool_registry.web import reset_web_clients
+    from tools.web import reset_web_clients
 
     reset_web_clients()
 
 
 def _reset_models() -> None:
-    from llms import reset_models
+    from core.llms import reset_models
 
     reset_models()
 

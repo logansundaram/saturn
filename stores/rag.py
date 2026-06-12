@@ -11,7 +11,7 @@ from langchain_core.documents import Document
 import pypdf
 
 from config import get_config
-from llms import get_embeddings
+from core.llms import get_embeddings
 from stores.document_registry import register_rag_document, remove_rag_document
 
 

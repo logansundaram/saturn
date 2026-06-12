@@ -2,6 +2,7 @@ import time
 from pathlib import Path
 
 from commands._framework import command, _print
+from commands._utils import is_remove_verb
 
 
 @command(
@@ -18,7 +19,8 @@ plus a view of the workspace sandbox files (where the file tools read/write).
                         spaces don't need quoting; a dragged file's quoted path works as-is
                         (tip: type `/docs add ` then drag the file onto the terminal).
                         A no-op if the file is already present and unchanged (content hash).
-  /docs remove <name>   remove a document: drops its vectors and manifest entry (rm/drop work)
+  /docs remove <name>   remove a document: drops its vectors and manifest entry (any removal
+                        verb works: remove/rm/delete/del/forget/drop)
   /docs sync            re-scan the corpus directory and embed anything new/changed
   /docs sync --force    full rebuild: re-embed every document (recovers a stale/corrupt cache;
                         also how an edited rag.chunk_size/embedder change is applied on demand)
@@ -40,7 +42,7 @@ def _docs(ctx, args):
     rest = args[1:]
     if sub == "add":
         _add(rest)
-    elif sub in ("remove", "rm", "drop", "forget"):
+    elif is_remove_verb(sub):
         _remove(rest)
     elif sub == "sync":
         _sync(force=any(a in ("--force", "-f", "force") for a in rest))

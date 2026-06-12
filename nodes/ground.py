@@ -1,0 +1,163 @@
+import time
+import diag
+
+from langchain.messages import HumanMessage, AIMessage
+
+from core.state import AgentState
+from config import get_config
+from textutil import clip
+from stores.memory_registry import read_memory_block
+from stores.document_registry import (
+    read_workspace_manifest,
+    read_documents_manifest,
+)
+
+"""
+Grounding node (re-scoped from the old context_builder).
+
+Its ONLY job is to load the things that are NOT already available to the model:
+  - the document + workspace manifests (so the planner knows what docs/files exist),
+  - persistent user/agent profiles (the persistent layer of memory), if present, and
+  - durable facts saved via the `remember` tool (Phase 3 working memory).
+
+It deliberately does NOT include:
+  - the tool inventory  -> tools are bound natively via bind_tools; duplicating them as text
+                           hurts tool-calling on small local models.
+  - the chat history    -> `messages` is already passed to the model directly.
+
+Built once per turn (manifests/profiles are static within a turn). Dynamic information —
+tool results — flows through `messages`, never this frozen grounding string.
+"""
+
+# Persistent profiles live alongside the workspace. Optional — missing files are fine.
+_PROFILE_FILES = ("user_profile.md", "agent_profile.md")
+
+# Per-workspace instructions (the CLAUDE.md/AGENTS.md equivalent): a SATURDAY.md at the workspace
+# root is loaded into context EVERY turn, so the user can durably steer how the agent treats this
+# workspace (conventions, goals, what matters) without re-typing it. Drafted by /init, hand-edited
+# freely. Capped so a runaway instructions file can't eat the context window.
+_INSTRUCTIONS_FILE = "SATURDAY.md"
+_INSTRUCTIONS_CAP = 6000
+
+
+def _read_instructions() -> str:
+    path = get_config().path("workspace") / _INSTRUCTIONS_FILE
+    if not path.exists():
+        return ""
+    # errors="replace" for the same reason as the profiles: a hand-edited file with a stray
+    # non-UTF-8 byte must not fail every turn at the first node.
+    text = path.read_text(encoding="utf-8", errors="replace").strip()
+    if len(text) > _INSTRUCTIONS_CAP:
+        text = text[:_INSTRUCTIONS_CAP] + "\n… (SATURDAY.md truncated — keep it concise)"
+    return text
+
+# How many prior Q&A exchanges to recap into context, and how much of each to keep. Small on
+# purpose: enough for the planner/synthesizer to resolve a follow-up ("do that for the other
+# file") without re-bloating context — the full prior turn already rides `messages`.
+_RECAP_EXCHANGES = 2
+_RECAP_CHARS = 240
+
+
+def _recent_exchanges(messages: list) -> str:
+    """A compact recap of the last few completed Q&A exchanges, for the planner/synthesizer —
+    which read `context` but are NOT given the raw `messages` the agent sees. Without this they
+    are blind to the conversation, so a follow-up turn gets planned/synthesized as if it arrived
+    cold. Pairs each user question with the assistant's final (non-tool-call) answer; skips the
+    current in-flight query (the trailing HumanMessage with no answer yet)."""
+    from core.compaction import is_summary
+    from core.state import is_steer_message
+
+    pairs = []
+    pending_q = None
+    for m in messages:
+        if isinstance(m, HumanMessage):
+            # Not every HumanMessage is a question: a compaction summary is carried history and a
+            # standalone mid-turn steer note is a correction — pairing either with the next answer
+            # corrupts the recap. With those skipped, the LATEST question wins, so a question left
+            # unanswered by a failed turn is superseded instead of mis-pairing with the next
+            # turn's answer.
+            if is_summary(m) or is_steer_message(m):
+                continue
+            text = str(m.content).strip()
+            if text:
+                pending_q = text
+        elif isinstance(m, AIMessage) and not getattr(m, "tool_calls", None):
+            answer = str(m.content).strip()
+            if pending_q and answer:
+                pairs.append((pending_q, answer))
+                pending_q = None
+    if not pairs:
+        return ""
+
+    lines = []
+    for q, a in pairs[-_RECAP_EXCHANGES:]:
+        lines.append(f"- User: {clip(q, _RECAP_CHARS)}\n  You: {clip(a, _RECAP_CHARS)}")
+    return "\n".join(lines)
+
+
+def _read_profiles() -> str:
+    workspace = get_config().path("workspace")
+    chunks = []
+    for name in _PROFILE_FILES:
+        path = workspace / name
+        if path.exists():
+            # errors="replace": a hand-edited cp1252 profile must not raise here — grounding is the
+            # first node, so an uncaught decode error fails every turn with no in-app recovery.
+            text = path.read_text(encoding="utf-8", errors="replace").strip()
+            if text:
+                chunks.append(text)
+    return "\n\n".join(chunks)
+
+
+def grounding_node(state: AgentState) -> dict:
+    start = time.perf_counter()
+
+    sections = ["## Grounding context"]
+
+    profiles = _read_profiles()
+    if profiles:
+        sections.append("### Profiles\n" + profiles)
+
+    instructions = _read_instructions()
+    if instructions:
+        sections.append(
+            "### Workspace instructions (SATURDAY.md — the user's standing guidance "
+            "for this workspace; follow it)\n" + instructions
+        )
+
+    memory = read_memory_block()
+    if memory:
+        sections.append(
+            "### Persistent memory (facts the user asked me to remember)\n" + memory
+        )
+
+    recap = _recent_exchanges(state.get("messages", []))
+    if recap:
+        sections.append(
+            "### Recent conversation (this session — for resolving follow-up references)\n"
+            + recap
+        )
+
+    docs_manifest = read_documents_manifest().strip()
+    sections.append(
+        "### Knowledge base (searchable via `search_knowledge_base`)\n"
+        + (docs_manifest or "No ingested documents yet.")
+    )
+
+    ws_manifest = read_workspace_manifest().strip()
+    sections.append(
+        "### Workspace files (accessible via read_file / write_file / list_directory)\n"
+        + (ws_manifest or "No workspace files yet.")
+    )
+
+    # Files the user attached to THIS message with `@path` (resolved + read by mentions.expand in the
+    # REPL loop, stashed on state). Folded in here so the planner/agent/synthesize — which read this
+    # context, not the raw messages — all see the file contents inline. Empty on a turn with no
+    # resolvable mentions.
+    attachments = state.get("attachments", "")
+    if attachments:
+        sections.append(attachments)
+
+    context = "\n\n".join(sections)
+    diag.log(f"grounding_node : {time.perf_counter() - start:.4f}s")
+    return {"context": context}

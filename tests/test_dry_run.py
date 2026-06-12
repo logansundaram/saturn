@@ -4,7 +4,7 @@ import pytest
 from langchain.messages import AIMessage, HumanMessage, ToolMessage
 
 from config import get_config
-from node_registry.tools import tool_node
+from nodes.tools import tool_node
 
 
 @pytest.fixture(autouse=True)

@@ -1,7 +1,7 @@
-"""node_registry/tools.py helpers — the observation clamp (gotcha #5: one big tool result must
+"""nodes/tools.py helpers — the observation clamp (gotcha #5: one big tool result must
 never overflow the context window) and the call/preview formatters the trace rides on."""
 
-from node_registry.tools import (
+from nodes.tools import (
     _clamp_observation,
     _fmt_call,
     _preview,

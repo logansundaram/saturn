@@ -21,6 +21,26 @@ def truncate(s: str, n: int) -> str:
     return s if len(s) <= n else s[: n - 1] + "…"
 
 
+def head_tail(text: str, cap: int, marker: "str | None" = None) -> str:
+    """Head+tail elision for text over `cap` chars: keep the first 2/3 and the last 1/3 with an
+    explicit marker noting how many characters were dropped — the head usually carries the
+    intent, the tail is where a long payload hides the part that matters, so neither end is
+    silently cut. THE one home for the head+tail idiom (tool observations, the gate's full-width
+    argument view — hand-rolled copies drift on the split math and the marker). `marker` is a
+    format template receiving `dropped` (the elided character count); None uses the compact
+    ellipsis form. Text at or under `cap` is returned unchanged (the same object, so identity
+    checks on the passthrough hold)."""
+    text = str(text)
+    if len(text) <= cap:
+        return text
+    head = cap * 2 // 3
+    tail = cap - head
+    dropped = len(text) - cap
+    if marker is None:
+        marker = "\n… [truncated {dropped} characters] …\n"
+    return text[:head] + marker.format(dropped=dropped) + text[-tail:]
+
+
 def clip(s, n: int) -> str:
     """One-line preview: collapse all whitespace runs to single spaces, then truncate to `n`."""
     return truncate(" ".join(str(s or "").split()), n)
@@ -66,9 +86,9 @@ def iter_strings(value):
 def safe_stem(name, fallback: str) -> str:
     """Sanitize a user-supplied name to a safe filename stem: path parts dropped, a trailing
     `.json` stripped (so `brief.json` and `brief` resolve identically), every other special
-    character collapsed to `-`. THE one sanitizer for user-named JSON artifacts (sessions,
-    recipes) — two drifted copies would let `/resume save` and `/plan save` enforce different
-    naming rules."""
+    character collapsed to `-`. THE one sanitizer for user-named JSON artifacts (sessions
+    today; any future user-named store) — drifted copies would enforce different naming
+    rules per store."""
     stem = PurePath(str(name)).name
     if stem.lower().endswith(".json"):
         stem = stem[:-5]

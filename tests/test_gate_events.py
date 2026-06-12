@@ -1,0 +1,204 @@
+"""
+Structured human-gate records (state["gate_events"]) — the chain-of-custody piece this wave
+added: the approval node's per-prompt event shape (approve-all / reject-all / partial), the
+auto-approved-silence rule (no prompt -> no record), the headless --json "gates" derivation,
+and /trace why's always-on verification section (the negative case must print, matching the
+Glass Box). Offline: the LangGraph interrupt is stubbed; no LLM/graph/network runs.
+"""
+
+import json
+import types
+
+from trust import quarantine
+from nodes import approval as approval_mod
+from nodes.approval import approval_node, gate_event
+from core.state import summarize_gates
+
+
+# --- the event builder: ONE shape for --json, the Glass Box, and the signed export -----------
+
+_CALLS = [
+    {"id": "c1", "name": "run_shell", "args": {"command": "git status"}},
+    {"id": "c2", "name": "write_file", "args": {"path": "a.txt", "content": "x"}},
+]
+
+
+def test_gate_event_approve_all():
+    ev = gate_event(_CALLS, {"c1", "c2"})
+    assert ev["decision"] == "approved"
+    assert ev["calls"] == [
+        {"id": "c1", "name": "run_shell", "approved": True},
+        {"id": "c2", "name": "write_file", "approved": True},
+    ]
+    assert ev["quarantine"] is False and ev["taint"] == [] and ev["step"] is None
+
+
+def test_gate_event_reject_all():
+    ev = gate_event(_CALLS, set())
+    assert ev["decision"] == "rejected"
+    assert all(not c["approved"] for c in ev["calls"])
+
+
+def test_gate_event_partial_and_context_fields():
+    ev = gate_event(
+        _CALLS,
+        {"c2"},
+        quarantine=True,
+        taint=[{"call_id": "c1", "source_tool": "web_extract"}],
+        step="apply the fix",
+    )
+    assert ev["decision"] == "partial"
+    assert [c["approved"] for c in ev["calls"]] == [False, True]
+    assert ev["quarantine"] is True
+    assert ev["taint"] == [{"call_id": "c1", "source_tool": "web_extract"}]
+    assert ev["step"] == "apply the fix"
+
+
+def test_gate_event_is_json_serializable():
+    # The record rides the trace delta, the --json payload, and the signed export — it must be
+    # plain JSON all the way down (gotcha #4: nothing Pydantic, nothing custom).
+    ev = gate_event(_CALLS, {"c1"}, taint=[{"call_id": "c1", "source_tool": "http_request"}])
+    assert json.loads(json.dumps(ev)) == ev
+
+
+# --- the approval node records exactly one event per PROMPT ----------------------------------
+
+
+def _msg_with_calls(calls):
+    return types.SimpleNamespace(content="about to act", tool_calls=calls)
+
+
+def _node_state(calls, plan=None):
+    return {
+        "messages": [_msg_with_calls(calls)],
+        "plan": plan or [],
+        "tools_called": [],
+    }
+
+
+def _gate_everything(monkeypatch, decision):
+    """Force every call to face the (stubbed) human, who answers `decision`."""
+    quarantine.reset_turn()
+    monkeypatch.setattr(approval_mod.policy, "approves", lambda *a, **k: False)
+    monkeypatch.setattr(approval_mod, "interrupt", lambda payload: decision)
+
+
+def test_node_approve_all_records_event(monkeypatch):
+    _gate_everything(monkeypatch, True)
+    plan = [{"step_id": 1, "label": "do the work", "status": "pending",
+             "intended_tool": "run_shell"}]
+    cmd = approval_node(_node_state(list(_CALLS), plan=plan))
+    assert cmd.goto == "tools"
+    (ev,) = cmd.update["gate_events"]
+    assert ev["decision"] == "approved"
+    assert [c["name"] for c in ev["calls"]] == ["run_shell", "write_file"]
+    assert all(c["approved"] for c in ev["calls"])
+    assert ev["step"] == "do the work"
+
+
+def test_node_reject_all_records_event(monkeypatch):
+    _gate_everything(monkeypatch, False)
+    cmd = approval_node(_node_state(list(_CALLS)))
+    assert cmd.goto == "agent"  # fully-rejected batch goes back to the agent
+    (ev,) = cmd.update["gate_events"]
+    assert ev["decision"] == "rejected"
+    assert all(not c["approved"] for c in ev["calls"])
+    assert ev["step"] is None  # no plan — no active-step label, recorded as unknown not ""
+    # The decline ToolMessages still ride the same update (unchanged behavior).
+    assert len(cmd.update["messages"]) == 2
+
+
+def test_node_partial_records_event(monkeypatch):
+    _gate_everything(monkeypatch, {"approved_ids": ["c1"]})
+    cmd = approval_node(_node_state(list(_CALLS)))
+    assert cmd.goto == "tools"  # survivors still run
+    (ev,) = cmd.update["gate_events"]
+    assert ev["decision"] == "partial"
+    assert {c["name"]: c["approved"] for c in ev["calls"]} == {
+        "run_shell": True, "write_file": False,
+    }
+
+
+def test_node_auto_approved_batch_records_nothing(monkeypatch):
+    # No prompt -> no record: "gate_events empty" must always mean "the human was never asked".
+    quarantine.reset_turn()
+    monkeypatch.setattr(approval_mod.policy, "approves", lambda *a, **k: True)
+    monkeypatch.setattr(
+        approval_mod, "interrupt",
+        lambda payload: (_ for _ in ()).throw(AssertionError("gate must not prompt")),
+    )
+    cmd = approval_node(_node_state(list(_CALLS)))
+    assert cmd.goto == "tools"
+    assert not cmd.update  # no gate_events delta at all
+
+
+def test_node_quarantine_escalation_flag_recorded(monkeypatch):
+    _gate_everything(monkeypatch, True)
+    monkeypatch.setattr(quarantine, "gate_pending", lambda: True)
+    consumed = []
+    monkeypatch.setattr(quarantine, "consume_gate", lambda: consumed.append(True))
+    cmd = approval_node(_node_state(list(_CALLS)))
+    (ev,) = cmd.update["gate_events"]
+    assert ev["quarantine"] is True
+    assert consumed  # the approval spent the one-shot escalation (unchanged behavior)
+
+
+def test_node_taint_warnings_recorded(monkeypatch):
+    _gate_everything(monkeypatch, False)
+    hit = types.SimpleNamespace(source_tool="web_extract", preview="evil span", span_len=44)
+    monkeypatch.setattr(
+        quarantine, "taint_scan",
+        lambda args: [hit] if (args or {}).get("command") else [],
+    )
+    cmd = approval_node(_node_state(list(_CALLS)))
+    (ev,) = cmd.update["gate_events"]
+    # Only the call whose args carried the tainted span shows up, with its source tool.
+    assert ev["taint"] == [{"call_id": "c1", "source_tool": "web_extract"}]
+
+
+# --- headless --json: the "gates" field derives from the state dict --------------------------
+
+
+def test_summarize_gates_counts_and_denied_names():
+    events = [
+        gate_event(_CALLS, {"c1"}),                       # partial: write_file denied
+        gate_event([{"id": "c3", "name": "http_request", "args": {}}], set()),  # rejected
+    ]
+    assert summarize_gates(events) == {
+        "prompted": 3,
+        "denied": ["write_file", "http_request"],
+    }
+
+
+def test_summarize_gates_empty_and_garbage_tolerant():
+    assert summarize_gates([]) == {"prompted": 0, "denied": []}
+    assert summarize_gates(None) == {"prompted": 0, "denied": []}
+    assert summarize_gates([None, "junk", {"calls": [None, 7]}]) == {
+        "prompted": 0, "denied": [],
+    }
+
+
+# --- /trace why: the verification section always prints --------------------------------------
+
+
+def test_why_verification_prints_negative_case(capsys):
+    from commands.trace import _render_why
+    from tui import ui
+
+    run = (3, "what is new?", None, None, "ok", "an answer")
+    _render_why(ui, run, [], [])
+    out = capsys.readouterr().out
+    assert "verification" in out
+    assert "groundedness judge did not run — no ungrounded draft was caught." in out
+
+
+def test_why_verification_prints_judge_verdict(capsys):
+    from commands.trace import _render_why
+    from tui import ui
+
+    run = (4, "q", None, None, "ok", "an answer")
+    calls = [(1, "replan", json.dumps({"content": "ungrounded: never looked it up"}))]
+    _render_why(ui, run, [], calls)
+    out = capsys.readouterr().out
+    assert "groundedness judge: ungrounded: never looked it up" in out
+    assert "did not run" not in out

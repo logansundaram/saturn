@@ -65,7 +65,7 @@ _TREE_MID, _TREE_END, _TREE_PIPE, _TREE_LEAF = "├─", "└─", "│", "└"
 
 # ── trace verbosity ───────────────────────────────────────────────────────────
 # How much of the execution trace scrolls live. The trace DB keeps everything regardless, so
-# /trace and /calls stay full-fidelity no matter what this is set to:
+# /trace and /trace calls stay full-fidelity no matter what this is set to:
 #   "normal"  (default) — plumbing nodes (ground, update_plan) are folded out of the live rail;
 #                         their *output* still prints (update_plan's plan diff is driven by
 #                         show_plan), and their timing rolls into the next visible node.
@@ -136,7 +136,7 @@ def _active_ctx_window() -> int:
     """The agent model's context window — the fill gauge's denominator. Lazily imports llms so
     ui stays a leaf module; best-effort (0 if the factory/config is unavailable)."""
     try:
-        from llms import active_context_window
+        from core.llms import active_context_window
 
         return active_context_window()
     except Exception:
@@ -150,7 +150,7 @@ def _active_model() -> str:
     banner-captured `_model` if the factory/config is unavailable."""
     try:
         from config import get_config
-        from llms import model_id
+        from core.llms import model_id
 
         return f"{get_config().active_tier}:{model_id('tool_caller')}"
     except Exception:

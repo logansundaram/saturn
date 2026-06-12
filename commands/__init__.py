@@ -25,31 +25,27 @@ from commands._session import write_autosave
 import importlib as _importlib
 
 _COMMAND_MODULES = [
-    "allow",
-    "autoapprove",
     "clear",
     "compact",
     "config",
     "context",
     "docs",
     "dryrun",
-    "glass",
     "help",
     "init",
     "mcp",
     "memory",
     "models",
     "plan",
-    "policy",
+    "policy",  # also registers its top-level views: /risk, /allow, /autoapprove
     "privacy",
     "quit",
     "resume",
     "retry",
     "rewind",
-    "risk",
     "source",
     "tools",
-    "trace",
+    "trace",  # also registers /glass (the front door for /trace answer)
     "undo",
     "update",
     "user_commands",

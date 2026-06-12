@@ -3,23 +3,47 @@ Shared utilities used by multiple command handlers.
 """
 from __future__ import annotations
 
-from typing import Optional
-
 # All chat-model roles; used by /models, /context, and /config. The canonical tuple lives in
 # config.MODEL_ROLES (shared with llms.check_models and the signed trust report).
 from config import MODEL_ROLES as _ROLES  # noqa: E402
 
 
-def _parse_toggle(args: list[str], current: bool) -> Optional[bool]:
-    """Parse an on/off argument. No arg flips the current value; unrecognized returns None."""
+def parse_toggle_status(args: list[str]) -> "bool | str | None":
+    """THE on/off grammar for every status-or-set command (/dryrun, /policy open, /plan review,
+    /plan lockstep, /privacy airgap): no argument -> None, a STATUS readout — bare is NEVER a
+    flip, mutation is always an explicit verb; on/true/yes/1 -> True; off/false/no/0 -> False;
+    anything else -> "invalid" (the caller prints usage). One parser so the toggles can't
+    drift apart."""
     if not args:
-        return not current
+        return None
     val = args[0].lower()
     if val in ("on", "true", "yes", "1"):
         return True
     if val in ("off", "false", "no", "0"):
         return False
-    return None
+    return "invalid"
+
+
+def split_save_flag(args: list[str]) -> "tuple[list[str], bool]":
+    """Split the standalone `--save` / `-s` persist flag out of `args`: case-insensitive, any
+    position, exact token only. Returns (remaining args, flag present?). THE one --save parser —
+    every command that persists a session edit to config.yaml reads the flag through this, so
+    `/plan lockstep --save` and `/privacy airgap --save` can never disagree about what counts as
+    the flag. Shared convention for `--save` with NO explicit value: persist the CURRENT value
+    (it mutates nothing live, so it is safe everywhere) — never refuse, never flip."""
+    rest = [a for a in args if a.lower() not in ("--save", "-s")]
+    return rest, len(rest) != len(args)
+
+
+# THE removal-verb vocabulary, accepted identically by every command that deletes something
+# (/docs, /memory, /resume, /policy allow, /config key ...). One set so muscle memory transfers;
+# don't define a per-command subset.
+REMOVE_VERBS = ("remove", "rm", "delete", "del", "forget", "drop")
+
+
+def is_remove_verb(token: str) -> bool:
+    """True when `token` is one of the shared removal verbs (case-insensitive)."""
+    return token.lower() in REMOVE_VERBS
 
 
 def _resync_rag_after_model_change() -> None:

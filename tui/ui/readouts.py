@@ -1,6 +1,6 @@
 """
 On-demand readouts (`/context`, `/models`) and the one-off log lines (notes, warnings,
-steering acknowledgements, queued-line echoes). All render in the trace-rail style and reuse the
+steering/pause acknowledgements, queued-line echoes). All render in the trace-rail style and reuse the
 shared meter vocabulary (`_mini_bar`/`_meter_color`), so a gauge reads identically here, in the
 status bar, and in the live trace. None of these touch per-turn state.
 """
@@ -181,6 +181,20 @@ def steer_note(text: str) -> None:
         _console.print(t)
     else:
         print(f"  ↪ steering — applies at the next step: {msg}")
+
+
+def pause_note() -> None:
+    """Acknowledge an empty-line Esc the moment it's captured. The plan-review pause lands at the
+    next step boundary (see plan_gate), which on a local model can be a long wait — this is the
+    immediate feedback that the keypress registered, printed above the live status bar exactly
+    like steer_note's steering acknowledgement."""
+    if _RICH:
+        t = Text()
+        t.append("  ⏸ ", style=f"bold {_ACCENT}")
+        t.append("pausing for plan review at the next step…", style=_ACCENT)
+        _console.print(t)
+    else:
+        print("  ⏸ pausing for plan review at the next step…")
 
 
 def echo_queued(line: str) -> None:

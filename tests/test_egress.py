@@ -2,7 +2,7 @@
 
 import pytest
 
-import egress
+from trust import egress
 from config import get_config
 
 

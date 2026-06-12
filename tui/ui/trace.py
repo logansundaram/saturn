@@ -65,7 +65,7 @@ def show_node(node: str, delta: dict | None = None) -> None:
     # plan-review prompt. _t_last is already advanced, so the next node's timing excludes the gate.
     # The plumbing nodes (ground, update_plan) fold the same way at normal verbosity: their timing
     # rolls into the next visible node, and update_plan's plan diff still prints (show_plan is
-    # driven separately by on_update). Everything stays in the trace DB for /trace and /calls.
+    # driven separately by on_update). Everything stays in the trace DB for /trace and /trace calls.
     if node == "plan_gate":
         return
     if node in _base._FOLD_NODES and _base._VERBOSITY != "verbose":
@@ -165,7 +165,7 @@ def _render_tool_events(events: list[dict], *, always_show_results: bool = False
     """Draw the tool-I/O sub-tree under the `tools` node header: one `├─ name(args)  dur` branch
     per call, the call repr sized to the terminal and durations column-aligned within the round so
     they read as a column. The raw result preview is **hidden** by default — it's noisy JSON, and
-    `/calls` (or `/trace full`) surfaces full outputs on demand — but a FAILED call still shows
+    `/trace calls` (or `/trace full`) surfaces full outputs on demand — but a FAILED call still shows
     its error leaf inline (signal, not noise). What the agent *did* (name · args · cost · ok/fail)
     always stays visible. `always_show_results=True` (the /trace replay) shows every output, word-
     wrapped under the rail with a hanging indent."""

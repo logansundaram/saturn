@@ -6,7 +6,10 @@ out and Tab-complete, and input is multiline: Enter submits; Shift+Enter (Window
 compacted to a `[paste #N +L lines]` chip so a wall of code doesn't flood the prompt — the full
 text is kept aside, re-expanded into the message at submit, and Ctrl+E with the cursor on the chip
 re-expands it in place for editing. Falls back to rich's (or plain) input() without prompt_toolkit.
-`banner` prints the session header and captures the model label for the status bar.
+`banner` prints the session header and captures the model label for the status bar. The live
+posture flags (⚠ GATE OFF / ⛓ AIRGAP / DRY-RUN) ride the prompt's right edge as the rprompt —
+the status bar that carries them mid-turn is torn down around every input(), exactly when the
+user picks their next action; the plain fallback prints them as one line above the prompt.
 """
 
 import sys
@@ -43,6 +46,40 @@ except Exception:  # pragma: no cover - fallback path
     _PTK = False
 
 _ptk_session = None  # one PromptSession for the process -> free line history across turns
+
+
+# ── posture at the prompt ──────────────────────────────────────────────────────
+# The status bar's loud posture flags (⚠ GATE OFF / ⛓ AIRGAP / DRY-RUN) are transient — the bar
+# tears down around every input(), which is exactly when the user picks their next action. These
+# re-derive the same live reads (no new state, same keys and threshold logic as the bar) for the
+# `»` prompt: prompt_toolkit renders them as the rprompt; the plain fallback prints one short
+# line above the prompt only when at least one flag is active.
+def _posture_flags() -> list[tuple[str, str]]:
+    """Active posture flags as (label, kind) pairs — kind ∈ gate|airgap|dryrun. Read live each
+    call, exactly like the status bar: the policy threshold at `destructive` means the gate is
+    OPEN; air-gap and dry-run come straight off the runtime knobs."""
+    flags: list[tuple[str, str]] = []
+    try:
+        from config import get_config
+
+        cfg = get_config()
+        if cfg.auto_approve == "destructive":
+            flags.append(("⚠ GATE OFF", "gate"))
+        if bool(cfg.get("runtime.airgap", False)):
+            flags.append(("⛓ AIRGAP", "airgap"))
+        if bool(cfg.get("runtime.dry_run", False)):
+            flags.append(("DRY-RUN", "dryrun"))
+    except Exception:
+        return []
+    return flags
+
+
+# kind -> rich style, mirroring the status bar's rendering of the identical flags.
+_POSTURE_STYLE = {
+    "gate": f"bold {_RISK.get('destructive', 'red')}",
+    "airgap": f"bold {_ACCENT}",
+    "dryrun": f"bold {_RISK.get('side_effecting', 'yellow')}",
+}
 
 
 # ── startup banner ─────────────────────────────────────────────────────────────
@@ -101,7 +138,27 @@ if _PTK:
         "cmd.args": "ansibrightblack",
         "mention": "ansibrightblue",
         "paste": "reverse ansibrightblack",  # the [paste #N …] chip — reads as one atomic token
+        "posture.gate": "ansired bold",
+        "posture.airgap": "ansicyan bold",
+        "posture.dryrun": "ansiyellow bold",
+        "posture.sep": "ansibrightblack",
     })
+
+    # kind -> rprompt style class (the ptk twin of _POSTURE_STYLE).
+    _POSTURE_PTK = {"gate": "class:posture.gate", "airgap": "class:posture.airgap",
+                    "dryrun": "class:posture.dryrun"}
+
+    def _posture_rprompt():
+        """rprompt fragments for the `»` line — a callable, so the flags are re-derived live on
+        each render. Empty when nothing is active, so the default prompt stays clean. Read-only:
+        this is the ONLY prompt_toolkit integration point for posture (the reader machinery is
+        frozen; rprompt is a standard PromptSession parameter)."""
+        frags = []
+        for label, kind in _posture_flags():
+            if frags:
+                frags.append(("class:posture.sep", " · "))
+            frags.append((_POSTURE_PTK.get(kind, "class:posture.sep"), label))
+        return frags
 
     # Teach the vt100 parser the Shift/Ctrl+Enter escape sequences modern POSIX terminals emit
     # (kitty, foot, Ghostty, WezTerm send CSI-u by default; xterm-family sends the modifyOtherKeys
@@ -353,7 +410,7 @@ if _PTK:
     @_PTK_KB.add("s-tab")  # Shift+Tab: cycle the gate policy's auto-approve threshold
     def _ptk_cycle_permission(event):
         from config import RISK_ORDER
-        import policy
+        from trust import policy
         current = policy.tier()
         idx = RISK_ORDER.index(current) if current in RISK_ORDER else 0
         next_tier = RISK_ORDER[(idx + 1) % len(RISK_ORDER)]
@@ -423,8 +480,10 @@ def prompt(command_meta=None) -> str:
     `/command` token or an `@path` mention, and the line is multiline: Enter submits;
     Shift+Enter / Ctrl+Enter / Ctrl+J / Alt+Enter (POSIX fallback: backslash+Enter) insert a
     newline. A large paste renders as a `[paste #N …]` chip (Ctrl+E on it re-expands for editing)
-    and is swapped back to the full text in the returned line. Without prompt_toolkit, falls back
-    to rich/plain input. Returns the raw line (slash-command + @mention handling happen upstream)."""
+    and is swapped back to the full text in the returned line. Active posture flags (gate off /
+    air-gap / dry-run) render live at the line's right edge (rprompt). Without prompt_toolkit,
+    falls back to rich/plain input (posture printed above the prompt only when something is
+    active). Returns the raw line (slash-command + @mention handling happen upstream)."""
     _live_stop()  # never read a line under an active Live (also clears a bar left by an error)
     if _PTK and command_meta is not None:
         global _ptk_session
@@ -440,7 +499,21 @@ def prompt(command_meta=None) -> str:
             multiline=True,
             key_bindings=_PTK_KB,
             prompt_continuation=_ptk_continuation,
+            rprompt=_posture_rprompt,  # live posture flags at the right edge (read each render)
         ))
+    # Plain fallback: no rprompt to carry the posture, so print one short line above the prompt —
+    # only when at least one flag is active, keeping the default prompt clean.
+    flags = _posture_flags()
+    if flags:
+        if _RICH:
+            t = Text("  ")
+            for i, (label, kind) in enumerate(flags):
+                if i:
+                    t.append(" · ", style=_DIM)
+                t.append(label, style=_POSTURE_STYLE.get(kind, _DIM))
+            _console.print(t)
+        else:
+            print("  " + " · ".join(label for label, _ in flags))
     if _RICH:
         return _console.input(f"[bold {_ACCENT}]»[/] ")
     return input("» ")

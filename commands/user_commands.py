@@ -14,8 +14,9 @@ typed after the command (no `$ARGUMENTS` → the arguments append to the end).
 Then `/brief notes.md` runs the expanded text as a normal turn — same plan, same gates, same
 trace. A template is a PROMPT, never code: it can't call tools or skip the gate; everything it
 triggers goes through the loop's existing trust machinery. Names that collide with a built-in
-command (or its aliases) are skipped and reported. `/commands` lists what's loaded; `/commands
-reload` re-scans after an edit.
+command (or its aliases) are skipped and reported. Loaded templates are listed in /help (tagged
+"(user)"); templates are picked up automatically — startup loads them, and an unknown /name at
+dispatch triggers one rescan — no management command needed.
 """
 
 from __future__ import annotations
@@ -27,9 +28,7 @@ from commands._framework import (
     _ALIASES,
     _RENAMED,
     SlashCommand,
-    command,
     command_completions,
-    _print,
 )
 
 # Names this module registered (so a reload can drop them before re-scanning, and a user file
@@ -84,8 +83,8 @@ def expand_arguments(body: str, args: list[str]) -> str:
 
 def _make_handler(body: str):
     def handler(ctx, args):
-        # The expansion runs as the next agent turn (the same requeue seam /retry full and
-        # /plan run use) — through the normal plan/gate/trace machinery, never around it.
+        # The expansion runs as the next agent turn (the same requeue seam /retry full uses)
+        # — through the normal plan/gate/trace machinery, never around it.
         ctx.requeue = expand_arguments(body, args)
 
     return handler
@@ -153,53 +152,13 @@ def problems() -> list[str]:
     return list(_PROBLEMS)
 
 
-@command(
-    "commands",
-    "List user-defined slash commands; reload after editing their templates.",
-    aliases=("cmds",),
-    usage="/commands [reload]",
-    details="""
-User-defined slash commands are markdown templates in database/commands/ (paths.user_commands):
-`<name>.md` becomes `/name`. The template body runs as a normal agent turn when invoked —
-`$ARGUMENTS` is replaced with everything typed after the command. Optional YAML frontmatter:
-
-  ---
-  summary: one line shown in /help and completions
-  ---
-  Summarize @$ARGUMENTS in exactly three bullet points.
-
-A template is a prompt, not code: whatever it triggers still flows through the plan, the
-approval gate, and the trace. Names colliding with built-ins are skipped (reported here).
-
-  /commands          list loaded user commands + the template directory
-  /commands reload   re-scan after adding/editing/removing templates
-""",
-)
-def _commands_cmd(ctx, args):
-    if args and args[0].lower() in ("reload", "rescan", "refresh"):
-        n, probs = load_user_commands()
-        _print(f"  reloaded — {n} user command(s) registered.")
-        for p in probs:
-            _print(f"  ⚠ {p}")
-        return
-
-    d = _commands_dir()
-    if not _REGISTERED:
-        _print("  (no user commands loaded)")
-        _print(f"  create one: drop <name>.md into {d}")
-        _print("  then /commands reload — the body runs as an agent turn; $ARGUMENTS expands.")
-        return
-    _print(f"  user commands  (templates in {d}):")
-    for name in sorted(_REGISTERED):
-        cmd = COMMANDS.get(name)
-        if cmd:
-            _print(f"    /{name:<18} {cmd.summary}")
-    for p in _PROBLEMS:
-        _print(f"  ⚠ {p}")
-    _print("  edit a template then /commands reload to apply.")
+def registered_names() -> set[str]:
+    """Names of the currently loaded user commands — /help renders these as its `user` section
+    (and subtracts them to know which COMMANDS entries are built-ins)."""
+    return set(_REGISTERED)
 
 
 # NOTE: no import-time scan. commands/__init__ calls load_user_commands() explicitly AFTER every
 # built-in module has registered (two-phase load), so the collision check structurally sees all
-# built-ins regardless of import order. Problems are kept for /commands and surfaced by the
-# startup warner in agent.main — never raised, a bad template can't block launch.
+# built-ins regardless of import order. Problems are surfaced by the startup warner in
+# agent.main — never raised, a bad template can't block launch.

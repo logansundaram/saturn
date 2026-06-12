@@ -2,8 +2,8 @@
 the late-steer salvage path (agent.main pushes an unconsumed steer correction at turn end so the
 user's typed words run as the next message instead of being silently dropped)."""
 
-from interrupts import PauseController
-from typeahead import InputQueue
+from core.interrupts import PauseController
+from tui.typeahead import InputQueue
 
 
 def _queue():

@@ -1,5 +1,5 @@
 from commands._framework import command, _print
-from commands._utils import _parse_toggle, _ROLES
+from commands._utils import _ROLES, parse_toggle_status, split_save_flag
 
 # One byte formatter for every trust surface (textutil.human_bytes) — the per-answer receipt and
 # these readouts must render the same byte count identically, or the "receipt echoes the ledger"
@@ -12,7 +12,8 @@ _REDACT_MODES = ("off", "warn", "redact")
 @command(
     "privacy",
     "The privacy surface: what CAN leave this machine, what DID, and the controls that seal it.",
-    usage="/privacy [egress [n|clear] | airgap [on|off] [--save] | redact [<mode>|preview] [--save]]",
+    usage="/privacy [egress [log|verify|clear|n] | airgap [on|off] [--save] | "
+          "redact [<mode>|preview] [--save] | report [-o <path>]]",
     details="""
 One front door for the whole network boundary. Bare /privacy answers "what can leave this
 machine right now?"; the subcommands are its verifiable companions — what actually left, the
@@ -36,13 +37,14 @@ seal, and the secret-stripper:
   /privacy airgap          seal the boundary. With no argument, prints the enforcement posture
                            (what is open vs sealed right now). When ON: web tools refuse, remote
                            MCP calls refuse, and a cloud-bound role refuses to run.
-    /privacy airgap on|off   toggle; add --save to persist to config.yaml
+    /privacy airgap on|off   set; add --save to persist to config.yaml (`--save` with no value
+                             persists the CURRENT setting without changing it)
 
   /privacy redact          strip secrets (API keys, tokens, private keys, JWTs, emails) from
                            prompts before they reach a cloud model. Modes: off | warn | redact.
     /privacy redact preview  scan the CURRENT context and report what WOULD be stripped — sends
                              nothing
-    /privacy redact <mode> [--save]
+    /privacy redact <mode> [--save]   (`--save` with no mode persists the current one unchanged)
 
   /privacy report          the trust report: ONE signed document gathering every posture above —
                            inference bindings, gate policy, air-gap/redaction, and what actually
@@ -125,7 +127,7 @@ def _overview(ctx):
     )
 
     # --- mcp servers ----------------------------------------------------------
-    import mcp_client
+    from tools import mcp_client
 
     statuses = mcp_client.status()
     if statuses or mcp_client.configured():
@@ -166,20 +168,27 @@ def _overview(ctx):
     # --- data locations -------------------------------------------------------
     _print("  your data (all local)")
     rows = []
-    for label, name in (
-        ("workspace", "workspace"),
-        ("documents (RAG)", "documents"),
-        ("memory", "memory"),
-        ("traces + checkpoints", "db_sqlite"),
-        ("sessions", "sessions"),
-        ("exports", "exports"),
+    for label, name, note in (
+        ("workspace", "workspace", ""),
+        ("documents (RAG)", "documents", ""),
+        ("memory", "memory", ""),
+        ("traces + checkpoints", "db_sqlite", ""),
+        ("sessions", "sessions", ""),
+        ("exports", "exports", ""),
+        ("gate policy", "permissions", "risk overrides + shell allowlist (/policy)"),
+        ("signing key", "signing_key", "this machine's audit key — private key never leaves"),
+        ("egress log", "egress_log",
+         "retains query/URL detail across sessions; delete the file to start a fresh chain"),
     ):
         try:
-            rows.append((label, (str(cfg.path(name)), "dim")))
+            rows.append((label, (str(cfg.path(name)), "dim"), (note, "dim")))
         except KeyError:
             continue
     ui.table(rows)
 
+    qmode = str(cfg.get("runtime.quarantine", "gate") or "gate")
+    _print(f"  injection quarantine: {qmode} — untrusted tool output (web/http/MCP/corpus) is")
+    _print("  screened for instruction-shaped content before the model sees it.")
     _print("  telemetry: none — no analytics, no crash reporting, no phone-home.")
     _print("  verify it: the source is MIT-licensed, and a network monitor will show only the")
     _print("  calls listed above.")
@@ -194,7 +203,7 @@ def _overview(ctx):
 
 
 def _egress(ctx, args):
-    import egress
+    from trust import egress
     from tui import ui
 
     if args and args[0].lower() in ("clear", "reset"):
@@ -265,7 +274,7 @@ def _egress(ctx, args):
 def _egress_log(ctx, args):
     """`/privacy egress log [n]` — the DURABLE, cross-session egress record (paths.egress_log),
     the in-memory ledger's twin that survives restarts and is tamper-evident."""
-    import egress
+    from trust import egress
     from tui import ui
 
     limit = None
@@ -305,7 +314,7 @@ def _egress_log(ctx, args):
 def _egress_verify(ctx):
     """`/privacy egress verify` — walk the durable log's hash chain and report whether any line was
     edited, reordered, or removed."""
-    import egress
+    from trust import egress
     from tui import ui
 
     v = egress.verify_log()
@@ -330,21 +339,29 @@ def _egress_verify(ctx):
 
 
 def _airgap(ctx, args):
-    import egress
+    from trust import egress
     from config import get_config, persist
     from tui import ui
 
     cfg = get_config()
-    save = any(a.lower() in ("--save", "-s", "save") for a in args)
-    toggle_args = [a for a in args if a.lower() not in ("--save", "-s", "save")]
+    toggle_args, save = split_save_flag(args)
+    new = parse_toggle_status(toggle_args)
 
-    # No on/off -> just show the posture.
-    if not toggle_args and not save:
+    # No on/off -> status; `--save` alone persists the CURRENT value (the shared convention —
+    # it mutates nothing live, so the seal can't silently flip).
+    if new is None:
+        if save:
+            cur = "on" if bool(cfg.get("runtime.airgap", False)) else "off"
+            try:
+                persist("runtime.airgap")
+                _print(f"  airgap is {cur} — saved runtime.airgap to config.yaml "
+                       "(no change made; /privacy airgap on|off changes it).")
+            except Exception as exc:
+                _print(f"  (could not persist to config.yaml: {exc})")
+            return
         _show_posture(ctx, cfg, ui, egress)
         return
-
-    new = _parse_toggle(toggle_args, bool(cfg.get("runtime.airgap", False)))
-    if new is None:
+    if new == "invalid":
         _print(f"  usage: /privacy airgap on|off [--save]   (currently "
                f"{'on' if cfg.get('runtime.airgap', False) else 'off'})")
         return
@@ -354,7 +371,7 @@ def _airgap(ctx, args):
     # the next get_model rebuild re-checks the gate and refuses. Web tools / MCP check the gate live
     # on every call, so they need nothing here.
     try:
-        from llms import reset_models
+        from core.llms import reset_models
         reset_models()
     except Exception:
         pass
@@ -452,7 +469,7 @@ def _safe_spec(cfg, role) -> bool:
 
 
 def _redact(ctx, args):
-    import redaction
+    from trust import redaction
     from config import get_config, persist
     from tui import ui
 
@@ -461,21 +478,29 @@ def _redact(ctx, args):
     if args and args[0].lower() in ("preview", "scan", "check", "test"):
         return _redact_preview(ctx, redaction, ui)
 
-    save = any(a.lower() in ("--save", "-s", "save") for a in args)
-    mode_args = [a for a in args if a.lower() not in ("--save", "-s", "save")]
+    mode_args, save = split_save_flag(args)
 
-    if not mode_args and not save:
+    # No mode -> status; `--save` alone persists the CURRENT mode (the shared convention — it
+    # mutates nothing live).
+    if not mode_args:
+        if save:
+            try:
+                persist("runtime.redaction")
+                _print(f"  redaction mode: {redaction.mode()} — saved runtime.redaction to "
+                       "config.yaml (no change made; /privacy redact <mode> changes it).")
+            except Exception as exc:
+                _print(f"  (could not persist to config.yaml: {exc})")
+            return
         _print(f"  redaction mode: {redaction.mode()}   (off | warn | redact)")
         _print("  /privacy redact <mode> to change · /privacy redact preview to see what would")
         _print("  be stripped now.")
         return
 
-    if mode_args:
-        new = mode_args[0].lower()
-        if new not in _REDACT_MODES:
-            _print(f"  unknown mode {new!r} — use one of: {', '.join(_REDACT_MODES)}")
-            return
-        cfg.set("runtime.redaction", new)
+    new = mode_args[0].lower()
+    if new not in _REDACT_MODES:
+        _print(f"  unknown mode {new!r} — use one of: {', '.join(_REDACT_MODES)}")
+        return
+    cfg.set("runtime.redaction", new)
 
     if save:
         try:
@@ -557,7 +582,7 @@ def _report(ctx, args):
     import json
     from pathlib import Path
 
-    import trust_report
+    from trust import trust_report
     from tui import ui
 
     out_path = None
@@ -565,6 +590,9 @@ def _report(ctx, args):
     for a in it:
         if a.lower() in ("-o", "--out", "--output"):
             out_path = next(it, None)
+            if out_path is None:
+                _print("  usage: /privacy report [-o <path>] — -o needs a path; nothing written.")
+                return
 
     report = trust_report.build_report()
     inf = report["inference"]

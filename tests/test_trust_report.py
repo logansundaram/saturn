@@ -5,8 +5,8 @@ Covers: the report assembles the expected sections, signing wraps it with a veri
 digest+signature, verify_report confirms an untouched report and flags a tampered one.
 """
 
-import egress
-import trust_report
+from trust import egress
+from trust import trust_report
 
 
 def test_build_report_shape(isolated_paths):
@@ -52,6 +52,41 @@ def test_tampered_report_fails_digest(isolated_paths):
 
 def test_verify_rejects_non_report(isolated_paths):
     assert trust_report.verify_report({"not": "a report"}) == {"is_report": False}
+
+
+def test_report_carries_format_marker(isolated_paths):
+    # The versioned artifact-format marker the standalone spec pins (utilities/VERIFY_SPEC.md).
+    from trust import signing
+
+    egress.clear()
+    r = trust_report.build_report()
+    assert r["format"] == signing.ARTIFACT_FORMAT
+
+
+def test_report_anchor_present_inside_signed_body(isolated_paths):
+    # The egress-chain anchor rides INSIDE the signed body: the report's signature commits the
+    # chain head, so a later tail-truncation of egress.log contradicts the report.
+    import json
+
+    egress.clear()
+    egress.record("web_search", "api.example.com", n_bytes=10)
+    r = trust_report.build_report()
+    assert r["egress_anchor"] == egress.log_tip()
+    assert r["egress_anchor"]["tip_hash"] == egress.read_log()[-1]["h"]
+    assert r["egress_anchor"]["line_count"] == 1
+
+    signed = trust_report.sign_report(r)
+    assert trust_report.verify_report(signed)["digest_ok"] is True
+    tampered = json.loads(json.dumps(signed))
+    tampered["egress_anchor"]["tip_hash"] = "0" * 64
+    assert trust_report.verify_report(tampered)["digest_ok"] is False
+
+
+def test_report_anchor_absent_without_log(isolated_paths):
+    # No durable log in this fresh tree → the field is ABSENT, never a fake value.
+    egress.clear()
+    r = trust_report.build_report()
+    assert "egress_anchor" not in r
 
 
 def test_trace_verify_accepts_trust_report_file(isolated_paths, capsys):

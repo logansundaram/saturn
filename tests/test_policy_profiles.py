@@ -5,7 +5,7 @@ validation failing closed, and the YAML `off`-is-False footgun.
 
 import pytest
 
-import policy
+from trust import policy
 from config import get_config
 
 
@@ -137,11 +137,32 @@ def test_apply_write_failure_leaves_live_knobs_untouched(clean_policy, monkeypat
     assert get_config().get("runtime.airgap") is False
 
 
+def test_export_command_artifact_round_trips(clean_policy, tmp_path, monkeypatch):
+    # The /policy export file (now also reachable via -o/--out/--output) must be a valid profile
+    # end-to-end: written through the command path, applied through apply_policy_file.
+    from core import llms
+    import commands.policy  # noqa: F401 — registers /policy
+    from commands._framework import CommandContext, dispatch
+    from commands.policy import apply_policy_file
+
+    monkeypatch.setattr(llms, "reset_models", lambda: None)
+    policy.add_shell_allow("git status")
+    dest = tmp_path / "exported.yaml"
+    ctx = CommandContext(state={}, make_initial_state=dict, db_path="")
+    dispatch(f"/policy export -o {dest}", ctx)
+    assert dest.exists()
+
+    policy.remove_shell_allow("git status")
+    summary = apply_policy_file(str(dest))
+    assert "policy applied" in summary
+    assert policy.shell_allow() == ["git status"]
+
+
 def test_apply_policy_file_drops_model_cache(clean_policy, tmp_path, monkeypatch):
     # A profile can flip runtime.airgap — apply_policy_file must drop the llms model cache
     # (mirroring /privacy airgap) or a cloud model cached while the boundary was open keeps
     # serving calls from llms._DERIVED_CACHE after the profile sealed it.
-    import llms
+    from core import llms
     from commands.policy import apply_policy_file
 
     calls = []

@@ -6,9 +6,9 @@ quarantine.longest_overlap it relies on. Pure/offline: no LLM, no network, no DB
 import pytest
 from langchain.messages import AIMessage, HumanMessage
 
-import egress
-import glassbox
-import quarantine
+from trust import egress
+from trust import glassbox
+from trust import quarantine
 
 
 # A long, distinctive span an untrusted source might plant and the answer might echo.
@@ -213,3 +213,228 @@ def test_longest_overlap_many_matches_pairwise():
     spans = quarantine.longest_overlap_many("echo " + _PAYLOAD, others)
     assert spans[0] and "forty thousand dollars" in spans[0]
     assert spans[1] is None
+
+
+# --- human gate decisions (the gate_events record) --------------------------------------------
+
+_GATE_EV = {
+    "calls": [
+        {"id": "1", "name": "run_shell", "approved": True},
+        {"id": "2", "name": "http_request", "approved": False},
+    ],
+    "decision": "partial",
+    "quarantine": False,
+    "taint": [],
+    "step": None,
+}
+
+
+def test_build_from_record_gate_events_drive_gated_and_summary():
+    deltas = [
+        {"tool_results": ["web_search(query='x') -> data"]},
+        {"gate_events": [_GATE_EV]},
+    ]
+    gb = glassbox.build_from_record("q", "Answer [1].", deltas)
+    assert gb.gated == 2
+    assert gb.gate_summary == [
+        {"name": "run_shell", "approved": True},
+        {"name": "http_request", "approved": False},
+    ]
+
+
+def test_build_from_record_without_gate_events_stays_unknown():
+    """An older record (or one with no prompt) carries no gate_events: gated must stay None —
+    unknown, NEVER 'zero gates' (a pre-feature record may have gated plenty)."""
+    gb = glassbox.build_from_record("q", "Answer.", [{"tool_results": []}])
+    assert gb.gated is None
+    assert gb.gate_summary is None
+
+
+def test_build_from_state_gate_events_supersede_ui_count():
+    state = _state("Answer.")
+    state["gate_events"] = [
+        {"calls": [{"id": "1", "name": "run_shell", "approved": False}],
+         "decision": "rejected", "quarantine": False, "taint": [], "step": None},
+    ]
+    gb = glassbox.build_from_state(state, egress_events=None, gated=0)
+    assert gb.gated == 1
+    assert gb.gate_summary == [{"name": "run_shell", "approved": False}]
+
+
+# --- local-inference attestation ---------------------------------------------------------------
+
+def _all_local_bindings():
+    return {
+        "bindings": [
+            {"role": "synthesizer", "provider": "ollama", "model": "qwen3.5:9b",
+             "locality": "local"},
+        ],
+        "all_local": True,
+    }
+
+
+def test_local_inference_truth_table(monkeypatch):
+    from trust import trust_report
+
+    monkeypatch.setattr(trust_report, "_inference", _all_local_bindings)
+
+    # Live, empty exact slice, all chat roles local -> the positive attestation.
+    gb = glassbox.build_from_state(_state("A."), egress_events=[], gated=0)
+    assert isinstance(gb.local_inference, dict)
+    assert gb.local_inference["local"] is True
+    assert gb.local_inference["models"][0]["model"] == "qwen3.5:9b"
+
+    # A cloud llm event in the slice -> False, regardless of bindings.
+    ev = egress.EgressEvent(ts="t", channel="llm", host="api.anthropic.com", n_bytes=10)
+    gb2 = glassbox.build_from_state(_state("A."), egress_events=[ev], gated=0)
+    assert gb2.local_inference is False
+
+    # No exact slice (history / unknown) -> None: the claim is withheld, never inferred.
+    gb3 = glassbox.build_from_state(_state("A."), egress_events=None, gated=0)
+    assert gb3.local_inference is None
+    assert glassbox.build_from_record("q", "A.", []).local_inference is None
+
+
+def test_local_inference_withheld_when_a_role_binds_cloud(monkeypatch):
+    """Zero llm events but a cloud-bound role: egress recording is best-effort, so the positive
+    claim is withheld (None = unknown) rather than asserted off a silent ledger."""
+    from trust import trust_report
+
+    monkeypatch.setattr(trust_report, "_inference",
+                        lambda: {"bindings": [], "all_local": False})
+    gb = glassbox.build_from_state(_state("A."), egress_events=[], gated=0)
+    assert gb.local_inference is None
+
+
+def test_glass_renders_no_local_claim_when_unknown(capsys):
+    from tui.ui import glass as glass_ui
+
+    gb = glassbox.build_from_state(_state("A."), egress_events=None, gated=0)
+    assert gb.local_inference is None
+    glass_ui.show_glassbox(gb)
+    out = capsys.readouterr().out
+    assert "computed entirely on this machine" not in out
+
+
+def test_glass_renders_local_claim_when_proven(monkeypatch, capsys):
+    from trust import trust_report
+    from tui.ui import glass as glass_ui
+
+    monkeypatch.setattr(trust_report, "_inference", _all_local_bindings)
+    gb = glassbox.build_from_state(_state("A."), egress_events=[], gated=0)
+    glass_ui.show_glassbox(gb)
+    out = capsys.readouterr().out
+    assert "computed entirely on this machine" in out
+
+
+def test_glass_renders_human_gate_lines(capsys):
+    from tui.ui import glass as glass_ui
+
+    gb = glassbox.build_from_record("q", "Answer.", [{"gate_events": [_GATE_EV]}])
+    glass_ui.show_glassbox(gb)
+    out = capsys.readouterr().out
+    assert "you approved 1 call (run_shell)" in out
+    assert "you rejected 1 call (http_request)" in out
+
+    # No gate prompted (or none recorded): nothing renders — silence, not a claim.
+    gb2 = glassbox.build_from_record("q", "Answer.", [])
+    glass_ui.show_glassbox(gb2)
+    out2 = capsys.readouterr().out
+    assert "you approved" not in out2 and "you rejected" not in out2
+
+
+# --- the answer attestation (Glass Box v2: dict round trip + the signed export) ----------------
+
+def test_glassbox_dict_round_trip():
+    deltas = [
+        {
+            "tool_results": ["web_extract(url='evil') -> page: " + _PAYLOAD + " end"],
+            "tool_events": [{"name": "web_extract", "quarantine": ["urgent-imperative"]}],
+        },
+        {"gate_events": [_GATE_EV]},
+    ]
+    gb = glassbox.build_from_record("q", "Then " + _PAYLOAD + " [1].", deltas)
+    d = gb.to_dict()
+    gb2 = glassbox.from_dict(d)
+    assert gb2.gated == gb.gated == 2
+    assert gb2.gate_summary == gb.gate_summary
+    assert gb2.complete == gb.complete is True
+    assert gb2.local_inference is None
+    assert [(s.n, s.tool, s.origin, s.trusted) for s in gb2.sources] == \
+           [(s.n, s.tool, s.origin, s.trusted) for s in gb.sources]
+    assert gb2.sources[0].tainted_span == gb.sources[0].tainted_span
+
+
+def test_from_dict_fails_toward_caution():
+    gb = glassbox.from_dict({"sources": [{"n": 1, "label": "x"}], "gated": "junk"})
+    (s,) = gb.sources
+    assert s.origin == "network" and s.trusted is False  # unknown renders cautious, never green
+    assert gb.gated is None and gb.sent_known is False and gb.composed_local is None
+    assert glassbox.from_dict(None).sources == []
+
+
+def test_export_run_carries_attestation_committed_by_digest(isolated_paths, tmp_path):
+    import json
+
+    from trust import signing
+    from commands.trace import export_run
+    from stores.trace import Tracer
+
+    db = tmp_path / "trace.sqlite"
+    tr = Tracer(str(db))
+    rid = tr.start_run("t1", "what is on the page?")
+    tr.log_event(rid, "tools", {
+        "tools_called": ["web_extract"],
+        "tool_results": ["web_extract(url='evil') -> page: " + _PAYLOAD + " end"],
+        "tool_events": [{"name": "web_extract", "quarantine": ["override-instructions"]}],
+    })
+    tr.log_event(rid, "approval", {"gate_events": [{
+        "calls": [{"id": "1", "name": "http_request", "approved": False}],
+        "decision": "rejected", "quarantine": False, "taint": [], "step": None,
+    }]})
+    tr.end_run(rid, "ok", "Answer: " + _PAYLOAD + " [1]")
+
+    dest, payload = export_run(str(db), rid, dest=tmp_path / "run.json")
+    att = payload["answer_attestation"]
+    assert att["complete"] is True
+    assert att["gated"] == 1
+    assert att["gate_summary"] == [{"name": "http_request", "approved": False}]
+    assert att["local_inference"] is None       # history: no exact slice — unknown, not claimed
+    assert att["sources"][0]["tool"] == "web_extract"
+    assert att["sources"][0]["tainted_span"]    # the planted span reached the recorded answer
+
+    # The digest COMMITS the attestation: the written artifact verifies; a tampered one fails.
+    on_disk = json.loads(dest.read_text(encoding="utf-8"))
+    assert signing.verify_payload(on_disk)["digest_ok"] is True
+    on_disk["answer_attestation"]["gate_summary"][0]["approved"] = True
+    assert signing.verify_payload(on_disk)["digest_ok"] is False
+
+
+def test_render_export_renders_attested_block(tmp_path, capsys):
+    import json
+
+    from trust import signing
+    from commands.trace import render_export
+
+    body = {
+        "saturn_trace_export": 1,
+        "saturn_version": "0.1.0",
+        "exported_at": "2026-06-11T12:00:00",
+        "run": {"run_id": 9, "query": "q", "started_at": "t0", "ended_at": "t1",
+                "status": "ok", "response": "Answer."},
+        "events": [],
+        "llm_calls": [],
+        "answer_attestation": glassbox.build_from_record(
+            "q", "Answer.", [{"gate_events": [_GATE_EV]}]).to_dict(),
+    }
+    body["integrity"] = {"algorithm": "sha256", "digest": signing.canonical_digest(body)}
+    f = tmp_path / "run_9.json"
+    f.write_text(json.dumps(body), encoding="utf-8")
+    assert render_export(str(f)) is True
+    out = capsys.readouterr().out
+    assert "answer attestation" in out
+    # Intact digest, unsigned: the caption is the digest-only trust claim — the verdict-tracking
+    # caption must never downgrade a record that verified (nor overclaim "signed").
+    assert "committed by this export's integrity digest; unsigned" in out
+    assert "UNVERIFIED answer attestation" not in out
+    assert "you rejected 1 call (http_request)" in out

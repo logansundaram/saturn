@@ -1,4 +1,5 @@
 from commands._framework import command, _print
+from commands._utils import is_remove_verb
 
 
 @command(
@@ -14,7 +15,8 @@ without hand-editing database/memory/memory.md.
 
   /memory               numbered list of every stored fact
   /memory add <fact>    save a fact directly (same dedup as the remember tool)
-  /memory forget <n>    delete fact n (the number shown by /memory)
+  /memory forget <n>    delete fact n (the number shown by /memory; any removal verb works:
+                        forget/remove/rm/delete/del/drop)
 
 The store is a plain markdown file (paths.memory in config.yaml) — still safe to hand-edit;
 this is just the in-app view of it.
@@ -50,7 +52,7 @@ def _memory(ctx, args):
         _print(f"  {add_memory(fact)}")
         return
 
-    if sub in ("forget", "rm", "delete", "del"):
+    if is_remove_verb(sub):
         if len(args) < 2 or not args[1].isdigit():
             _print("  usage: /memory forget <n>   (the number shown by /memory)")
             return

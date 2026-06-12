@@ -2,7 +2,7 @@
 boundary: a match skips the approval gate entirely), the persisted /risk overrides, and the
 auto-approve threshold with its /autoapprove (gate-off) view."""
 
-import policy
+from trust import policy
 
 
 # ── shell_allowed: the strict matcher the approval gate calls ─────────────────────────────────
@@ -63,6 +63,45 @@ def test_remove_shell_allow_by_index_and_text(isolated_paths):
     assert policy.remove_shell_allow("LS -LA") == "ls -la"
     assert policy.remove_shell_allow("nope") is None
     assert policy.shell_allow() == []
+
+
+# ── shell_prefix_rejects: the public face of the metacharacter screen ────────────────────────
+
+
+def test_shell_prefix_rejects_metacharacters():
+    """The gate UI (always-allow prefix proposal) asks this predicate instead of re-reading the
+    private regex — every metacharacter the matcher refuses must come back with a reason."""
+    for bad in ("git;", "a | b", "x && y", "a > b", "a < b", "`id`", "$(id)", "a\nb", "a\rb"):
+        assert policy.shell_prefix_rejects(bad), bad
+
+
+def test_shell_prefix_rejects_empty():
+    assert policy.shell_prefix_rejects("")
+    assert policy.shell_prefix_rejects("   ")
+
+
+def test_shell_prefix_accepts_plain_prefixes():
+    assert policy.shell_prefix_rejects("git status") is None
+    assert policy.shell_prefix_rejects("ls -la") is None
+
+
+def test_shell_allowed_routes_through_the_one_screen(isolated_paths, monkeypatch):
+    """shell_allowed and shell_prefix_rejects must be ONE screen — a command the predicate
+    rejects can never be exempt, whatever the allowlist stores."""
+    policy.add_shell_allow("git status")
+    rejected = []
+
+    real = policy.shell_prefix_rejects
+
+    def spy(text):
+        out = real(text)
+        if out:
+            rejected.append(text)
+        return out
+
+    monkeypatch.setattr(policy, "shell_prefix_rejects", spy)
+    assert policy.shell_allowed("git status; rm -rf ~") is None
+    assert rejected == ["git status; rm -rf ~"]
 
 
 # ── risk overrides (/risk … --save) ───────────────────────────────────────────────────────────

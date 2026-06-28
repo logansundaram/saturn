@@ -48,7 +48,6 @@ def test_removed_recipe_subcommands_print_migration_note(ctx, capsys):
         _plan(ctx, [sub, "weekly-brief"])
         out = _out(capsys)
         assert "plan recipes were removed" in out
-        assert "database/commands/<name>.md" in out
     assert ctx.requeue is None  # nothing is queued to run
 
 

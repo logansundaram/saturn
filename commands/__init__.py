@@ -35,20 +35,12 @@ _COMMAND_MODULES = [
     "runtime",       # /tools, /models, /context, /mcp
     "system",        # /help, /quit, /update
     "trace",         # /trace; also /glass and /source (the provenance views)
-    "user_commands",
 ]
 
 for _mod in _COMMAND_MODULES:
     _importlib.import_module(f"commands.{_mod}")
 
-# Two-phase load: user-defined templates scan AFTER every built-in module above has registered,
-# so the collision check ("a user file can never shadow a built-in") holds structurally instead
-# of hanging on list order — appending a new built-in module anywhere above is always safe.
-from commands.user_commands import load_user_commands as _load_user_commands
-
-_load_user_commands()
-
-del _importlib, _mod, _COMMAND_MODULES, _load_user_commands
+del _importlib, _mod, _COMMAND_MODULES
 
 __all__ = [
     "CommandContext",

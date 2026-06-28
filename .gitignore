@@ -29,7 +29,8 @@ database/.hint_*
 # the /undo snapshots, and user-defined slash-command templates.
 # Ignoring the whole paths means a future tracked file can never collide with a user's local
 # one and break the ff-only pull — user-generated artifacts live ONLY in ignored paths.
-# (database/recipes/ kept ignored for installs that predate the plan-recipes cut.)
+# (database/recipes/ and database/commands/ kept ignored for installs that predate the
+# plan-recipes and user-command cuts.)
 database/sessions/
 database/permissions.json
 database/snapshots/

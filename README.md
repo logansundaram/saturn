@@ -115,10 +115,6 @@ replay. The point isn't how much Saturn can do — it's that you can see and con
 - **Trust receipt on every answer** — the stats line under each response also says what left
   your machine that turn: `local-only`, or exactly how many bytes went to which host, plus how
   many actions faced the approval gate. The privacy claim, proven per answer.
-- **User-defined commands** — drop a markdown template into `database/commands/` and it becomes
-  a slash command (`/brief notes.md`); `$ARGUMENTS` expands, and the template runs as a normal
-  gated, traced agent turn. Templates are picked up automatically (no reload command) and listed
-  in `/help`.
 - **Per-workspace instructions** — `/init` surveys your workspace and drafts `SATURDAY.md`,
   standing instructions loaded every turn (like a per-project system prompt).
 - **Headless mode** — `saturn -p "query"` runs one query and prints the answer; piped stdin

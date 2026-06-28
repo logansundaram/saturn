@@ -115,17 +115,13 @@ _RENAMED = {
     "airgap": "privacy airgap",
     "redact": "privacy redact",
     "why": "trace why",
-    # June 2026 audit-surface trim: the /commands management command is cut — templates load at
-    # startup and rescan automatically on a dispatch miss; /help lists what's loaded.
+    # /commands was never a real command — point the habit at the command list.
     "commands": "help",
     "cmds": "help",
 }
 
 # A second, parenthesized line for redirects whose one-line pointer doesn't tell the whole story.
-_RENAMED_NOTES = {
-    "commands": "user command templates are listed in /help and reload automatically",
-    "cmds": "user command templates are listed in /help and reload automatically",
-}
+_RENAMED_NOTES: dict[str, str] = {}
 
 
 def _print_renamed(key: str) -> bool:
@@ -139,26 +135,6 @@ def _print_renamed(key: str) -> bool:
     if note:
         _print(f"  ({note})")
     return True
-
-
-def _rescan_user_commands() -> bool:
-    """Re-scan user-command templates (lazy import — user_commands imports this module). Called
-    on a dispatch miss so a template dropped into the directory mid-session becomes /name without
-    a restart; the loader also clears the prompt's completion cache. Returns False on failure —
-    a broken template dir must never mask the unknown-command message."""
-    try:
-        from commands.user_commands import load_user_commands
-
-        load_user_commands()
-        return True
-    except Exception as exc:
-        try:
-            import diag
-
-            diag.log(f"user-command rescan on dispatch miss failed: {exc}")
-        except Exception:
-            pass
-        return False
 
 
 def _show_help(cmd: SlashCommand) -> None:
@@ -191,12 +167,6 @@ def dispatch(line: str, ctx: CommandContext) -> None:
 
     name = key if key in COMMANDS else _ALIASES.get(key)
     cmd = COMMANDS.get(name) if name else None
-    if cmd is None and key not in _RENAMED:
-        # Unknown name → rescan user templates ONCE and retry, so a template dropped into the
-        # directory mid-session works immediately (the old /commands reload, now automatic).
-        if _rescan_user_commands():
-            name = key if key in COMMANDS else _ALIASES.get(key)
-            cmd = COMMANDS.get(name) if name else None
     if cmd is None:
         if not _print_renamed(key):
             _print(f"  unknown command: /{key} - try /help")
@@ -205,9 +175,9 @@ def dispatch(line: str, ctx: CommandContext) -> None:
     # A standalone --help / -h token at the START or as the FINAL argument shows help instead of
     # executing — `/trace export --help` must explain export, never run it; `/resume save --help`
     # must not create a session named "--help". First-or-last ONLY: a mid-position token is DATA,
-    # not a flag — `/memory add prefer -h over --help in CLI docs` must store the fact, and a
-    # user-template's $ARGUMENTS must pass it through. Exact-token match only (args are
-    # whitespace-split), so an argument merely containing the substring still executes.
+    # not a flag — `/memory add prefer -h over --help in CLI docs` must store the fact. Exact-token
+    # match only (args are whitespace-split), so an argument merely containing the substring still
+    # executes.
     if args and (args[0].lower() in _HELP_FLAGS or args[-1].lower() in _HELP_FLAGS):
         _show_help(cmd)
         return

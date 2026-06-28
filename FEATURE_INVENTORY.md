@@ -129,7 +129,7 @@ what's left is "Saturn minus N leaf modules" (delete in place) or "a different c
 | `/dryrun` — execution off switch | `policy.py` | Trust | Seam | ___ |
 | `/resume` — sessions (save/restore/list/delete/rename/autosave) | `conversation.py`, `_session.py` | Product | Leaf | ___ |
 | `/config` (+ setup/doctor, key) — YAML config front end | `config.py` | Dev | Seam | ___ |
-| User-defined slash commands (`database/commands/*.md` → `/name`) | `user_commands.py` | Product | Leaf | ___ |
+| User-defined slash commands (`database/commands/*.md` → `/name`) | `user_commands.py` | Product | Leaf | CUT — deleted in place 2026-06-28 |
 | Command grammar (REMOVE_VERBS / LIST_VERBS / `--save` / toggle-status) | `_framework.py`, `_utils.py` | Product | Core | ___ |
 | Drag-and-drop file path handling (ingest/attach/text) | `core/mentions.py` | Product | Leaf | ___ |
 

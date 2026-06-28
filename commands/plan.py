@@ -2,10 +2,7 @@ from commands._framework import command, _print
 from commands._utils import parse_toggle_status, split_save_flag
 
 # Printed for the removed recipe subcommands (save/recipes/run) so muscle memory lands softly.
-_RECIPES_REMOVED = (
-    "  plan recipes were removed — save a reusable prompt as a user command instead: "
-    "database/commands/<name>.md -> /<name>"
-)
+_RECIPES_REMOVED = "  plan recipes were removed — re-enter the prompt each run."
 
 
 @command(
@@ -43,9 +40,6 @@ When a turn pauses, you get an interactive editor. Its verbs (also usable live):
   add <label> [::tool] · edit <id> <label> · tool <id> <name|none>
   status <id> <status> · move <id> <pos>   · drop <id>
   go / <enter> to run the edited plan, abort to stop the turn.
-
-(Plan recipes were removed — for a reusable prompt, drop a markdown template into
-database/commands/<name>.md and it becomes /<name>.)
 
 Examples:
   /plan                      show the current plan

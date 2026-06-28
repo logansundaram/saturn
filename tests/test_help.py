@@ -16,7 +16,6 @@ from commands._framework import (
     dispatch,
 )
 from commands.system import _GATE_VIEWS, _GROUPS
-from commands.user_commands import registered_names
 
 
 def _ctx():
@@ -28,8 +27,7 @@ def _ctx():
 def test_grouping_table_exactly_covers_live_registry():
     grouped = [n for _group, names in _GROUPS for n in names]
     assert len(grouped) == len(set(grouped)), "a command appears in two /help groups"
-    # Built-ins are whatever is registered that the user-template loader didn't put there.
-    builtins = set(COMMANDS) - registered_names()
+    builtins = set(COMMANDS)
     assert set(grouped) == builtins, (
         f"/help grouping table drifted from the registry — "
         f"missing: {sorted(builtins - set(grouped))}, stale: {sorted(set(grouped) - builtins)}"
@@ -86,7 +84,6 @@ def test_cut_commands_command_gets_pointer(capsys):
         dispatch(spelling, _ctx())
         out = capsys.readouterr().out
         assert "moved" in out and "/help" in out
-        assert "reload automatically" in out
 
 
 def test_help_details_state_the_real_flag_grammar(capsys):

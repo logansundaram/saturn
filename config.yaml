@@ -24,7 +24,6 @@ paths:
   permissions: database/permissions.json  # persisted /risk overrides + /allow shell prefixes
   exports: logging/exports             # /trace export run records (audit artifacts)
   shell_jobs: logging/shell            # background run_shell job logs (check_shell_job reads them)
-  user_commands: database/commands     # user-defined slash-command templates (<name>.md -> /name)
 
 # ---------------------------------------------------------------------------
 # Loop / safety runtime knobs (were the MAX_ITERATIONS constant + the gate policy).

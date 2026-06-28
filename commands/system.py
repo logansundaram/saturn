@@ -29,8 +29,7 @@ from commands._session import write_autosave
 # The grouping table /help renders from. Static and hand-placed (deliberately NOT a new @command
 # field): ≤6 themes, alphabetical inside each, and every registered built-in appears exactly
 # once — tests/test_help.py cross-checks this against the live registry, so a future command
-# can't silently vanish from /help. User-defined templates render in their own trailing "user"
-# section, built live from the loader.
+# can't silently vanish from /help.
 _GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("conversation", ("clear", "compact", "resume", "retry", "rewind")),
     ("knowledge & workspace", ("docs", "init", "memory", "undo")),
@@ -67,9 +66,8 @@ def _names(cmd) -> str:
     usage="/help [command]",
     details="""
 With no argument, opens with the trust-stack map (posture · activity · proof) then lists every
-command grouped by theme; user-defined templates (database/commands/*.md) appear under `user`.
-The legacy gate spellings (/risk · /allow · /autoapprove) fold into one line — they are views
-of /policy.
+command grouped by theme. The legacy gate spellings (/risk · /allow · /autoapprove) fold into one
+line — they are views of /policy.
 
 With a command name, prints its detailed help — identical to `/<command> --help`. Renamed
 commands answer here too: `/help why` prints the same pointer as typing /why.
@@ -99,7 +97,6 @@ def _help(ctx, args):
         _show_help(cmd)
         return
 
-    from commands.user_commands import registered_names
     from tui import ui
 
     ui.section("slash commands", "/help <command> or /<command> --help for details on one")
@@ -120,11 +117,6 @@ def _help(ctx, args):
         if views:
             ui.table([[("views of /policy: " + " · ".join("/" + v for v in views), "dim")]])
 
-    user_names = sorted(n for n in registered_names() if n in COMMANDS)
-    if user_names:
-        _print("")
-        _print("  user")
-        ui.table([(_names(COMMANDS[n]), (COMMANDS[n].summary, "dim")) for n in user_names])
     _print("")
 
 

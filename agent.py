@@ -802,12 +802,6 @@ def main():
 
     for problem in mcp_client.problems():
         ui.warn(problem)
-    # User-defined slash-command templates that failed to load (collisions, empty files) — same
-    # treatment: warn now, never block. /help lists the templates that did load.
-    from commands.user_commands import problems as _user_cmd_problems
-
-    for problem in _user_cmd_problems():
-        ui.warn(f"user command: {problem}")
     # A permissions.json that failed to load degraded the gate to defaults inside policy._load —
     # silently, since trust/ never imports tui. Surface it with the rest of the startup health
     # report (the mcp_client.problems() pattern); registry already triggered the load at import,

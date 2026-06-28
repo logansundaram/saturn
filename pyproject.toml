@@ -48,6 +48,8 @@ dependencies = [
     "trafilatura>=2.0.0",
     "httpx>=0.28.1",
     "tavily-python>=0.7.24",
+    # --- trust stack (ed25519 signed exports/reports — trust/signing.py) ---
+    "cryptography>=42.0",
     # --- config / utilities ---
     "pyyaml>=6.0.3",
     "python-dotenv>=1.2.2",

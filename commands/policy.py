@@ -197,8 +197,17 @@ def _allow_list(policy) -> None:
 
 
 def _allow_add(policy, prefix: str) -> None:
-    """Store one allowlist prefix + the shared confirmation copy (bare and `add` forms agree)."""
-    if policy.add_shell_allow(prefix):
+    """Store one allowlist prefix + the shared confirmation copy (bare and `add` forms agree).
+    add_shell_allow refuses text the matcher could never honor (ValueError: empty, or carrying a
+    shell metacharacter) — rendered here as the command's own refusal, never the dispatcher's
+    generic '/policy failed' catch-all."""
+    try:
+        added = policy.add_shell_allow(prefix)
+    except ValueError as exc:
+        _print(f"  cannot allowlist `{prefix}`: {exc}.")
+        _print("  such a command always faces the gate — nothing was stored.")
+        return
+    if added:
         _print(f"  allowed: run_shell commands starting with `{prefix}` now skip the gate.")
         _print("  (persisted; undo with /policy allow remove. Chained/redirected commands "
                "still prompt.)")
@@ -234,12 +243,12 @@ def open_handler(ctx, args):
         return
     policy.set_gate_off(new)
     if new:
-        _print("  ┏━ ⚠  AUTO-APPROVE ON ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        _print("  ┏━ ⚠  AUTO-APPROVE ON")
         _print("  ┃  the approval gate is OPEN: auto-approve threshold =")
         _print("  ┃  destructive, so every tool call — including side-")
         _print("  ┃  effecting and destructive ones — runs WITHOUT asking.")
         _print("  ┃  /policy open off to restore the previous threshold.")
-        _print("  ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        _print("  ┗━")
     else:
         _print(f"  auto-approve off — gate threshold restored to `{policy.tier()}`.")
 
@@ -317,13 +326,13 @@ def can_handler(ctx, args):
             remote = []
         if remote:
             cannot.append(("remote MCP", "air-gap is ON — " + ", ".join(remote) + " refuse"))
-        from commands.privacy import _cloud_roles
+        from commands.privacy import _offmachine_roles
 
-        cloud = _cloud_roles(cfg)
-        if cloud:
-            roles = ", ".join(f"{r} ({p}:{m})" for r, p, m in cloud)
-            cannot.append(("cloud inference",
-                           f"air-gap is ON — cloud-bound role(s) refuse to run: {roles}"))
+        offmachine = _offmachine_roles(cfg)
+        if offmachine:
+            roles = ", ".join(f"{r} ({p}:{m})" for r, p, m in offmachine)
+            cannot.append(("off-machine inference",
+                           f"air-gap is ON — off-machine role(s) refuse to run: {roles}"))
     if not gate_open:
         cannot.append(("anything you reject",
                        f"every call above `{threshold}` faces you first — `n` at the gate "
@@ -334,7 +343,11 @@ def can_handler(ctx, args):
         _print("    (nothing is structurally blocked — the gate is OFF and the boundary open;")
         _print("     /policy open off and /privacy airgap on restore the walls)")
 
-    qmode = str(cfg.get("runtime.quarantine", "gate") or "gate")
+    # Effective quarantine mode (quarantine.mode() normalizes case + invalid values to "gate") —
+    # the blast-radius footer must state the mode in force, not echo a raw config string.
+    from trust import quarantine
+
+    qmode = quarantine.mode()
     rmode = str(cfg.get("runtime.redaction", "off") or "off")
     try:
         from trust import signing
@@ -476,9 +489,12 @@ def _policy_cmd(ctx, args):
             _print(f"    shell allowlist        : {len(allow)} prefix(es) — " + " · ".join(allow))
         else:
             _print("    shell allowlist        : (none)")
+        from trust import quarantine
+
         _print(f"    airgap                 : {'on' if cfg.get('runtime.airgap', False) else 'off'}")
         _print(f"    redaction              : {cfg.get('runtime.redaction', 'off') or 'off'}")
-        _print(f"    quarantine             : {cfg.get('runtime.quarantine', 'gate') or 'gate'}")
+        # Effective mode, not the raw string — an invalid value runs as "gate" (quarantine.mode).
+        _print(f"    quarantine             : {quarantine.mode()}")
         _print("  blast radius: /policy can  ·  export: /policy export  ·  apply: /policy import <path>")
         return
 
@@ -665,10 +681,10 @@ def _dryrun(ctx, args):
         pass
 
     if new:
-        _print("  ┏━ ◊  DRY-RUN ON ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        _print("  ┏━ ◊  DRY-RUN ON")
         _print("  ┃  the agent will PLAN and DECIDE but execute nothing.")
         _print("  ┃  every tool call is stubbed — no files, shell, or")
         _print("  ┃  network. the answer reports what it WOULD do.")
-        _print("  ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        _print("  ┗━")
     else:
         _print("  dry-run off — tools execute for real again.")

@@ -240,6 +240,46 @@ def test_compaction_llm_failure_leaves_history_intact():
         compaction._llm_summary = orig
 
 
+def test_compaction_steer_note_is_not_a_turn_boundary():
+    """plan_gate's standalone mid-turn steer note is a HumanMessage but NOT a turn boundary
+    (core.state.is_turn_start — the same rule _compact_history already obeys): with
+    keep_recent_turns=1 the boundary must land on the steered turn's REAL question. Slicing at
+    the steer note would fold the question + its pre-steer scratchpad into the lossy summary
+    while the correction survives as the apparent current question."""
+    from core import compaction
+    from core.state import STEER_PREFIX
+
+    orig = compaction._llm_summary
+    compaction._llm_summary = lambda older: f"SUMMARY({len(older)})"  # stub: offline + deterministic
+    try:
+        msgs = [
+            HumanMessage("q1"), AIMessage("a1"),
+            HumanMessage("q2"),
+            AIMessage("", tool_calls=[{"name": "web_search", "args": {}, "id": "t1"}]),
+            ToolMessage("results", tool_call_id="t1"),
+            HumanMessage(f"{STEER_PREFIX} no, the OTHER repo"),
+            AIMessage("final"),
+        ]
+        new, stats = compaction.summarize_messages(msgs)
+        # Boundary = q2: only the q1 turn folds, never the steered turn's question.
+        assert stats["summarized_turns"] == 1
+        assert compaction.is_summary(new[0])
+        assert new[1].content == "q2"
+        # The steered turn survives verbatim: its scratchpad AND the steer note itself.
+        assert any(isinstance(m, ToolMessage) for m in new)
+        assert any(str(m.content).startswith(STEER_PREFIX) for m in new)
+
+        # Stats side of the same predicate: once the steered turn ages into the older slice it
+        # must count as ONE folded turn — the steer note (and the prior summary) must not
+        # inflate the user-facing "compacted N earlier turn(s)" notice.
+        chained = new + [HumanMessage("q3"), AIMessage("a3")]
+        n2, s2 = compaction.summarize_messages(chained)
+        assert s2["summarized_turns"] == 1
+        assert sum(compaction.is_summary(m) for m in n2) == 1
+    finally:
+        compaction._llm_summary = orig
+
+
 # --- Tier 2 #6: type-ahead queue + Esc steering (InputQueue char handling, no console) ----------
 def test_typeahead_queues_enter_terminated_lines_fifo():
     from tui import typeahead

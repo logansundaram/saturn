@@ -3,7 +3,7 @@ import re
 from core import budget
 from config import get_config
 from core.state import AgentState, unrun_planned_tools
-from textutil import clip
+from textutil import clip, split_call_result
 from core.llms import (
     get_model,
     extract_tok_per_sec,
@@ -35,8 +35,10 @@ def _label_clamp(label: str, cap: int = _MAX_SOURCE_LABEL) -> str:
 
 def _tool_source_label(result) -> str:
     """Provenance label for one tool_results entry. Entries are `name(args) -> result` strings
-    (nodes/tools.py pairs them on purpose); the call repr before the arrow is the label."""
-    return _label_clamp(str(result).split(" -> ", 1)[0])
+    (nodes/tools.py pairs them on purpose); the call repr before the arrow is the label — split
+    via textutil.split_call_result, THE one parser of that serialization (the Glass Box splits
+    the same strings for its taint corpus; two hand-rolled splits would drift)."""
+    return _label_clamp(split_call_result(result)[0])
 
 
 def _doc_source_label(observation) -> str:
@@ -80,6 +82,21 @@ def sources_footer(sources) -> str:
     return "Sources:\n" + "\n".join(f"  [{n}] {label}" for n, label in sources)
 
 
+def _gathered_section(items, numbered, citations, name):
+    """One gathered-material prompt section ("Tool results" / "Retrieved documents"), or None
+    when nothing was gathered. Keyed on the section NAME only — the citation-instruction suffix
+    is deliberately byte-identical across both sections, and the `numbered` list must come from
+    build_sources so the prompt's [n] markers and the Sources footer stay in lockstep."""
+    if not items:
+        return None
+    if citations:
+        return HumanMessage(
+            content=f"{name} (numbered — cite the matching [n] after claims drawn from them):\n"
+            + "\n\n".join(numbered)
+        )
+    return HumanMessage(content=f"{name}:\n" + "\n\n".join(map(str, items)))
+
+
 def cancel_orphaned_calls(last) -> list:
     """Cancellation ToolMessages for a trailing AIMessage's unanswered tool_calls (empty when
     there are none). Nothing can have answered a TRAILING message's calls, so every call gets
@@ -107,6 +124,8 @@ def synthesize_node(state: AgentState):
 
     citations = bool(get_config().get("runtime.citations", True))
     sources: list[tuple[int, str]] = []
+    numbered_tools: list[str] = []
+    numbered_docs: list[str] = []
     if citations:
         numbered_tools, numbered_docs, sources = build_sources(
             tool_results, documents_retrieved
@@ -117,28 +136,18 @@ def synthesize_node(state: AgentState):
     if context:
         llm_input.append(HumanMessage(content=f"Relevant context:\n{context}"))
 
-    if tool_results:
-        if citations:
-            body = "\n\n".join(numbered_tools)
-            header = "Tool results (numbered — cite the matching [n] after claims drawn from them):\n"
-        else:
-            body = "\n\n".join(map(str, tool_results))
-            header = "Tool results:\n"
-        llm_input.append(HumanMessage(content=header + body))
-
-    if documents_retrieved:
-        # tool_node stores retrieval results as pre-formatted strings (source + text),
-        # not Document objects.
-        if citations:
-            body = "\n\n".join(numbered_docs)
-            header = (
-                "Retrieved documents (numbered — cite the matching [n] after claims drawn "
-                "from them):\n"
-            )
-        else:
-            body = "\n\n".join(str(doc) for doc in documents_retrieved)
-            header = "Retrieved documents:\n"
-        llm_input.append(HumanMessage(content=header + body))
+    # Tools first, then documents — build_sources numbers in exactly this order, so the section
+    # order is load-bearing for the inline [n] markers.
+    section = _gathered_section(tool_results, numbered_tools, citations, "Tool results")
+    if section is not None:
+        llm_input.append(section)
+    # tool_node stores retrieval results as pre-formatted strings (source + text),
+    # not Document objects.
+    section = _gathered_section(
+        documents_retrieved, numbered_docs, citations, "Retrieved documents"
+    )
+    if section is not None:
+        llm_input.append(section)
 
     # The agent's draft answer — its final no-tool-call message. This is the exact text the
     # replan judge verified for groundedness, so the shipped answer must BUILD ON it rather than

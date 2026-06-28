@@ -62,3 +62,47 @@ def test_failed_turn_question_superseded():
     out = _recent_exchanges(msgs)
     assert "retried question" in out and "the answer" in out
     assert "failed-turn question" not in out
+
+
+def test_final_answer_supersedes_the_draft():
+    """A normal turn carries TWO consecutive no-tool AIMessages — the agent's draft (the finish
+    that routed to synthesize) then synthesize's final answer, and _compact_history keeps both.
+    The recap must show the answer the user actually saw, never the intermediate draft."""
+    msgs = [
+        HumanMessage(content="the question"),
+        AIMessage(content="", tool_calls=[{"name": "web_search", "args": {}, "id": "t1"}]),
+        AIMessage(content="DRAFT wording"),
+        AIMessage(content="FINAL answer"),
+    ]
+    out = _recent_exchanges(msgs)
+    assert "FINAL answer" in out
+    assert "DRAFT" not in out
+
+
+def test_replan_repair_never_recaps_the_rejected_draft():
+    """The replan-repair path: the judge rejects an ungrounded draft, a web_search step is
+    inserted, and the corrected answer lands last. Recapping the rejected draft would plan the
+    NEXT turn against the very claims the trust machinery caught and fixed."""
+    msgs = [
+        HumanMessage(content="who won the match"),
+        AIMessage(content="UNGROUNDED draft the judge rejected"),
+        AIMessage(content="", tool_calls=[{"name": "web_search", "args": {}, "id": "t1"}]),
+        AIMessage(content="grounded draft"),
+        AIMessage(content="FINAL grounded answer"),
+    ]
+    out = _recent_exchanges(msgs)
+    assert "FINAL grounded answer" in out
+    assert "UNGROUNDED" not in out
+
+
+def test_trailing_empty_ai_message_keeps_the_final_answer():
+    """An empty trailing no-tool AIMessage must not blank a real final answer out of the pair —
+    the supersede only fires for non-empty answers."""
+    msgs = [
+        HumanMessage(content="the question"),
+        AIMessage(content="DRAFT wording"),
+        AIMessage(content="FINAL answer"),
+        AIMessage(content=""),
+    ]
+    out = _recent_exchanges(msgs)
+    assert "FINAL answer" in out

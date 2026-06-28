@@ -89,6 +89,16 @@ def test_cut_commands_command_gets_pointer(capsys):
         assert "reload automatically" in out
 
 
+def test_help_details_state_the_real_flag_grammar(capsys):
+    # The /help details must match the dispatcher's actual grammar — first-or-last only, a
+    # mid-position token is data. The old text claimed "anywhere in its arguments", which a
+    # user could trust into expecting `/memory add foo --help bar` to show help.
+    dispatch("/help help", _ctx())
+    out = capsys.readouterr().out
+    assert "anywhere in its arguments" not in out
+    assert "FIRST or LAST" in out
+
+
 # --- the dispatcher help grammar -----------------------------------------------------------------
 
 def test_help_flag_first_or_last_shows_help_without_executing(capsys):

@@ -69,6 +69,22 @@ def test_huge_exponent_bounded():
     assert _calc("2**64") == "18446744073709551616"
 
 
+def test_pow_builtin_exponent_bounded():
+    """pow() is the ** operator with a function-call spelling — it must share the _MAX_POW_EXP
+    bound (pow(9, 99999999) was a guard bypass: tiny expression, ~95-million-digit result).
+    The exponent can arrive positionally or as a keyword, so every spelling is bounded."""
+    assert _calc("pow(9, 20000)").startswith("Error")
+    assert _calc("pow(9, exp=20000)").startswith("Error")
+    assert _calc("pow(base=9, exp=20000)").startswith("Error")
+    # Legitimate small exponents still work, in both spellings.
+    assert _calc("pow(2, 10)") == "1024"
+    assert _calc("pow(2, exp=10)") == "1024"
+    # The 3-arg modular form is cheap at any exponent (modular exponentiation) — stays unbounded.
+    expected = str(pow(9, 99999999, 1000))
+    assert _calc("pow(9, 99999999, 1000)") == expected
+    assert _calc("pow(9, 99999999, mod=1000)") == expected
+
+
 def test_non_numeric_operands_refused():
     """Sequence repetition ([1] * 10**9, 'a' * 10**9) is a memory bomb, not math."""
     assert _calc("[1, 2] * 1000000").startswith("Error")

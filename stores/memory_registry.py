@@ -66,9 +66,21 @@ def _fact_text(stored: str) -> str:
 
 def add_memory(fact: str, category: str = "general") -> str:
     """Append a durable fact. No-op (reported) if an identical fact is already stored."""
-    fact = (fact or "").strip()
+    # Normalize BEFORE the empty check and the dedup comparison — this is the ONE write boundary
+    # (the `remember` tool and /memory add both land here). The file's contract is one fact per
+    # bullet: a model-supplied multi-line fact written verbatim would leave continuation lines
+    # that _facts() never sees (truncated in every grounding turn) and that remove_memory's
+    # header+bullets rewrite would permanently drop. Collapsing ALL whitespace runs keeps dedup
+    # comparing the same form a reflowed duplicate arrives in.
+    fact = " ".join((fact or "").split())
     if not fact:
         return "Nothing to remember — the fact was empty."
+
+    # The category rides inside the "[category] " prefix _PREFIX_RE parses: a newline breaks the
+    # bullet line and a "]" terminates the [^\]]* group early, corrupting _fact_text's strip
+    # ("[" is harmless to the parse). A category that sanitizes to nothing falls back to the
+    # untagged default.
+    category = " ".join((category or "").split()).replace("]", "").strip() or "general"
 
     existing = _facts(_read_raw())
     # Dedup on the bare fact text (date/category prefix stripped), case-insensitive — and by

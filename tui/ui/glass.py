@@ -198,8 +198,8 @@ def show_glassbox(gb) -> None:
     _render_label(gb)
     _console.print() if _RICH else print()
     _render_answer(gb)
+    _render_sources(gb)  # opens with its own section rule (and the blank that precedes one)
     _console.print() if _RICH else print()
-    _render_sources(gb)
     if _RICH:
         foot = Text()
         foot.append("  ╶ ", style=_DIM)

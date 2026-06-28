@@ -11,13 +11,14 @@ from textutil import human_bytes
 
 from . import _base
 from ._base import (
-    Text, _console, _RICH,
+    Padding, Text, _console, _RICH,
     _ACCENT, _DIM, _FAINT, _NODE_W, _RAIL, _RAIL_GLYPH,
     _TREE_END, _TREE_LEAF, _TREE_MID, _TREE_PIPE,
     _emit, _fmt_args, _fmt_dur, _human_tokens, _rail, _term_width, _truncate,
 )
 from .statusbar import _live_refresh
 from .plan import show_plan
+from .listing import section
 
 
 # ── execution trace ─────────────────────────────────────────────────────────────
@@ -378,19 +379,13 @@ def show_run(run, events) -> None:
     `run` is the row `(run_id, query, started_at, ended_at, status, response)`; `events` are its
     `(seq, ts, node, summary, data)` rows in order. Step times are wall-clock deltas between event
     timestamps, so a tool step that waited on the approval gate honestly includes that pause."""
-    from stores.trace import decode_json, parse_ts
+    from stores.trace import decode_json, parse_ts, response_truncated
 
     run_id, query, started_at, ended_at, status, response_text = run
 
-    # header: run id · query · when / status / total wall time
-    if _RICH:
-        rule = Text()
-        rule.append("  ╶── ", style=_DIM)
-        rule.append(f"run #{run_id}", style=f"bold {_ACCENT}")
-        rule.append(" " + "─" * 40, style=_DIM)
-        _console.print(rule)
-    else:
-        print(f"  ╶── run #{run_id} " + "─" * 40)
+    # header: run id, then the query echoed at a `»` (the same glyph it was typed at), then a
+    # dim when · status · total-time meta line — the one header vocabulary (listing.section).
+    section(f"run #{run_id}")
 
     q = " ".join(str(query or "").split()) or "(empty)"
     start_dt, end_dt = parse_ts(started_at), parse_ts(ended_at)
@@ -399,20 +394,20 @@ def show_run(run, events) -> None:
     status_style = {"ok": "green", "error": "bold red", "running": "yellow"}.get(str(status), _DIM)
     if _RICH:
         qline = Text("  ")
-        qline.append("query  ", style=_DIM)
+        qline.append("» ", style=_DIM)
         qline.append(q, style="default")
         _console.print(qline)
         meta = Text("  ")
         meta.append(when or "—", style=_DIM)
-        meta.append("  ·  ", style=_DIM)
+        meta.append(" · ", style=_DIM)
         meta.append(str(status), style=status_style)
         if total:
-            meta.append("  ·  ", style=_DIM)
+            meta.append(" · ", style=_DIM)
             meta.append(total, style=_DIM)
         _console.print(meta)
     else:
-        print(f"  query  {q}")
-        print(f"  {when}  ·  {status}" + (f"  ·  {total}" if total else ""))
+        print(f"  » {q}")
+        print(f"  {when} · {status}" + (f" · {total}" if total else ""))
     _emit("")
 
     # node-by-node replay. plan_gate is a control checkpoint with no info (folded in the live trace
@@ -449,20 +444,41 @@ def show_run(run, events) -> None:
     # a faint label) rather than as the bold-accent markdown the LIVE turn already showed.
     if response_text:
         _emit("")
+        # end_run's write-time truncation marker (stores.trace.response_truncated): the stored row
+        # holds a capped answer, so the label says "truncated" up front rather than letting the
+        # reader discover the cut at the tail marker. Legacy rows cut at the old silent 2000-char
+        # cap carry no marker and read False — absent-as-unknown, never an inferred flag.
+        cut = response_truncated(response_text)
         if _RICH:
             rule = Text()
             rule.append("  ╶ ", style=_FAINT)
             rule.append("final answer", style=_DIM)
             rule.append(" (recorded)", style=_FAINT)
+            if cut:
+                rule.append(" (truncated)", style=_DIM)
             _console.print(rule)
-            for ln in response_text.splitlines() or [""]:
-                row = Text("  ")
-                row.append(ln, style=_DIM)
-                _console.print(row)
+            # Recorded answers are typically long single-line paragraphs: render through the same
+            # Padding idiom as the live answer body (response._print_markdown_body's fallback) so
+            # every soft-wrapped continuation keeps the 2-space indent instead of spilling to
+            # column 0. Rich's wrap preserves intra-line leading whitespace (code blocks / nested
+            # lists keep their shape), and the measure IS the live answer's _BODY_WIDTH — imported,
+            # not copied, so tuning it can never leave the replay wrapping at a stale width.
+            from .response import _BODY_WIDTH
+
+            _console.print(Padding(Text(response_text, style=_DIM), (0, 0, 0, 2)),
+                           width=min(_term_width(), _BODY_WIDTH))
         else:
-            print("  ╶ final answer (recorded)")
+            import textwrap
+
+            print("  ╶ final answer (recorded)" + (" (truncated)" if cut else ""))
+            avail = max(20, _term_width() - 4)
             for ln in response_text.splitlines() or [""]:
-                print(f"  {ln}")
+                # drop/replace_whitespace=False: keep indentation inside the recorded text intact
+                # — only the line break is added, mirroring the byte-faithful wrap contract.
+                pieces = textwrap.wrap(ln, avail, replace_whitespace=False,
+                                       drop_whitespace=False) or [""]
+                for piece in pieces:
+                    print(f"  {piece}")
 
 
 # ── LLM-call replay (/trace invoke) ──────────────────────────────────────────────
@@ -503,17 +519,15 @@ def show_llm_calls(run, calls, full: bool = False) -> None:
     run_id, query, *_rest = run
     clip = None if full else _LLM_PREVIEW_CHARS
 
-    if _RICH:
-        rule = Text()
-        rule.append("  ╶── ", style=_DIM)
-        rule.append(f"run #{run_id}", style=f"bold {_ACCENT}")
-        rule.append("  llm calls", style=_DIM)
-        rule.append(" " + "─" * 32, style=_DIM)
-        _console.print(rule)
-    else:
-        print(f"  ╶── run #{run_id}  llm calls " + "─" * 32)
+    section(f"run #{run_id} · llm calls")
     q = " ".join(str(query or "").split()) or "(empty)"
-    _emit(("  query  " + q) if not _RICH else Text("  query  ", style=_DIM) + Text(q))
+    if _RICH:
+        qline = Text("  ")
+        qline.append("» ", style=_DIM)
+        qline.append(q, style="default")
+        _console.print(qline)
+    else:
+        print(f"  » {q}")
 
     if not calls:
         _emit("  (no LLM calls recorded for this run)")
@@ -524,25 +538,25 @@ def show_llm_calls(run, calls, full: bool = False) -> None:
     total_dur = sum((c[4] or 0) for c in calls)
     total_in = sum((c[5] or 0) for c in calls)
     total_out = sum((c[6] or 0) for c in calls)
-    roll = (f"  {len(calls)} call(s)  ·  {_fmt_dur(total_dur).strip()}"
-            f"  ·  {_human_tokens(total_in)}→{_human_tokens(total_out)} tok")
+    roll = (f"  {len(calls)} call(s) · {_fmt_dur(total_dur).strip()}"
+            f" · {_human_tokens(total_in)}→{_human_tokens(total_out)} tok")
     _emit(roll if not _RICH else Text(roll, style=_DIM))
     _emit("")
 
     for idx, (_seq, _ts, node, model, dur, ptok, otok, inp, outp, status) in enumerate(calls, 1):
-        toks = f"  ·  {_human_tokens(ptok or 0)}→{_human_tokens(otok or 0)} tok" if (ptok or otok) else ""
+        toks = f" · {_human_tokens(ptok or 0)}→{_human_tokens(otok or 0)} tok" if (ptok or otok) else ""
         if _RICH:
             h = Text("  ")
             h.append(f"{idx}. ", style=f"bold {_ACCENT}")
             h.append(str(node), style="default")
-            h.append(f"  ·  {model}", style=_DIM)
-            h.append(f"  ·  {_fmt_dur(dur or 0).strip()}{toks}", style=_DIM)
+            h.append(f" · {model}", style=_DIM)
+            h.append(f" · {_fmt_dur(dur or 0).strip()}{toks}", style=_DIM)
             if status != "ok":
-                h.append(f"  ·  {status}", style="bold red")
+                h.append(f" · {status}", style="bold red")
             _console.print(h)
         else:
-            err = f"  ·  {status}" if status != "ok" else ""
-            print(f"  {idx}. {node}  ·  {model}  ·  {_fmt_dur(dur or 0).strip()}{toks}{err}")
+            err = f" · {status}" if status != "ok" else ""
+            print(f"  {idx}. {node} · {model} · {_fmt_dur(dur or 0).strip()}{toks}{err}")
 
         for m in decode_json(inp, []):
             tag = _LLM_ROLE.get(m.get("role", ""), (m.get("role") or "msg")[:4])

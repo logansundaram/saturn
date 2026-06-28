@@ -293,7 +293,9 @@ def _set_yaml_scalar(text: str, dotted_key: str, value: Any) -> str:
     """Return `text` (raw config.yaml) with the scalar at `dotted_key` replaced by `value`,
     preserving comments, indentation, and every unrelated line. Tracks nesting by indentation so a
     dotted path resolves to the right leaf. Raises KeyError if the key isn't present as an existing
-    scalar leaf, ValueError if the in-memory value is a container (only scalars are persistable)."""
+    scalar leaf — including when it matches a bare `web:`-style SECTION HEADER, which is not a leaf
+    (see the header guard below) — and ValueError if the in-memory value is a container (only
+    scalars are persistable)."""
     if isinstance(value, (dict, list)):
         raise ValueError(f"{dotted_key} is a container, not a scalar — edit config.yaml by hand")
 
@@ -316,6 +318,33 @@ def _set_yaml_scalar(text: str, dotted_key: str, value: Any) -> str:
 
         if [k for _, k in stack] != target:
             continue
+
+        # Header guard: a bare `key:` whose value position is empty (an inline comment aside)
+        # and whose next real line opens a more-deeply-indented block (or a block-sequence
+        # item) is a SECTION HEADER, not a scalar leaf. Rewriting it to `key: value` while its
+        # children stay behind yields unparseable YAML ("mapping values are not allowed here")
+        # — and _load() runs at module import, so the NEXT launch of the app would die before
+        # anything renders, leaving the user to hand-repair config.yaml. A bare `key:` with no
+        # such follower is a genuinely-null scalar leaf and stays editable.
+        content = after.strip()
+        if not content or content.startswith("#"):
+            for nxt in lines[i + 1:]:
+                nxt_body = nxt.rstrip("\n").rstrip("\r")
+                nxt_strip = nxt_body.strip()
+                if not nxt_strip or nxt_strip.startswith("#"):
+                    continue  # blank/comment lines say nothing about nesting
+                nxt_indent = len(nxt_body) - len(nxt_body.lstrip())
+                # A same-indent `- item` after a bare `key:` is that key's block sequence
+                # (YAML allows sequence items at the parent key's indent) — a container too.
+                if nxt_indent > indent or (
+                    nxt_indent == indent
+                    and (nxt_strip == "-" or nxt_strip.startswith("- "))
+                ):
+                    raise KeyError(
+                        f"{dotted_key} is a section header, not an editable scalar leaf — "
+                        "set one of its child keys instead"
+                    )
+                break
 
         ws = re.match(r"^(\s*)(.*)$", after)
         sep = ws.group(1) or " "

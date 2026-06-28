@@ -32,7 +32,6 @@ hard-coded here.
 """
 
 import os
-from urllib.parse import urlparse
 
 import diag
 from trust import egress
@@ -70,14 +69,6 @@ def _provider() -> str:
 
 def _max_results() -> int:
     return int(get_config().get("web.max_results", 5))
-
-
-def _host(url: str) -> str:
-    """The hostname of a URL for the egress ledger (falls back to the raw value)."""
-    try:
-        return urlparse(url).hostname or str(url)
-    except Exception:
-        return str(url)
 
 
 def _use_tavily() -> bool:
@@ -154,13 +145,21 @@ def _local_extract(url: str) -> str:
 def web_search(query: str):
     """Execute a web search query. Uses Tavily when a key is configured, otherwise falls back
     to keyless DuckDuckGo automatically — no API key required."""
-    backend_host = "tavily.com" if _use_tavily() else "duckduckgo.com"
-    blocked = egress.check("web_search", backend_host, query)
+    # ONE air-gap check up front — the gate keys on airgap_on(), not the host, and a second
+    # check before the keyless fallback would double-record the blocked event. RECORDING, by
+    # contrast, happens at each real send point below, so the ledger names the backend actually
+    # contacted: a Tavily attempt that falls back to DuckDuckGo really exits twice.
+    blocked = egress.check(
+        "web_search", "tavily.com" if _use_tavily() else "duckduckgo.com", query
+    )
     if blocked:
         return blocked
-    egress.record("web_search", backend_host, query, provider=backend_host.split(".")[0],
-                  n_bytes=len(query or ""))
     if _use_tavily():
+        # Recorded BEFORE the attempt — the ledger's deliberate fail-toward-recording property
+        # (egress.record docstring; http_request does the same): a call that dies mid-flight
+        # still left the machine.
+        egress.record("web_search", "tavily.com", query, provider="tavily",
+                      n_bytes=len(query or ""))
         try:
             return _client().search(query, max_results=_max_results())
         except _TAVILY_FALLBACK_ERRORS as err:
@@ -171,6 +170,10 @@ def web_search(query: str):
             # disabled for the session. A flaky Tavily must never cost an answer DuckDuckGo
             # could have given.
             diag.log(f"[web] Tavily search failed ({type(err).__name__}); DuckDuckGo fallback")
+    # The keyless path really contacts DuckDuckGo — its own ledger event. After a failed Tavily
+    # attempt this is deliberately a SECOND event: both exits happened.
+    egress.record("web_search", "duckduckgo.com", query, provider="duckduckgo",
+                  n_bytes=len(query or ""))
     return _ddg_search(query, _max_results())
 
 
@@ -179,13 +182,25 @@ def web_extract(url: str):
     """Extract the readable page content behind a URL. Use this to read a specific page that
     web_search surfaced. Runs locally (trafilatura) with no API key by default; only uses
     Tavily Extract when the web provider is explicitly forced to 'tavily'."""
-    first_url = url[0] if isinstance(url, (list, tuple)) and url else url
-    host = _host(str(first_url))
-    blocked = egress.check("web_extract", host, str(first_url))
+    # Normalize FIRST: an empty call must return before any egress accounting — host_of(str([]))
+    # would otherwise put a phantom blocked event with the garbage host "[]" into the air-gap
+    # ledger (and the durable hash-chained log) for a call that could never have sent anything.
+    urls = [u for u in (url if isinstance(url, (list, tuple)) else [url]) if u]
+    if not urls:
+        return "No URL provided to extract."
+    first_url = urls[0]
+    # ONE air-gap check, per-send-point recording — mirrors web_search: the gate keys on
+    # airgap_on(), so a single check covers the whole call (a second would double-record the
+    # blocked event); RECORDING below names the host actually contacted, per send.
+    blocked = egress.check("web_extract", egress.host_of(str(first_url)), str(first_url))
     if blocked:
         return blocked
-    egress.record("web_extract", host, str(first_url), n_bytes=len(str(first_url)))
     if _provider() == "tavily" and _use_tavily():
+        # Forced-Tavily extraction sends every URL to Tavily's API in one call — the pages' own
+        # hosts are never contacted on this branch, so ONE event names the backend (same label
+        # as web_search), sized by everything sent.
+        egress.record("web_extract", "tavily.com", str(first_url), provider="tavily",
+                      n_bytes=sum(len(str(u)) for u in urls))
         try:
             return _client().extract(url)
         except _TAVILY_FALLBACK_ERRORS as err:
@@ -194,11 +209,14 @@ def web_extract(url: str):
             # Transient Tavily failure: degrade to the local extractor for this call only
             # (mirrors web_search — the key may be fine, so don't disable it).
             diag.log(f"[web] Tavily extract failed ({type(err).__name__}); local fallback")
-    # Local-first path: handle a single URL or a list of URLs.
-    urls = [u for u in (url if isinstance(url, (list, tuple)) else [url]) if u]
-    if not urls:
-        return "No URL provided to extract."
-    results = {u: _local_extract(u) for u in urls}
+    # Local-first path: each URL is its own fetch, so each gets its own ledger event naming ITS
+    # host — a multi-URL extract to three hosts is three sends, and /privacy egress, the rail
+    # leaf, and the Glass Box must say so (recorded before the send: fail-toward-recording).
+    # After a failed Tavily attempt these are deliberately additional events.
+    results = {}
+    for u in urls:
+        egress.record("web_extract", egress.host_of(str(u)), str(u), n_bytes=len(str(u)))
+        results[u] = _local_extract(u)
     return results if len(results) > 1 else next(iter(results.values()))
 
 
@@ -216,7 +234,7 @@ def http_request(url: str, method: str = "GET", headers: dict | None = None,
     that). Every call is approved by the human first, who sees the exact method, URL, headers,
     and body before anything is sent."""
     method = (method or "GET").upper()
-    host = _host(url)
+    host = egress.host_of(url)
     blocked = egress.check("http_request", host, f"{method} {url}")
     if blocked:
         return blocked

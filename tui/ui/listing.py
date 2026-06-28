@@ -2,9 +2,9 @@
 Shared list/table rendering for the readout commands (/tools, /docs, /memory, /models, …).
 
 One vocabulary instead of per-command hand-rolled output: `section()` opens a block with the
-`╶── title ───` rule the existing readouts use, and `table()` prints column-aligned rows in the
-trace-rail style. Alignment, color, and truncation behave identically across every listing in
-the app — the difference between "a pile of prints" and a serious terminal tool.
+short `── title` rule every block in the app uses, and `table()` prints column-aligned rows in
+the trace-rail style. Alignment, color, and truncation behave identically across every listing
+in the app — the difference between "a pile of prints" and a serious terminal tool.
 
 Cells are plain values or `(text, style)` tuples for a per-cell override (e.g. a risk tier
 colored by value). The LAST column flexes into the remaining terminal width and truncates with
@@ -28,20 +28,23 @@ def risk_style(risk: str) -> str:
 
 
 def section(title: str, subtitle: str = "") -> None:
-    """The `╶── title ───…` rule that opens every readout block, with an optional dim subtitle
-    line (counts, the active binding, a hint)."""
+    """The `── title` header that opens every block — one leading blank line so blocks breathe,
+    a short dim rule, the title in the accent, and an optional dim subtitle line (counts, the
+    active binding, a hint). No trailing fill: the accent word carries the eye, not a bar of
+    dashes — one header vocabulary across every readout, the response, and the trace replays."""
     if _RICH:
-        rule = Text()
-        rule.append("  ╶── ", style=_DIM)
+        _console.print()
+        rule = Text("  ")
+        rule.append("── ", style=_DIM)
         rule.append(title, style=f"bold {_ACCENT}")
-        rule.append(" " + "─" * max(8, 46 - len(title)), style=_DIM)
         _console.print(rule)
         if subtitle:
             sub = Text("  ")
             sub.append(subtitle, style=_DIM)
             _console.print(sub)
     else:
-        print(f"  ╶── {title} " + "─" * max(8, 46 - len(title)))
+        print()
+        print(f"  ── {title}")
         if subtitle:
             print(f"  {subtitle}")
 

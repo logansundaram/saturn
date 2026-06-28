@@ -8,7 +8,8 @@ all of them into ONE record and signs it — the artifact a security-conscious u
 auditor) actually wants: a portable, verifiable attestation of "here is exactly how this agent was
 allowed to behave, and here is what it actually did."
 
-It is pure assembly over leaf modules (config, egress, policy, redaction, signing) — no new state,
+It is pure assembly over leaf modules (config, egress, policy, quarantine, redaction, signing) —
+no new state,
 no I/O of its own beyond what those modules already do. `build_report()` returns a plain dict (so
 it is trivially testable and renderable); `sign_report()` wraps it with the same digest+signature
 layering as a trace export, so `/trace verify`-style checks apply to it too.
@@ -20,6 +21,7 @@ from datetime import datetime
 
 from trust import egress
 from trust import policy
+from trust import quarantine
 from trust import redaction
 from trust import signing
 from config import MODEL_ROLES, get_config
@@ -28,7 +30,14 @@ REPORT_VERSION = 1
 
 
 def _inference() -> dict:
+    """THE locality classifier (posture line, Glass Box attestation, /privacy all read this —
+    never re-roll it). 'local' means the words are computed ON THIS MACHINE: an Ollama binding
+    only earns it when the endpoint is loopback — a remote OLLAMA_HOST is network inference and
+    classifies 'remote' (off-machine, like 'cloud'), reported with the endpoint so the reader
+    can see where."""
     cfg = get_config()
+    ollama_local = egress.ollama_is_local()
+    ollama_loc = "local" if ollama_local else "remote"
     bindings = []
     for role in MODEL_ROLES:
         try:
@@ -39,15 +48,40 @@ def _inference() -> dict:
             "role": role,
             "provider": spec.provider,
             "model": spec.model,
-            "locality": "local" if spec.provider == "ollama" else "cloud",
+            "locality": ollama_loc if spec.provider == "ollama" else "cloud",
         })
     try:
         bindings.append({"role": "embedder", "provider": "ollama",
-                         "model": cfg.embedder_model, "locality": "local"})
+                         "model": cfg.embedder_model, "locality": ollama_loc})
     except Exception:
         pass
     cloud = sorted({b["provider"] for b in bindings if b["locality"] == "cloud"})
-    return {"bindings": bindings, "cloud_providers": cloud, "all_local": not cloud}
+    remote = any(b["locality"] == "remote" for b in bindings)
+    out = {"bindings": bindings, "cloud_providers": cloud,
+           "all_local": not cloud and not remote}
+    if remote:
+        out["remote_ollama"] = egress.ollama_endpoint()
+    return out
+
+
+def remote_ollama_label(inf: dict) -> str:
+    """The display label for a remote-Ollama destination (`ollama @ <endpoint>`) — one spelling
+    for every surface that names it (posture line, /privacy tables, the report render)."""
+    return f"ollama @ {inf.get('remote_ollama', '?')}"
+
+
+def offmachine_destinations(inf: "dict | None" = None) -> list[str]:
+    """The off-machine inference destinations as display labels: cloud providers plus a remote
+    Ollama endpoint (`remote_ollama_label`). THE one assembly of the where-list — the session
+    posture line (receipt.posture_spans), /privacy's verdict, and the trust-report render all
+    print this, so they can never name different destination sets for the identical posture.
+    Takes the classifier's dict (or computes it fresh); empty when everything is local."""
+    if inf is None:
+        inf = _inference()
+    where = list(inf.get("cloud_providers") or [])
+    if inf.get("remote_ollama"):
+        where.append(remote_ollama_label(inf))
+    return where
 
 
 def build_report() -> dict:
@@ -92,7 +126,10 @@ def build_report() -> dict:
         "boundary": {
             "airgap": bool(cfg.get("runtime.airgap", False)),
             "redaction": redaction.mode(),
-            "quarantine": str(cfg.get("runtime.quarantine", "gate")),
+            # The EFFECTIVE mode (mirrors redaction.mode() above): quarantine.mode() normalizes
+            # case and falls back to "gate" on an invalid value — a signed attestation must
+            # state the mode in force, never echo a raw string the system ignored.
+            "quarantine": quarantine.mode(),
             "dry_run": bool(cfg.get("runtime.dry_run", False)),
         },
         "egress_session": egress.summary(),

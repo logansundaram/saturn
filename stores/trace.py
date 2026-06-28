@@ -33,6 +33,22 @@ def parse_ts(ts):
         return None
 
 
+# Write-time truncation marker for the recorded final answer (end_run). The stable PREFIX is the
+# detection key — the cap value is appended after it so the stored row is self-describing even if
+# the cap changes between recording and reading. One constant + one detector, shared by every
+# reader (show_run's label, /glass #id, the export's answer attestation), so they can't drift.
+_RESPONSE_TRUNCATION_MARKER = "… [recorded answer truncated at "
+
+
+def response_truncated(text) -> bool:
+    """True when a recorded `runs.response` carries end_run's write-time truncation marker.
+    Readers treat a marked row as INCOMPLETE (show_run says "truncated", the Glass Box /
+    attestation pass complete=False). Historical rows cut at the old 2000-char cap carry no
+    marker and read False here — absent-as-unknown (the gotcha #7 convention): never try to
+    infer truncation for legacy rows."""
+    return _RESPONSE_TRUNCATION_MARKER in str(text or "")
+
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS runs (
     run_id     INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -109,37 +125,78 @@ def _summarize(delta: dict) -> tuple[str, str]:
 
 
 class Tracer:
+    """Every write is BEST-EFFORT: the watcher must never take down the watched. log_event runs
+    on every node delta of a live turn, so a sqlite failure here (db.sqlite locked by a second
+    instance / an open DB browser — it's shared with SqliteSaver — or disk full) would otherwise
+    raise out of run_turn's stream loop and report a healthy turn as failed."""
+
     def __init__(self, db_path: str):
         self.conn = sqlite3.connect(db_path, check_same_thread=False)
         self.conn.executescript(_SCHEMA)
         self.conn.commit()
         self._seq = 0
         self._llm_seq = 0
+        self._broken = False  # one-shot circuit breaker — see _trip
+
+    @property
+    def broken(self) -> bool:
+        """True while the circuit breaker is tripped (recording disabled until the next
+        start_run). Exposed so the LOOP can surface a "trace recording degraded" notice —
+        stores/ must not import tui, so this module never warns the user itself."""
+        return self._broken
+
+    def _trip(self, where: str, exc: Exception) -> None:
+        """Swallow a write failure and trip the one-shot circuit breaker: after the FIRST failed
+        write every later PER-DELTA write (log_event / log_llm_call) no-ops, because each failed
+        execute/commit can block up to sqlite's busy timeout PER node delta — a dead
+        observability layer must degrade to silence, not a multi-second stall on every update.
+        end_run is exempt (one terminal write; see there). diag-logged once at trip time;
+        start_run re-arms, so the next turn retries exactly once; the loop reads `broken` and
+        warns the user the record degraded."""
+        if not self._broken:
+            import diag
+            diag.log(f"trace {where} failed — recording disabled until the next run: {exc}")
+        self._broken = True
 
     def start_run(self, thread_id: str, query: str) -> int:
-        cur = self.conn.execute(
-            "INSERT INTO runs (thread_id, query, started_at, status) VALUES (?, ?, ?, ?)",
-            (thread_id, query, datetime.now().isoformat(), "running"),
-        )
-        self.conn.commit()
         self._seq = 0
         self._llm_seq = 0
-        return cur.lastrowid
+        self._broken = False  # re-arm the breaker: one retry per turn, never a permanently dead trace
+        try:
+            cur = self.conn.execute(
+                "INSERT INTO runs (thread_id, query, started_at, status) VALUES (?, ?, ?, ?)",
+                (thread_id, query, datetime.now().isoformat(), "running"),
+            )
+            self.conn.commit()
+            return cur.lastrowid
+        except Exception as exc:
+            self._trip("start_run", exc)
+            # Sentinel: log_event/end_run against -1 are harmless orphan writes / no-op updates
+            # (and the breaker is tripped anyway). Headless --export fails loudly on its own path.
+            return -1
 
     def log_event(self, run_id: int, node: str, delta: dict) -> None:
+        # seq increments even when broken/failing, so any later successful rows stay ordered.
         self._seq += 1
+        if self._broken:
+            return
         summary, data = _summarize(delta or {})
-        self.conn.execute(
-            "INSERT INTO events (run_id, seq, ts, node, summary, data) VALUES (?, ?, ?, ?, ?, ?)",
-            (run_id, self._seq, datetime.now().isoformat(), node, summary, data),
-        )
-        self.conn.commit()
+        try:
+            self.conn.execute(
+                "INSERT INTO events (run_id, seq, ts, node, summary, data) VALUES (?, ?, ?, ?, ?, ?)",
+                (run_id, self._seq, datetime.now().isoformat(), node, summary, data),
+            )
+            self.conn.commit()
+        except Exception as exc:
+            self._trip("log_event", exc)
 
     def log_llm_call(self, run_id, node, model, dur, prompt_tokens, output_tokens,
                      input_json, output_json, status="ok") -> None:
         """Record one model call's input + output (from the LLMTraceHandler). Best-effort: a logging
         failure must never propagate into the running model call."""
         self._llm_seq += 1
+        if self._broken:
+            return
         try:
             self.conn.execute(
                 "INSERT INTO llm_calls (run_id, seq, ts, node, model, dur, prompt_tokens, "
@@ -149,8 +206,7 @@ class Tracer:
             )
             self.conn.commit()
         except Exception as exc:
-            import diag
-            diag.log(f"log_llm_call failed: {exc}")
+            self._trip("log_llm_call", exc)
 
     def llm_handler(self, run_id: int) -> "LLMTraceHandler":
         """A run-scoped LangChain callback that captures every model call's input/output into the
@@ -158,11 +214,29 @@ class Tracer:
         return LLMTraceHandler(self, run_id)
 
     def end_run(self, run_id: int, status: str, response: str = "") -> None:
-        self.conn.execute(
-            "UPDATE runs SET ended_at = ?, status = ?, response = ? WHERE run_id = ?",
-            (datetime.now().isoformat(), status, (response or "")[:2000], run_id),
-        )
-        self.conn.commit()
+        text = response or ""
+        # The recorded answer is capped like a delta (_DATA_CAP — it IS the headline record every
+        # after-the-fact surface reads: show_run, the signed export, /glass #id's taint scan).
+        # When it still overflows, the cut gets an explicit write-time marker so the stored row
+        # is self-describing: readers render "truncated" / complete=False instead of presenting
+        # a mid-sentence cut as the whole answer, and the export's digest/signature commit the
+        # marker honestly. (The old silent [:2000] cut even lost the Sources: footer.)
+        if len(text) > _DATA_CAP:
+            text = text[:_DATA_CAP] + f"\n{_RESPONSE_TRUNCATION_MARKER}{_DATA_CAP} chars]"
+        # Deliberately EXEMPT from the circuit breaker: end_run is ONE write at turn end (not
+        # the per-delta hot path the breaker protects from repeated busy-timeout stalls) and it
+        # carries the run's terminal status + answer — a transient lock that tripped the breaker
+        # early in the turn and cleared since must not leave this run 'running' forever with no
+        # recorded response (/trace, /glass #id, and exports all read that row). Worst case one
+        # more busy-timeout wait per turn; a failure still just trips/diag-logs.
+        try:
+            self.conn.execute(
+                "UPDATE runs SET ended_at = ?, status = ?, response = ? WHERE run_id = ?",
+                (datetime.now().isoformat(), status, text, run_id),
+            )
+            self.conn.commit()
+        except Exception as exc:
+            self._trip("end_run", exc)
 
 
 # ── LLM-call capture ───────────────────────────────────────────────────────────
@@ -220,7 +294,13 @@ def _llm_output(response) -> tuple[dict, int, int]:
             meta = getattr(msg, "response_metadata", None) or {}
             ptok = meta.get("prompt_eval_count") or 0
             otok = meta.get("eval_count") or 0
-    out = {"content": str(text)[:_LLM_MSG_CAP], "tool_calls": tool_calls}
+    text = str(text)
+    out = {"content": text[:_LLM_MSG_CAP], "tool_calls": tool_calls}
+    if len(text) > _LLM_MSG_CAP:
+        # Same convention as _msg_to_dict's input flag: record the ORIGINAL length so the
+        # /trace invoke renderer can disclose the recording cut — without it, --full presents
+        # a capped output as the model's complete reply.
+        out["truncated"] = len(text)
     return out, int(ptok or 0), int(otok or 0)
 
 

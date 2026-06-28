@@ -28,6 +28,10 @@ tavily-python>=0.7.24         # OPTIONAL: premium web search/extract/research
 # langchain-anthropic>=1.0.0    # provider: anthropic (the cloud-hybrid tier)
 # langchain-openai>=1.0.0       # provider: openai
 
+# --- trust stack ---
+cryptography>=42.0            # ed25519 audit signatures (trust/signing.py) — without it, exports
+                              # ship digest-only and `saturn verify` fails closed on signed artifacts
+
 # --- config / utilities ---
 pyyaml>=6.0.3
 python-dotenv>=1.2.2

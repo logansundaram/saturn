@@ -16,7 +16,7 @@ from trust import quarantine
 from config import get_config
 from tools.registry import tools_by_name, RETRIEVAL_TOOLS
 from core.state import AgentState
-from textutil import clip, fmt_args, head_tail
+from textutil import CALL_RESULT_SEP, clip, fmt_args, head_tail
 
 # Cap each argument's length so a big write_file payload doesn't bloat the trace/synthesis input.
 _MAX_ARG_REPR = 200
@@ -178,7 +178,10 @@ def tool_node(state: AgentState):
         if name in RETRIEVAL_TOOLS:
             documents_retrieved.append(clamped)
         else:
-            tool_results.append(f"{_fmt_call(name, args)} -> {clamped}")
+            # The one serialization both downstream parsers split (textutil.split_call_result):
+            # synthesize's Sources labels take the call half, the Glass Box's taint corpus the
+            # observation half.
+            tool_results.append(f"{_fmt_call(name, args)}{CALL_RESULT_SEP}{clamped}")
         # Structured per-call record for the UI's tool-I/O tree (args + result preview + timing).
         event = {
             "name": name,

@@ -25,6 +25,33 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
       - name: Install dependencies
-        run: pip install -r requirements.txt pytest
+        # Install from the package, not requirements.txt — a dependency missing from
+        # pyproject.toml fails HERE instead of shipping broken to pipx/uv installs.
+        run: pip install -e .[dev]
       - name: Run unit suite
         run: python -m pytest tests/ -q
+
+  package:
+    # Build the wheel and install it into a CLEAN venv (no checkout on sys.path), then run the
+    # entry point — catches packaging breakage (a module missing from py-modules/packages, a
+    # data-file not shipped, a dep missing from pyproject) that the unit job never sees.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build wheel
+        run: pipx run build --wheel
+      - name: Install wheel into a clean venv
+        run: |
+          python -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install dist/*.whl
+      - name: Smoke-test the installed package
+        env:
+          SATURDAY_HOME: ${{ runner.temp }}/saturday-home
+        run: |
+          cd "$RUNNER_TEMP"
+          ./venv/bin/saturn --version
+          ./venv/bin/saturn --help > /dev/null
+          ./venv/bin/python -c "from trust import signing; assert signing.available(), 'cryptography must ship as a core dependency — signed exports degraded'"

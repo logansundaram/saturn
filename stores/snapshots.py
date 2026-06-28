@@ -4,7 +4,9 @@ Workspace snapshots — the undo layer behind the mutating file tools (`/undo`).
 Before `write_file` / `edit_file` changes a workspace file, the file's current bytes are copied
 into a per-turn snapshot batch under `config.path("snapshots")` (a file that does not exist yet is
 recorded too, so undoing a creation deletes it). `/undo` restores the most recent batch and removes
-it; batches are pruned to the last `_KEEP_BATCHES` turns so the directory can't grow unbounded.
+it — unless a restore FAILED, in which case the batch survives (shrunk to the failed entries) so
+the saved bytes stay available for a retry; batches are pruned to the last `_KEEP_BATCHES` turns
+so the directory can't grow unbounded.
 
 Scope: only the file tools snapshot — `run_shell` can touch anything, so its effects are NOT
 undoable (the approval gate showing the exact command is its safety boundary). Everything here is
@@ -151,12 +153,17 @@ def list_batches() -> list[dict]:
 
 
 def undo_last() -> "tuple[str, list[str]]":
-    """Restore the most recent snapshot batch into the workspace and delete the batch.
+    """Restore the most recent snapshot batch into the workspace.
 
     Returns (batch_summary, action_lines); raises RuntimeError when there is nothing to undo.
     Each touched file is restored to its turn-start bytes; a file the batch recorded as
     not-existing (the tool created it) is deleted. Restore paths are re-resolved against the
-    CURRENT workspace and sandbox-checked, mirroring the file tools."""
+    CURRENT workspace and sandbox-checked, mirroring the file tools.
+
+    A fully-clean pass deletes the batch (each /undo pops one). A pass with any FAILED or
+    sandbox-skipped entry KEEPS the batch, shrunk to just those entries (`_shrink_batch`) —
+    the batch holds the ONLY copy of those files' turn-start bytes, so a failed undo must
+    never destroy the recovery data it exists to provide. Run /undo again to retry."""
     batches = _batch_dirs()
     if not batches:
         raise RuntimeError("no snapshots to undo — nothing has written to the workspace yet")
@@ -168,11 +175,16 @@ def undo_last() -> "tuple[str, list[str]]":
     from stores.document_registry import register_workspace_file, remove_workspace_file
 
     actions: list[str] = []
+    # Entries that did NOT resolve this pass (the restore raised — a locked file, permissions —
+    # or the path fell outside the current workspace). Their saved bytes are the only copy of
+    # the turn-start state, so they decide below whether the batch may be deleted.
+    unresolved: list[dict] = []
     for entry in reversed(manifest.get("files", [])):
         rel = entry["path"]
         target = (workspace / rel).resolve()
         if not target.is_relative_to(workspace):
             actions.append(f"skipped {rel} (outside the current workspace)")
+            unresolved.append(entry)
             continue
         try:
             if entry.get("existed"):
@@ -186,6 +198,7 @@ def undo_last() -> "tuple[str, list[str]]":
                 actions.append(f"deleted {rel} (was created by that turn)")
         except Exception as exc:
             actions.append(f"FAILED to restore {rel}: {exc}")
+            unresolved.append(entry)
             continue
         # Keep the grounding manifest truthful about what's in the workspace now. Best-effort —
         # a manifest hiccup must not fail the restore that already landed. Restored content was
@@ -201,5 +214,34 @@ def undo_last() -> "tuple[str, list[str]]":
     label = manifest.get("created", "") or manifest.get("id", batch_dir.name)
     query = manifest.get("query", "")
     summary = f"{label}" + (f' — "{query}"' if query else "")
-    shutil.rmtree(batch_dir, ignore_errors=True)
+    if not unresolved:
+        shutil.rmtree(batch_dir, ignore_errors=True)
+    else:
+        _shrink_batch(batch_dir, manifest, unresolved, actions)
     return summary, actions
+
+
+def _shrink_batch(batch_dir: Path, manifest: dict, unresolved: "list[dict]",
+                  actions: "list[str]") -> None:
+    """A restore failed (or was sandbox-skipped): deleting the batch — the clean-pass
+    behaviour — would destroy the ONLY copy of those files' turn-start bytes, exactly the
+    recovery data the snapshot exists for. Keep the batch instead, shrunk to the unresolved
+    entries. The manifest rewrite is mandatory, not an optimization: a retry over the FULL
+    manifest would re-restore the already-succeeded files, clobbering anything written since
+    this undo — so the succeeded entries leave the manifest and their saved bytes are pruned
+    to match. /undo always pops the newest batch with no skip affordance, so the action line
+    names the directory: a permanently unrestorable entry is resolved by removing it by hand."""
+    keep = {e["path"] for e in unresolved}  # paths are unique per batch (first snapshot wins)
+    for entry in manifest.get("files", []):
+        if entry["path"] in keep or not entry.get("existed"):
+            continue
+        try:  # best-effort: a leftover saved file is harmless once it left the manifest
+            (batch_dir / _FILES_DIR / entry["path"]).unlink(missing_ok=True)
+        except OSError as exc:
+            diag.log(f"undo saved-bytes prune failed for {entry['path']}: {exc}")
+    manifest["files"] = [e for e in manifest.get("files", []) if e["path"] in keep]
+    _save_manifest(batch_dir, manifest)
+    actions.append(
+        f"kept this snapshot batch — run /undo again to retry the {len(unresolved)} "
+        f"unresolved file(s), or remove it by hand: {batch_dir}"
+    )

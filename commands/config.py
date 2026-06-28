@@ -1,6 +1,34 @@
 from commands._framework import command, _print
 from commands._utils import _resync_rag_after_model_change, is_remove_verb, split_save_flag
 
+# Existence sentinel for cfg.get: distinguishes a key that is ABSENT from one present with an
+# explicit null value (cfg.get's None default conflates the two — exactly how a typo'd key used
+# to read back as a success-shaped `= None`).
+_MISSING = object()
+
+
+def _leaf_keys(node: dict, prefix: str = "") -> list[str]:
+    """Every dotted path to a non-mapping leaf in the live config — the did-you-mean candidate
+    list for a typo'd key. Callers snapshot this BEFORE a cfg.set, so a just-created typo can
+    never suggest itself."""
+    out: list[str] = []
+    for k, v in node.items():
+        dotted = f"{prefix}{k}"
+        if isinstance(v, dict) and v:
+            out.extend(_leaf_keys(v, dotted + "."))
+        else:
+            out.append(dotted)
+    return out
+
+
+def _did_you_mean(cfg, key: str) -> str:
+    """` — did you mean X?` for the closest existing dotted leaf, or "". The exact /policy risk
+    suggestion wording, so the two typo surfaces read identically."""
+    import difflib
+
+    hint = difflib.get_close_matches(key, _leaf_keys(cfg._data), n=1)
+    return f" — did you mean {hint[0]}?" if hint else ""
+
 
 def _list_keys() -> None:
     """The numbered key listing — also the menu the set-picker selects from."""
@@ -220,7 +248,7 @@ def _config(ctx, args):
         _print("  manage keys: /config key   (see /config --help)")
         return
 
-    if args[0] == "reload":
+    if args[0].lower() == "reload":  # case-insensitive like every sibling subcommand match
         reload()
         from core.llms import reset_models
         reset_models()
@@ -244,7 +272,13 @@ def _config(ctx, args):
             # identical to /config persist <key>; it mutates nothing live).
             _persist_key(cfg, key)
             return
-        _print(f"  {key} = {cfg.get(key)!r}")
+        current = cfg.get(key, _MISSING)
+        if current is _MISSING:
+            # An absent key must not read back success-shaped as `= None` — None stays the
+            # rendering only for a key explicitly present with a null value.
+            _print(f"  {key} is not set{_did_you_mean(cfg, key)}")
+            return
+        _print(f"  {key} = {current!r}")
         return
 
     # The old grammar took a trailing bare save/persist as the flag; storing it silently as
@@ -255,10 +289,36 @@ def _config(ctx, args):
         return
 
     value = " ".join(values)
+
+    # Section guard: a dotted key naming a whole MAPPING must refuse — cfg.set would replace the
+    # mapping with a scalar (every `web.*`-style read silently degrades to defaults for the rest
+    # of the session), and a later persist would rewrite the bare `web:` header line into
+    # `web: foo` above its still-indented children: unparseable YAML that kills the next launch
+    # (_set_yaml_scalar now also refuses headers, but the session-side corruption must stop here
+    # too). The guard lives in this handler, NOT in Config.set — /models legitimately replaces a
+    # {provider, model} role-binding dict with a bare scalar model id via cfg.set.
+    current = cfg.get(key, _MISSING)
+    if isinstance(current, dict):
+        children = ", ".join(f"{key}.{child}" for child in current)
+        _print(f"  {key} is a section, not a setting — set one of: {children}")
+        return
+    if isinstance(current, list):
+        _print(f"  {key} is a list, not a scalar setting — edit config.yaml by hand")
+        return
+
+    # A key the config has never seen still sets — the default-tolerant knobs (shell.background,
+    # runtime.sign_exports, runtime.egress_log, paths.*) and absent per-tier role leaves must
+    # keep working on a config.yaml predating them — but the success-shaped line is replaced
+    # with a plain warning so a misspelled safety knob can't masquerade as applied. The
+    # suggestion snapshots the leaf list BEFORE the set, so the typo never suggests itself.
+    suggestion = _did_you_mean(cfg, key) if current is _MISSING else ""
     cfg.set(key, value)
+    if current is _MISSING:
+        _print(f"  note: {key!r} was not an existing config key{suggestion} "
+               "(set anyway; only keys the code reads have any effect)")
     if save:
         _persist_key(cfg, key)
-    else:
+    elif current is not _MISSING:
         _print(
             f"  {key} = {cfg.get(key)!r}  (session only; add --save or run /config persist {key})"
         )

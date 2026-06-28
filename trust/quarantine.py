@@ -305,7 +305,7 @@ def longest_overlap_many(text: str, others: "list[str]") -> "list[str | None]":
         j = 0
         while j + _TAINT_MIN <= len(b):
             seed = b[j:j + _TAINT_MIN]
-            advanced = 0
+            advance_to = j
             for i in agrams.get(hash(seed), ()):
                 if a[i:i + _TAINT_MIN] != seed:
                     continue
@@ -313,21 +313,36 @@ def longest_overlap_many(text: str, others: "list[str]") -> "list[str | None]":
                 while x < len(a) and y < len(b) and a[x] == b[y]:
                     x += 1
                     y += 1
-                if y - j > len(best):
-                    best = b[j:y]
-                advanced = max(advanced, y - j)
-            j += advanced if advanced else 1
+                # Extend BACKWARD too (mirroring _locate_span): the greedy advance jumps past
+                # every start inside a matched region, so a longer common span that STARTS
+                # inside it would otherwise never be tried — when `text` repeats the seed with
+                # different extents, the recorded span could understate the real overlap shown
+                # to the human as evidence. Backward extension recovers that span from the
+                # seed the scan does reach; the advance still goes to the span's END.
+                i0, j0 = i, j
+                while i0 > 0 and j0 > 0 and a[i0 - 1] == b[j0 - 1]:
+                    i0 -= 1
+                    j0 -= 1
+                if y - j0 > len(best):
+                    best = b[j0:y]
+                advance_to = max(advance_to, y)
+            j = advance_to if advance_to > j else j + 1
         out[k] = best or None
     return out
 
 
 def longest_overlap(text_a: str, text_b: str) -> "str | None":
-    """The longest contiguous normalized span (≥ `_TAINT_MIN` chars) common to both texts, or None.
+    """A maximal contiguous normalized span (≥ `_TAINT_MIN` chars) common to both texts, or None.
+    Forward+backward extension from each seed recovers spans that straddle a repeated region; in
+    adversarial nested-repeat layouts the result is a maximal span, not guaranteed to be THE
+    longest (the greedy advance trades exactness for linear scanning).
 
     The shared span-matching primitive, exposed for the Glass Box (`glassbox.py`): `taint_scan`
     matches the recorded source SET against a call's args (data→action); the Glass Box matches ONE
-    source's observation against the final answer (data→answer). Same normalization + threshold, so
-    a span that would taint a tool call and a span that bled into the answer are judged identically.
+    source's observation against the final answer (data→answer). Same normalization + threshold,
+    and both halves match against OBSERVATION content only (record_untrusted records the clamped
+    observation; the Glass Box strips the model-authored call repr before scanning) — so a span
+    that would taint a tool call and a span that bled into the answer are judged the same way.
     Pure; case-insensitive + whitespace-collapsed so a reflowed copy still matches."""
     return longest_overlap_many(text_a, [text_b])[0]
 

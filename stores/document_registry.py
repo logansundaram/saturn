@@ -20,7 +20,7 @@ import json
 import re
 import time
 from datetime import date
-from pathlib import Path
+from pathlib import Path, PurePath
 
 from langchain.messages import HumanMessage
 
@@ -45,23 +45,44 @@ def _documents_manifest() -> Path:
 # ---------------------------------------------------------------------------
 
 
+def _workspace_key(file_path: str) -> str:
+    """Canonical workspace-manifest key: POSIX separators, './' segments dropped. Entries are
+    matched by exact string, and three writers share them — write_file, edit_file, and /undo's
+    manifest sync — so register and remove must land on ONE form or the manifest accumulates
+    duplicate/phantom entries the ground node then feeds the LLM every turn. Defense in depth
+    only: PurePath does NOT collapse '..' components, so the load-bearing canonicalization is the
+    callers passing a sandbox-RESOLVED relative path (tools/files.py derives it from the resolved
+    target); this just papers over separator and './' drift from any future caller."""
+    return PurePath(file_path).as_posix()
+
+
 def register_workspace_file(file_path: str, content: str) -> None:
-    """Called by write_file after a successful write. Keyed by the full relative path (not the
-    basename) so files with the same name in different subdirs don't collide on one entry."""
-    _upsert(_workspace_manifest(), file_path, content, Path(file_path).suffix)
+    """Called by write_file/edit_file after a successful write. Keyed by the full relative path
+    (not the basename) so files with the same name in different subdirs don't collide on one
+    entry; normalized via _workspace_key so the summary cache and the manifest share one
+    canonical key regardless of how the caller spelled the path."""
+    key = _workspace_key(file_path)
+    _upsert(_workspace_manifest(), key, content, PurePath(key).suffix)
 
 
 def remove_workspace_file(file_path: str) -> None:
     """Strip a workspace file's manifest entry. Called by /undo (stores/snapshots.py) when it
     deletes a file the undone turn created, so the grounding manifest never lists a file that is
-    gone. The cached summary is left alone — it is keyed by content hash, so it is simply unused."""
-    _remove_entry(_workspace_manifest(), file_path)
+    gone. The cached summary is left alone — it is keyed by content hash, so it is simply unused.
+    Normalized with the same _workspace_key as register, so a remove always finds the entry the
+    register created."""
+    _remove_entry(_workspace_manifest(), _workspace_key(file_path))
 
 
 def register_rag_document(source: str, content: str) -> None:
     """Called by rag.sync for each new/changed document. `source` is the corpus-relative path;
     key the manifest + summary cache by it (not the basename) so e.g. teamA/report.md and
-    teamB/report.md get distinct entries instead of overwriting each other."""
+    teamB/report.md get distinct entries instead of overwriting each other.
+
+    Deliberately NOT normalized (unlike the workspace pair): rag.sync keys register, remove, AND
+    its index.json `files` dict by the same str(path.relative_to(root)) form — normalizing only
+    this side would desync remove_rag_document's manifest + summary-cache deletion from the
+    vector index. If symmetry is ever wanted, both sides AND the index must move together."""
     _upsert(_documents_manifest(), source, content, Path(source).suffix)
 
 

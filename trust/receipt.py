@@ -166,21 +166,34 @@ def posture_spans() -> list[tuple[str, str]]:
     # Inference locality — the headline privacy fact: where the words come from.
     all_local = None
     try:
-        from trust.trust_report import _inference  # the one locality classifier — never re-rolled
+        # The one locality classifier + the one where-list assembly — never re-rolled.
+        from trust.trust_report import _inference, offmachine_destinations
 
         inf = _inference()
         all_local = bool(inf.get("all_local"))
         if all_local:
             spans.append(("inference local", "ok"))
+        elif inf.get("remote_ollama"):
+            # A remote OLLAMA_HOST: the words come from another machine even though the
+            # provider says "ollama" — name the endpoint, never let it read as local.
+            spans.append(
+                (f"inference off-machine: {', '.join(offmachine_destinations(inf))}", "warn")
+            )
         else:
-            cloud = ", ".join(inf.get("cloud_providers") or []) or "cloud"
+            cloud = ", ".join(offmachine_destinations(inf)) or "cloud"
             spans.append((f"inference cloud: {cloud}", "warn"))
     except Exception:
         pass
 
     # Quarantine / redaction / durable egress log — calm one-worders; a disabled guard warms up.
     try:
-        q = str(cfg.get("runtime.quarantine", "gate"))
+        # The EFFECTIVE mode, not the raw config string: quarantine.mode() lowercases and falls
+        # back to "gate" on an invalid value, so `runtime.quarantine: none` runs gated — this
+        # line must state the mode in force, never echo a string the system ignored. (Lazy
+        # import of a leaf — quarantine pulls only config+textutil, no cycle.)
+        from trust import quarantine
+
+        q = quarantine.mode()
         spans.append((f"quarantine {q}", "warn" if q == "off" else "dim"))
     except Exception:
         pass

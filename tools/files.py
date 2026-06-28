@@ -72,11 +72,17 @@ def write_file(file_path: str, content: str, overwrite: bool = True):
     target_path.parent.mkdir(parents=True, exist_ok=True)
     # Capture the turn-start state (or the file's absence) so /undo can reverse this write.
     snapshot_file(str(target_path.relative_to(workspace)), target_path)
+    # Manifest entries are matched by EXACT key string, so all three writers — write_file,
+    # edit_file, and /undo's manifest sync (stores/snapshots.py) — must agree on one form: the
+    # RESOLVED workspace-relative path in POSIX separators. The raw model-typed file_path
+    # ("./x", "notes\\x") would key a divergent duplicate entry that edit_file updates and
+    # /undo removes under a different string, leaving phantom rows in the grounding manifest.
+    manifest_key = target_path.relative_to(workspace).as_posix()
     existed = target_path.exists()
     if overwrite:
         with open(target_path, "w", encoding="utf-8") as file:
             file.write(content)
-        register_workspace_file(file_path, content)
+        register_workspace_file(manifest_key, content)
         return "File overwritten successfully" if existed else "File created successfully"
     with open(target_path, "a", encoding="utf-8") as file:
         file.write(content)
@@ -84,7 +90,7 @@ def write_file(file_path: str, content: str, overwrite: bool = True):
     # errors="replace" (matching read_file): the append already landed, so a decode error
     # on a pre-existing non-UTF-8 byte must not fail the call and strand the manifest.
     full_content = target_path.read_text(encoding="utf-8", errors="replace")
-    register_workspace_file(file_path, full_content)
+    register_workspace_file(manifest_key, full_content)
     return "Content appended to file successfully"
 
 
@@ -131,7 +137,10 @@ def edit_file(file_path: str, old_string: str, new_string: str, replace_all: boo
     snapshot_file(str(target_path.relative_to(workspace)), target_path)
     new_content = content.replace(old_string, new_string)
     target_path.write_text(new_content, encoding="utf-8")
-    register_workspace_file(str(target_path.relative_to(workspace)), new_content)
+    # POSIX-form key — str(relative_to(...)) is backslash-separated on Windows, which keyed a
+    # SECOND manifest entry for a file write_file had already registered. One canonical key
+    # (matching write_file and /undo's manifest sync) keeps one entry per file.
+    register_workspace_file(target_path.relative_to(workspace).as_posix(), new_content)
     n = count if replace_all else 1
     return f"Edited {file_path}: replaced {n} occurrence(s)."
 

@@ -41,7 +41,6 @@ class SlashCommand:
     handler: Handler
     aliases: tuple[str, ...] = ()
     usage: str = ""
-    implemented: bool = True
     details: str = ""
 
 
@@ -55,7 +54,6 @@ def command(
     *,
     aliases: tuple[str, ...] = (),
     usage: str = "",
-    implemented: bool = True,
     details: str = "",
 ) -> Callable[[Handler], Handler]:
     """Register a slash command."""
@@ -66,7 +64,6 @@ def command(
             handler=fn,
             aliases=aliases,
             usage=usage,
-            implemented=implemented,
             details=details,
         )
         COMMANDS[name] = cmd
@@ -86,8 +83,7 @@ def command_completions() -> list[tuple[str, str]]:
     """(token, summary) pairs for every invocable command — canonical names and aliases."""
     out: list[tuple[str, str]] = []
     for cmd in COMMANDS.values():
-        summary = cmd.summary + ("" if cmd.implemented else "  (scaffold)")
-        out.append((cmd.name.lower(), summary))
+        out.append((cmd.name.lower(), cmd.summary))
         for alias in cmd.aliases:
             out.append((alias.lower(), f"alias for /{cmd.name}"))
     return sorted(out)
@@ -95,15 +91,6 @@ def command_completions() -> list[tuple[str, str]]:
 
 def _print(line: str = "") -> None:
     print(line)
-
-
-def _todo(cmd: SlashCommand, args: list[str]) -> None:
-    """Uniform 'not wired yet' notice for scaffolded commands."""
-    _print(f"  /{cmd.name} is scaffolded but not implemented yet.")
-    _print(f"  intended: {cmd.summary}")
-    if cmd.usage:
-        _print(f"  usage:    {cmd.usage}")
-    _print(f"  see /{cmd.name} --help for the full spec.")
 
 
 _HELP_FLAGS = {"--help", "-h"}
@@ -183,8 +170,6 @@ def _show_help(cmd: SlashCommand) -> None:
     _print(f"  {title}")
     _print(f"  {'─' * min(len(title), 60)}")
     _print(f"  {cmd.summary}")
-    if not cmd.implemented:
-        _print("  (scaffolded — prints intended behaviour only; not yet wired)")
     _print("")
     _print(f"  usage:  {cmd.usage or ('/' + cmd.name)}")
     if cmd.details:
@@ -225,10 +210,6 @@ def dispatch(line: str, ctx: CommandContext) -> None:
     # whitespace-split), so an argument merely containing the substring still executes.
     if args and (args[0].lower() in _HELP_FLAGS or args[-1].lower() in _HELP_FLAGS):
         _show_help(cmd)
-        return
-
-    if not cmd.implemented:
-        _todo(cmd, args)
         return
 
     try:

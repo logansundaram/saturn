@@ -12,7 +12,12 @@ import pypdf
 
 from config import get_config
 from core.llms import get_embeddings
-from stores.document_registry import register_rag_document, remove_rag_document
+from stores.document_registry import (
+    manifest_entries,
+    read_documents_manifest,
+    register_rag_document,
+    remove_rag_document,
+)
 
 
 # What the corpus ingests. Text formats load directly; PDFs are cleaned (furniture/hyphenation);
@@ -282,7 +287,11 @@ def _load_file_docs(path: Path):
     readable text (trafilatura); CSV gets a schema header; DOCX extracts paragraphs + tables;
     plain text a single Document. `full_text` is what the manifest summarizer sees."""
     root = documents_dir()
-    source = str(path.relative_to(root))
+    try:
+        source = str(path.relative_to(root))
+    except ValueError:
+        # Screening a file BEFORE it is copied into the corpus (screen_file) — label by name.
+        source = path.name
     suffix = path.suffix.lower()
     docs = []
     if suffix == ".pdf":
@@ -351,6 +360,56 @@ def _chunks_for(source: str, docs):
     return chunks, ids
 
 
+# ── corpus admission screening ───────────────────────────────────────────────────────────────
+# A trojanized document is the quarantine side door: ingest it once and its payload re-presents
+# on every RAG search. Retrieval is already quarantined (search_knowledge_base is untrusted), but
+# the warning belongs at the SOURCE too: /docs add asks the human before admitting a flagged
+# file; sync() reports what it admitted.
+
+
+# Screen→ingest handoff: /docs add screens a file (full load + scan via screen_file), then
+# ingest_file → sync() would load and scan the very same bytes again seconds later — for a large
+# PDF that doubles the pypdf parse + full-text regex scan before the embed even starts. One slot,
+# keyed by CONTENT HASH so it can never serve stale or wrong-file data (the corpus copy is
+# byte-identical to the screened source), popped on use.
+_SCREENED: dict = {}
+
+
+def screen_file(src_path) -> list:
+    """The instruction-shaped findings (quarantine.scan) in a would-be document's extracted
+    text. Pure read — nothing is copied or embedded (the loaded docs + findings are cached by
+    content hash for the ingest that typically follows; see _SCREENED). Returns [] when
+    quarantine is off, or when the file can't be parsed (the loader will fail loudly at ingest;
+    screening must never block what ingest would reject anyway)."""
+    from trust import quarantine
+
+    if not quarantine.active():
+        return []
+    path = Path(src_path).expanduser()
+    try:
+        h = _file_hash(path)
+        _, docs, full_text = _load_file_docs(path)
+    except Exception:
+        return []
+    findings = quarantine.scan(full_text)
+    _SCREENED.clear()  # one slot — the handoff is immediate, never a cache to manage
+    _SCREENED[h] = (docs, full_text, findings)
+    return findings
+
+
+def _admission_flags(full_text: str, findings: "list | None" = None) -> list[str]:
+    """The flag KINDS in one admitted document ([] when quarantine is off) — sync() records
+    these per file so the corpus never gains an injection payload silently. `findings` lets the
+    screen-file handoff pass its already-computed scan instead of re-scanning the full text."""
+    from trust import quarantine
+
+    if not quarantine.active():
+        return []
+    if findings is None:
+        findings = quarantine.scan(full_text)
+    return sorted({f.kind for f in findings})
+
+
 # ── sync: the single reconcile-against-disk entry point ─────────────────────────────────────────
 def sync(*, force: bool = False, verbose: bool = True, on_file=None) -> dict:
     """Reconcile the persisted vector store + document manifest against the corpus on disk.
@@ -358,8 +417,10 @@ def sync(*, force: bool = False, verbose: bool = True, on_file=None) -> dict:
     Loads the cached store, then by content hash: embeds new/changed files, drops vectors +
     manifest entries for removed files, and leaves unchanged files alone. An embedder OR
     chunking-config change (or `force=True`, used by /docs sync --force) triggers a full
-    re-embed. Re-dumps the store and rewrites the index at the end. Returns a stats dict:
-    added / updated / removed / unchanged / rebuilt.
+    re-embed. The manifest is additionally reconciled against disk directly, so a removed file
+    loses its manifest entry even on a full rebuild (where the index was just reset and cannot
+    name it). Re-dumps the store and rewrites the index only when something actually changed.
+    Returns a stats dict: added / updated / removed / unchanged / rebuilt.
 
     `on_file(source, i, n)` (optional) is called before each file is embedded — the progress
     hook the /docs sync command renders, so a long re-embed isn't silent.
@@ -396,16 +457,37 @@ def sync(*, force: bool = False, verbose: bool = True, on_file=None) -> dict:
         # A bad file degrades to a reported skip instead of aborting the whole sync — one
         # unreadable document must never take down retrieval for the rest of the corpus.
         "failed": [],
+        # (source, [kind, …]) for admitted files carrying instruction-shaped content — the
+        # corpus admission warning (see screen_file above).
+        "flagged": [],
     }
 
-    # Files gone from disk: drop their vectors + manifest entry.
+    # Files gone from disk: drop their vectors + manifest entry. `removed_sources` tracks the
+    # index-level removals so the manifest reconcile below never double-counts one, and so the
+    # dump/index rewrite at the end fires exactly when the store/index actually mutated.
+    removed_sources: set = set()
     for source in [s for s in files if s not in on_disk]:
         ids = files[source].get("chunk_ids") or []
         if ids:
             store.delete(ids)
         remove_rag_document(source)
         del files[source]
+        removed_sources.add(source)
         stats["removed"] += 1
+
+    # Manifest orphans: entries for documents no longer on disk that the index walk above cannot
+    # see. On a full rebuild `files` was just reset to {} (and a wiped cache/ dir — documented
+    # "safe to delete" — has no index at all), so a deleted document's manifest block + cached
+    # summary would otherwise survive forever: the fresh index only records on-disk files, so no
+    # FUTURE sync would notice the orphan either. Reconcile the manifest against disk directly.
+    # Vectors need no cleanup here — a rebuilt store starts empty, and the loop above already
+    # deleted every indexed source's chunks. An orphan is, by definition, absent from `files`,
+    # so this pass never touches the store or the index.
+    for entry in manifest_entries(read_documents_manifest()):
+        name = entry.get("name", "")
+        if name and name not in on_disk and name not in removed_sources:
+            remove_rag_document(name)
+            stats["removed"] += 1
 
     # New or changed files: re-embed only those (hash-check first so the progress hook knows the
     # real total — unchanged files never count toward it).
@@ -426,7 +508,17 @@ def sync(*, force: bool = False, verbose: bool = True, on_file=None) -> dict:
         # reported per-file instead of aborting the sync for the whole corpus. An EMBEDDING
         # failure (daemon down) still raises out as before — nothing can proceed without it.
         try:
-            _src, docs, full_text = _load_file_docs(path)
+            screened = _SCREENED.pop(h, None)
+            if screened is not None:
+                # The screen-file handoff: same bytes (content-hash keyed), already loaded and
+                # scanned by /docs add moments ago. Relabel to the corpus source key — the
+                # screen loaded from the ORIGINAL path, so its docs carry the bare basename.
+                docs, full_text, findings = screened
+                for d in docs:
+                    d.metadata["source"] = source
+            else:
+                _src, docs, full_text = _load_file_docs(path)
+                findings = None
             chunks, ids = _chunks_for(source, docs)
         except Exception as exc:
             stats["failed"].append((source, str(exc)))
@@ -438,9 +530,20 @@ def sync(*, force: bool = False, verbose: bool = True, on_file=None) -> dict:
         register_rag_document(source, full_text)  # manifest summary (cached by hash downstream)
         files[source] = {"hash": h, "chunk_ids": ids}
         stats["updated" if entry else "added"] += 1
+        kinds = _admission_flags(full_text, findings)
+        if kinds:
+            stats["flagged"].append((source, kinds))
 
-    store.dump(str(_store_path()))
-    _write_index({"embedder": embedder, "chunking": chunking, "files": files})
+    # Dump + index rewrite only when something mutated the store or the index. The common case —
+    # a startup whose corpus hasn't changed — must not rewrite a multi-MB vectors.json on every
+    # launch: besides the waste, each rewrite widens the crash window in which a kill mid-write
+    # leaves a truncated dump that _load_store() treats as corrupt, silently forcing a full
+    # re-embed of the whole corpus next run. Behavior-preserving: an unchanged store/index
+    # round-trips to identical content anyway. Manifest-orphan cleanup above deliberately does
+    # not trigger a rewrite (it changes neither the store nor `files`).
+    if full_rebuild or to_embed or removed_sources:
+        store.dump(str(_store_path()))
+        _write_index({"embedder": embedder, "chunking": chunking, "files": files})
 
     if verbose:
         print(
@@ -450,6 +553,9 @@ def sync(*, force: bool = False, verbose: bool = True, on_file=None) -> dict:
         )
         for source, err in stats["failed"]:
             print(f"  failed to load {source}: {err}")
+        for source, kinds in stats["flagged"]:
+            print(f"  ⚠ {source}: instruction-shaped content ({', '.join(kinds)}) — "
+                  f"its search results are quarantined as untrusted")
     return stats
 
 

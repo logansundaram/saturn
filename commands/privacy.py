@@ -1,5 +1,5 @@
 from commands._framework import command, _print
-from commands._utils import _ROLES, parse_toggle_status, split_save_flag
+from commands._utils import parse_toggle_status, split_save_flag
 
 # One byte formatter for every trust surface (textutil.human_bytes) — the per-answer receipt and
 # these readouts must render the same byte count identically, or the "receipt echoes the ledger"
@@ -84,34 +84,21 @@ def _overview(ctx):
     cfg = get_config()
 
     # --- inference ---------------------------------------------------------
-    bindings = []
-    for role in _ROLES:
-        try:
-            spec = cfg.model_for_role(role)
-            bindings.append((role, spec.provider, spec.model))
-        except KeyError:
-            continue
-    bindings.append(("embedder", "ollama", cfg.embedder_model))
-    cloud = sorted({p for _, p, _ in bindings if p != "ollama"})
+    # trust_report._inference is THE locality classifier (loopback-aware: a remote OLLAMA_HOST
+    # classifies "remote", never "local") and offmachine_destinations THE where-list assembly —
+    # reused here, not re-rolled.
+    from trust.trust_report import _inference, offmachine_destinations
 
-    if cloud:
-        verdict = f"cloud-bound roles send prompts+context to: {', '.join(cloud)}"
-    else:
+    inf = _inference()
+    if inf["all_local"]:
         verdict = "all inference is local — prompts, documents, and memory stay on this machine"
+    else:
+        verdict = ("off-machine roles send prompts+context to: "
+                   f"{', '.join(offmachine_destinations(inf))}")
     ui.section("privacy", verdict)
 
     _print("  inference")
-    ui.table(
-        [
-            (
-                role,
-                model,
-                ("local", ui.risk_style("read_only")) if provider == "ollama"
-                else (f"cloud — {provider}", ui.risk_style("side_effecting")),
-            )
-            for role, provider, model in bindings
-        ]
-    )
+    ui.table([(b["role"], b["model"], _locality_cell(b, inf, ui)) for b in inf["bindings"]])
 
     # --- web egress ---------------------------------------------------------
     provider = str(cfg.get("web.provider", "auto"))
@@ -186,7 +173,11 @@ def _overview(ctx):
             continue
     ui.table(rows)
 
-    qmode = str(cfg.get("runtime.quarantine", "gate") or "gate")
+    # The EFFECTIVE mode (quarantine.mode() normalizes case + falls back to "gate" on an invalid
+    # value) — the posture readout must state the mode in force, not echo a raw config string.
+    from trust import quarantine
+
+    qmode = quarantine.mode()
     _print(f"  injection quarantine: {qmode} — untrusted tool output (web/http/MCP/corpus) is")
     _print("  screened for instruction-shaped content before the model sees it.")
     _print("  telemetry: none — no analytics, no crash reporting, no phone-home.")
@@ -232,9 +223,18 @@ def _egress(ctx, args):
     except Exception:
         pass
 
+    # A clear-emptied ledger must never read as "nothing left this machine" — the counts below
+    # are since the clear, and the durable log is where the full record lives (it is audit,
+    # never cleared). Same unknown-over-local-only contract the receipt and Glass Box apply.
+    cleared = bool(s.get("cleared"))
     if not evs:
-        ui.section("egress", "nothing has left this machine this session" + airgap)
-        _print("  the boundary has stayed closed — no web, http, MCP, or cloud-model egress.")
+        if cleared:
+            ui.section("egress", "no events since the ledger was cleared" + airgap)
+            _print("  the in-memory ledger was cleared this session — earlier egress is not")
+            _print("  shown here; the durable log retains the full record (/privacy egress log).")
+        else:
+            ui.section("egress", "nothing has left this machine this session" + airgap)
+            _print("  the boundary has stayed closed — no web, http, MCP, or cloud-model egress.")
         return
 
     hosts = s["hosts"]
@@ -246,6 +246,9 @@ def _egress(ctx, args):
         + airgap
     )
     ui.section("egress", headline)
+    if cleared:
+        _print("  (ledger cleared this session — counts are since the clear; the durable log"
+               " retains the full record)")
 
     shown = evs[-limit:] if limit else evs
     if limit and len(evs) > limit:
@@ -383,16 +386,16 @@ def _airgap(ctx, args):
             _print(f"  (could not persist to config.yaml: {exc})")
 
     if new:
-        cloud = _cloud_roles(cfg)
-        _print("  ┏━ ⛓  AIR-GAP ON ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        offmachine = _offmachine_roles(cfg)
+        _print("  ┏━ ⛓  AIR-GAP ON")
         _print("  ┃  the network boundary is SEALED. web tools, remote")
-        _print("  ┃  MCP calls, and cloud-bound roles are blocked and")
+        _print("  ┃  MCP calls, and off-machine roles are blocked and")
         _print("  ┃  logged. /privacy airgap off to re-open ·")
         _print("  ┃  /privacy egress to inspect.")
-        _print("  ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-        if cloud:
-            roles = ", ".join(f"{r} ({p}:{m})" for r, p, m in cloud)
-            _print(f"  ⚠  cloud-bound role(s) will now FAIL: {roles}")
+        _print("  ┗━")
+        if offmachine:
+            roles = ", ".join(f"{r} ({p}:{m})" for r, p, m in offmachine)
+            _print(f"  ⚠  off-machine role(s) will now FAIL: {roles}")
             _print("     switch to a local tier first:  /models tier workstation")
     else:
         _print("  air-gap off — network access restored.")
@@ -400,43 +403,62 @@ def _airgap(ctx, args):
         _print("  saved runtime.airgap to config.yaml (survives restart).")
 
 
-def _cloud_roles(cfg):
-    """(role, provider, model) for every role bound to a non-Ollama (cloud) model."""
+def _locality_cell(b: dict, inf: dict, ui):
+    """The styled locality cell for one inference binding (the bare /privacy and /privacy report
+    tables render identically through this)."""
+    from trust.trust_report import remote_ollama_label
+
+    if b["locality"] == "local":
+        return ("local", ui.risk_style("read_only"))
+    if b["locality"] == "remote":
+        return (f"remote — {remote_ollama_label(inf)}", ui.risk_style("side_effecting"))
+    return (f"cloud — {b['provider']}", ui.risk_style("side_effecting"))
+
+
+def _offmachine_roles(cfg):
+    """(role, where, model) for every role whose inference LEAVES this machine — cloud-bound
+    roles and Ollama roles behind a remote OLLAMA_HOST (trust_report._inference, the one
+    locality classifier; the endpoint label via remote_ollama_label, the one spelling)."""
+    from trust.trust_report import _inference, remote_ollama_label
+
+    inf = _inference()
     out = []
-    for role in _ROLES:
-        try:
-            spec = cfg.model_for_role(role)
-        except KeyError:
-            continue
-        if spec.provider != "ollama":
-            out.append((role, spec.provider, spec.model))
+    for b in inf["bindings"]:
+        if b["locality"] == "cloud":
+            out.append((b["role"], b["provider"], b["model"]))
+        elif b["locality"] == "remote":
+            out.append((b["role"], remote_ollama_label(inf), b["model"]))
     return out
 
 
 def _show_posture(ctx, cfg, ui, egress):
+    from trust.trust_report import _inference
+
     on = bool(cfg.get("runtime.airgap", False))
-    cloud = _cloud_roles(cfg)
+    inf = _inference()
+    offmachine = not inf["all_local"]
     if on:
-        verdict = "SEALED — web, remote MCP, and cloud-bound roles are blocked"
-    elif cloud:
-        verdict = "open — and cloud-bound role(s) are sending prompts off-machine right now"
+        verdict = "SEALED — web, remote MCP, and off-machine roles are blocked"
+    elif offmachine:
+        verdict = "open — and off-machine role(s) are sending prompts off this machine right now"
     else:
         verdict = "open — but every role is local, so nothing leaves unless a web tool is used"
     ui.section("air-gap", verdict)
 
     sealed = lambda: ("sealed", ui.risk_style("read_only")) if on else ("open", ui.risk_style("destructive"))
 
+    from trust.trust_report import remote_ollama_label
+
     rows = []
-    for role in _ROLES:
-        if not _safe_spec(cfg, role):
-            continue
-        spec = cfg.model_for_role(role)
-        if spec.provider == "ollama":
-            rows.append((role, spec.model, ("local", ui.risk_style("read_only"))))
+    for b in inf["bindings"]:
+        if b["locality"] == "local":
+            rows.append((b["role"], b["model"], ("local", ui.risk_style("read_only"))))
         else:
-            label = "BLOCKED — cloud" if on else f"cloud — {spec.provider}"
-            rows.append((role, spec.model, (label, ui.risk_style("destructive"))))
-    _print("  inference (cloud-bound roles refuse to run under air-gap)")
+            where = (f"remote — {remote_ollama_label(inf)}"
+                     if b["locality"] == "remote" else f"cloud — {b['provider']}")
+            label = f"BLOCKED — {where}" if on else where
+            rows.append((b["role"], b["model"], (label, ui.risk_style("destructive"))))
+    _print("  inference (off-machine roles refuse to run under air-gap)")
     ui.table(rows)
 
     _print("  egress paths")
@@ -444,8 +466,8 @@ def _show_posture(ctx, cfg, ui, egress):
         [
             ("web tools", "web_search / web_extract / http_request", sealed()),
             ("remote MCP", "http/sse server calls (stdio = local process)", sealed()),
-            ("cloud models", "prompts + context to a cloud provider",
-             ("sealed", ui.risk_style("read_only")) if (on or not cloud)
+            ("off-machine models", "prompts + context to a cloud provider or remote Ollama",
+             ("sealed", ui.risk_style("read_only")) if (on or not offmachine)
              else ("open", ui.risk_style("destructive"))),
         ]
     )
@@ -455,14 +477,6 @@ def _show_posture(ctx, cfg, ui, egress):
            f"— full ledger in /privacy egress")
     if not on:
         _print("  seal it with  /privacy airgap on   (then re-run /privacy airgap to verify).")
-
-
-def _safe_spec(cfg, role) -> bool:
-    try:
-        cfg.model_for_role(role)
-        return True
-    except KeyError:
-        return False
 
 
 # ── /privacy redact — the cloud-boundary secret stripper ─────────────────────────────────────
@@ -518,20 +532,9 @@ def _redact(ctx, args):
     if save:
         _print("  saved runtime.redaction to config.yaml (survives restart).")
     if m != "off":
-        cloud = _has_cloud_role(cfg)
-        if not cloud:
-            _print("  note: every role is local right now, so there is no cloud boundary to guard")
-            _print("        (redaction applies only when a role is bound to a cloud model).")
-
-
-def _has_cloud_role(cfg) -> bool:
-    for role in _ROLES:
-        try:
-            if cfg.model_for_role(role).provider != "ollama":
-                return True
-        except KeyError:
-            continue
-    return False
+        if not _offmachine_roles(cfg):
+            _print("  note: every role is local right now, so there is no off-machine boundary")
+            _print("        to guard (redaction applies to cloud and remote-Ollama sends).")
 
 
 def _redact_preview(ctx, redaction, ui):
@@ -596,19 +599,18 @@ def _report(ctx, args):
 
     report = trust_report.build_report()
     inf = report["inference"]
-    verdict = ("all inference local — nothing leaves unless a web tool runs"
-               if inf["all_local"]
-               else f"cloud-bound roles send to: {', '.join(inf['cloud_providers'])}")
+    if inf["all_local"]:
+        verdict = "all inference local — nothing leaves unless a web tool runs"
+    else:
+        # The one where-list assembly — this render, /privacy's verdict, and the posture line
+        # must name the same destination set for the same posture.
+        verdict = ("inference leaves this machine — sends to: "
+                   f"{', '.join(trust_report.offmachine_destinations(inf))}")
     ui.section("trust report", verdict)
 
     # Inference
     _print("  inference")
-    ui.table([
-        (b["role"], b["model"],
-         ("local", ui.risk_style("read_only")) if b["locality"] == "local"
-         else (f"cloud — {b['provider']}", ui.risk_style("side_effecting")))
-        for b in inf["bindings"]
-    ])
+    ui.table([(b["role"], b["model"], _locality_cell(b, inf, ui)) for b in inf["bindings"]])
 
     # Policy / boundary posture
     pol = report["policy"]
@@ -640,6 +642,11 @@ def _report(ctx, args):
           "dim")),
         ("log integrity", "hash chain", chain),
     ])
+    # The `cleared` marker rides inside the signed body (egress.summary) — disclose it here too,
+    # so the human render never presents a since-the-clear count as the whole session's total.
+    if se.get("cleared"):
+        _print("  (session ledger was cleared this session — the session counts are since the"
+               " clear; the durable log retains the full record)")
 
     # Signing
     sg = report["signing"]

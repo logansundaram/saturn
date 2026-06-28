@@ -11,8 +11,11 @@ def fresh_ledger(isolated_paths, monkeypatch):
     """Empty the ledger and pin air-gap off around each test. Depends on isolated_paths: every
     record() ALSO appends to the durable egress log (paths.egress_log), and without the redirect
     this module poisons the REAL database/egress.log with thousands of junk lines per run (the
-    ledger-cap test alone records _MAX_EVENTS+50 events)."""
+    ledger-cap test alone records _MAX_EVENTS+50 events). _CLEARED_AT is reset too — the
+    isolation clear() must look like a FRESH SESSION, not an operator `/privacy egress clear`
+    (which summary() now reports via its `cleared` marker)."""
     egress.clear()
+    monkeypatch.setattr(egress, "_CLEARED_AT", 0)
     monkeypatch.setitem(get_config()._data["runtime"], "airgap", False)
     yield
     egress.clear()
@@ -79,3 +82,26 @@ def test_clear():
     egress.record("web_search", "h", "x")
     egress.clear()
     assert egress.count() == 0
+
+
+def test_summary_carries_cleared_marker():
+    """summary() must say when the counts are since-the-clear: the signed trust report embeds
+    this dict verbatim as egress_session, and without the marker a post-clear report would
+    attest 'sent: 0' over a session that sent (the per-turn cleared_since hazard, ledger-wide)."""
+    egress.record("web_search", "h", "x")
+    assert egress.summary()["cleared"] is False  # fresh session (fixture resets _CLEARED_AT)
+    egress.clear()
+    s = egress.summary()
+    assert s["cleared"] is True
+    assert s["sent"] == 0  # the understated count the marker exists to qualify
+
+
+def test_host_of():
+    # THE shared ledger host derivation (tools/web.py and tools/mcp_client.py both import it
+    # from here — formerly two byte-identical local copies).
+    assert egress.host_of("https://api.example.com/v1/x?q=1") == "api.example.com"
+    assert egress.host_of("http://localhost:8000/mcp") == "localhost"
+    # An unparseable/host-less value falls back to the raw input — a boundary label must never
+    # be lost (unlike ollama_is_local, which deliberately fails toward NOT-local instead).
+    assert egress.host_of("not a url") == "not a url"
+    assert egress.host_of("") == ""

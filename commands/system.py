@@ -74,8 +74,10 @@ of /policy.
 With a command name, prints its detailed help — identical to `/<command> --help`. Renamed
 commands answer here too: `/help why` prints the same pointer as typing /why.
 
-Every command also accepts a standalone --help / -h token anywhere in its arguments; it shows
-this detail view instead of executing (`/trace export --help` explains export, never runs it).
+Every command also accepts a standalone --help / -h token as its FIRST or LAST argument; it
+shows this detail view instead of executing (`/trace export --help` explains export, never
+runs it). A mid-position token is data, so `/memory add prefer -h over --help in docs` stores
+the fact.
 
 Examples:
   /help              the grouped command list

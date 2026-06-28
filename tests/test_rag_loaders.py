@@ -36,6 +36,20 @@ def test_supported_extensions_cover_new_formats():
         assert ext in SUPPORTED_EXTENSIONS
 
 
+def test_docs_help_advertises_every_supported_format():
+    """/docs --help under-reported the formats as (pdf/txt/md) and the shipped html/csv/docx
+    loaders went undiscovered. The details string stays a LITERAL on purpose — knowledge.py
+    deliberately lazy-imports stores.rag inside handlers, and building the help dynamically
+    would drag the loader stack into command registration at startup — so the drift guard
+    lives here instead: every supported suffix must appear in the registered help text."""
+    import commands  # noqa: F401 — two-phase registration of every built-in module
+    from commands._framework import COMMANDS
+
+    details = COMMANDS["docs"].details.lower()
+    for ext in SUPPORTED_EXTENSIONS:
+        assert ext.lstrip(".") in details, f"/docs --help does not mention {ext}"
+
+
 def test_html_to_text_strips_markup_and_script():
     raw = (
         "<html><head><style>p{color:red}</style></head><body>"

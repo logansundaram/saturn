@@ -230,14 +230,9 @@ def _compact_history(messages: list, keep_recent_turns: int = 1) -> list:
     orphan-free). Run only at the turn boundary.
 
     `keep_recent_turns=0` reproduces the old strip-everything behaviour."""
-    from core.compaction import is_summary
-    from core.state import is_steer_message
+    from core.state import is_turn_start
 
-    human_idxs = [
-        i
-        for i, m in enumerate(messages)
-        if isinstance(m, HumanMessage) and not is_steer_message(m) and not is_summary(m)
-    ]
+    human_idxs = [i for i, m in enumerate(messages) if is_turn_start(m)]
     if keep_recent_turns > 0 and human_idxs:
         # Boundary = start of the Nth-from-last turn (clamped to the first turn).
         boundary = human_idxs[-min(keep_recent_turns, len(human_idxs))]
@@ -300,6 +295,18 @@ def _human_int(n: int) -> str:
     if n < 1_000_000:
         return f"{n / 1000:.1f}k"
     return f"{n / 1_000_000:.2f}M"
+
+
+def _trace_warning(tracer) -> "str | None":
+    """The user-facing notice when this turn's trace circuit breaker tripped (stores/trace._trip),
+    or None. The tracer degrades to silence by design (the watcher must never stall the watched),
+    but the DEGRADATION itself must be loud — the user believes /trace, /glass #id, and signed
+    exports are accumulating a record, and this turn's may be partial or missing entirely. The
+    breaker re-arms on the next start_run, so the warning is per-affected-turn, not permanent."""
+    if not getattr(tracer, "broken", False):
+        return None
+    return ("trace recording degraded this turn (a db.sqlite write failed — locked by another "
+            "process?) — this run may be missing from /trace; details in logging/diag.log")
 
 
 def _fresh_turn(state: AgentState, user_input: str) -> AgentState:
@@ -436,6 +443,8 @@ def _parse_cli(argv=None):
         parser.error("--replay renders an export offline and cannot be combined with -p/--prompt")
     if args.export and args.prompt is None:
         parser.error("--export only applies to a headless turn — use it with -p/--prompt")
+    if args.json and args.prompt is None:
+        parser.error("--json only applies to a headless turn — use it with -p/--prompt")
     return args
 
 
@@ -526,6 +535,25 @@ def _ingest_warning(exc: Exception, *, reachable: "bool | None" = None,
 
     detail = clip(exc, 300) or exc.__class__.__name__
     return f"knowledge-base ingest failed, continuing without RAG: {detail}"
+
+
+def _warn_flagged_attachments(block: str, emit) -> None:
+    """Attachment admission warning — @file mentions and piped stdin attach the user's OWN files,
+    but their CONTENT often isn't the user's words (a downloaded PDF, a vendored README, a piped
+    log). Instruction-shaped content gets one warning naming the patterns, never a block: the
+    human chose to attach it; the point is that they KNOW what rode in with it. `emit` is the
+    output channel (ui.warn interactively, stderr headless)."""
+    try:
+        from trust import quarantine
+
+        if not block or not quarantine.active():
+            return
+        kinds = sorted({f.kind for f in quarantine.scan(block)})
+        if kinds:
+            emit(f"attachment contains instruction-shaped content ({', '.join(kinds)}) — "
+                 f"the model sees it as data; watch the plan and gate for actions you didn't ask for")
+    except Exception:
+        pass  # a warning helper must never cost the turn
 
 
 def _read_piped_stdin() -> str:
@@ -620,6 +648,13 @@ def main():
         graph, ingest_warning = _startup_load(interactive=False)
         if ingest_warning:
             print(ingest_warning, file=sys.stderr)
+        # The gate posture warning the interactive startup block prints — same fact, stderr:
+        # a permissions.json that failed to load means persisted /risk overrides and /allow
+        # prefixes are NOT in force for this run.
+        from trust import policy as _policy
+
+        if _policy.load_problem():
+            print(f"warning: {_policy.load_problem()}", file=sys.stderr)
         tracer = Tracer(DB_PATH)
         state = _initial_state()
         state = _fresh_turn(state, _args.prompt)
@@ -639,6 +674,9 @@ def main():
                 if state["attachments"]
                 else stdin_block
             )
+        _warn_flagged_attachments(
+            state["attachments"], lambda m: print(f"! {m}", file=sys.stderr)
+        )
         thread_id = str(uuid.uuid4())
         run_id = tracer.start_run(thread_id, _args.prompt)
         config = {
@@ -702,6 +740,8 @@ def main():
             )
             answer = state["messages"][-1].content
             tracer.end_run(run_id, "ok", answer)
+            if (trace_note := _trace_warning(tracer)):
+                print(f"warning: {trace_note}", file=sys.stderr)
             if _args.json:
                 _emit_json(
                     {
@@ -730,6 +770,8 @@ def main():
                 print(answer)
         except Exception as exc:
             tracer.end_run(run_id, "error", str(exc))
+            if (trace_note := _trace_warning(tracer)):
+                print(f"warning: {trace_note}", file=sys.stderr)
             if _args.json:
                 _emit_json(
                     {
@@ -814,6 +856,15 @@ def main():
 
     for problem in _user_cmd_problems():
         ui.warn(f"user command: {problem}")
+    # A permissions.json that failed to load degraded the gate to defaults inside policy._load —
+    # silently, since trust/ never imports tui. Surface it with the rest of the startup health
+    # report (the mcp_client.problems() pattern); registry already triggered the load at import,
+    # so the report is final by now.
+    from trust import policy as _policy
+
+    _policy_problem = _policy.load_problem()
+    if _policy_problem:
+        ui.warn(_policy_problem)
 
     # Carries the live session into slash-command handlers. `make_initial_state` lets
     # /reset rebuild state without commands.py importing back into agent.py.
@@ -876,7 +927,18 @@ def main():
     pending_attachments: list[str] = []
 
     while True:
-        user_input = _next_input()
+        # The idle prompt's exit semantics mirror the gate/ask: Ctrl-C is a soft no (drop the
+        # half-typed line, keep the session), Ctrl-D / exhausted stdin EXITS through the same
+        # /quit path as typing it (autosave included; never `continue` — a closed stdin would
+        # spin forever). run_turn owns in-turn Ctrl-C separately.
+        try:
+            user_input = _next_input()
+        except KeyboardInterrupt:
+            ui.note("cancelled — /quit (or Ctrl-D) exits")
+            continue
+        except EOFError:
+            commands.dispatch("/quit", cmd_ctx)  # the one quit path (autosave + farewell)
+            break
 
         # A line that is nothing but an existing file path is a drag-and-drop onto the terminal
         # (the terminal pastes the path, quoted when it has spaces) — offer the two things a file
@@ -926,6 +988,7 @@ def main():
         if attached:
             state["attachments"] = attach_block
             ui.note("attached " + ", ".join(mentions.display(p) for p in attached))
+            _warn_flagged_attachments(attach_block, ui.warn)
         # Persistent review mode (/plan review on) arms a pause at the FIRST gate every turn, so the
         # plan is vetted before any execution. A one-shot /plan pause set the controller directly.
         if cmd_ctx.review_plan:
@@ -976,6 +1039,8 @@ def main():
             answer.abort()  # tear down the live answer region (never leak it across the prompt)
             tracer.end_run(run_id, "interrupted", "turn cancelled by user (Ctrl-C)")
             ui.warn("Turn cancelled.")
+            if (trace_note := _trace_warning(tracer)):
+                ui.warn(trace_note)
             cmd_ctx.state = state
             continue
         except Exception as exc:
@@ -987,6 +1052,8 @@ def main():
             answer.abort()  # tear down the live answer region before the warning prints
             tracer.end_run(run_id, "error", str(exc))
             ui.warn(f"Turn failed: {exc}")
+            if (trace_note := _trace_warning(tracer)):
+                ui.warn(trace_note)
             cmd_ctx.state = state
             continue
         finally:
@@ -1049,6 +1116,12 @@ def main():
                 "your steering correction arrived after the turn had finished — it could not be "
                 "applied mid-turn, so it will run as your next message instead."
             )
+
+        # A tripped trace breaker (stores/trace._trip) degrades recording silently by design —
+        # the degradation itself must not be silent. After the answer renders, never inside the
+        # live region.
+        if (trace_note := _trace_warning(tracer)):
+            ui.warn(trace_note)
 
         # Surface the session token budget (runtime.token_budget) when it bites. Once spent, every
         # turn force-lands at synthesize without new tool rounds (route_after_agent) — which would

@@ -77,6 +77,25 @@ def test_posture_spans_loud_states_lead_and_warn(monkeypatch):
     assert ("egress log off", "warn") in spans
 
 
+def test_posture_spans_state_the_effective_quarantine_mode(monkeypatch):
+    """The posture line must state the mode IN FORCE (quarantine.mode() — invalid values run as
+    'gate', case is normalized), never echo a raw config string the system ignored: 'quarantine
+    none' rendered calm-dim over a system actually running 'gate' is a posture it didn't read."""
+    rt = _runtime(monkeypatch)
+    import trust.trust_report as tr
+
+    monkeypatch.setattr(tr, "_inference", lambda: {"all_local": True, "cloud_providers": []})
+
+    monkeypatch.setitem(rt, "quarantine", "none")  # invalid → the system runs gated
+    spans = receipt.posture_spans()
+    assert ("quarantine gate", "dim") in spans
+    assert not any(t.startswith("quarantine none") for t, _ in spans)
+
+    monkeypatch.setitem(rt, "quarantine", "OFF")   # case variant → effective off, styled loud
+    spans = receipt.posture_spans()
+    assert ("quarantine off", "warn") in spans
+
+
 def test_posture_line_prints_spans_and_pointer(capsys, monkeypatch):
     mod = importlib.import_module("tui.ui.prompt")
     out_before = capsys.readouterr()  # drain
@@ -341,6 +360,25 @@ def test_build_live_treats_a_cleared_slice_as_unknown(monkeypatch, isolated_path
 
 
 # --- the status bar's session spend --------------------------------------------------------------
+
+def test_statusbar_unreadable_posture_is_unknown_never_calm(monkeypatch):
+    # A config read failing mid-refresh must NOT render the calm `read_only` tier — that would
+    # show a SAFER posture than reality on exactly the surface that exists to shout ⚠ GATE OFF
+    # while the gate is open. The facet renders an explicit unknown instead (the posture-line
+    # rule: a facet that can't be read is omitted/marked, never guessed).
+    sb = importlib.import_module("tui.ui.statusbar")
+    if not sb._RICH:
+        pytest.skip("rich not available")
+    import config as config_mod
+
+    def boom():
+        raise RuntimeError("config unreadable mid-refresh")
+
+    monkeypatch.setattr(config_mod, "get_config", boom)
+    plain = sb._StatusBar().__rich__().plain
+    assert "read_only" not in plain
+    assert "posture ?" in plain
+
 
 def test_statusbar_renders_session_token_spend(monkeypatch):
     sb = importlib.import_module("tui.ui.statusbar")

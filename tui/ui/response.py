@@ -10,25 +10,25 @@ import time
 
 from . import _base
 from ._base import (
-    Live, Markdown, Text, _console, _RICH,
-    _ACCENT, _DIM, _fmt_dur, _term_width,
+    Live, Markdown, Padding, Text, _console, _RICH,
+    _DIM, _fmt_dur, _term_width,
 )
 from .statusbar import _live_stop
+from .listing import section
 
 
 def _stats_parts() -> list[str]:
     """The run-stats half of the receipt: a permanent echo of the (transient) status bar — the
-    bar vanishes when the turn ends, so this is what survives in the scrollback. Always dim."""
+    bar vanishes when the turn ends, so this is what survives in the scrollback. Always dim, and
+    deliberately short: time · iterations · tools · rate (the context gauge stays a live-bar /
+    `/context` fact — stale by the time the answer lands)."""
     elapsed = time.perf_counter() - _base._turn_start if _base._turn_start else 0.0
     status = _base._status
     n = status["tools"]
-    parts = [f"{status['iteration']} iter", f"{n} tool{'' if n == 1 else 's'}",
-             _fmt_dur(elapsed).strip()]
+    parts = [_fmt_dur(elapsed).strip(), f"{status['iteration']} iter",
+             f"{n} tool{'' if n == 1 else 's'}"]
     if status["tok_per_sec"] > 0:
         parts.append(f"{status['tok_per_sec']:.0f} tok/s")
-    window = status["ctx_window"]
-    if window and status["ctx_used"]:
-        parts.append(f"ctx {status['ctx_used'] / window * 100:.0f}%")
     return parts
 
 
@@ -131,37 +131,37 @@ def _facet_annotation(facet) -> tuple[str, str, str]:
 def _print_sources(entries: list[str], gb) -> None:
     """The Sources footer, rendered natively with per-source trust coloring: green = local +
     trusted, yellow = network / untrusted origin, red = a span of that source reached the answer
-    verbatim. The line text is identical to the recorded footer; only an annotation is appended.
-    Without provenance (e.g. a /retry re-render) the block prints dim — never colored by
-    guesswork."""
+    verbatim. The line text is identical to the recorded footer; only an annotation is appended
+    (and the block sits at the answer's 2-space indent). Without provenance (e.g. a /retry
+    re-render) the block prints dim — never colored by guesswork."""
     by_n = {s.n: s for s in (gb.sources if gb is not None else [])}
     if _RICH:
         _console.print()
-        _console.print(Text("Sources:", style=_DIM))
+        _console.print(Text("  Sources:", style=_DIM))
         for ln in entries:
             m = _SOURCE_LINE_RE.match(ln)
             facet = by_n.get(int(m.group(1))) if m else None
             if facet is None:
-                _console.print(Text(ln, style=_DIM))
+                _console.print(Text("  " + ln, style=_DIM))
                 continue
             glyph, style, note = _facet_annotation(facet)
             head, _, rest = ln.partition("]")
-            row = Text()
+            row = Text("  ")
             row.append(head + "]", style=style)
             row.append(rest, style="default")
             row.append(f"   {glyph} {note}", style=style)
             _console.print(row)
     else:
         print()
-        print("Sources:")
+        print("  Sources:")
         for ln in entries:
             m = _SOURCE_LINE_RE.match(ln)
             facet = by_n.get(int(m.group(1))) if m else None
             if facet is None:
-                print(ln)
+                print("  " + ln)
             else:
                 glyph, _style, note = _facet_annotation(facet)
-                print(f"{ln}   {glyph} {note}")
+                print(f"  {ln}   {glyph} {note}")
 
 
 def _print_taint_warning(gb) -> None:
@@ -186,10 +186,11 @@ def _print_taint_warning(gb) -> None:
 
 
 def _print_receipt() -> None:
-    """The one-line receipt under every answer: the dim run stats, then the trust segment as
-    semantically-colored spans. The plain (no-rich) path prints the identical text, unstyled.
-    The first time the trust segment shows egress or a gated count, a dim `/glass` pointer is
-    appended once per install."""
+    """The one-line receipt under every answer: the trust segment leads as semantically-colored
+    spans (the headline — `local-only` / what was sent / what was gated), the dim run stats
+    follow. The plain (no-rich) path prints the identical text, unstyled. The first time the
+    trust segment shows egress or a gated count, a dim `/glass` pointer is appended once per
+    install."""
     stats = _stats_parts()
     spans = _trust_spans()
     tail = None
@@ -202,15 +203,19 @@ def _print_receipt() -> None:
         except Exception:
             pass
     if _RICH:
-        line = Text("  ╶ " + " · ".join(stats), style=_DIM)
-        for text, kind in spans:
-            line.append(" · ", style=_DIM)
+        line = Text("  ╶ ", style=_DIM)
+        for i, (text, kind) in enumerate(spans):
+            if i:
+                line.append(" · ", style=_DIM)
             line.append(text, style=_TRUST_STYLE.get(kind, _DIM))
+        if spans and stats:
+            line.append(" · ", style=_DIM)
+        line.append(" · ".join(stats), style=_DIM)
         if tail:
             line.append(" · " + tail, style=_DIM)
         _console.print(line)
     else:
-        parts = stats + [text for text, _ in spans] + ([tail] if tail else [])
+        parts = [text for text, _ in spans] + stats + ([tail] if tail else [])
         print("  ╶ " + " · ".join(parts))
 
 
@@ -234,6 +239,24 @@ def _first_answer_hint() -> None:
         print(f"  · {_FIRST_ANSWER_HINT}")
 
 
+# The answer's measure: indented to the app's 2-space rhythm and capped so prose stays readable
+# on a wide terminal (a full-bleed 200-column paragraph is harder to read than a ~100-column one).
+_BODY_WIDTH = 100
+
+
+def _print_markdown_body(body: str) -> None:
+    """Render the answer body as real markdown at the app's 2-space indent, measure-capped.
+    Falls back to plain text if the markdown parser trips on arbitrary model output — never lose
+    the answer over formatting (Text, so brackets are never eaten as Rich markup)."""
+    width = min(_term_width(), _BODY_WIDTH)
+    try:
+        # Markdown parses markdown, not Rich console markup, so bracketed tokens like
+        # `list[str]` or citations `[1]` are safe literal text here.
+        _console.print(Padding(Markdown(body), (0, 0, 0, 2)), width=width)
+    except Exception:
+        _console.print(Padding(Text(body), (0, 0, 0, 2)), width=width)
+
+
 def response(text: str) -> None:
     """The payload. Leaves the trace rail behind a short labeled rule and renders the answer as
     real markdown — headings, bold, lists, and fenced code with syntax highlighting — so it reads
@@ -244,22 +267,9 @@ def response(text: str) -> None:
     gb = _pop_turn_provenance()
     prose, src_lines = _split_sources(text)
     if _RICH:
-        _console.print()  # part the answer from the trace rail above it
-        rule = Text()
-        rule.append("  ── ", style=_DIM)
-        rule.append("response", style=f"bold {_ACCENT}")
-        rule.append(" " + "─" * 40, style=_DIM)
-        _console.print(rule)
+        section("response")  # parts the answer from the trace rail above it
         _console.print()  # let the answer breathe beneath its rule
-        body = prose if src_lines else text
-        try:
-            # Markdown parses markdown, not Rich console markup, so bracketed tokens like
-            # `list[str]` or citations `[1]` are safe literal text here.
-            _console.print(Markdown(body))
-        except Exception:
-            # Arbitrary model output can occasionally trip the markdown parser; never lose the
-            # answer over formatting. markup=False so brackets aren't eaten as Rich tags.
-            _console.print(body, markup=False)
+        _print_markdown_body(prose if src_lines else text)
         if src_lines:
             _print_sources(src_lines, gb)
         _console.print()  # let the answer breathe before the receipt
@@ -269,7 +279,7 @@ def response(text: str) -> None:
         _console.print()  # trailing whitespace before the next prompt
     else:
         print()
-        print("  ── response " + "─" * 36)
+        print("  ── response")
         print()
         print(text)
         print()
@@ -319,12 +329,7 @@ class ResponseStream:
         self._started = True
         _live_stop()  # drop the turn's status bar — the answer takes over the bottom of the screen
         if _RICH:
-            _console.print()  # part the answer from the trace rail above it
-            rule = Text()
-            rule.append("  ── ", style=_DIM)
-            rule.append("response", style=f"bold {_ACCENT}")
-            rule.append(" " + "─" * 40, style=_DIM)
-            _console.print(rule)
+            section("response")  # parts the answer from the trace rail above it
             _console.print()
             # transient + a screen-bounded tail => the live region always fits, so stop() erases it
             # cleanly no matter how long the answer runs. Manual refresh (throttled in feed).
@@ -332,7 +337,7 @@ class ResponseStream:
             self._live.start()
         else:
             print()
-            print("  ── response " + "─" * 36)
+            print("  ── response")
             print()
 
     def _tail(self) -> "Text":
@@ -386,11 +391,7 @@ class ResponseStream:
         gb = _pop_turn_provenance()
         if _RICH:
             prose, src_lines = _split_sources(text)
-            body = prose if src_lines else text
-            try:
-                _console.print(Markdown(body))
-            except Exception:
-                _console.print(body, markup=False)
+            _print_markdown_body(prose if src_lines else text)
             if src_lines:
                 _print_sources(src_lines, gb)
             _console.print()

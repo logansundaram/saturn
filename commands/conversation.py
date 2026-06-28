@@ -22,7 +22,7 @@ from commands._session import (
     clear_autosave,
     write_autosave,
 )
-from commands._utils import is_list_verb, is_remove_verb
+from commands._utils import LIST_VERBS, REMOVE_VERBS
 from textutil import clip
 
 
@@ -40,6 +40,9 @@ What is NOT touched: config, model/tier bindings, the RAG corpus, the durable me
 (remember/recall), and the on-disk trace. The trace survives, so /trace and /trace calls still
 show past runs after a clear.
 
+The autosave slot IS dropped when a non-empty conversation is cleared — "fresh start" means the
+cleared conversation is not silently restorable via /resume.
+
 Pass --screen (-s) to ONLY repaint the terminal, leaving the conversation intact.
 
 Aliases /reset and /new are the same fresh-start; /cls too.
@@ -54,9 +57,23 @@ def _clear(ctx, args):
     import sys
 
     screen_only = bool(args) and args[0].lower() in ("--screen", "-s", "screen")
+    # Any OTHER argument must error, never fall through to the destructive default — a typo'd
+    # `--scren` asking for a repaint must not wipe the conversation (the /mcp precedent: an
+    # unrecognized verb stops instead of degrading into the default action).
+    if args and not screen_only:
+        _print(f"  unknown argument {args[0]!r} — usage: /clear [--screen]")
+        return
 
     if not screen_only:
+        # Drop the autosave slot only when a non-empty conversation was actually discarded —
+        # write_autosave's empty-guard contract (_session.py): a caller that deliberately empties
+        # the conversation clears the slot, or /clear → /quit → /resume resurrects exactly what
+        # the user cleared. Unconditional clearing would instead wipe the PREVIOUS session's
+        # autosave when /clear is typed at a fresh launch — the case the empty-guard protects.
+        had_messages = bool(ctx.state.get("messages"))
         ctx.state = ctx.make_initial_state()
+        if had_messages:
+            clear_autosave()
 
     subprocess.run("cls" if sys.platform == "win32" else "clear", shell=True, check=False)
 
@@ -65,6 +82,11 @@ def _clear(ctx, args):
 
     _reprint_banner(ctx)
     _print("  new conversation — fresh state, no message history.")
+    # Only true when nothing was cleared this call (an empty conversation leaves the previous
+    # session's autosave intact above) — a cleared conversation's slot is gone by design.
+    if _autosave_file().exists():
+        _print("  (the previous session is still in the autosave — /resume restores it until "
+               "your next turn overwrites the slot.)")
 
 
 def _reprint_banner(ctx) -> None:
@@ -147,20 +169,13 @@ def drop_last_turn(ctx) -> "str | None":
     carried messages, clear the per-turn scratch that referred to it, and re-autosave so a crash
     can't resurrect what was just rewound. Returns the dropped user query, or None when there was
     no turn to drop. Shared with /retry full (rewind + re-run)."""
-    from langchain.messages import HumanMessage
-
-    from core.compaction import is_summary
-    from core.state import is_steer_message
+    from core.state import is_turn_start
 
     msgs = ctx.state.get("messages", [])
-    # A turn starts at a REAL user message: a standalone mid-turn steer note belongs to the turn
-    # it corrected (slicing there would leave the question + half a scratchpad behind), and a
-    # compaction summary is carried history, not a turn.
-    human_idxs = [
-        i
-        for i, m in enumerate(msgs)
-        if isinstance(m, HumanMessage) and not is_steer_message(m) and not is_summary(m)
-    ]
+    # A turn starts at a REAL user message (is_turn_start — THE shared boundary predicate): a
+    # standalone mid-turn steer note belongs to the turn it corrected (slicing there would leave
+    # the question + half a scratchpad behind), and a compaction summary is carried history.
+    human_idxs = [i for i, m in enumerate(msgs) if is_turn_start(m)]
     if not human_idxs:
         return None
     boundary = human_idxs[-1]
@@ -220,9 +235,12 @@ def _rewind(ctx, args):
         return
     n_dropped = n_before - len(ctx.state.get("messages", []))
     _print(f'  rewound the last turn — dropped {n_dropped} message(s) ("{clip(dropped, _PREVIEW_CHARS)}").')
-    remaining = sum(
-        1 for m in ctx.state.get("messages", []) if m.__class__.__name__ == "HumanMessage"
-    )
+    # Count with the SAME boundary predicate drop_last_turn slices by — a compaction summary or
+    # steer note is a HumanMessage but not a turn, so a raw isinstance count here would promise
+    # "1 earlier turn(s) remain" right before the next /rewind says "nothing to rewind".
+    from core.state import is_turn_start
+
+    remaining = sum(1 for m in ctx.state.get("messages", []) if is_turn_start(m))
     if remaining:
         _print(f"  {remaining} earlier turn(s) remain; /rewind again to keep walking back.")
     else:
@@ -278,16 +296,13 @@ def _retry(ctx, args):
 
 
 def _last_query(ctx) -> "str | None":
-    from langchain.messages import HumanMessage
+    from core.state import is_turn_start
 
-    from core.compaction import is_summary
-    from core.state import is_steer_message
-
-    # Last REAL question: a standalone mid-turn steer note is a correction to a turn, not the
-    # turn's query (requeueing it would re-run the correction without the question), and a
-    # compaction summary is carried history.
+    # Last REAL question (is_turn_start): a standalone mid-turn steer note is a correction to a
+    # turn, not the turn's query (requeueing it would re-run the correction without the
+    # question), and a compaction summary is carried history.
     for m in reversed(ctx.state.get("messages", [])):
-        if isinstance(m, HumanMessage) and not is_steer_message(m) and not is_summary(m):
+        if is_turn_start(m):
             return str(m.content)
     return None
 
@@ -378,13 +393,14 @@ Examples:
 """,
 )
 def _resume(ctx, args):
-    if args and args[0].lower() in ("save", "--save", "-s"):
+    verb = _resume_verb(args[0]) if args else None
+    if verb == "save":
         return _save_named(ctx, args[1:])
-    if args and (is_list_verb(args[0]) or args[0].lower() in ("--list", "-l")):
+    if verb == "list":
         return _list_saved()
-    if args and (is_remove_verb(args[0]) or args[0].lower() == "--delete"):
+    if verb == "remove":
         return _delete_named(args[1:])
-    if args and args[0].lower() in ("rename", "mv", "--rename"):
+    if verb == "rename":
         return _rename_named(args[1:])
     if args:
         return _load_named(ctx, " ".join(args))
@@ -404,6 +420,50 @@ def _resume(ctx, args):
     _print("  conversation history restored — continue where you left off.")
 
 
+# The /resume subcommand vocabulary — ONE table drives both the router (`_resume_verb`) and the
+# reserved-stem screen below, so a subcommand cannot be added without its name being refused as
+# a session name at save time (the stranded-session trap this hunk fixed: `/resume save list`
+# used to succeed and the session was then only reachable by list number). Per subcommand:
+# (bare spellings — these are also the reserved stems, flag spellings — safe_stem strips their
+# dashes back to the bare words, so they need no separate reservation).
+_RESUME_VERBS = {
+    "save": (("save",), ("--save", "-s")),
+    "list": (LIST_VERBS, ("--list", "-l")),
+    "remove": (REMOVE_VERBS, ("--delete",)),
+    "rename": (("rename", "mv"), ("--rename",)),
+}
+
+
+def _resume_verb(token: str) -> "str | None":
+    """Which /resume subcommand a first token routes to, or None (load-by-name / bare resume)."""
+    t = str(token).lower()
+    for verb, (bare, flags) in _RESUME_VERBS.items():
+        if t in bare or t in flags:
+            return verb
+    return None
+
+
+# Stems the /resume router intercepts BEFORE the load-by-name branch: a session saved under one
+# could never be loaded by typing its name (`/resume list` would list, not load, list.json). The
+# refusal happens at CREATION (mirroring /policy allow's lone-verb reservation) and compares the
+# SANITIZED stem case-insensitively — the router lowercases args[0], so `/resume save LIST`
+# strands too, and safe_stem turns flag spellings like `--list` into these same words. Load /
+# delete / rename RESOLUTION stays unchanged, so a pre-existing colliding file remains reachable
+# (by /resume list number). Derived from the router's own table — never a second hand-kept copy.
+_RESERVED_SESSION_STEMS = frozenset(
+    w for bare, _flags in _RESUME_VERBS.values() for w in bare
+)
+
+
+def _refuse_reserved_stem(path) -> bool:
+    """True (after printing the refusal) when `path`'s stem is a /resume subcommand word."""
+    if path.stem.lower() in _RESERVED_SESSION_STEMS:
+        _print(f"  {path.stem!r} is a /resume subcommand — a session saved under that name "
+               "could never be loaded by name. Pick another name.")
+        return True
+    return False
+
+
 def _save_named(ctx, args):
     import json
     from datetime import datetime
@@ -415,6 +475,8 @@ def _save_named(ctx, args):
 
     name = " ".join(args) if args else "session-" + datetime.now().strftime("%Y%m%d-%H%M%S")
     path = _session_file(name)
+    if _refuse_reserved_stem(path):
+        return
     existed = path.exists()
     path.write_text(json.dumps(_session_payload(messages), indent=2), encoding="utf-8")
     note = " (overwrote existing)" if existed else ""
@@ -473,6 +535,10 @@ def _rename_named(args):
         _print(f"  no saved session matching {old!r} (/resume list shows what's on disk).")
         return
     dest = _session_file(new)
+    # Renaming ONTO a reserved subcommand word strands the session exactly like saving under
+    # one — same refusal, same creation-time boundary.
+    if _refuse_reserved_stem(dest):
+        return
     if dest.exists():
         _print(f"  a session named {dest.stem!r} already exists — pick another name "
                "or /resume delete it first.")

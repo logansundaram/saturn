@@ -73,6 +73,18 @@ def _eval_node(node):
             raise ValueError("only these functions are supported: " + ", ".join(sorted(_ALLOWED_FUNCS)))
         args = [_eval_node(a) for a in node.args]
         kwargs = {kw.arg: _eval_node(kw.value) for kw in node.keywords if kw.arg}
+        if node.func.id == "pow":
+            # The pow() builtin is the ** operator with a function-call spelling — it must share
+            # the _MAX_POW_EXP bound, or pow(9, 99999999) recreates the exact resource bomb the
+            # ast.Pow branch above refuses (tiny expression, ~95-million-digit result). The
+            # exponent may arrive positionally OR as a keyword (pow takes base/exp/mod keywords),
+            # so resolve both forms. The 3-arg modular form stays unbounded on purpose: modular
+            # exponentiation is cheap at any exponent, and it is the one reason pow() exists here
+            # at all (2-arg use is already covered by **).
+            exp = args[1] if len(args) > 1 else kwargs.get("exp")
+            has_mod = len(args) > 2 or "mod" in kwargs
+            if exp is not None and not has_mod and abs(_number(exp)) > _MAX_POW_EXP:
+                raise ValueError(f"exponent too large (limit {_MAX_POW_EXP})")
         return _ALLOWED_FUNCS[node.func.id](*args, **kwargs)
     if isinstance(node, (ast.Tuple, ast.List)):
         # Argument sequences for sum/min/max, e.g. sum([1, 2, 3]).

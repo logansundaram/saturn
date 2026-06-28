@@ -31,6 +31,23 @@ def test_find_mentions_trailing_punctuation(tmp_path):
     assert len(found) == 1 and os.path.samefile(found[0], f)
 
 
+def test_find_mentions_dedupes_path_spellings(tmp_path, monkeypatch):
+    import os
+
+    monkeypatch.chdir(tmp_path)
+    f = tmp_path / "a.txt"
+    f.write_text("alpha-contents", encoding="utf-8")
+    # Two spellings of the same file are ONE attachment — dedup is by file identity
+    # (realpath+normcase), not by the raw string the user typed.
+    found = mentions.find_mentions("see @a.txt and also @./a.txt")
+    assert len(found) == 1 and os.path.samefile(found[0], f)
+    # The kept path is the first-seen as-typed spelling (display labels stay as typed).
+    assert found[0] == "a.txt"
+    block, paths = mentions.expand("see @a.txt and also @./a.txt")
+    assert len(paths) == 1
+    assert block.count("alpha-contents") == 1
+
+
 def test_unresolvable_mentions_ignored(tmp_path):
     assert mentions.find_mentions("email @handle and @nope/missing.txt") == []
     # A directory is not a file mention.
@@ -56,6 +73,19 @@ def test_expand_block_and_extra_paths(tmp_path):
     assert "alpha-contents" in block and "beta-contents" in block
     block, paths = mentions.expand("no mentions here")
     assert block == "" and paths == []
+
+
+def test_expand_extra_path_already_mentioned_attaches_once(tmp_path, monkeypatch):
+    import os
+
+    monkeypatch.chdir(tmp_path)
+    f = tmp_path / "a.txt"
+    f.write_text("alpha-contents", encoding="utf-8")
+    # Drag-attaching (extra_paths) the absolute form of a file already @-mentioned relatively
+    # must not double-attach it — identity comparison, same as the mention dedup.
+    block, paths = mentions.expand("check @a.txt", extra_paths=[str(f)])
+    assert len(paths) == 1 and os.path.samefile(paths[0], f)
+    assert block.count("alpha-contents") == 1
 
 
 def test_expand_clamps_large_files(tmp_path):

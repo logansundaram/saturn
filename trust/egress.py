@@ -35,6 +35,7 @@ import time
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlparse
 
 import diag
 from trust import signing
@@ -83,8 +84,45 @@ def airgap_on() -> bool:
     return bool(get_config().get("runtime.airgap", False))
 
 
+def ollama_endpoint() -> str:
+    """The Ollama base URL the client libraries will actually talk to: `OLLAMA_HOST` when set
+    (the one binding — nothing in config.yaml names it; ChatOllama/OllamaEmbeddings/ollama.list
+    all read the same env var), else the daemon's local default."""
+    return (os.environ.get("OLLAMA_HOST") or "").strip() or "http://127.0.0.1:11434"
+
+
+def ollama_is_local() -> bool:
+    """Whether Ollama traffic stays on this machine. The whole "local inference" story keys on
+    this: an `OLLAMA_HOST` pointing off-machine makes the "local" models network egress like any
+    cloud provider — recorded in the ledger, refused under air-gap, and disqualifying for the
+    local-inference attestation. Fails toward NOT local (an unparseable endpoint must never
+    earn a 'local' claim)."""
+    endpoint = ollama_endpoint()
+    if "://" not in endpoint:
+        endpoint = "http://" + endpoint
+    try:
+        from urllib.parse import urlparse
+
+        name = (urlparse(endpoint).hostname or "").lower()
+    except Exception:
+        return False
+    return name in ("localhost", "::1", "0.0.0.0") or name.startswith("127.")
+
+
 def _host_label(host: str) -> str:
     return (host or "?").strip() or "?"
+
+
+def host_of(url: str) -> str:
+    """Hostname of a URL for the egress ledger (falls back to the raw value). THE one
+    derivation of "where did this go" every egress reporter shares (tools/web.py,
+    tools/mcp_client.py) — a second copy could drift and label the same destination two ways.
+    NOT used by ollama_is_local(): its fallback deliberately fails toward NOT-local
+    (empty/False), whereas a ledger label must never be lost, so it falls back to the raw URL."""
+    try:
+        return urlparse(url).hostname or str(url)
+    except Exception:
+        return str(url)
 
 
 def _safe_int(v) -> int:
@@ -514,7 +552,11 @@ def summarize_events(events) -> dict:
 
 def summary() -> dict:
     """Aggregate the ledger for the `/privacy egress` headline: totals, bytes, distinct hosts,
-    blocked."""
+    blocked. Carries `cleared`: whether a `/privacy egress clear` wiped events this session —
+    the counts are then SINCE THE CLEAR, not the whole session, and any truth-claiming consumer
+    (the signed trust report embeds this dict verbatim as `egress_session`) must disclose that
+    rather than attest an understated total. The same hazard `cleared_since` guards for per-turn
+    slices, surfaced here for the whole-ledger aggregation."""
     agg = summarize_events(_LEDGER)
     by_channel: dict[str, int] = {}
     for e in _LEDGER:
@@ -528,6 +570,7 @@ def summary() -> dict:
         "redactions": agg["redactions"],
         "hosts": agg["hosts"],
         "by_channel": by_channel,
+        "cleared": _CLEARED_AT > 0,
     }
 
 

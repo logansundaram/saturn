@@ -249,6 +249,33 @@ def test_undo_accepts_every_list_verb(ctx, capsys, isolated_paths, verb):
     assert "no snapshots stored" in _out(capsys)  # the list view, not a restore attempt
 
 
+@pytest.mark.parametrize("arg", ("lst", "lis", "2", "show"))
+def test_undo_unknown_argument_never_reverts(ctx, capsys, monkeypatch, arg):
+    """/undo is destructive with no redo: a typo'd listing attempt must ERROR, never fall
+    through to the revert (the /mcp typo'd-'relod' rule — here the silent default would
+    overwrite workspace files instead of printing a readout)."""
+    from stores import snapshots
+
+    reverted: list[bool] = []
+    monkeypatch.setattr(snapshots, "undo_last",
+                        lambda: reverted.append(True) or ("turn", []))
+    _undo(ctx, [arg])
+    assert "unknown argument" in _out(capsys)
+    assert reverted == []  # the revert never ran
+
+
+def test_bare_undo_still_reverts(ctx, capsys, monkeypatch):
+    """Only a BARE /undo performs the restore — pin the happy path alongside the guard."""
+    from stores import snapshots
+
+    reverted: list[bool] = []
+    monkeypatch.setattr(snapshots, "undo_last",
+                        lambda: reverted.append(True) or ("turn", ["restored a.txt"]))
+    _undo(ctx, [])
+    assert reverted == [True]
+    assert "restored a.txt" in _out(capsys)
+
+
 @pytest.mark.parametrize("verb", LIST_VERBS)
 def test_models_list_verb_is_noninteractive(ctx, monkeypatch, models_env, verb):
     """`/models list` renders the table WITHOUT dropping into the picker (`ollama list` style) —
@@ -381,3 +408,108 @@ def test_config_set_without_save_stays_session_only(ctx, capsys, runtime_key, re
     assert runtime_key.get("runtime.max_iterations") == 12
     assert recording_persist == []
     assert "session only" in _out(capsys)
+
+
+# --- /config guards: section keys refuse, typo'd keys warn, missing keys read honestly --------
+
+@pytest.fixture
+def sandboxed_config(monkeypatch):
+    """Run /config against a deep copy of the live config data, so keys the test creates (or
+    sections it tries to clobber) never leak into other tests sharing the module singleton."""
+    import copy
+    from config import get_config
+
+    cfg = get_config()
+    monkeypatch.setattr(cfg, "_data", copy.deepcopy(cfg._data))
+    return cfg
+
+
+def test_config_refuses_to_set_a_section(ctx, capsys, sandboxed_config, recording_persist):
+    """`/config web foo` would scalar-replace the whole mapping in memory (web.* reads silently
+    degrade to defaults) and `--save` would rewrite the bare `web:` header into unparseable
+    YAML — refused at the door, with the child keys listed."""
+    cfg = sandboxed_config
+    before = dict(cfg.get("web"))
+    _config(ctx, ["web", "tavily"])
+    out = _out(capsys)
+    assert "is a section" in out and "web.provider" in out
+    assert cfg.get("web") == before  # nothing replaced
+    assert recording_persist == []
+
+
+def test_config_refuses_to_set_a_section_even_with_save(ctx, capsys, sandboxed_config,
+                                                        recording_persist):
+    cfg = sandboxed_config
+    _config(ctx, ["runtime", "foo", "--save"])
+    assert "is a section" in _out(capsys)
+    assert isinstance(cfg.get("runtime"), dict)  # still a mapping
+    assert recording_persist == []  # and nothing reached config.persist
+
+
+def test_config_refuses_to_set_a_list(ctx, capsys, sandboxed_config, recording_persist):
+    cfg = sandboxed_config
+    cfg._data["scratch_list"] = ["a"]
+    _config(ctx, ["scratch_list", "foo"])
+    assert "is a list" in _out(capsys)
+    assert cfg.get("scratch_list") == ["a"]
+    assert recording_persist == []
+
+
+def test_config_set_near_miss_key_warns_and_leaves_real_key(ctx, capsys, sandboxed_config):
+    """A typo'd safety knob must not print a success-shaped line while the real setting stays
+    untouched — warn, suggest the real key (the /policy risk did-you-mean wording)."""
+    cfg = sandboxed_config
+    before = cfg.get("runtime.auto_approve")
+    _config(ctx, ["runtime.autoapprove", "destructive"])
+    out = _out(capsys)
+    assert "was not an existing config key" in out
+    assert "did you mean runtime.auto_approve?" in out
+    assert cfg.get("runtime.auto_approve") == before  # the real knob untouched
+    assert "session only" not in out  # the warning REPLACES the success line
+
+
+def test_config_set_new_key_still_takes_effect(ctx, capsys, sandboxed_config):
+    """Default-tolerant knobs (shell.background, runtime.sign_exports, …) must keep working on a
+    config.yaml predating them: an absent key warns but still sets."""
+    cfg = sandboxed_config
+    _config(ctx, ["runtime.brand_new_knob", "true"])
+    assert cfg.get("runtime.brand_new_knob") is True  # set (and coerced) despite the warning
+    assert "was not an existing config key" in _out(capsys)
+
+
+def test_config_read_missing_key_says_not_set(ctx, capsys, sandboxed_config):
+    """An absent key reads as 'is not set' with a suggestion — never the success-shaped
+    `= None`, which stays the rendering for a key explicitly present with a null value."""
+    _config(ctx, ["runtime.max_iteratons"])
+    out = _out(capsys)
+    assert "is not set" in out
+    assert "= None" not in out
+    assert "did you mean runtime.max_iterations?" in out
+
+
+def test_config_read_present_null_key_still_renders_none(ctx, capsys, sandboxed_config):
+    cfg = sandboxed_config
+    cfg._data.setdefault("runtime", {})["nullable_knob"] = None
+    _config(ctx, ["runtime.nullable_knob"])
+    assert "runtime.nullable_knob = None" in _out(capsys)
+
+
+# --- /config reload matches case-insensitively like every sibling subcommand ------------------
+
+@pytest.mark.parametrize("spelling", ["reload", "Reload", "RELOAD"])
+def test_config_reload_case_insensitive(ctx, capsys, monkeypatch, spelling):
+    """`/config Reload` must reload, not fall through to the dotted-key reader (it used to print
+    the baffling `Reload = None`)."""
+    import config as config_module
+    import commands.config as config_cmd
+    from core import llms
+
+    calls: list[bool] = []
+    monkeypatch.setattr(config_module, "reload",
+                        lambda: calls.append(True) or config_module.get_config())
+    monkeypatch.setattr(llms, "reset_models", lambda: None)
+    monkeypatch.setattr(config_cmd, "_resync_rag_after_model_change", lambda: None)
+
+    _config(ctx, [spelling])
+    assert calls == [True]
+    assert "reloaded" in _out(capsys)

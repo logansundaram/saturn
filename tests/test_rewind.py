@@ -113,3 +113,25 @@ def test_rewinding_the_only_turn_clears_the_autosave(isolated_paths):
     assert _autosave_file().exists()
     drop_last_turn(ctx)
     assert not _autosave_file().exists()
+
+
+def test_rewind_remaining_count_uses_the_turn_boundary_predicate(isolated_paths, capsys):
+    """The confirmation's "N earlier turn(s) remain" must count turns the way drop_last_turn
+    slices them: a compaction summary (or steer note) is a HumanMessage but NOT a rewindable
+    turn, so a raw isinstance count would promise a turn the very next /rewind denies."""
+    from core.compaction import _SUMMARY_PREFIX
+
+    from commands.conversation import _rewind
+
+    ctx = _ctx([
+        HumanMessage(content=f"{_SUMMARY_PREFIX}:\nolder turns, summarized"),
+        HumanMessage(content="real question"),
+        AIMessage(content="real answer"),
+    ])
+    _rewind(ctx, [])
+    out = capsys.readouterr().out
+    assert "the conversation is now empty" in out
+    assert "remain" not in out  # the summary alone is not "1 earlier turn(s)"
+    # And the next /rewind agrees with what was just promised.
+    _rewind(ctx, [])
+    assert "nothing to rewind" in capsys.readouterr().out

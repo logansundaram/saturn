@@ -76,7 +76,7 @@ def show_context(window: int, used: int, source: str, per_role: dict[str, int]) 
         print(f"  {_RAIL_GLYPH} usage  {bar}  {pct:>4.0f}%   {used:,} / {window:,}")
 
     if per_role:
-        roles_txt = "  ·  ".join(f"{r} {w:,}" for r, w in per_role.items())
+        roles_txt = " · ".join(f"{r} {w:,}" for r, w in per_role.items())
         _emit(f"  roles: {roles_txt}")
     _emit("  set with /context <size> (or /context auto for per-model capability)")
 
@@ -111,7 +111,7 @@ def show_models(models, bindings: dict, active_tier: str, embedder: str,
             parts.append("embedder")
         return "  ".join(parts)
 
-    section("models", f"tier {active_tier}  ·  embedder {embedder or '—'}")
+    section("models", f"tier {active_tier} · embedder {embedder or '—'}")
 
     if not models:
         _emit("  (no local models — is the Ollama daemon running? `ollama list`)")

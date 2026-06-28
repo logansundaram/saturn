@@ -83,6 +83,43 @@ def iter_strings(value):
             yield from iter_strings(v)
 
 
+def map_strings(value, fn):
+    """Structure-preserving rewrite of every string leaf inside a nested dict/list/tuple value —
+    the REWRITE twin of `iter_strings`, visiting exactly the same leaves (dict KEYS and
+    non-string scalars untouched), so a scan and a rewrite over the same tree can never disagree
+    about what counts as content (the MCP boundary's warn-mode count vs redact-mode rewrite).
+    Tuples come back as lists — every consumer serializes toward JSON, which has none."""
+    if isinstance(value, str):
+        return fn(value)
+    if isinstance(value, dict):
+        return {k: map_strings(v, fn) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [map_strings(v, fn) for v in value]
+    return value
+
+
+# The separator nodes/tools.py mirrors each executed call into `tool_results` with
+# (`f"{call_repr}{CALL_RESULT_SEP}{observation}"`). One constant + one parser, because TWO
+# downstream surfaces split these strings and must never disagree about where the observation
+# begins: synthesize's Sources labels (the call half) and the Glass Box's taint corpus (the
+# observation half).
+CALL_RESULT_SEP = " -> "
+
+
+def split_call_result(entry) -> "tuple[str, str]":
+    """Split one mirrored tool-result entry into (call_repr, observation) — THE one parser of
+    the `name(args) -> observation` serialization built in nodes/tools.py. Known edge, shared
+    with the construction site: an argument VALUE containing the separator splits early, leaving
+    model-authored text in the observation half — both consumers fail toward caution on it (a
+    mislabeled source at worst, a spurious taint warning at worst; never dropped observation
+    content). An entry with no separator returns (entry, entry): the whole string is the best
+    available answer to either question."""
+    parts = str(entry).split(CALL_RESULT_SEP, 1)
+    if len(parts) == 1:
+        return parts[0], parts[0]
+    return parts[0], parts[1]
+
+
 def safe_stem(name, fallback: str) -> str:
     """Sanitize a user-supplied name to a safe filename stem: path parts dropped, a trailing
     `.json` stripped (so `brief.json` and `brief` resolve identically), every other special

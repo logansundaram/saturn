@@ -20,6 +20,7 @@ from __future__ import annotations
 import diag
 from langchain.messages import AIMessage, HumanMessage, ToolMessage
 
+from core.state import is_turn_start
 from textutil import truncate
 
 # Tag marking the synthetic summary message. Kept on a HumanMessage so it rides through the
@@ -73,11 +74,12 @@ def summarize_messages(messages: list, keep_recent_turns: int = 1):
     conversation."""
     stats = {"before": len(messages), "after": len(messages), "summarized_turns": 0}
 
-    # Turn boundaries = real user messages (a prior summary isn't a turn). Need more than the
-    # retained window, or there's nothing older to fold.
-    human_idxs = [
-        i for i, m in enumerate(messages) if isinstance(m, HumanMessage) and not is_summary(m)
-    ]
+    # Turn boundaries = real user messages (a prior summary isn't a turn, and neither is a
+    # standalone mid-turn steer note — slicing at one would fold the turn's REAL question into
+    # the lossy summary while the correction survives as the apparent current question). The
+    # shared is_turn_start predicate owns that rule. Need more than the retained window, or
+    # there's nothing older to fold.
+    human_idxs = [i for i, m in enumerate(messages) if is_turn_start(m)]
     if len(human_idxs) <= keep_recent_turns:
         return messages, stats
 
@@ -96,9 +98,10 @@ def summarize_messages(messages: list, keep_recent_turns: int = 1):
 
     new = [HumanMessage(content=f"{_SUMMARY_PREFIX}:\n{summary}")] + recent
     stats["after"] = len(new)
-    stats["summarized_turns"] = sum(
-        1 for m in older if isinstance(m, HumanMessage) and not is_summary(m)
-    )
+    # Same predicate as the boundary scan: a steer note in the older slice is part of a turn,
+    # not a turn — counting it would inflate the user-facing "compacted N earlier turn(s)" line.
+    # (Steer notes still render in the summary transcript as "User:" lines via _role.)
+    stats["summarized_turns"] = sum(1 for m in older if is_turn_start(m))
     return new, stats
 
 

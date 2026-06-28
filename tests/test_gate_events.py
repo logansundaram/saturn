@@ -119,6 +119,29 @@ def test_node_partial_records_event(monkeypatch):
     }
 
 
+def test_node_always_decision_records_event_and_applies_grants(monkeypatch, isolated_paths):
+    # The always-allow answer resumes with the COLLECTED grants dict: the UI mutated nothing
+    # while the interrupt was pending (so the re-run still sees the batch gated and this event
+    # records — gotcha #7), and the node applies the grants here, past the interrupt.
+    fake_registry = types.SimpleNamespace(TOOL_RISK={})
+    monkeypatch.setattr("tools.registry", fake_registry, raising=False)
+    decision = {
+        "approved": True,
+        "tools": ["write_file"],
+        "shell_grants": [{"prefix": "git status", "command": "git status"}],
+    }
+    _gate_everything(monkeypatch, decision)
+    cmd = approval_node(_node_state(list(_CALLS)))
+    assert cmd.goto == "tools"
+    (ev,) = cmd.update["gate_events"]
+    assert ev["decision"] == "approved"  # the human's `a` is in the record
+    # …and the grants applied: the tier drop in the live registry, the prefix in the one store.
+    assert fake_registry.TOOL_RISK == {"write_file": "read_only"}
+    from trust import policy
+
+    assert policy.shell_allow() == ["git status"]
+
+
 def test_node_auto_approved_batch_records_nothing(monkeypatch):
     # No prompt -> no record: "gate_events empty" must always mean "the human was never asked".
     quarantine.reset_turn()

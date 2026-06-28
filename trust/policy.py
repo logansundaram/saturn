@@ -28,15 +28,17 @@ allowing "git status" would also wave through "git status; rm -rf ~" — the gat
 on anything it can't read at a glance. A background run_shell call (detached, timeout-free) is
 never prefix-exempt either: the prefix was granted for a bounded foreground run, not a daemon.
 
-Imports only config (a leaf), so registry.py, the approval node, and the TUI can import this
-freely.
+Imports only config + diag (both leaves), so registry.py, the approval node, and the TUI can
+import this freely.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import re
 
+import diag
 from config import get_config, persist, RISK_ORDER
 
 # Any of these in a command means it can do more than its first tokens say — chaining, piping,
@@ -119,23 +121,76 @@ def _path():
     return get_config().path("permissions")
 
 
+# Set on the first corrupt-policy-file load this process (None = the file loaded cleanly or
+# simply doesn't exist yet). The gate itself must never raise — it degrades to safe defaults —
+# but a silent reset drops user-RAISED /risk overrides below the posture the operator believes
+# is in force, so the degradation must be LOUD somewhere: agent.main reads this once at startup
+# and warns (the mcp_client.problems() pattern; trust/ never imports tui, so the user-visible
+# warning lives at the surface, not here).
+_LOAD_PROBLEM: "str | None" = None
+
+
+def load_problem() -> "str | None":
+    """The corrupt-policy-file report, if the durable policy failed to load this session."""
+    return _LOAD_PROBLEM
+
+
 def _load() -> dict:
-    """The stored policy file, with safe defaults when missing or unreadable."""
+    """The stored policy file, with safe defaults when missing or unreadable. A MISSING file is
+    the normal first run (silent); a GARBLED one (ValueError: bad JSON, wrong shape, undecodable
+    bytes) is a posture event — recorded once (`load_problem()` + diag.log) and the bad bytes
+    renamed to permissions.json.corrupt, because the next `_save` would otherwise overwrite the
+    user's only copy of the prior posture with defaults-plus-one-entry. A TRANSIENT read failure
+    (OSError: an AV/backup tool briefly holding the file, a permission hiccup) degrades to
+    defaults for the read but leaves the file IN PLACE — the content isn't corrupt, and renaming
+    a perfectly valid policy file away on a momentary lock would silently drop the persisted
+    posture for every future session."""
+    global _LOAD_PROBLEM
+    path = _path()
     try:
-        data = json.loads(_path().read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError(f"expected a JSON mapping, got {type(data).__name__}")
+    except FileNotFoundError:
         data = {}
-    if not isinstance(data, dict):
+    except OSError as exc:
         data = {}
+        if _LOAD_PROBLEM is None:
+            _LOAD_PROBLEM = (
+                f"gate policy file could not be read ({path}): {exc} — running with defaults; "
+                "persisted /risk overrides and /allow prefixes are NOT in effect (file left "
+                "in place; restart to retry)"
+            )
+            diag.log(f"policy: {_LOAD_PROBLEM}")
+    except ValueError as exc:
+        data = {}
+        if _LOAD_PROBLEM is None:
+            saved = ""
+            try:  # keep the prior posture recoverable before any mutation rewrites the file
+                os.replace(path, path.with_name(path.name + ".corrupt"))
+                saved = f" (bad file kept as {path.name}.corrupt)"
+            except OSError as move_exc:
+                diag.log(f"policy: could not preserve corrupt policy file: {move_exc}")
+            _LOAD_PROBLEM = (
+                f"gate policy file unreadable ({path}): {exc} — running with defaults; "
+                f"persisted /risk overrides and /allow prefixes are NOT in effect{saved}"
+            )
+            diag.log(f"policy: {_LOAD_PROBLEM}")
     data.setdefault("risk_overrides", {})
     data.setdefault("shell_allow", [])
     return data
 
 
 def _save(data: dict) -> None:
+    """Crash-safe write: sibling temp file then os.replace (atomic on Windows + POSIX). A kill
+    mid-write truncates the temp file, never the live gate policy — a truncated permissions.json
+    would silently drop user-RAISED risk overrides on the next load. Local copy of the idiom
+    (cf. stores/memory_registry._atomic_write): policy.py is a leaf and must not import stores."""
     path = _path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    os.replace(tmp, path)
 
 
 # --- risk-tier overrides (/risk … --save) -----------------------------------------------
@@ -171,7 +226,16 @@ def shell_allow() -> list[str]:
 
 
 def add_shell_allow(prefix: str) -> bool:
-    """Store a prefix; False if it (case-insensitively) is already stored."""
+    """Store a prefix; False if it (case-insensitively) is already stored. Raises ValueError on
+    text that could never be a gate-exempt prefix (`shell_prefix_rejects`: empty, or carrying a
+    shell metacharacter) — storing it anyway would create a permanently-inert grant that the
+    confirmation copy and `/policy can` then claim skips the gate, a posture the matcher
+    (`shell_allowed`) contradicts. The screen runs on the RAW input BEFORE whitespace
+    normalization: normalization collapses newlines into spaces, which would launder one
+    metacharacter class straight past the screen."""
+    reason = shell_prefix_rejects(prefix)
+    if reason:
+        raise ValueError(reason)
     prefix = " ".join(prefix.split())
     data = _load()
     if any(p.lower() == prefix.lower() for p in data["shell_allow"]):
@@ -227,8 +291,8 @@ def apply_profile(profile: dict, save: bool = False) -> dict:
     `save`, which persists them to config.yaml) and REPLACE the durable permissions file with the
     profile's risk overrides + shell allowlist. Returns the validated risk-override map so the
     caller can sync the live registry (registry.TOOL_RISK). Raises ValueError on a payload that
-    isn't a Saturn policy profile OR carries an invalid threshold/redaction value — never
-    half-applies one. (A typo'd `auto_approve` must not silently leave whatever threshold the
+    isn't a Saturn policy profile OR carries an invalid threshold/redaction value, an invalid
+    risk tier, or a shell_allow prefix the matcher could never honor — never half-applies one. (A typo'd `auto_approve` must not silently leave whatever threshold the
     machine happened to have — possibly a gate-open --yolo residue — in force while the rest of
     the profile applies; an absent key is fine, an invalid value is a hard error.)"""
     if not isinstance(profile, dict) or profile.get("saturn_policy") != PROFILE_VERSION:
@@ -250,11 +314,21 @@ def apply_profile(profile: dict, save: bool = False) -> dict:
                 f"{', '.join(RISK_ORDER)}"
             )
         overrides[str(name)] = str(t)
-    allow = [
-        " ".join(str(p).split())
-        for p in (profile.get("shell_allow") or [])
-        if str(p).strip()
-    ]
+    allow: list[str] = []
+    for p in profile.get("shell_allow") or []:
+        if not str(p).strip():
+            continue  # blank entries are formatting noise — silently dropped (tested behavior)
+        # A prefix the matcher (shell_allowed) could never honor is a posture misstatement: the
+        # applied profile would claim a gate exemption that never fires (/policy can would list
+        # it under WITHOUT ASKING). Hard error like an invalid tier — and screened on the RAW
+        # entry, before the whitespace normalization below launders newlines into spaces.
+        bad = shell_prefix_rejects(str(p))
+        if bad:
+            raise ValueError(
+                f"invalid shell_allow prefix {str(p)!r} — {bad}; such a command always faces "
+                "the gate, so no profile can exempt it"
+            )
+        allow.append(" ".join(str(p).split()))
     threshold = profile.get("auto_approve")
     if threshold is not None and threshold not in RISK_ORDER:
         raise ValueError(
@@ -313,20 +387,57 @@ def shell_prefix_rejects(text: str) -> "str | None":
     return None
 
 
+def shell_prefix_covers(prefix: str, command: str) -> bool:
+    """Whether `prefix` would exempt `command` under THE matcher's rules — the per-prefix half of
+    `shell_allowed` (metacharacter screen on the command, then token-boundary equality), exposed
+    pure so the gate UI can validate a typed grant WITHOUT persisting it (the always-allow flow
+    collects grants at decision time and applies them past the interrupt). `shell_allowed`
+    delegates here: one matcher, never a second copy of its rule."""
+    if shell_prefix_rejects(command):
+        return False
+    cmd_tokens = [t.lower() for t in str(command).split()]
+    p_tokens = [t.lower() for t in str(prefix).split()]
+    return bool(p_tokens) and cmd_tokens[: len(p_tokens)] == p_tokens
+
+
 def shell_allowed(command: str) -> "str | None":
     """The allowlisted prefix that exempts `command` from the gate, or None.
 
     A command is exempt only when (a) the metacharacter screen (`shell_prefix_rejects`) passes —
     no chaining/redirection/substitution anywhere in it — and (b) its leading whitespace-split
-    tokens equal some stored prefix's tokens, case-insensitively. Token equality (not startswith)
-    so "git status" never matches "git statusx"."""
+    tokens equal some stored prefix's tokens, case-insensitively (`shell_prefix_covers`). Token
+    equality (not startswith) so "git status" never matches "git statusx"."""
     if shell_prefix_rejects(command):
         return None
-    cmd_tokens = [t.lower() for t in command.split()]
-    if not cmd_tokens:
-        return None
     for prefix in _load()["shell_allow"]:
-        p_tokens = [t.lower() for t in prefix.split()]
-        if p_tokens and cmd_tokens[: len(p_tokens)] == p_tokens:
+        if shell_prefix_covers(prefix, command):
             return prefix
     return None
+
+
+def grant_shell_prefix(prefix: str, command: str, *, dry_run: bool = False) -> "tuple[bool, str]":
+    """The gate's scoped always-allow grant: validate `prefix` against `command` through the one
+    matcher and (unless `dry_run`) persist it to the /allow store. Returns (command now exempt?,
+    disclosure message — the gate UI prints it verbatim).
+
+    The UI calls this with dry_run=True at decision time, while the approval interrupt is still
+    pending: persisting then would let the node's re-run recompute the batch as ungated and lose
+    the human's decision from gate_events (gotcha #7) — so the UI only collects the validated
+    grant, and the approval node applies it here past the interrupt. Never raises: every refusal
+    is a (False, why) so a typed metacharacter degrades to "it keeps prompting", never a dead
+    turn."""
+    prefix = " ".join(str(prefix).split())
+    if not prefix:
+        return False, "run_shell: no prefix granted — it keeps prompting"
+    if shell_prefix_rejects(prefix) or not shell_prefix_covers(prefix, command):
+        return False, (f'run_shell: prefix "{prefix}" would not exempt this command '
+                       "(token boundary, no shell metacharacters) — no grant, it keeps prompting")
+    matched = shell_allowed(command)
+    if matched is not None and matched.lower() != prefix.lower():
+        # An already-stored prefix covers this command; the new one adds nothing for it — no
+        # redundant entry to stack up for the user to audit later.
+        return True, f'run_shell: already covered by allowlisted prefix "{matched}"'
+    if not dry_run:
+        add_shell_allow(prefix)  # screened above — cannot raise
+    return True, (f'run_shell: always-allowing commands starting "{prefix}" '
+                  "(persisted to the allowlist; undo: /policy allow remove)")

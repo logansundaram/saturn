@@ -126,6 +126,52 @@ def test_corrupt_policy_file_fails_safe(isolated_paths):
     assert policy.shell_allowed("git status") is None
 
 
+def test_garbled_policy_file_preserved_as_corrupt(isolated_paths, monkeypatch):
+    """Genuinely corrupt CONTENT (bad JSON / wrong shape) is renamed aside — recoverable, and
+    safe from the next _save overwriting the user's only copy of the prior posture — and the
+    degradation is recorded for the startup warning (load_problem)."""
+    monkeypatch.setattr(policy, "_LOAD_PROBLEM", None)  # one-shot per process — reset for the test
+    path = isolated_paths / "database" / "permissions.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{not json at all", encoding="utf-8")
+    assert policy.shell_allow() == []
+    assert not path.exists()  # the bad bytes were moved aside…
+    assert path.with_name(path.name + ".corrupt").exists()  # …and kept recoverable
+    assert policy.load_problem()  # agent.main warns from this at startup
+
+
+def test_transient_read_failure_leaves_policy_file_in_place(isolated_paths, monkeypatch):
+    """A momentary OSError (an AV/backup tool briefly holding the file — routine on Windows)
+    must degrade THE READ to defaults, never displace the perfectly valid file: renaming it to
+    .corrupt would silently drop the persisted /risk overrides and /allow prefixes for every
+    future session."""
+    import json
+    from pathlib import Path
+
+    monkeypatch.setattr(policy, "_LOAD_PROBLEM", None)
+    path = isolated_paths / "database" / "permissions.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"risk_overrides": {}, "shell_allow": ["git status"]}),
+                    encoding="utf-8")
+
+    real_read = Path.read_text
+    state = {"failed": False}
+
+    def flaky_read(self, *a, **k):
+        if self.name == "permissions.json" and not state["failed"]:
+            state["failed"] = True
+            raise PermissionError("file briefly locked by another process")
+        return real_read(self, *a, **k)
+
+    monkeypatch.setattr(Path, "read_text", flaky_read)
+    assert policy.shell_allow() == []  # this read degrades to defaults…
+    assert policy.load_problem()  # …loudly (the startup warning reads this)
+    assert path.exists()  # but the file was left exactly where it was
+    assert not path.with_name(path.name + ".corrupt").exists()
+    # The lock cleared: the very next read finds the persisted posture intact.
+    assert policy.shell_allow() == ["git status"]
+
+
 # ── the tier threshold + its /autoapprove (gate-off) view ─────────────────────────────────────
 
 

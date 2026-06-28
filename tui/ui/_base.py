@@ -18,13 +18,14 @@ try:
     from rich.text import Text
     from rich.live import Live
     from rich.markdown import Markdown
+    from rich.padding import Padding
 
     _console = Console(highlight=False)
     _RICH = True
 except Exception:  # pragma: no cover - fallback path
     # Define the names unconditionally so `from ._base import Text` resolves even without rich;
     # they're only ever *used* under an `if _RICH:` guard, so the None values are never called.
-    Console = Text = Live = Markdown = None
+    Console = Text = Live = Markdown = Padding = None
     _console = None
     _RICH = False
 
@@ -97,13 +98,11 @@ _plan_seen: dict = {}
 _trace_started = False  # False until the turn's first node line prints (gates one lead-in blank)
 
 # ── live status-bar state (shared with response/_StatusBar) ───────────────────
-# `_status` is the live readout the bar renders; `_turn_start` anchors the elapsed clock.
-# `_model` is captured once in banner() so the bar needs no model passed per turn. (The Live
-# handle + the metrics sampler stay private to statusbar.py — only these cross submodules.)
+# `_status` is the live readout the bar renders; `_turn_start` anchors the elapsed clock. (The
+# Live handle + the metrics sampler stay private to statusbar.py — only these cross submodules.)
 _turn_start = None
 _status = {"node": "", "iteration": 0, "tools": 0, "tok_per_sec": 0.0,
            "ctx_used": 0, "ctx_window": 0, "gates": 0}
-_model = "unknown"
 # (The turn-start egress mark lives in receipt.py — receipt-domain state, not UI state.)
 
 
@@ -141,28 +140,6 @@ def _active_ctx_window() -> int:
         return active_context_window()
     except Exception:
         return 0
-
-
-def _active_model() -> str:
-    """The current `tier:model` label for the status bar, resolved live each render — `/model`
-    re-points config + drops the model caches but can't reach back into ui, so a value captured
-    once at banner() goes stale. Lazily imports config/llms (ui stays a leaf); falls back to the
-    banner-captured `_model` if the factory/config is unavailable."""
-    try:
-        from config import get_config
-        from core.llms import model_id
-
-        return f"{get_config().active_tier}:{model_id('tool_caller')}"
-    except Exception:
-        return _model
-
-
-def _active_model_short() -> str:
-    """The status-bar model label: the model id without the `tier:` prefix `_active_model` adds.
-    The tier already rides the banner, and the bar trims from the right on a narrow terminal, so
-    the prefix is pure cost here."""
-    full = _active_model()
-    return full.split(":", 1)[-1] if ":" in full else full
 
 
 # ── small rendering helpers ──────────────────────────────────────────────────

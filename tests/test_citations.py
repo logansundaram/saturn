@@ -4,6 +4,7 @@ and the mechanical Sources footer appended to the answer (runtime.citations)."""
 from nodes.synthesize import (
     build_sources,
     sources_footer,
+    _gathered_section,
     _tool_source_label,
     _doc_source_label,
 )
@@ -50,3 +51,37 @@ def test_footer_shape_and_empty_case():
 def test_empty_inputs():
     numbered_tools, numbered_docs, sources = build_sources([], [])
     assert numbered_tools == [] and numbered_docs == [] and sources == []
+
+
+def test_gathered_section_headers_pinned():
+    """Pin the exact prompt headers _gathered_section reconstructs — the section folding must
+    keep the synthesizer's prompt bytes identical to the pre-refactor two-block form."""
+    items = ["calc(x=1) -> 1"]
+    numbered = ["[1] calc(x=1) -> 1"]
+    msg = _gathered_section(items, numbered, True, "Tool results")
+    assert msg.content == (
+        "Tool results (numbered — cite the matching [n] after claims drawn from them):\n"
+        "[1] calc(x=1) -> 1"
+    )
+    msg = _gathered_section(items, numbered, False, "Tool results")
+    assert msg.content == "Tool results:\ncalc(x=1) -> 1"
+    msg = _gathered_section(items, numbered, True, "Retrieved documents")
+    assert msg.content.startswith(
+        "Retrieved documents (numbered — cite the matching [n] after claims drawn from them):\n"
+    )
+    # Nothing gathered -> no section message at all (the prompt omits the block).
+    assert _gathered_section([], [], True, "Tool results") is None
+
+
+def test_split_call_result_is_the_one_parser():
+    # THE parser of nodes/tools.py's `name(args) -> observation` serialization — synthesize's
+    # Sources labels take [0], the Glass Box's taint corpus takes [1]; one function, no drift.
+    from textutil import CALL_RESULT_SEP, split_call_result
+
+    call, obs = "web_search(query='x')", "result text -> with an arrow inside"
+    got_call, got_obs = split_call_result(f"{call}{CALL_RESULT_SEP}{obs}")
+    assert got_call == call
+    assert got_obs == obs  # only the FIRST separator splits — observation content survives whole
+    # No separator: both halves are the whole entry, so the label fallback and the
+    # keep-the-whole-observation fallback coincide by construction.
+    assert split_call_result("plain doc passage") == ("plain doc passage", "plain doc passage")

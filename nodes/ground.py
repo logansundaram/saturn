@@ -64,8 +64,7 @@ def _recent_exchanges(messages: list) -> str:
     are blind to the conversation, so a follow-up turn gets planned/synthesized as if it arrived
     cold. Pairs each user question with the assistant's final (non-tool-call) answer; skips the
     current in-flight query (the trailing HumanMessage with no answer yet)."""
-    from core.compaction import is_summary
-    from core.state import is_steer_message
+    from core.state import is_turn_start
 
     pairs = []
     pending_q = None
@@ -73,10 +72,10 @@ def _recent_exchanges(messages: list) -> str:
         if isinstance(m, HumanMessage):
             # Not every HumanMessage is a question: a compaction summary is carried history and a
             # standalone mid-turn steer note is a correction — pairing either with the next answer
-            # corrupts the recap. With those skipped, the LATEST question wins, so a question left
-            # unanswered by a failed turn is superseded instead of mis-pairing with the next
-            # turn's answer.
-            if is_summary(m) or is_steer_message(m):
+            # corrupts the recap (is_turn_start owns that rule). With those skipped, the LATEST
+            # question wins, so a question left unanswered by a failed turn is superseded instead
+            # of mis-pairing with the next turn's answer.
+            if not is_turn_start(m):
                 continue
             text = str(m.content).strip()
             if text:
@@ -86,6 +85,15 @@ def _recent_exchanges(messages: list) -> str:
             if pending_q and answer:
                 pairs.append((pending_q, answer))
                 pending_q = None
+            elif pairs and answer:
+                # A LATER no-tool AIMessage in the same turn supersedes the pair's answer: a
+                # normal turn carries TWO consecutive no-tool AIMessages — the agent's draft
+                # (the finish that routed to replan/synthesize) then synthesize's final answer —
+                # and the recap must show the answer the user actually saw, never the draft.
+                # Worst case otherwise is the replan-repair path: the recap would carry the very
+                # ungrounded draft the judge rejected. The `and answer` guard keeps an empty
+                # trailing AIMessage from blanking a real final answer.
+                pairs[-1] = (pairs[-1][0], answer)
     if not pairs:
         return ""
 

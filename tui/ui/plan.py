@@ -92,11 +92,11 @@ def _review_emit(text) -> None:
 
 def _review_header(reason: str) -> None:
     if _RICH:
+        _console.print()  # the pause lands mid-trace — let the frame read as its own moment
         top = Text()
         top.append("  ┏━ ", style="bold")
         top.append("plan review", style=f"bold {_ACCENT}")
         top.append(" — execution paused", style=_DIM)
-        top.append(" " + "━" * 22, style="bold")
         _console.print(top)
         if reason:
             r = Text()
@@ -104,7 +104,8 @@ def _review_header(reason: str) -> None:
             r.append(reason, style=_DIM)
             _console.print(r)
     else:
-        print("  ┏━ plan review — execution paused " + "━" * 16)
+        print()
+        print("  ┏━ plan review — execution paused")
         if reason:
             print(f"  ┃ {reason}")
 
@@ -128,6 +129,26 @@ def _render_review_plan(plan: list[dict], active_id) -> None:
             _console.print(row)
         else:
             print(f"  ┃ {line}{marker}")
+
+
+def _review_hint() -> None:
+    """The one-line standing hint under the plan — enough to act (run, stop, or start editing)
+    without reprinting the whole editor grammar at every pause; `help` opens the full version."""
+    if _RICH:
+        t = Text()
+        t.append("  ┃ ", style="bold")
+        t.append("enter", style=_ACCENT)
+        t.append(" runs · ", style=_DIM)
+        t.append("abort", style=_ACCENT)
+        t.append(" stops · edit with ", style=_DIM)
+        t.append("add/edit/tool/status/move/drop", style="default")
+        t.append(" · ", style=_DIM)
+        t.append("help", style=_ACCENT)
+        t.append(" for the grammar", style=_DIM)
+        _console.print(t)
+    else:
+        print("  ┃ enter runs · abort stops · edit with add/edit/tool/status/move/drop"
+              " · help for the grammar")
 
 
 def _review_help() -> None:
@@ -173,7 +194,7 @@ def review_plan(value: dict) -> dict:
 
     _review_header(reason)
     _render_review_plan(plan, active_id)
-    _review_help()
+    _review_hint()
 
     action = "continue"
     while True:

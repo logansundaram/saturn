@@ -12,10 +12,14 @@ def parse_toggle_status(args: list[str]) -> "bool | str | None":
     """THE on/off grammar for every status-or-set command (/dryrun, /policy open, /plan review,
     /plan lockstep, /privacy airgap): no argument -> None, a STATUS readout — bare is NEVER a
     flip, mutation is always an explicit verb; on/true/yes/1 -> True; off/false/no/0 -> False;
-    anything else -> "invalid" (the caller prints usage). One parser so the toggles can't
-    drift apart."""
+    anything else -> "invalid" (the caller prints usage). Trailing tokens are "invalid" too —
+    `/policy open on garbage` must not open the gate on the strength of a half-parsed line —
+    so every caller splits `--save` out (split_save_flag) BEFORE asking. One parser so the
+    toggles can't drift apart."""
     if not args:
         return None
+    if len(args) > 1:
+        return "invalid"
     val = args[0].lower()
     if val in ("on", "true", "yes", "1"):
         return True

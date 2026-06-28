@@ -29,7 +29,7 @@ from dataclasses import dataclass
 
 from trust import egress
 from trust import quarantine
-from textutil import clip
+from textutil import clip, split_call_result
 
 _TAINT_PREVIEW = 80
 _LEADING_IDENT = re.compile(r"\s*([A-Za-z_][A-Za-z0-9_]*)")
@@ -224,6 +224,21 @@ def _assemble(query, answer, tool_results, documents_retrieved, tool_events, rep
             "taint_idx": None,
         })
         if not trusted:
+            # Tool entries are `name(args) -> observation` strings (nodes/tools pairs them on
+            # purpose). The call repr before the arrow is the MODEL'S OWN text — its search
+            # query, its URL — not the untrusted observation; leaving it in the taint corpus
+            # makes an answer that merely restates a 40+ char query light up bold red as
+            # 'untrusted content reached the answer verbatim'. Strip it for TOOL sources only
+            # (textutil.split_call_result, THE one parser of that serialization — synthesize's
+            # Sources labels split the same strings, so the two surfaces can never disagree
+            # about where the observation begins); doc passages carry no call repr and must
+            # stay whole. The parser's known edge — an arg VALUE containing the separator
+            # splits early — fails toward caution here (at worst a spurious taint warning) and
+            # never drops genuine observation content. The data→action half already matches
+            # observation-only (quarantine.record_untrusted records the clamped observation),
+            # so this keeps the two halves judging the same content.
+            if idx < len(numbered_tools):
+                obs = split_call_result(obs)[1]
             rows[-1]["taint_idx"] = len(untrusted_obs)
             untrusted_obs.append(obs)
     spans = quarantine.longest_overlap_many(prose, untrusted_obs) if untrusted_obs else []

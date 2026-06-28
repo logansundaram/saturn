@@ -14,6 +14,7 @@ import types
 from trust import policy
 from trust import receipt
 from textutil import head_tail
+from nodes.approval import _apply_always_grants
 from tui.ui import approval
 from tui.ui import plan as plan_ui
 from tui.ui._base import _RAIL_GLYPH
@@ -167,58 +168,70 @@ def test_propose_shell_prefix():
 
 
 def test_grant_shell_prefix_valid(isolated_paths):
-    granted, _msg = approval._grant_shell_prefix("git", "git status")
+    granted, _msg = policy.grant_shell_prefix("git", "git status")
     assert granted
     assert policy.shell_allowed("git status --short") == "git"
 
 
 def test_grant_shell_prefix_rejects_non_prefix(isolated_paths):
-    granted, _msg = approval._grant_shell_prefix("curl", "git status")
+    granted, _msg = policy.grant_shell_prefix("curl", "git status")
     assert not granted
-    assert policy.shell_allow() == []  # rolled back, never stored
+    assert policy.shell_allow() == []  # refused, never stored
 
 
 def test_grant_shell_prefix_rejects_metacharacters(isolated_paths):
-    # The rejection flows through policy.shell_allowed itself — the one matcher.
-    granted, _msg = approval._grant_shell_prefix("git;", "git status")
+    # The rejection flows through the one matcher's own screen — and degrades to a refusal
+    # tuple, never a raise (a typed metacharacter at the live gate must not kill the turn).
+    granted, _msg = policy.grant_shell_prefix("git;", "git status")
     assert not granted
     assert policy.shell_allow() == []
     # A chained COMMAND can never be exempted either, even by its honest leading token.
-    granted, _msg = approval._grant_shell_prefix("git", "git status; rm -rf ~")
+    granted, _msg = policy.grant_shell_prefix("git", "git status; rm -rf ~")
     assert not granted
     assert policy.shell_allow() == []
 
 
 def test_grant_shell_prefix_token_boundary(isolated_paths):
-    granted, _msg = approval._grant_shell_prefix("git status", "git statusx")
+    granted, _msg = policy.grant_shell_prefix("git status", "git statusx")
     assert not granted
     assert policy.shell_allow() == []
 
 
 def test_grant_shell_prefix_already_covered(isolated_paths):
     policy.add_shell_allow("git")
-    granted, _msg = approval._grant_shell_prefix("git status", "git status --short")
+    granted, _msg = policy.grant_shell_prefix("git status", "git status --short")
     assert granted  # the command IS exempt going forward…
     assert policy.shell_allow() == ["git"]  # …but no redundant entry stacked
 
 
 def test_grant_shell_prefix_empty(isolated_paths):
-    granted, _msg = approval._grant_shell_prefix("   ", "git status")
+    granted, _msg = policy.grant_shell_prefix("   ", "git status")
     assert not granted
     assert policy.shell_allow() == []
 
 
 def test_grant_shell_prefix_keeps_preexisting_entry_on_failed_grant(isolated_paths):
     policy.add_shell_allow("curl")
-    granted, _msg = approval._grant_shell_prefix("curl", "git status")
+    granted, _msg = policy.grant_shell_prefix("curl", "git status")
     assert not granted
-    assert policy.shell_allow() == ["curl"]  # not ours — never rolled back
+    assert policy.shell_allow() == ["curl"]  # not ours — never touched
+
+
+def test_grant_shell_prefix_dry_run_validates_without_persisting(isolated_paths):
+    # The gate UI validates at decision time with dry_run=True (the interrupt is still pending —
+    # persisting then would let the node re-run see the batch ungated and lose the gate_event,
+    # gotcha #7); the node applies the collected grant past the interrupt.
+    granted, _msg = policy.grant_shell_prefix("git", "git status", dry_run=True)
+    assert granted
+    assert policy.shell_allow() == []  # validated only — nothing stored yet
+    granted, _msg = policy.grant_shell_prefix("git;", "git status", dry_run=True)
+    assert not granted
 
 
 def test_always_allow_scopes_run_shell(isolated_paths, monkeypatch):
     fake_registry = types.SimpleNamespace(TOOL_RISK={})
-    # `_always_allow` resolves the registry lazily via `from tools import registry`, which binds
-    # the package attribute — patch that attribute, not a bare sys.modules name.
+    # `_apply_always_grants` resolves the registry lazily via `from tools import registry`, which
+    # binds the package attribute — patch that attribute, not a bare sys.modules name.
     monkeypatch.setattr("tools.registry", fake_registry, raising=False)
     calls = [
         {"id": "1", "name": "run_shell", "risk": "destructive",
@@ -226,7 +239,15 @@ def test_always_allow_scopes_run_shell(isolated_paths, monkeypatch):
         {"id": "2", "name": "mcp_x_do", "risk": "destructive", "args": {}},
     ]
     answers = iter(["y"])
-    approval._always_allow(calls, lambda _prompt: next(answers))
+    decision = approval._always_allow(calls, lambda _prompt: next(answers))
+    # COLLECTED, not applied: nothing mutates while the interrupt is pending — the node's re-run
+    # must still see the batch gated so the human's decision reaches the gate_event record
+    # (gotcha #7: an empty record must always mean "never asked").
+    assert decision["approved"] is True
+    assert fake_registry.TOOL_RISK == {}
+    assert policy.shell_allow() == []
+    # The approval node applies the decision past the interrupt.
+    _apply_always_grants(decision)
     # The non-shell tool drops to read_only for the session; run_shell does NOT.
     assert fake_registry.TOOL_RISK == {"mcp_x_do": "read_only"}
     # Instead the FULL command landed in the /allow store, via the one policy path.
@@ -238,13 +259,11 @@ def test_always_allow_default_grant_does_not_cover_siblings(isolated_paths, monk
     # One `y` at the gate must never widen beyond the reviewed command: the default proposal is
     # the full command, so `git push --force` (and even shorter siblings) still face the gate.
     fake_registry = types.SimpleNamespace(TOOL_RISK={})
-    # `_always_allow` resolves the registry lazily via `from tools import registry`, which binds
-    # the package attribute — patch that attribute, not a bare sys.modules name.
     monkeypatch.setattr("tools.registry", fake_registry, raising=False)
     calls = [{"id": "1", "name": "run_shell", "risk": "destructive",
               "args": {"command": "git status --short"}}]
     answers = iter(["y"])
-    approval._always_allow(calls, lambda _prompt: next(answers))
+    _apply_always_grants(approval._always_allow(calls, lambda _prompt: next(answers)))
     assert policy.shell_allow() == ["git status --short"]
     assert policy.shell_allowed("git status --short") == "git status --short"
     assert policy.shell_allowed("git push --force") is None
@@ -254,13 +273,11 @@ def test_always_allow_default_grant_does_not_cover_siblings(isolated_paths, monk
 def test_always_allow_typed_shorter_prefix(isolated_paths, monkeypatch):
     # Broadening below the full command stays available — but only by TYPING the prefix.
     fake_registry = types.SimpleNamespace(TOOL_RISK={})
-    # `_always_allow` resolves the registry lazily via `from tools import registry`, which binds
-    # the package attribute — patch that attribute, not a bare sys.modules name.
     monkeypatch.setattr("tools.registry", fake_registry, raising=False)
     calls = [{"id": "1", "name": "run_shell", "risk": "destructive",
               "args": {"command": "git status --short"}}]
     answers = iter(["git status"])
-    approval._always_allow(calls, lambda _prompt: next(answers))
+    _apply_always_grants(approval._always_allow(calls, lambda _prompt: next(answers)))
     assert policy.shell_allow() == ["git status"]
     assert policy.shell_allowed("git status --porcelain") == "git status"
     assert policy.shell_allowed("git push") is None  # still narrower than the bare token
@@ -269,15 +286,31 @@ def test_always_allow_typed_shorter_prefix(isolated_paths, monkeypatch):
 
 def test_always_allow_enter_declines_shell_grant(isolated_paths, monkeypatch):
     fake_registry = types.SimpleNamespace(TOOL_RISK={})
-    # `_always_allow` resolves the registry lazily via `from tools import registry`, which binds
-    # the package attribute — patch that attribute, not a bare sys.modules name.
     monkeypatch.setattr("tools.registry", fake_registry, raising=False)
     calls = [{"id": "1", "name": "run_shell", "risk": "destructive",
               "args": {"command": "git status"}}]
     answers = iter([""])  # bare Enter = no, like every gate read
-    approval._always_allow(calls, lambda _prompt: next(answers))
+    decision = approval._always_allow(calls, lambda _prompt: next(answers))
+    assert decision["shell_grants"] == []  # declined — nothing collected
+    _apply_always_grants(decision)
     assert policy.shell_allow() == []
     assert "run_shell" not in fake_registry.TOOL_RISK
+
+
+def test_always_allow_metacharacter_prefix_degrades_to_refusal(isolated_paths, monkeypatch):
+    # A user-TYPED prefix carrying a metacharacter must degrade to "no grant, it keeps
+    # prompting" — never raise out of the live gate and kill the turn (add_shell_allow itself
+    # raises ValueError; the always-allow flow validates through grant_shell_prefix instead).
+    fake_registry = types.SimpleNamespace(TOOL_RISK={})
+    monkeypatch.setattr("tools.registry", fake_registry, raising=False)
+    calls = [{"id": "1", "name": "run_shell", "risk": "destructive",
+              "args": {"command": "git status"}}]
+    answers = iter(["git;"])  # typed a chained prefix at the sub-prompt
+    decision = approval._always_allow(calls, lambda _prompt: next(answers))
+    assert decision["approved"] is True  # the batch itself is still approved
+    assert decision["shell_grants"] == []  # but no grant was collected
+    _apply_always_grants(decision)
+    assert policy.shell_allow() == []
 
 
 # ── decision semantics: the fail-closed default is unchanged, only now signaled ──────────────
@@ -294,6 +327,148 @@ def test_select_calls_enter_defaults_to_no():
     answers = iter(["", "y"])
     out = approval._select_calls(calls, lambda _p: next(answers))
     assert out == {"approved_ids": ["b"]}
+
+
+def test_select_calls_prompt_disambiguates_same_tool_calls():
+    # Two same-tool calls — exactly the mixed-trust case `s` exists for — must NOT read
+    # identically at the prompt: each carries its clamped arg summary, so the human approves
+    # the twin they mean, not the one they remember from a scrolled-away frame.
+    calls = [
+        {"id": "a", "name": "run_shell", "args": {"command": "git status"}},
+        {"id": "b", "name": "run_shell", "args": {"command": "rm -rf /"}},
+    ]
+    prompts: list = []
+
+    def ask(p):
+        prompts.append(p)
+        return "y" if "git status" in p else ""
+
+    out = approval._select_calls(calls, ask)
+    assert out == {"approved_ids": ["a"]}  # the right twin, chosen BY its arguments
+    assert "git status" in prompts[0]
+    assert "rm -rf /" in prompts[1]
+    assert prompts[0] != prompts[1]
+
+
+def test_gate_key_vocabulary_single_source():
+    # Every recognized answer, the prompt's key choices, and both legends derive from the one
+    # _GATE_KEYS table — a key the resolver accepts but a legend doesn't name cannot exist
+    # (the same single-source pattern as _BESPOKE).
+    assert [k for k, *_ in approval._GATE_KEYS] == ["y", "N", "s", "a", "e"]
+    for key, spellings, terse, long_label in approval._GATE_KEYS:
+        assert f"{key} {terse}" in approval._KEY_LEGEND
+        assert f"{key} {long_label}" in approval._KEY_LEGEND_FULL
+        for s in spellings:
+            assert s in approval._KNOWN_ANSWERS
+    assert approval._KEY_CHOICES == "y / N / s / a / e"
+
+
+def test_unrecognized_answer_notes_but_never_alters_the_decision():
+    # Feedback only: every recognized answer stays silent; anything else gets the one-line
+    # "treated as no" note — the fail-closed reject itself is _resolve_decision's, unchanged.
+    for known in ("", "y", "yes", "n", "no", "a", "always", "s", "select", "sel"):
+        assert approval._unrecognized_note(known) is None
+    note = approval._unrecognized_note("help")
+    assert note is not None
+    assert '"help"' in note
+    assert "treated as no" in note
+    # The note doubles as the key legend — every gate key is named.
+    for key_hint in ("y approve", "N reject", "s per call", "a always-allow", "e explain"):
+        assert key_hint in note
+
+
+# ── per-call rendering: one _BESPOKE table, one framed-wrap loop — no drift ──────────────────
+
+
+def test_bespoke_table_is_single_source():
+    # _BESPOKE_RENDERED (the _full_width_args membership test) derives from the one table that
+    # also carries the compact-view skip keys and the renderer — three facts, one place.
+    assert approval._BESPOKE_RENDERED == tuple(approval._BESPOKE)
+    for name, (skip_keys, renderer) in approval._BESPOKE.items():
+        assert isinstance(skip_keys, tuple) and skip_keys, name
+        assert callable(renderer), name
+
+
+def test_frame_wrapped_plain_is_unwrapped_and_prefixed(monkeypatch, capsys):
+    # The plain fallback prints each logical line whole (the terminal wraps) — byte-faithfulness
+    # still holds because nothing is rewritten, only prefixed.
+    monkeypatch.setattr(approval, "_RICH", False)
+    approval._frame_wrapped(["x" * 500, ""], "$ ")
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0] == "  ┃       $ " + "x" * 500
+    assert lines[1] == "  ┃       $ "  # an empty line is still a row
+
+
+def test_render_call_plain_skips_bespoke_keys(isolated_paths, monkeypatch, capsys):
+    # The keys a bespoke renderer shows in full must never ALSO render as the 80-char repr —
+    # and the bespoke surface itself (diff / command) must actually appear. Pre-refactor this
+    # invariant lived twice (rich + plain loops) and could drift; now both run _render_call.
+    monkeypatch.setattr(approval, "_RICH", False)
+    approval._render_call({
+        "id": "1", "name": "write_file", "risk": "side_effecting",
+        "args": {"file_path": "a.txt", "content": "SECRETBODY", "overwrite": True},
+    })
+    approval._render_call({
+        "id": "2", "name": "run_shell", "risk": "destructive",
+        "args": {"command": "git status"},
+    })
+    out = capsys.readouterr().out
+    assert "[side_effecting] write_file" in out
+    assert "file_path = 'a.txt'" in out  # non-bespoke keys keep the compact repr
+    assert "content = " not in out  # shown as the diff below, never the truncated repr
+    assert "+ SECRETBODY" in out  # …and the diff really rendered it
+    assert "[destructive] run_shell" in out
+    assert "command = " not in out
+    assert "$ git status" in out  # the full-command view
+    assert "-> irreversible — review carefully" in out  # per-tier hint survived the extraction
+
+
+# ── sub-prompts are markup/emoji-safe: the displayed grant IS the stored grant ───────────────
+
+
+def test_gate_subprompts_render_bracketed_command_literally(isolated_paths, monkeypatch):
+    # End-to-end through ask_approval's rich path with a real markup-parsing Console: the
+    # always-allow prefix sub-prompt embeds the raw command, and bracketed shell content
+    # (grep classes, globs, `[/...]`-shaped tokens) plus `:name:` tokens are legitimate command
+    # text — policy's metachar screen does NOT reject them. Pre-fix, Console.input's default
+    # markup=True silently ate `[error]` (the human confirms a DIFFERENT text than is granted)
+    # and raised MarkupError on `[/tmp/x]` mid-gate; emoji=True swapped `:smile:` for a glyph.
+    import builtins
+    import io
+
+    from rich.console import Console
+
+    fake_registry = types.SimpleNamespace(TOOL_RISK={})
+    monkeypatch.setattr("tools.registry", fake_registry, raising=False)
+
+    buf = io.StringIO()
+    monkeypatch.setattr(approval, "_console",
+                        Console(file=buf, force_terminal=False, width=200, highlight=False))
+    monkeypatch.setattr(approval, "_RICH", True)
+    monkeypatch.setattr(approval, "_live_stop", lambda: None)
+    monkeypatch.setattr(approval, "_live_start", lambda: None)
+
+    answers = iter(["a", "y", "y"])  # main gate: always — then accept both prefix proposals
+    monkeypatch.setattr(builtins, "input", lambda *a, **k: next(answers))
+
+    cmd1 = "grep [error] :smile: app.log"
+    cmd2 = "ls [/tmp/x]"
+    value = {"tool_calls": [
+        {"id": "1", "name": "run_shell", "risk": "destructive", "args": {"command": cmd1}},
+        {"id": "2", "name": "run_shell", "risk": "destructive", "args": {"command": cmd2}},
+    ]}
+    decision = approval.ask_approval(value)  # no MarkupError killed the gate
+    assert decision["approved"] is True
+
+    out = buf.getvalue()
+    assert cmd1 in out  # byte-faithful: brackets not eaten, :smile: not emoji-substituted
+    assert cmd2 in out  # the `[/...]`-shaped token rendered instead of raising
+    # …and what was displayed is exactly what the node persists past the interrupt — the gate
+    # itself only COLLECTED the grants (nothing stored while the interrupt was pending).
+    assert policy.shell_allow() == []
+    assert [g["prefix"] for g in decision["shell_grants"]] == [cmd1, cmd2]
+    _apply_always_grants(decision)
+    assert policy.shell_allow() == [cmd1, cmd2]
 
 
 # ── plan review: bare plan rows inside the frame + fail-closed Ctrl-C/EOF ────────────────────

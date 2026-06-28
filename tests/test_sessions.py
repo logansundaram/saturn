@@ -101,3 +101,27 @@ def test_delete_and_rename(isolated_paths):
     _make("other")
     _rename_named(["other", "kept"])
     assert sorted(f.stem for f in _named_sessions()) == ["kept", "other"]
+
+
+def test_resume_router_and_reserved_stems_share_one_table(isolated_paths):
+    """Every bare word the router routes is a reserved session stem — derived from the same
+    _RESUME_VERBS table, so a future subcommand cannot recreate the stranded-session trap
+    (`/resume save list` succeeding, then `/resume list` listing instead of loading)."""
+    from commands.conversation import (
+        _RESERVED_SESSION_STEMS,
+        _RESUME_VERBS,
+        _refuse_reserved_stem,
+        _resume_verb,
+    )
+    from commands._session import _session_file
+
+    for verb, (bare, flags) in _RESUME_VERBS.items():
+        for word in bare + flags:
+            assert _resume_verb(word) == verb  # the router routes every spelling…
+        for word in bare:
+            assert word in _RESERVED_SESSION_STEMS  # …and every bare word is reserved
+            assert _refuse_reserved_stem(_session_file(word))  # so saving under it refuses
+    # Case-insensitive, like the router's lowercasing; non-verbs stay saveable.
+    assert _refuse_reserved_stem(_session_file("LIST"))
+    assert not _refuse_reserved_stem(_session_file("research"))
+    assert _resume_verb("research") is None

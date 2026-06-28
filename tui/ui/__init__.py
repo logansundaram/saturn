@@ -3,7 +3,12 @@ CLI rendering for the agent console.
 
 Design target: a serious local-agent console — git status / htop / pytest / a trace viewer,
 not a chatbot. Dense, fast, keyboard-first, low-noise, inspectable. The aesthetic comes from
-*structure*, not decoration:
+*structure*, not decoration, and the structure is deliberately spare (2026-06-12 visual
+refactor): everything sits on a 2-space indent, info lines share one tight ` · ` rhythm, and
+exactly TWO rule glyphs exist — `── title` opens a block (dim dashes, accent title, never a
+trailing bar of dashes; `listing.section` is the one implementation) and `╶ ` marks a quiet
+meta-footer (the receipt, a recorded answer). The only thing allowed to be heavy is the approval
+frame. Specifics:
 
   - A dim vertical rail (`│`) carries the execution trace. Consecutive node lines form one
     continuous gutter, so a turn reads as a single inspectable block (the htop/tree feel). Each
@@ -26,21 +31,26 @@ not a chatbot. Dense, fast, keyboard-first, low-noise, inspectable. The aestheti
     context tokens ingested, tok/s) — rendered **dim**: metrics are tertiary and must never
     out-shout the trace they ride on, let alone the response. The eye flows response → trace →
     metrics without having to parse the screen.
-  - The approval gate deliberately breaks out of the rail with a heavy rule. It's a blocking
-    safety decision and *should* draw the eye; everything else recedes. Each gated call shows its
-    risk tier, every argument on its own line, and a one-line "what allowing this means" hint.
-  - The final **response** renders as real markdown (headings, bold, lists, fenced code with
-    syntax highlighting), so the answer reads as finished output, not a log line.
+  - The approval gate is the ONE surface that gets to shout: a heavy `┏━ ┃ ┗━` frame (no trailing
+    fill — the weight is the frame itself), set off by a blank line, breaking out of the dim
+    rail. It's a blocking safety decision and *should* draw the eye; everything else recedes.
+    Each gated call shows its risk tier, every argument on its own line, and a one-line "what
+    allowing this means" hint. The plan-review pause wears the same frame.
+  - The final **response** renders under a `── response` rule as real markdown (headings, bold,
+    lists, fenced code) at the app's 2-space indent, its measure capped (~100 cols) so prose
+    stays readable on a wide terminal. The trust-colored Sources block and the receipt — trust
+    facts first (`local-only` / sends / gated), dim run stats after — close every answer.
   - A single-line **status bar** is pinned at the bottom of the screen for the duration of a turn
-    (`rich.live.Live`), grouped into three zones parted by a quiet `│` rule so it reads as
-    deliberate groups, not a value stream: **identity** (`saturday · model`) │ **progress**
-    (`▸node · iter · elapsed · tools · tok/s`) │ **resources** (`ctx NN% ▰▱` with a meter then
-    bare `cpu/ram/gpu/vram NN%` load-colored percentages; gpu/vram sampled off-thread by a daemon
-    so nvidia-smi never stalls the render). It's no-wrap + ellipsis so a narrow terminal trims the
-    right edge rather than wrapping. The trace lines above it keep scrolling normally. It's
-    `transient`, so it vanishes when the turn ends. Because `input()` can't run inside an active
-    `Live`, the bar is torn down around the `»` prompt, the approval gate, and the final response,
-    then restarted as the loop continues.
+    (`rich.live.Live`): **posture** (the gate tier — `⚠ GATE OFF` when open — plus ⛓ AIRGAP /
+    DRY-RUN while they hold; leftmost so right-edge trimming sacrifices it last) │ **type-ahead**
+    (only while queuing input) │ **progress** (`▸node · iter · tools · elapsed · tok/s`) │
+    **session** (`ctx NN% ▰▱` meter · `Σ` token spend · `⇅` egress count, each only once it has
+    something to say) │ **hardware** (bare load-colored `cpu/ram/gpu/vram NN%`, sampled
+    off-thread so nvidia-smi never stalls the render) │ the dim key legend, last on purpose. It's
+    no-wrap + ellipsis so a narrow terminal trims the right edge rather than wrapping; transient,
+    so it vanishes when the turn ends. Because `input()` can't run inside an active `Live`, the
+    bar is torn down around the `»` prompt, the approval gate, and the final response, then
+    restarted as the loop continues.
 
 The agent emits node/plan/state updates; this module is one subscriber that renders them.
 Swapping it for a Textual/Electron surface needs no graph change.

@@ -14,6 +14,7 @@ from typing import Literal
 from langchain.messages import ToolMessage
 from langgraph.types import interrupt, Command
 
+import diag
 from trust import policy
 from trust import quarantine
 from config import get_config
@@ -44,10 +45,16 @@ def _skip_rejected_steps(
     reserve, the rejection would skip the FIRST matching step, the executed call's credit would
     flow past it to the next one, and the plan would record the opposite of what happened.
 
-    A rejected call whose tool matched no planned step falls back to skipping the first
-    non-reserved step with an intended_tool — the planner's `intended_tool` guess didn't match what
-    the agent actually called, but that step is still what lockstep was driving, so it must advance
-    too. Returns a fresh list; never mutates the input."""
+    A rejection that matched NO planned step falls back to skipping the first non-reserved step
+    with an intended_tool — the planner's `intended_tool` guess didn't match what the agent
+    actually called, but that step is still what lockstep was driving, so it must advance too.
+    The fallback fires only when the main walk skipped NOTHING (mirroring update_plan_node's
+    `if called and not newly_marked` — gotcha #6: the walkers keep identical accounting): a
+    leftover rejected count alone must not trigger it, because rejected calls can OUTNUMBER the
+    matching steps (two parallel run_shell calls serving one run_shell step) and the surplus
+    would otherwise retire an UNRELATED later step the user was never asked about — silently
+    dropping planned work with no skip disclosure. Returns a fresh list; never mutates the
+    input."""
     if not plan:
         return plan
     plan = [dict(s) for s in plan]
@@ -56,6 +63,7 @@ def _skip_rejected_steps(
     reserve = Counter(called or []) + Counter(executing_tools or [])
     remaining = Counter(rejected_tools)
     reserved_ids: set = set()
+    skipped_any = False
     for step in plan:
         tool = step.get("intended_tool")
         status = step.get("status")
@@ -74,9 +82,14 @@ def _skip_rejected_steps(
         if remaining.get(tool, 0) > 0:
             remaining[tool] -= 1
             step["status"] = "skipped"
-    # Fallback: a rejection didn't line up with any planned tool. Skip the first un-reserved step
-    # so the lockstep directive stops re-pointing the agent at the work it was just told not to do.
-    if sum(remaining.values()) > 0:
+            skipped_any = True
+    # Fallback: NO rejection lined up with any planned tool (`rejected_tools and not skipped_any`,
+    # update_plan_node's `called and not newly_marked` in this walker's vocabulary). Skip the first
+    # un-reserved step so the lockstep directive stops re-pointing the agent at the work it was
+    # just told not to do. Guarded on skipped_any rather than a leftover count: once the main walk
+    # skipped the step this batch was serving, a surplus same-tool rejection has no step left to
+    # retire and must not spill onto an unrelated one.
+    if rejected_tools and not skipped_any:
         for step in plan:
             if step.get("status") in TERMINAL_STATUSES or id(step) in reserved_ids:
                 continue
@@ -126,13 +139,51 @@ def gate_event(
     }
 
 
+def _apply_always_grants(decision: dict) -> None:
+    """Apply the gate's `a(lways)` grants: drop each listed tool to the auto-approved tier for
+    the session (live registry.TOOL_RISK — exactly what /risk <tool> read_only does) and persist
+    any scoped run_shell prefix grants through the one policy store (policy.grant_shell_prefix:
+    screen -> coverage check with the one matcher -> add).
+
+    The UI COLLECTS these at decision time without mutating anything (it validates with
+    grant_shell_prefix(dry_run=True)); they are applied HERE, past the interrupt, because
+    LangGraph re-executes this node from the top on resume and `gated` recomputes against the
+    live policy — a grant applied while the interrupt was pending would auto-approve the very
+    calls the human was prompted about, the re-run would return at the no-gated fast path
+    without reaching the gate_event recording site, and the human's decision would vanish from
+    the record (gotcha #7: empty must always mean "never asked"). Failures degrade safely: a
+    refused shell grant just means the command faces the gate again next batch — diag-logged,
+    since a node cannot print."""
+    from tools import registry  # lazy, matching the UI: binds the live TOOL_RISK
+
+    for name in decision.get("tools") or []:
+        # run_shell never drops a tier (one keypress must not un-gate every future command —
+        # it gets the scoped prefix grants below instead). The UI never sends it here, but the
+        # resume value is still external input: fail closed.
+        if name and name != "run_shell":
+            registry.TOOL_RISK[str(name)] = "read_only"
+    for grant in decision.get("shell_grants") or []:
+        if not isinstance(grant, dict):
+            continue
+        try:
+            ok, msg = policy.grant_shell_prefix(
+                str(grant.get("prefix") or ""), str(grant.get("command") or "")
+            )
+        except Exception as exc:  # resume value is external input — a grant must never kill the turn
+            ok, msg = False, str(exc)
+        if not ok:
+            diag.log(f"approval_node: always-allow shell grant refused — {msg}")
+
+
 def approval_node(state: AgentState) -> Command[Literal["tools", "agent"]]:
     """Human-in-the-loop safety gate. Calls within the configured auto-approve tier pass
     straight through. If any pending call exceeds it, pause via `interrupt` and let the user
     decide per batch OR per call.
 
-    The resume value is either a bool (True = approve the whole batch, False = reject it) or
-    `{"approved_ids": [...]}` from the UI's per-call select mode. Rejected calls get a decline
+    The resume value is a bool (True = approve the whole batch, False = reject it),
+    `{"approved_ids": [...]}` from the UI's per-call select mode, or the always-allow decision
+    dict `{"approved": True, "tools": [...], "shell_grants": [...]}` whose grants are applied
+    past the interrupt by `_apply_always_grants`. Rejected calls get a decline
     ToolMessage here (orphaned tool_calls break the next model turn); everything else in the
     batch — ungated calls and per-call-approved ones — still routes to `tools`, which executes
     only the calls that don't already have a ToolMessage. Only a fully-rejected batch goes back
@@ -212,10 +263,17 @@ def approval_node(state: AgentState) -> Command[Literal["tools", "agent"]]:
         }
     )
 
-    # Resolve the decision into the set of approved gated-call ids.
+    # Resolve the decision into the set of approved gated-call ids. Two dict shapes: the per-call
+    # select ({"approved_ids": [...]}) and the always-allow decision ({"approved": True,
+    # "tools": [...], "shell_grants": [...]}) — the latter's grants are applied here, past the
+    # interrupt, never by the UI at decision time (see _apply_always_grants).
     gated_ids = {tc["id"] for tc in gated}
-    if isinstance(decision, dict):
+    if isinstance(decision, dict) and "approved_ids" in decision:
         approved_ids = gated_ids & set(decision.get("approved_ids") or [])
+    elif isinstance(decision, dict):
+        approved_ids = set(gated_ids) if decision.get("approved") else set()
+        if approved_ids:
+            _apply_always_grants(decision)
     elif decision:
         approved_ids = set(gated_ids)
     else:

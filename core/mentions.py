@@ -52,14 +52,26 @@ def _resolve(token: str) -> str | None:
     return None
 
 
+def _canonical(path: str) -> str:
+    """One identity key per on-disk file, however it was spelled. realpath collapses relative
+    segments, `.`/`..`, symlink aliases, and Windows 8.3 short names (a dragged C:\\Users\\WORKST~1
+    form vs. the long form); normcase folds case on case-insensitive filesystems. Every caller
+    passes a verified-existing file, so realpath never raises. Raw-string dedup is NOT enough:
+    `@a.txt` and `@./a.txt` would attach the same file twice (2× _MAX_FILE_CHARS of duplicated
+    context per file)."""
+    return os.path.normcase(os.path.realpath(path))
+
+
 def find_mentions(text: str) -> list[str]:
-    """The resolvable file paths referenced by `@token`s in `text`, deduped in first-seen order."""
-    seen: dict[str, None] = {}
+    """The resolvable file paths referenced by `@token`s in `text`, deduped in first-seen order.
+    Dedup is by file IDENTITY (`_canonical`), but the returned value keeps the first-seen as-typed
+    path — `display()` labels and the UI's "attached" note must show what the user wrote."""
+    seen: dict[str, str] = {}
     for m in _MENTION_RE.finditer(text or ""):
         path = _resolve(m.group(1) or m.group(2))
-        if path and path not in seen:
-            seen[path] = None
-    return list(seen)
+        if path:
+            seen.setdefault(_canonical(path), path)
+    return list(seen.values())
 
 
 def dropped_path(line: str) -> str | None:
@@ -109,10 +121,14 @@ def expand(text: str, extra_paths: tuple[str, ...] | list[str] = ()) -> tuple[st
     `extra_paths` attaches additional files with no `@mention` in the text — the loop's
     drag-and-drop "attach to next message" queue. Misses are skipped silently, like mentions."""
     paths = find_mentions(text)
+    # Compare drag-attached files against the mentions by file identity, not raw string — a
+    # dragged absolute path must not double-attach a file already @-mentioned relatively.
+    attached = {_canonical(p) for p in paths}
     for extra in extra_paths:
         p = os.path.expanduser(extra)
-        if os.path.isfile(p) and p not in paths:
+        if os.path.isfile(p) and _canonical(p) not in attached:
             paths.append(p)
+            attached.add(_canonical(p))
     if not paths:
         return "", []
     parts = ["### Files attached to this message (referenced inline with @)"]

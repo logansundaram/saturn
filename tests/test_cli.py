@@ -55,6 +55,14 @@ def test_export_requires_prompt(capsys):
     assert "--export" in capsys.readouterr().err
 
 
+def test_json_requires_prompt(capsys):
+    # `saturn --json` with no -p must exit 2 like --export, never silently launch the TUI.
+    with pytest.raises(SystemExit) as exc:
+        agent._parse_cli(["--json"])
+    assert exc.value.code == 2
+    assert "--json" in capsys.readouterr().err
+
+
 def test_valid_flag_combinations_parse():
     args = agent._parse_cli(["-p", "hello", "--json", "--export", "out.json", "--yolo"])
     assert args.prompt == "hello" and args.json and args.export == "out.json" and args.yolo
@@ -376,3 +384,173 @@ def test_benchmark_trust_failures_decision():
     elevated = {"grounding": {"ungrounded": 0},
                 "gate": {"policy_default": False, "missed": ["write_file"]}}
     assert benchmark.trust_failures(elevated) == []
+
+    # A runtime.token_budget spent BEFORE a bait force-lands it searchless: those grade
+    # budget_capped (reported), never ungrounded (failed). Mirror of the elevated-gate rule.
+    capped = {"grounding": {"ungrounded": 0, "budget_capped": 4, "token_budget": 50000},
+              "gate": {"policy_default": True, "missed": []}}
+    assert benchmark.trust_failures(capped) == []
+
+    # But a cap crossed DURING a bait's own turn is budget_ambiguous: the grade can't tell a
+    # forced landing from uncaught confabulation, and an ambiguous trust grade FAILS --strict —
+    # excusing it would let a bait whose own synthesize spend crossed the cap mask real
+    # confabulation the judge missed under budget.
+    ambiguous = {"grounding": {"ungrounded": 0, "budget_ambiguous": 1, "token_budget": 50000},
+                 "gate": {"policy_default": True, "missed": []}}
+    assert benchmark.trust_failures(ambiguous)
+
+
+# --- trust-benchmark budget grading ----------------------------------------------------------
+
+def _fake_trust_entry(query):
+    """The minimal run_query entry shape the trust grader reads: no search ran, no replan,
+    nothing gated — the shape that grades 'ungrounded' unless the budget posture excuses it."""
+    return {
+        "status": "ok",
+        "query": query,
+        "latency_s": 0.0,
+        "tools_called": [],
+        "gated_tools": [],
+        "gate_prompted": [],
+        "replans": 0,
+    }
+
+
+def test_trust_benchmark_budget_capped_not_ungrounded(monkeypatch):
+    """With runtime.token_budget spent, a searchless bait grades budget_capped: excluded from
+    the ungrounded count (so --strict cannot fail on it), excluded from the grounded-rate
+    denominator, and the posture is recorded in the summary like the gate's `policy`."""
+    import benchmark
+
+    monkeypatch.setattr(benchmark.budget, "exceeded", lambda: True)
+    monkeypatch.setattr(benchmark.budget, "limit", lambda: 5000)
+    monkeypatch.setattr(benchmark, "run_query", lambda graph, q: _fake_trust_entry(q))
+
+    out = benchmark.run_trust_benchmark(object())
+    g = out["summary"]["grounding"]
+    assert all(e["verdict"] == "budget_capped" for e in out["grounding_results"])
+    assert g["ungrounded"] == 0
+    assert g["budget_capped"] == len(benchmark.GROUNDING_BAIT)
+    assert g["token_budget"] == 5000
+    # Every bait was budget-capped: no meaningful grade remains, so no rate is asserted.
+    assert g["grounded_rate"] is None
+    assert benchmark.trust_failures(out["summary"]) == []
+
+
+def test_trust_benchmark_budget_crossed_mid_turn_is_ambiguous_and_fails_strict(monkeypatch):
+    """A ceiling crossed DURING a bait's own turn is NOT the clean pre-turn excuse: the crossing
+    may have happened in synthesize, after routing already gave the judge its full under-budget
+    chance and it missed — so that bait grades budget_ambiguous (excluded from the rate like
+    budget_capped, but FAILED by --strict: an ambiguous trust grade is a failed one). Baits
+    after it saw the budget spent before their turn and stay budget_capped (excused)."""
+    import benchmark
+
+    calls = {"n": 0}
+
+    def crossing_exceeded():
+        # False only on the very first check (the pre-turn snapshot of bait #1); True after —
+        # simulating the budget being crossed during bait #1's turn.
+        calls["n"] += 1
+        return calls["n"] > 1
+
+    monkeypatch.setattr(benchmark.budget, "exceeded", crossing_exceeded)
+    monkeypatch.setattr(benchmark.budget, "limit", lambda: 5000)
+    monkeypatch.setattr(benchmark, "run_query", lambda graph, q: _fake_trust_entry(q))
+
+    out = benchmark.run_trust_benchmark(object())
+    g = out["summary"]["grounding"]
+    assert out["grounding_results"][0]["verdict"] == "budget_ambiguous"
+    assert all(e["verdict"] == "budget_capped" for e in out["grounding_results"][1:])
+    assert g["ungrounded"] == 0
+    assert g["budget_ambiguous"] == 1
+    assert g["budget_capped"] == len(benchmark.GROUNDING_BAIT) - 1
+    # The ambiguous grade is the --strict failure — the masking case this distinction closes.
+    assert any("budget_ambiguous" in f for f in benchmark.trust_failures(out["summary"]))
+
+
+def test_trust_benchmark_no_budget_grades_unchanged(monkeypatch):
+    """With no budget set (the default), the searchless bait still grades ungrounded and still
+    fails --strict — the budget_capped verdict must never excuse real confabulation."""
+    import benchmark
+
+    monkeypatch.setattr(benchmark.budget, "exceeded", lambda: False)
+    monkeypatch.setattr(benchmark.budget, "limit", lambda: 0)
+    monkeypatch.setattr(benchmark, "run_query", lambda graph, q: _fake_trust_entry(q))
+
+    out = benchmark.run_trust_benchmark(object())
+    g = out["summary"]["grounding"]
+    assert g["ungrounded"] == len(benchmark.GROUNDING_BAIT)
+    assert g["budget_capped"] == 0
+    assert g["token_budget"] == 0
+    assert g["grounded_rate"] == 0.0
+    assert benchmark.trust_failures(out["summary"])
+
+
+# --- benchmark checkpoint hygiene ------------------------------------------------------------
+
+class _FakeCheckpointer:
+    def __init__(self):
+        self.deleted = []
+
+    def delete_thread(self, thread_id):
+        self.deleted.append(thread_id)
+
+
+class _FakeGraph:
+    def __init__(self):
+        self.checkpointer = _FakeCheckpointer()
+
+
+def test_benchmark_run_query_prunes_checkpoints(monkeypatch):
+    """Every benchmark query runs on a fresh thread against the production checkpointer; the
+    thread must be pruned afterward (agent.py's per-turn idiom) or db.sqlite grows without
+    bound across benchmark runs."""
+    import benchmark
+
+    seen = {}
+
+    def fake_run_turn(graph, state, config, approver=None):
+        seen["thread_id"] = config["configurable"]["thread_id"]
+        return state
+
+    monkeypatch.setattr(benchmark, "run_turn", fake_run_turn)
+    graph = _FakeGraph()
+    entry = benchmark.run_query(graph, "q")
+    assert entry["status"] == "ok"
+    assert graph.checkpointer.deleted == [seen["thread_id"]]
+
+
+def test_benchmark_run_query_prunes_on_error(monkeypatch):
+    import benchmark
+
+    def boom(graph, state, config, approver=None):
+        raise RuntimeError("turn died")
+
+    monkeypatch.setattr(benchmark, "run_turn", boom)
+    graph = _FakeGraph()
+    entry = benchmark.run_query(graph, "q")
+    assert entry["status"] == "error"
+    assert len(graph.checkpointer.deleted) == 1
+
+
+def test_benchmark_run_conversation_prunes_every_turn(isolated_paths, monkeypatch):
+    """The finally-prune fires before the error-path break, so a poisoned conversation still
+    prunes its last (failed) turn's checkpoints; untried turns start no thread."""
+    import benchmark
+
+    calls = {"n": 0}
+
+    def fake_run_turn(graph, state, config, approver=None):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise RuntimeError("second turn died")
+        return state
+
+    monkeypatch.setattr(benchmark, "run_turn", fake_run_turn)
+    graph = _FakeGraph()
+    convo = {"name": "x", "turns": [{"query": "one"}, {"query": "two"}, {"query": "never runs"}]}
+    result = benchmark.run_conversation(graph, convo)
+    assert [t["status"] for t in result["turns"]] == ["ok", "error"]
+    # Both started turns pruned (distinct fresh threads), including the one that raised.
+    assert len(graph.checkpointer.deleted) == 2
+    assert len(set(graph.checkpointer.deleted)) == 2

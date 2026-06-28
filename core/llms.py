@@ -53,19 +53,24 @@ class _CloudBoundaryModel:
         when `runtime.redaction` is on.
     Everything else (bind_tools, with_structured_output, attribute access) delegates to the inner
     model and re-wraps any derived runnable so the boundary survives `.bind_tools(...)` /
-    `.with_structured_output(...)`. Local Ollama models are never wrapped — there is no boundary."""
+    `.with_structured_output(...)`. LOOPBACK Ollama models are never wrapped — there is no
+    boundary; a REMOTE Ollama (OLLAMA_HOST off-machine) is wrapped exactly like a cloud provider,
+    with the real endpoint as the ledger host."""
 
-    def __init__(self, inner, provider: str, model: str):
+    def __init__(self, inner, provider: str, model: str, host: str = ""):
         self._inner = inner
         self._provider = provider
         self._model = model
+        self._host = host or f"{provider} API"
 
     def _outgoing(self, messages):
-        """Redact (per the mode) then record the egress; return the messages to actually send."""
+        """Redact (per the mode) then record the egress; return the messages to actually send.
+        n_bytes measures `to_send` — what actually crosses the boundary — not the pre-redaction
+        original: in redact mode the two differ by exactly the secrets that were stripped."""
         to_send, redactions = redaction.process_messages(messages) if isinstance(messages, list) else (messages, 0)
         egress.record(
-            "llm", f"{self._provider} API", self._model,
-            provider=self._provider, n_bytes=_approx_bytes(messages), redactions=redactions,
+            "llm", self._host, self._model,
+            provider=self._provider, n_bytes=_approx_bytes(to_send), redactions=redactions,
         )
         return to_send
 
@@ -79,11 +84,13 @@ class _CloudBoundaryModel:
         return await self._inner.ainvoke(self._outgoing(input), *args, **kwargs)
 
     def bind_tools(self, *args, **kwargs):
-        return _CloudBoundaryModel(self._inner.bind_tools(*args, **kwargs), self._provider, self._model)
+        return _CloudBoundaryModel(
+            self._inner.bind_tools(*args, **kwargs), self._provider, self._model, self._host
+        )
 
     def with_structured_output(self, *args, **kwargs):
         return _CloudBoundaryModel(
-            self._inner.with_structured_output(*args, **kwargs), self._provider, self._model
+            self._inner.with_structured_output(*args, **kwargs), self._provider, self._model, self._host
         )
 
     def __getattr__(self, name):
@@ -107,16 +114,29 @@ _MODEL_CACHE: dict[tuple[str, str], object] = {}
 _DERIVED_CACHE: dict[str, object] = {}
 
 
+def _wrap_ollama(m, model: str):
+    """Loopback Ollama is handed back bare — there is no boundary to guard. A REMOTE Ollama
+    (OLLAMA_HOST pointing off-machine) IS one: wrap it in the same cloud boundary proxy so every
+    call is redacted (per runtime.redaction) and recorded to the egress ledger with the real
+    endpoint as the host — 'local model' must never silently mean 'someone else's machine'."""
+    if egress.ollama_is_local():
+        return m
+    return _CloudBoundaryModel(m, "ollama", model, host=f"ollama @ {egress.ollama_endpoint()}")
+
+
 def _build(provider: str, model: str):
     if provider == "ollama":
         # Bind num_ctx to the effective window (runtime.num_ctx override, else the model's declared
         # window) so it actually runs at the size the UI gauges against — Ollama otherwise silently
         # caps at 2048, making the context-fill % lie. /context drops the cache to rebind live.
         # client_kwargs carries the request timeout (guards a wedged daemon; see _ollama_client_kwargs).
-        return ChatOllama(
-            model=model,
-            num_ctx=get_config().num_ctx_for(model),
-            **_ollama_client_kwargs(),
+        return _wrap_ollama(
+            ChatOllama(
+                model=model,
+                num_ctx=get_config().num_ctx_for(model),
+                **_ollama_client_kwargs(),
+            ),
+            model,
         )
     # Any other provider (cloud): lean on LangChain's universal initializer, then wrap it in the
     # cloud boundary proxy so every call is redacted (per runtime.redaction) and recorded to the
@@ -141,19 +161,23 @@ def get_model(role: str):
         raise RuntimeError(
             f"Air-gap is ON — role '{role}' is bound to a cloud model "
             f"({spec.provider}:{spec.model}), which cannot run with network egress blocked. "
-            f"Switch to a local tier (e.g. `/models tier workstation`) or turn it off with "
+            f"Switch to an all-local tier (`/models tier` lists them) or turn it off with "
             f"`/privacy airgap off`."
+        )
+    if spec.provider == "ollama" and not egress.ollama_is_local() and egress.airgap_on():
+        # An off-machine OLLAMA_HOST makes the "local" model network egress — same refusal as a
+        # cloud role, with the endpoint named so the fix is obvious.
+        egress.record("llm", f"ollama @ {egress.ollama_endpoint()}", f"{role} → {spec.model}",
+                      provider="ollama", status=egress.BLOCKED)
+        raise RuntimeError(
+            f"Air-gap is ON — OLLAMA_HOST points off this machine ({egress.ollama_endpoint()}), "
+            f"so role '{role}' ({spec.model}) would cross the network. Unset OLLAMA_HOST to use "
+            f"the local daemon, or turn the air-gap off with `/privacy airgap off`."
         )
     key = (spec.provider, spec.model)
     if key not in _MODEL_CACHE:
         _MODEL_CACHE[key] = _build(spec.provider, spec.model)
     return _MODEL_CACHE[key]
-
-
-def capability_of(role: str):
-    """Capability descriptor for the model currently bound to `role`."""
-    spec = get_config().model_for_role(role)
-    return get_config().capability_of(spec.model)
 
 
 def model_id(role: str) -> str:
@@ -201,11 +225,10 @@ def get_judge_model():
     decides whether the agent's draft answer is grounded or needs an inserted web-search step.
     Mirrors get_plan_model — Ollama uses method="json_schema" for server-constrained generation."""
     spec = get_config().model_for_role("judge")
-    if spec.provider != "ollama":
-        # Live air-gap guard even on a derived-cache hit (see get_tool_model). The local branch
-        # below builds its own temp-0 ChatOllama and never crosses the boundary, so only a
-        # cloud-bound judge needs the check.
-        get_model("judge")
+    # Live air-gap guard even on a derived-cache hit (see get_tool_model). Unconditional: a
+    # cloud-bound judge AND an Ollama judge behind a remote OLLAMA_HOST both cross the boundary
+    # (the guard lives in get_model; a loopback Ollama judge passes through untouched).
+    get_model("judge")
     if "judge" not in _DERIVED_CACHE:
         if spec.provider == "ollama":
             # A dedicated temperature-0 instance: groundedness is a classification, so we want a
@@ -213,11 +236,14 @@ def get_judge_model():
             # grounded/ungrounded run to run). Built separately from the shared get_model base —
             # on single-model tiers every role shares one ChatOllama, so lowering temperature there
             # would change planner/agent/synthesizer sampling too.
-            base = ChatOllama(
-                model=spec.model,
-                num_ctx=get_config().num_ctx_for(spec.model),
-                temperature=0,
-                **_ollama_client_kwargs(),
+            base = _wrap_ollama(
+                ChatOllama(
+                    model=spec.model,
+                    num_ctx=get_config().num_ctx_for(spec.model),
+                    temperature=0,
+                    **_ollama_client_kwargs(),
+                ),
+                spec.model,
             )
             _DERIVED_CACHE["judge"] = base.with_structured_output(
                 ReplanVerdict, method="json_schema"
@@ -227,9 +253,48 @@ def get_judge_model():
     return _DERIVED_CACHE["judge"]
 
 
+class _EmbeddingsBoundary:
+    """OllamaEmbeddings against a REMOTE daemon — the embedding twin of _CloudBoundaryModel.
+    Every batch checks the air-gap first (raising, since an embedder can't hand back a refusal
+    string) and records the egress: corpus text leaving for another machine must show in the
+    ledger like any other send. Loopback embeddings are never wrapped."""
+
+    def __init__(self, inner, model: str, host: str):
+        self._inner, self._model, self._host = inner, model, host
+
+    def _gate(self, texts) -> None:
+        if egress.airgap_on():
+            egress.record("embedding", self._host, self._model,
+                          provider="ollama", status=egress.BLOCKED)
+            raise RuntimeError(
+                f"Air-gap is ON — OLLAMA_HOST points off this machine ({self._host}), so "
+                f"embedding would send document text across the network. Unset OLLAMA_HOST or "
+                f"turn the air-gap off with `/privacy airgap off`."
+            )
+        egress.record("embedding", self._host, self._model, provider="ollama",
+                      n_bytes=sum(len(t) for t in texts if isinstance(t, str)))
+
+    def embed_documents(self, texts):
+        self._gate(texts)
+        return self._inner.embed_documents(texts)
+
+    def embed_query(self, text):
+        self._gate([text])
+        return self._inner.embed_query(text)
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
 def get_embeddings():
-    """Embedding model for the RAG store (the `embedder` slot of the active tier)."""
-    return OllamaEmbeddings(model=get_config().embedder_model)
+    """Embedding model for the RAG store (the `embedder` slot of the active tier). Behind a
+    remote OLLAMA_HOST it comes back wrapped in the egress/air-gap boundary — document text
+    crossing the network is egress, exactly like a cloud chat call."""
+    inner = OllamaEmbeddings(model=get_config().embedder_model)
+    if egress.ollama_is_local():
+        return inner
+    return _EmbeddingsBoundary(inner, get_config().embedder_model,
+                               f"ollama @ {egress.ollama_endpoint()}")
 
 
 def reset_models() -> None:

@@ -26,9 +26,10 @@ The one front door to the document knowledge base (what search_knowledge_base re
 plus a view of the workspace sandbox files (where the file tools read/write).
 
   /docs                 list the ingested corpus + the workspace files (also: list, ls)
-  /docs add <path>      copy a file into the corpus and embed it (pdf/txt/md). Paths with
-                        spaces don't need quoting; a dragged file's quoted path works as-is
-                        (tip: type `/docs add ` then drag the file onto the terminal).
+  /docs add <path>      copy a file into the corpus and embed it (txt/md/pdf/html/csv/docx).
+                        Paths with spaces don't need quoting; a dragged file's quoted path
+                        works as-is (tip: type `/docs add ` then drag the file onto the
+                        terminal).
                         A no-op if the file is already present and unchanged (content hash).
   /docs remove <name>   remove a document: drops its vectors and manifest entry (any removal
                         verb works: remove/rm/delete/del/forget/drop)
@@ -99,7 +100,8 @@ def _list_docs() -> None:
 
 
 def _add(rest: list) -> None:
-    from stores.rag import ingest_file, SUPPORTED_EXTENSIONS
+    from stores.rag import ingest_file, screen_file, SUPPORTED_EXTENSIONS
+    from tui import ui
 
     if not rest:
         _print("  usage: /docs add <path-to-file>")
@@ -113,6 +115,22 @@ def _add(rest: list) -> None:
     if path.suffix.lower() not in SUPPORTED_EXTENSIONS:
         _print(f"  unsupported type '{path.suffix}' — supported: {', '.join(sorted(SUPPORTED_EXTENSIONS))}")
         return
+    # Corpus admission screen: an ingested document re-presents its content on EVERY future
+    # search, so instruction-shaped content gets one human look before it's let in. Default no
+    # (bare Enter / Ctrl-C refuses) — the same fail-closed default as the approval gate.
+    findings = screen_file(str(path))
+    if findings:
+        kinds = ", ".join(sorted({f.kind for f in findings}))
+        ui.warn(f"{path.name} contains instruction-shaped content ({kinds}):")
+        for f in findings[:3]:
+            _print(f"      · {f.preview}")
+        if len(findings) > 3:
+            _print(f"      · … +{len(findings) - 3} more")
+        _print("    retrieved chunks are quarantined as untrusted, but the text will reach the")
+        _print("    model on every search that matches it.")
+        if ui.ask("ingest anyway? [y/N] ").lower() not in ("y", "yes"):
+            _print("  not ingested.")
+            return
     s = ingest_file(str(path))
     failed = dict(s.get("failed") or [])
     if any(src == path.name or src.endswith(path.name) for src in failed):
@@ -163,6 +181,9 @@ def _sync(*, force: bool) -> None:
     )
     for src, err in s.get("failed") or []:
         _print(f"  failed to load {src}: {err}")
+    for src, kinds in s.get("flagged") or []:
+        ui.warn(f"{src}: instruction-shaped content ({', '.join(kinds)}) — "
+                "its search results are quarantined as untrusted")
 
 
 # ── /memory ──────────────────────────────────────────────────────────────────────────────────
@@ -405,6 +426,14 @@ def _undo(ctx, args):
             for path in b["files"]:
                 _print(f"         {path}")
         _print("  /undo restores #1 (each /undo pops one batch).")
+        return
+
+    # Anything unrecognized REFUSES — never falls through to the revert. /undo is destructive
+    # with no redo, so a typo'd listing attempt ('/undo lst', '/undo 2', '/undo show') must
+    # error, not silently restore files (the /mcp typo'd-'relod' rule, with higher stakes).
+    if args:
+        _print(f"  unknown argument {args[0]!r} — usage: /undo [list]  "
+               "(bare /undo reverts the last writing turn)")
         return
 
     try:

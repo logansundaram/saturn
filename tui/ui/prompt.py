@@ -6,7 +6,7 @@ out and Tab-complete, and input is multiline: Enter submits; Shift+Enter (Window
 compacted to a `[paste #N +L lines]` chip so a wall of code doesn't flood the prompt — the full
 text is kept aside, re-expanded into the message at submit, and Ctrl+E with the cursor on the chip
 re-expands it in place for editing. Falls back to rich's (or plain) input() without prompt_toolkit.
-`banner` prints the session header and captures the model label for the status bar. The live
+`banner` prints the two-line session header. The live
 posture flags (⚠ GATE OFF / ⛓ AIRGAP / DRY-RUN) ride the prompt's right edge as the rprompt —
 the status bar that carries them mid-turn is torn down around every input(), exactly when the
 user picks their next action; the plain fallback prints them as one line above the prompt.
@@ -84,12 +84,10 @@ _POSTURE_STYLE = {
 
 # ── startup banner ─────────────────────────────────────────────────────────────
 def banner(model: str, n_tools: int, n_docs: int, db_path: str) -> None:
-    """Session header: a light two-line identity block — model/tier · context window, then tool +
-    doc counts · git branch · working dir, with the `/help` hint folded onto the second line. No
-    box and no absolute trace-DB path (it widened the old card for a value that's a `/config` away);
-    just alignment and whitespace, in the dim/accent palette. `db_path` is accepted for callers /
-    future relocation but isn't rendered here."""
-    _base._model = model  # captured here so the live status bar needs no model passed per turn
+    """Session header: a quiet two-line identity block — the name + model/tier + context window,
+    then a dim facts line (tools · docs · git branch · working dir · the `/help` pointer). One
+    tight ` · ` rhythm, no box, no prose tails — the posture line below it carries the trust
+    facts. `db_path` is accepted for callers / future relocation but isn't rendered here."""
     win = _active_ctx_window()
     ctx = _human_tokens(win) if win else "?"
     branch = _git_branch()
@@ -98,29 +96,24 @@ def banner(model: str, n_tools: int, n_docs: int, db_path: str) -> None:
     if _RICH:
         head = Text("  ")
         head.append("saturday.ai", style=f"bold {_ACCENT}")
-        head.append("   ", style=_DIM)
+        head.append("  ", style=_DIM)
         head.append(model, style="default")
-        head.append("  ·  ctx ", style=_DIM)
+        head.append(" · ctx ", style=_DIM)
         head.append(ctx, style="default")
         _console.print(head)
 
         info = Text("  ")
-        info.append(f"{n_tools} tools", style="default")
-        info.append("  ·  ", style=_DIM)
-        info.append(f"{n_docs} docs", style="default")
+        info.append(f"{n_tools} tools · {n_docs} docs", style=_DIM)
         if branch:
-            info.append("  ·  ", style=_DIM)
-            info.append(f"git {branch}", style="default")
-        info.append("  ·  ", style=_DIM)
-        info.append(cwd, style=_DIM)
-        info.append("      ", style=_DIM)
+            info.append(f" · git {branch}", style=_DIM)
+        info.append(f" · {cwd}", style=_DIM)
+        info.append(" · ", style=_DIM)
         info.append("/help", style=_ACCENT)
-        info.append(" for commands", style=_DIM)
         _console.print(info)
     else:
-        git = f"  ·  git {branch}" if branch else ""
-        print(f"saturday.ai  {model}  ·  ctx {ctx}")
-        print(f"{n_tools} tools  ·  {n_docs} docs{git}  ·  {cwd}      /help for commands")
+        git = f" · git {branch}" if branch else ""
+        print(f"saturday.ai  {model} · ctx {ctx}")
+        print(f"{n_tools} tools · {n_docs} docs{git} · {cwd} · /help")
 
 
 # kind -> style for the posture line's spans (receipt.posture_spans) — the same semantic palette
@@ -153,15 +146,13 @@ def posture_line() -> None:
             if i:
                 line.append(" · ", style=_DIM)
             line.append(text, style=_POSTURE_LINE_STYLE.get(kind, _DIM))
-        line.append("      ", style=_DIM)
+        line.append("   ", style=_DIM)
         line.append("/privacy", style=_ACCENT)
         line.append(" · ", style=_DIM)
         line.append("/policy can", style=_ACCENT)
-        line.append(" for the full picture", style=_DIM)
         _console.print(line)
     else:
-        print("  " + " · ".join(t for t, _ in spans)
-              + "      /privacy · /policy can for the full picture")
+        print("  " + " · ".join(t for t, _ in spans) + "   /privacy · /policy can")
 
 
 # ── input prompt ───────────────────────────────────────────────────────────────

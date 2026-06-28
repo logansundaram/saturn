@@ -62,8 +62,9 @@ from typing import Optional
 
 import diag
 from trust import egress
+from trust import redaction
 from config import get_config
-from textutil import truncate
+from textutil import map_strings, truncate
 from tools.toolspec import RISK_TIERS, register_tool_object
 
 # Fallbacks when config.yaml lacks the knobs (mirrors shell.py's local-helper style).
@@ -377,16 +378,6 @@ def _safe_name(name: str) -> str:
     return _NAME_OK.sub("_", name)[:_MAX_TOOL_NAME]
 
 
-def _host(url: str) -> str:
-    """Hostname of a server URL for the egress ledger (falls back to the raw value)."""
-    from urllib.parse import urlparse
-
-    try:
-        return urlparse(url).hostname or str(url)
-    except Exception:
-        return str(url)
-
-
 def _make_func(server: str, mcp_tool: str):
     """The sync callable behind one registered MCP tool — a closure so each StructuredTool binds
     its own (server, tool) pair."""
@@ -448,6 +439,24 @@ _DEAD_CONNECTION_MARKERS = (
 )
 
 
+def _redact_args(args):
+    """Deep-copy a tool-call args tree with every secret-like span replaced
+    (`redaction.redact`) — the redact-mode twin of the warn-mode count at the MCP boundary.
+    Walks `textutil.map_strings`, the rewrite twin of the `iter_strings` walk that warn mode's
+    `redaction.scan_args` counts with — one walker, so the two modes can never disagree about
+    what counts as argument content. Only string leaves change; structure and non-string
+    values pass through untouched."""
+    total = 0
+
+    def _swap(s):
+        nonlocal total
+        new, findings = redaction.redact(s)
+        total += len(findings)
+        return new
+
+    return map_strings(args, _swap), total
+
+
 def call_tool(server: str, tool: str, args: dict) -> str:
     """Execute one remote tool call synchronously (the bridge tool_node ends up in). Always
     returns a string observation — errors are reported to the model, never raised, matching how
@@ -460,15 +469,26 @@ def call_tool(server: str, tool: str, args: dict) -> str:
     # record it to the egress ledger. A stdio server is a local child process (its own egress, if
     # any, is shown in /privacy), so it isn't gated here.
     if st.spec.transport in ("http", "sse"):
-        host = _host(st.spec.url)
+        host = egress.host_of(st.spec.url)  # the shared ledger host derivation (trust/egress.py)
         gblocked = egress.check("mcp", host, f"{server}.{tool}")
         if gblocked:
             return gblocked
+        # Redaction parity with the cloud-LLM boundary (llms._CloudBoundaryModel): tool args
+        # cross the wire too. `warn` counts secret-like values into the egress event; `redact`
+        # replaces them in the args actually sent. The gate may have shown the human the call,
+        # but a tier relaxed via /risk sends without a prompt — the boundary itself can't be blind.
+        redactions = 0
+        if redaction.active():
+            if redaction.mode() == "redact":
+                args, redactions = _redact_args(args or {})
+            else:
+                redactions = len(redaction.scan_args(args or {}))
         try:
             n_bytes = len(json.dumps(args or {}, default=str))
         except Exception:
             n_bytes = 0
-        egress.record("mcp", host, f"{server}.{tool}", provider=server, n_bytes=n_bytes)
+        egress.record("mcp", host, f"{server}.{tool}", provider=server,
+                      n_bytes=n_bytes, redactions=redactions)
 
     # Lazy reconnect: a server that crashed or dropped (state error/disconnected) gets ONE fresh
     # connection attempt per call. /mcp reload remains the full recovery (re-lists + re-registers).

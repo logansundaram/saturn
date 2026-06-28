@@ -96,6 +96,23 @@ def test_risk_save_flag_case_insensitive_any_position(gate, ctx, capsys):
         registry.TOOL_RISK["web_search"] = declared
 
 
+def test_allow_metacharacter_prefix_gets_designed_refusal(gate, ctx, capsys):
+    # add_shell_allow raises ValueError on a prefix the matcher could never honor — the command
+    # renders its own refusal (with the why), never the dispatcher's generic '/policy failed'.
+    dispatch("/policy allow echo hi > out.txt", ctx)
+    out = capsys.readouterr().out
+    assert "failed:" not in out
+    assert "cannot allowlist" in out
+    assert "metacharacter" in out
+    assert policy.shell_allow() == []
+    # Same refusal through the explicit add verb and the legacy spelling.
+    dispatch("/policy allow add git status; rm -rf ~", ctx)
+    assert "cannot allowlist" in capsys.readouterr().out
+    dispatch("/allow git log | head", ctx)
+    assert "cannot allowlist" in capsys.readouterr().out
+    assert policy.shell_allow() == []
+
+
 def test_allow_parity_between_spellings(gate, ctx, capsys):
     dispatch("/allow git status", ctx)
     legacy = capsys.readouterr().out

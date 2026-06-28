@@ -1,9 +1,10 @@
 """
 The bottom-pinned live status bar + its off-thread system-metrics sampler, plus `reset_turn`
-(per-turn state seeding). One high-signal `rich.live.Live` line — identity · progress · resources —
-re-evaluated on every refresh so the elapsed clock and the sampled gauges tick even between node
-updates. The `Live` handle, the metrics snapshot, and the type-ahead preview stay private here; only
-the per-turn timing/plan state (in `_base`) is shared with the trace/plan/response renderers.
+(per-turn state seeding). One high-signal `rich.live.Live` line — posture · progress · session ·
+hardware — re-evaluated on every refresh so the elapsed clock and the sampled gauges tick even
+between node updates. The `Live` handle, the metrics snapshot, and the type-ahead preview stay
+private here; only the per-turn timing/plan state (in `_base`) is shared with the trace/plan/
+response renderers.
 """
 
 import time
@@ -12,7 +13,7 @@ from . import _base
 from ._base import (
     Live, Text, _console, _RICH,
     _ACCENT, _DIM, _RAIL, _RISK,
-    _active_ctx_window, _active_model_short, _fmt_dur, _human_tokens, _meter_color, _mini_bar,
+    _active_ctx_window, _fmt_dur, _human_tokens, _meter_color, _mini_bar,
 )
 
 
@@ -72,10 +73,11 @@ def set_input_preview(buffer: str, queued: int) -> None:
 
 class _StatusBar:
     """Renderable for the pinned bar. `__rich__` is re-evaluated on every Live refresh, so the
-    elapsed clock and the sampled system gauges tick even when no node update has fired. One
-    high-signal line: identity · run progress · token/context · live hardware load · active node.
-    Set no-wrap + ellipsis so a narrow terminal trims the right edge instead of wrapping to two
-    rows (the bar must stay exactly one line for the Live region)."""
+    elapsed clock and the sampled system gauges tick even when no node update has fired. Five
+    quiet zones — posture · [type-ahead] · progress · session · hardware — plus the trailing key
+    legend; each zone is short and most appear only when they have something to say. Set no-wrap
+    + ellipsis so a narrow terminal trims the right edge instead of wrapping to two rows (the bar
+    must stay exactly one line for the Live region)."""
 
     def __rich__(self) -> "Text":
         elapsed = time.perf_counter() - _base._turn_start if _base._turn_start else 0.0
@@ -88,45 +90,42 @@ class _StatusBar:
             bar.append(" · ", style=_DIM)
 
         def zone():  # between-zone separator: a quiet rule so the groups read as groups
-            bar.append("   │   ", style=_RAIL)
+            bar.append("  │  ", style=_RAIL)
 
-        # ── identity ──
+        # ── posture ── the gate policy leads the bar, read live (policy.py — /autoapprove,
+        # Shift+Tab and /config are all views of the same threshold). At `destructive` the gate
+        # is not "at a tier", it's OPEN, and the bar must say so loudly for as long as that is
+        # true — the /autoapprove banner scrolls away; this indicator doesn't. Leftmost on
+        # purpose: the bar trims from the right edge, and "the gate is open" (with the air-gap /
+        # dry-run flags beside it) must be the last thing a narrow terminal sacrifices.
         bar.append("  ", style=_DIM)
-        bar.append("saturday", style=f"bold {_ACCENT}")
-        dot()
-        bar.append(_active_model_short(), style="default")
-        dot()
-        # The gate policy, read live (policy.py — /autoapprove, Shift+Tab and /config are all
-        # views of the same threshold). At `destructive` the gate is not "at a tier", it's OPEN,
-        # and the bar must say so loudly for as long as that is true — the /autoapprove banner
-        # scrolls away; this indicator doesn't.
         try:
             from config import get_config
-            _perm = get_config().auto_approve
+            _cfg = get_config()
+            _perm = _cfg.auto_approve
+            _airgap = bool(_cfg.get("runtime.airgap", False))
+            _dry = bool(_cfg.get("runtime.dry_run", False))
         except Exception:
-            _perm = "read_only"
+            # A facet that can't be read is OMITTED, never guessed (the posture-line rule,
+            # receipt.posture_spans): substituting the calm "read_only" here would show a SAFER
+            # posture than reality on exactly the surface that exists to shout ⚠ GATE OFF.
+            _perm, _airgap, _dry = None, False, False
         if _perm == "destructive":
             bar.append("⚠ GATE OFF", style=f"bold {_RISK.get('destructive', 'red')}")
+        elif _perm is None:
+            bar.append("posture ?", style=_DIM)
         else:
             bar.append(_perm, style=_RISK.get(_perm, _DIM))
+        if _airgap:
+            dot()
+            bar.append("⛓ AIRGAP", style=f"bold {_ACCENT}")
+        if _dry:
+            dot()
+            bar.append("DRY-RUN", style=f"bold {_RISK.get('side_effecting', 'yellow')}")
 
-        # Mode flags — air-gap (network sealed) and dry-run (nothing executes). Both are loud,
-        # persistent states the user must be able to see at a glance for as long as they hold.
-        try:
-            from config import get_config as _gc
-            _cfg = _gc()
-            if bool(_cfg.get("runtime.airgap", False)):
-                dot()
-                bar.append("⛓ AIRGAP", style=f"bold {_ACCENT}")
-            if bool(_cfg.get("runtime.dry_run", False)):
-                dot()
-                bar.append("DRY-RUN", style=f"bold {_RISK.get('side_effecting', 'yellow')}")
-        except Exception:
-            pass
-
-        # ── type-ahead ── only present while the user is queuing input mid-turn. Placed right after
-        # identity (ahead of progress) so the line being typed is never the part trimmed by the
-        # bar's ellipsis overflow — seeing your own keystrokes matters more than the gauges here.
+        # ── type-ahead ── only present while the user is queuing input mid-turn. Ahead of
+        # progress so the line being typed is never the part trimmed by the bar's ellipsis
+        # overflow — seeing your own keystrokes matters more than the gauges.
         buf, queued = _input_state["buffer"], _input_state["queued"]
         if buf or queued:
             zone()
@@ -134,17 +133,17 @@ class _StatusBar:
                 bar.append(buf, style=_ACCENT)  # the line being typed, highlighted in cyan
                 bar.append("▏", style=f"bold {_ACCENT}")  # block cursor on the typed line
             if queued:
-                label = f"  ({queued} queued)" if buf else f"{queued} queued"
+                label = f" ({queued} queued)" if buf else f"{queued} queued"
                 bar.append(label, style=_DIM)
 
-        # ── progress ── the active stage leads: it's the highest-value live datum, and keeping it
-        # left means a narrow terminal trims resources off the right rather than "where am I".
+        # ── progress ── where the turn is right now: active node, then counts · time · rate.
         zone()
         if status["node"]:
             bar.append(f"▸ {status['node']}", style=f"bold {_ACCENT}")
             dot()
-        for i, label in enumerate((f"iter {status['iteration']}", _fmt_dur(elapsed).strip(),
-                                   f"{n} tool{'' if n == 1 else 's'}")):
+        for i, label in enumerate((f"iter {status['iteration']}",
+                                   f"{n} tool{'' if n == 1 else 's'}",
+                                   _fmt_dur(elapsed).strip())):
             if i:
                 dot()
             bar.append(label, style="default")
@@ -152,48 +151,46 @@ class _StatusBar:
             dot()
             bar.append(f"{tps:.0f} tok/s", style="default")
 
-        # ── egress ── how many times anything has left the machine this session (the boundary
-        # counter). Only shown once non-zero, so a fully-local session stays calm; it's the live
-        # twin of /privacy egress, and the whole point of the privacy proof point being *visible*.
-        try:
-            from trust import egress as _eg
-            _ne = _eg.count()
-        except Exception:
-            _ne = 0
-        if _ne:
-            zone()
-            bar.append("⇅ ", style=_DIM)
-            bar.append(f"{_ne} egress", style="default")
-
-        # ── session spend ── tokens observed on this session's LLM calls (core.budget) — the
-        # ambient twin of /trace cost, and the live numerator of runtime.token_budget when one is
-        # set (load-colored by how much of the ceiling is spent). Hidden until the first call so
-        # a fresh session stays calm.
+        # ── session ── the turn-spanning gauges, one zone: context fill (it drives the agent, so
+        # it keeps its meter), token spend (core.budget — the ambient twin of /trace cost, the
+        # live numerator of runtime.token_budget when one is set), and the egress counter (the
+        # live twin of /privacy egress — the boundary, visible). Spend and egress appear only
+        # once non-zero, so a fresh, fully-local session stays calm.
+        window = status["ctx_window"]
         try:
             from core import budget as _budget
 
             _sp, _cap = _budget.spent(), _budget.limit()
         except Exception:
             _sp, _cap = 0, 0
-        if _sp:
+        try:
+            from trust import egress as _eg
+            _ne = _eg.count()
+        except Exception:
+            _ne = 0
+        if window or _sp or _ne:
             zone()
-            bar.append("Σ ", style=_DIM)
-            if _cap:
-                bar.append(f"{_human_tokens(_sp)}/{_human_tokens(_cap)} tok",
-                           style=_meter_color(_sp / _cap * 100))
-            else:
-                bar.append(f"{_human_tokens(_sp)} tok", style="default")
-
-        # ── resources ── tertiary; ctx keeps its meter (it drives the agent), hardware is bare %.
-        window = status["ctx_window"]
-        m = _metrics
-        if window or m is not None:
-            zone()
-        if window:
-            _append_meter(bar, "ctx", status["ctx_used"] / window * 100, cells=4)
-        if m is not None:
             if window:
-                bar.append("  ", style=_DIM)
+                _append_meter(bar, "ctx", status["ctx_used"] / window * 100, cells=4)
+            if _sp:
+                if window:
+                    dot()
+                bar.append("Σ ", style=_DIM)
+                if _cap:
+                    bar.append(f"{_human_tokens(_sp)}/{_human_tokens(_cap)} tok",
+                               style=_meter_color(_sp / _cap * 100))
+                else:
+                    bar.append(f"{_human_tokens(_sp)} tok", style="default")
+            if _ne:
+                if window or _sp:
+                    dot()
+                bar.append("⇅ ", style=_DIM)
+                bar.append(f"{_ne} egress", style="default")
+
+        # ── hardware ── tertiary, bare load-colored percentages (sampled off-thread).
+        m = _metrics
+        if m is not None:
+            zone()
             _append_meter(bar, "cpu", m.cpu_usage_percent)
             ram_pct = m.ram_used_gb / m.total_ram_gb * 100 if m.total_ram_gb else 0.0
             bar.append("  ", style=_DIM)
@@ -207,7 +204,7 @@ class _StatusBar:
 
         # ── key legend ── the turn-time keys, taught ambiently while they're usable. Trails the
         # whole line ON PURPOSE: the bar trims from the right edge on a narrow terminal (no-wrap
-        # + ellipsis), so the hint is the first thing sacrificed — never the progress or gauges.
+        # + ellipsis), so the hint is the first thing sacrificed — never the posture or progress.
         zone()
         bar.append("esc pause · ctrl-c cancel", style=_DIM)
         return bar

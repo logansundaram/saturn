@@ -185,7 +185,7 @@ def posture_spans() -> list[tuple[str, str]]:
     except Exception:
         pass
 
-    # Quarantine / redaction / durable egress log — calm one-worders; a disabled guard warms up.
+    # Quarantine / redaction — calm one-worders; a disabled guard warms up.
     try:
         # The EFFECTIVE mode, not the raw config string: quarantine.mode() lowercases and falls
         # back to "gate" on an invalid value, so `runtime.quarantine: none` runs gated — this

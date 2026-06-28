@@ -8,10 +8,7 @@ from config import get_config
 
 @pytest.fixture(autouse=True)
 def fresh_ledger(isolated_paths, monkeypatch):
-    """Empty the ledger and pin air-gap off around each test. Depends on isolated_paths: every
-    record() ALSO appends to the durable egress log (paths.egress_log), and without the redirect
-    this module poisons the REAL database/egress.log with thousands of junk lines per run (the
-    ledger-cap test alone records _MAX_EVENTS+50 events). _CLEARED_AT is reset too — the
+    """Empty the ledger and pin air-gap off around each test. _CLEARED_AT is reset too — the
     isolation clear() must look like a FRESH SESSION, not an operator `/privacy egress clear`
     (which summary() now reports via its `cleared` marker)."""
     egress.clear()

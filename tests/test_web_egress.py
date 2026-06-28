@@ -52,9 +52,7 @@ class _OkTavily:
 @pytest.fixture(autouse=True)
 def fresh_web_state(isolated_paths, monkeypatch):
     """Empty ledger, air-gap off, Tavily session-disable flag reset, DDGS stubbed, and no real
-    key in the environment — each test picks its backend deterministically and offline.
-    isolated_paths keeps the durable egress log (every record() also appends to disk) out of
-    the real database/."""
+    key in the environment — each test picks its backend deterministically and offline."""
     egress.clear()
     monkeypatch.setitem(get_config()._data["runtime"], "airgap", False)
     # setattr FIRST so teardown restores the pristine value even when a test trips
@@ -172,8 +170,7 @@ def test_extract_empty_list_records_nothing():
 
 def test_extract_empty_list_records_nothing_under_airgap(monkeypatch):
     # The empty guard precedes the air-gap check: an empty call must not put a phantom BLOCKED
-    # event with the garbage host "[]" into the ledger (and the durable hash-chained audit log)
-    # for a send that could never have happened.
+    # event with the garbage host "[]" into the ledger for a send that could never have happened.
     monkeypatch.setitem(get_config()._data["runtime"], "airgap", True)
     out = web.web_extract.func(url=[])
     assert "No URL" in out

@@ -184,7 +184,7 @@ def web_extract(url: str):
     Tavily Extract when the web provider is explicitly forced to 'tavily'."""
     # Normalize FIRST: an empty call must return before any egress accounting — host_of(str([]))
     # would otherwise put a phantom blocked event with the garbage host "[]" into the air-gap
-    # ledger (and the durable hash-chained log) for a call that could never have sent anything.
+    # ledger for a call that could never have sent anything.
     urls = [u for u in (url if isinstance(url, (list, tuple)) else [url]) if u]
     if not urls:
         return "No URL provided to extract."

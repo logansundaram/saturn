@@ -35,11 +35,9 @@ database/permissions.json
 database/snapshots/
 database/recipes/
 database/commands/
-# ed25519 audit-signing PRIVATE key — must never be committed. (Comment on its own line: git
-# treats a trailing inline comment as part of the pattern, which would match NOTHING.)
+# ed25519 audit-signing private key — never commit (used on the phase-3/audit-crypto branch).
+# Comment on its own line: git treats a trailing inline comment as part of the pattern.
 database/signing_key.json
-# durable cross-session egress audit log (also matched by *.log above; kept explicit)
-database/egress.log
 
 # Model cache
 models/

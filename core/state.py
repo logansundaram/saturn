@@ -254,11 +254,11 @@ class AgentState(TypedDict):
     # FACED the human (auto-approved batches record nothing):
     #   {"calls": [{"id", "name", "approved"}], "decision": "approved"|"rejected"|"partial",
     #    "quarantine": bool (was this the injection-escalation gate?),
-    #    "taint": [{"call_id", "source_tool"}], "step": active-step label or None}
+    #    "step": active-step label or None}
     # Plain dicts only (gotcha #4). A human decision is the ONE run fact that can never be
-    # recomputed after the fact, so this same record feeds the headless --json "gates" field, the
-    # Glass Box's gate_summary, and the signed export's answer attestation — keep the shape
-    # minimal (see nodes/approval.gate_event). Same append-reducer; reset per turn.
+    # recomputed after the fact, so this same record feeds the headless --json "gates" field and
+    # the Glass Box's gate_summary — keep the shape minimal (see nodes/approval.gate_event). Same
+    # append-reducer; reset per turn.
     gate_events: Annotated[List[dict], operator.add]
 
     # Tokens/second from the most recent LLM call (agent or synthesizer). Overwritten

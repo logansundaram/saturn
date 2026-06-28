@@ -158,10 +158,8 @@ def tool_node(state: AgentState):
         # through byte-identical. See quarantine.py.
         q_kinds: list[str] = []
         if ok and not dry_run and quarantine.active() and quarantine.is_untrusted(name):
-            # Register the untrusted result as a taint source (the data->action check the gate runs
-            # over later tool calls) BEFORE fencing — record the content the model will see, not our
-            # markers — then scan it for injection phrasing (the data-as-instructions check).
-            quarantine.record_untrusted(name, clamped)
+            # Scan an untrusted result (web/http/MCP/corpus) for instruction-shaped content (the
+            # data-as-instructions check) and fence it before the model sees it.
             findings = quarantine.scan(clamped)
             if findings:
                 quarantine.flag(name, findings)
@@ -178,9 +176,8 @@ def tool_node(state: AgentState):
         if name in RETRIEVAL_TOOLS:
             documents_retrieved.append(clamped)
         else:
-            # The one serialization both downstream parsers split (textutil.split_call_result):
-            # synthesize's Sources labels take the call half, the Glass Box's taint corpus the
-            # observation half.
+            # The call paired with its observation (CALL_RESULT_SEP); synthesize's Sources labels
+            # split on it to recover the call half from the observation.
             tool_results.append(f"{_fmt_call(name, args)}{CALL_RESULT_SEP}{clamped}")
         # Structured per-call record for the UI's tool-I/O tree (args + result preview + timing).
         event = {

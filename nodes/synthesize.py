@@ -36,8 +36,7 @@ def _label_clamp(label: str, cap: int = _MAX_SOURCE_LABEL) -> str:
 def _tool_source_label(result) -> str:
     """Provenance label for one tool_results entry. Entries are `name(args) -> result` strings
     (nodes/tools.py pairs them on purpose); the call repr before the arrow is the label — split
-    via textutil.split_call_result, THE one parser of that serialization (the Glass Box splits
-    the same strings for its taint corpus; two hand-rolled splits would drift)."""
+    via textutil.split_call_result, THE one parser of that serialization."""
     return _label_clamp(split_call_result(result)[0])
 
 

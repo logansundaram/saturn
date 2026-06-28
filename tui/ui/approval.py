@@ -312,7 +312,7 @@ def _full_width_args(name, risk: str) -> bool:
     of the compact 80-char repr. Every side_effecting/destructive call WITHOUT a bespoke renderer
     qualifies — notably all mcp_* tools, which fail closed to destructive precisely because
     they're untrusted, so hiding the tail of their arguments behind a truncated repr is exactly
-    backwards. read_only calls (reaching the gate only via a quarantine/taint escalation) keep
+    backwards. read_only calls (reaching the gate only via a quarantine escalation) keep
     the compact form."""
     return risk in ("side_effecting", "destructive") and name not in _BESPOKE_RENDERED
 
@@ -381,22 +381,6 @@ def _render_secret_warnings(args: dict) -> None:
                 "wherever this call goes")
 
 
-def _render_taint_warning(tc: dict) -> None:
-    """When a call's arguments contain a span of text that arrived from an untrusted source this
-    turn (web page, HTTP response, remote MCP tool, ingested doc), say so right at the call — this
-    is the data->action channel: the agent may be acting on content an attacker planted in a page,
-    not on what the user actually asked for. The matched span is shown so the human can see exactly
-    what crossed."""
-    hits = tc.get("taint") or []
-    if not hits:
-        return
-    sources = ", ".join(sorted({h.get("source") for h in hits if h.get("source")}))
-    _frame_note(f"⚠ untrusted data → action: this call's arguments contain text from {sources} "
-                "— verify it reflects YOUR intent, not content the source planted")
-    for h in hits[:2]:
-        _frame_note(f"↳ matched span: {h.get('preview')}", style=_DIM)
-
-
 def _arg_repr(v) -> str:
     """Compact one-line value form for the non-bespoke argument rows."""
     return _truncate(repr(v), 80)
@@ -407,8 +391,8 @@ def _render_call(tc: dict) -> None:
     and plain prompts (the rendering IS the safety surface, so the two paths must never drift):
     the risk-tier head line, the argument view (full-width when the call has no bespoke renderer,
     compact 80-char repr otherwise — minus the keys the bespoke view shows in full), the bespoke
-    safety surface itself (diff / command / request, from the one _BESPOKE table), the secret and
-    taint warnings, and the per-tier hint."""
+    safety surface itself (diff / command / request, from the one _BESPOKE table), the secret
+    warning, and the per-tier hint."""
     risk = str(tc.get("risk", "destructive"))
     risk_style = _RISK.get(risk, "bold red")
     name = tc.get("name")
@@ -446,7 +430,6 @@ def _render_call(tc: dict) -> None:
     if bespoke:
         bespoke(args)
     _render_secret_warnings(args)
-    _render_taint_warning(tc)
     hint = _RISK_HINT.get(risk)
     if hint:
         if _RICH:

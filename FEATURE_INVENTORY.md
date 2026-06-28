@@ -54,28 +54,28 @@ what's left is "Saturn minus N leaf modules" (delete in place) or "a different c
 
 | Feature | Module | Layer | Coupling | Disposition |
 |---|---|---|---|---|
-| Risk-tiered approval gate (read_only / side_effecting / destructive) | `trust/policy.py`, `nodes/approval.py` | Trust | Seam | ___ |
-| Unified policy object — the 5 gate-relaxation views | `trust/policy.py` | Trust | Leaf | ___ |
-| `/risk` overrides · `/allow` shell prefixes · `/autoapprove` · threshold · `--yolo` | `trust/policy.py` | Trust | Leaf | ___ |
-| Policy profiles (export/import shareable YAML) | `trust/policy.py` | Trust | Leaf | ___ |
-| Blast-radius readout (`/policy can`) | `trust/policy.py` | Trust | Leaf | ___ |
-| Prompt-injection quarantine (scan + fence) | `trust/quarantine.py` | Trust | Seam | ___ |
-| Quarantine gate escalation (first batch after injection gated) | `trust/quarantine.py`, `nodes/approval.py` | Trust | Seam | ___ |
-| Data→action taint tracking (`taint_scan`) | `trust/quarantine.py` | Trust | Seam | ___ |
-| The Glass Box — answer-level provenance | `trust/glassbox.py` | Trust | Leaf | ___ |
-| Glass Box v2 — signed answer attestation | `trust/glassbox.py` | Trust | Leaf | ___ |
-| Egress ledger + air-gap gate (the one network chokepoint) | `trust/egress.py` | Trust | Seam | ___ |
-| Durable hash-chained egress log + chain verify | `trust/egress.py` | Trust | Leaf | ___ |
-| Egress-chain anchoring (`log_tip` inside signed artifacts) | `trust/egress.py` | Trust | Leaf | ___ |
-| ed25519 audit signing | `trust/signing.py` | Trust | Leaf | ___ |
-| Signed trace exports | `trust/signing.py`, `commands/trace.py` | Trust | Leaf | ___ |
-| Signed trust report | `trust/trust_report.py` | Trust | Leaf | ___ |
-| Per-answer trust receipt + session posture line | `trust/receipt.py` | Trust | Seam | ___ |
-| Secret redaction at the cloud boundary (off/warn/redact) | `trust/redaction.py` | Trust | Seam | ___ |
-| Air-gap mode | `trust/egress.py`, `commands/privacy.py` | Trust | Seam | ___ |
-| Dry-run mode (plan everything, execute nothing) | `nodes/*`, `commands/policy.py` | Trust | Seam | ___ |
-| Standalone offline verifier + published spec | `utilities/saturn_verify.py`, `VERIFY_SPEC.md` | Trust | Leaf | ___ |
-| Discovery hints + gate teaching preamble | `trust/receipt.py` | Trust | Leaf | ___ |
+| Risk-tiered approval gate (read_only / side_effecting / destructive) | `trust/policy.py`, `nodes/approval.py` | Trust | Seam | KEEP |
+| Unified policy object — the 5 gate-relaxation views | `trust/policy.py` | Trust | Leaf | KEEP |
+| `/risk` overrides · `/allow` shell prefixes · `/autoapprove` · threshold · `--yolo` | `trust/policy.py` | Trust | Leaf | KEEP |
+| Policy profiles (export/import shareable YAML) | `trust/policy.py` | Trust | Leaf | SHELVED → phase-3/audit-crypto |
+| Blast-radius readout (`/policy can`) | `trust/policy.py` | Trust | Leaf | SHELVED → phase-3/audit-crypto |
+| Prompt-injection quarantine (scan + fence) | `trust/quarantine.py` | Trust | Seam | KEEP |
+| Quarantine gate escalation (first batch after injection gated) | `trust/quarantine.py`, `nodes/approval.py` | Trust | Seam | KEEP |
+| Data→action taint tracking (`taint_scan`) | `trust/quarantine.py` | Trust | Seam | SHELVED → phase-3/audit-crypto |
+| The Glass Box — answer-level provenance (v1) | `trust/glassbox.py` | Trust | Leaf | KEEP (v1 trimmed: no tainted_span) |
+| Glass Box v2 — signed answer attestation | `trust/glassbox.py` | Trust | Leaf | SHELVED → phase-3/audit-crypto |
+| Egress ledger + air-gap gate (the one network chokepoint) | `trust/egress.py` | Trust | Seam | KEEP |
+| Durable hash-chained egress log + chain verify | `trust/egress.py` | Trust | Leaf | SHELVED → phase-3/audit-crypto |
+| Egress-chain anchoring (`log_tip` inside signed artifacts) | `trust/egress.py` | Trust | Leaf | SHELVED → phase-3/audit-crypto |
+| ed25519 audit signing | `trust/signing.py` | Trust | Leaf | SHELVED → phase-3/audit-crypto (replaced by `trust/digest.py`) |
+| Trace exports (integrity digest) | `trust/digest.py`, `commands/trace.py` | Trust | Leaf | KEEP (digest-only; signing shelved) |
+| Signed trust report | `trust/trust_report.py` | Trust | Leaf | SHELVED → phase-3/audit-crypto |
+| Per-answer trust receipt + session posture line | `trust/receipt.py` | Trust | Seam | KEEP |
+| Secret redaction at the cloud boundary (off/warn/redact) | `trust/redaction.py` | Trust | Seam | KEEP |
+| Air-gap mode | `trust/egress.py`, `commands/privacy.py` | Trust | Seam | KEEP |
+| Dry-run mode (plan everything, execute nothing) | `nodes/*`, `commands/policy.py` | Trust | Seam | KEEP |
+| Standalone offline verifier + published spec | `utilities/saturn_verify.py`, `VERIFY_SPEC.md` | Trust | Leaf | SHELVED → phase-3/audit-crypto |
+| Discovery hints + gate teaching preamble | `trust/receipt.py` | Trust | Leaf | KEEP |
 
 ---
 
@@ -173,7 +173,7 @@ what's left is "Saturn minus N leaf modules" (delete in place) or "a different c
 | Feature | Module | Layer | Coupling | Disposition |
 |---|---|---|---|---|
 | Interactive chat loop | `agent.py` | Engine | Core | ___ |
-| Headless `-p` mode (`--json` / `--policy` / `--export`) | `agent.py` | Product | Seam | ___ |
+| Headless `-p` mode (`--json` / `--export`; `--policy` shelved with profiles) | `agent.py` | Product | Seam | ___ |
 | `verify` verb (offline artifact check) | `agent.py` | Trust | Leaf | ___ |
 | `--replay` (render an export offline) | `agent.py` | Trust | Seam | ___ |
 | Piped stdin attach | `agent.py` | Product | Leaf | ___ |

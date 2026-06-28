@@ -159,7 +159,7 @@ def _render_trust_annotations(node: str, delta: dict) -> None:
       - under `approval`, the echo of each HUMAN gate decision (state["gate_events"]): the
         interactive prompt scrolls away with the turn, so this leaf is the transcript's
         permanent record of who allowed what — green for approved, red for rejected, with the
-        quarantine/taint escalation named when one forced the prompt."""
+        quarantine escalation named when one forced the prompt."""
     if node == "replan":
         if delta.get("replans"):
             _node_leaf("judge: draft answer ungrounded — inserted a web search step", "yellow")
@@ -174,8 +174,6 @@ def _render_trust_annotations(node: str, delta: dict) -> None:
         why = []
         if ev.get("quarantine"):
             why.append("quarantine escalation")
-        if ev.get("taint"):
-            why.append("tainted args")
         suffix = f" ({', '.join(why)})" if why else ""
         if approved:
             _node_leaf("✓ you approved " + ", ".join(approved) + suffix, "green")

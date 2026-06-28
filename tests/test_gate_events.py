@@ -30,7 +30,7 @@ def test_gate_event_approve_all():
         {"id": "c1", "name": "run_shell", "approved": True},
         {"id": "c2", "name": "write_file", "approved": True},
     ]
-    assert ev["quarantine"] is False and ev["taint"] == [] and ev["step"] is None
+    assert ev["quarantine"] is False and ev["step"] is None
 
 
 def test_gate_event_reject_all():
@@ -44,20 +44,18 @@ def test_gate_event_partial_and_context_fields():
         _CALLS,
         {"c2"},
         quarantine=True,
-        taint=[{"call_id": "c1", "source_tool": "web_extract"}],
         step="apply the fix",
     )
     assert ev["decision"] == "partial"
     assert [c["approved"] for c in ev["calls"]] == [False, True]
     assert ev["quarantine"] is True
-    assert ev["taint"] == [{"call_id": "c1", "source_tool": "web_extract"}]
     assert ev["step"] == "apply the fix"
 
 
 def test_gate_event_is_json_serializable():
-    # The record rides the trace delta, the --json payload, and the signed export — it must be
-    # plain JSON all the way down (gotcha #4: nothing Pydantic, nothing custom).
-    ev = gate_event(_CALLS, {"c1"}, taint=[{"call_id": "c1", "source_tool": "http_request"}])
+    # The record rides the trace delta and the --json payload — it must be plain JSON all the
+    # way down (gotcha #4: nothing Pydantic, nothing custom).
+    ev = gate_event(_CALLS, {"c1"})
     assert json.loads(json.dumps(ev)) == ev
 
 
@@ -164,19 +162,6 @@ def test_node_quarantine_escalation_flag_recorded(monkeypatch):
     (ev,) = cmd.update["gate_events"]
     assert ev["quarantine"] is True
     assert consumed  # the approval spent the one-shot escalation (unchanged behavior)
-
-
-def test_node_taint_warnings_recorded(monkeypatch):
-    _gate_everything(monkeypatch, False)
-    hit = types.SimpleNamespace(source_tool="web_extract", preview="evil span", span_len=44)
-    monkeypatch.setattr(
-        quarantine, "taint_scan",
-        lambda args: [hit] if (args or {}).get("command") else [],
-    )
-    cmd = approval_node(_node_state(list(_CALLS)))
-    (ev,) = cmd.update["gate_events"]
-    # Only the call whose args carried the tainted span shows up, with its source tool.
-    assert ev["taint"] == [{"call_id": "c1", "source_tool": "web_extract"}]
 
 
 # --- headless --json: the "gates" field derives from the state dict --------------------------

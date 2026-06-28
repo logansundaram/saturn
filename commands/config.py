@@ -307,8 +307,8 @@ def _config(ctx, args):
         return
 
     # A key the config has never seen still sets — the default-tolerant knobs (shell.background,
-    # runtime.sign_exports, runtime.egress_log, paths.*) and absent per-tier role leaves must
-    # keep working on a config.yaml predating them — but the success-shaped line is replaced
+    # paths.*) and absent per-tier role leaves must keep working on a config.yaml predating
+    # them — but the success-shaped line is replaced
     # with a plain warning so a misspelled safety knob can't masquerade as applied. The
     # suggestion snapshots the leaf list BEFORE the set, so the typo never suggests itself.
     suggestion = _did_you_mean(cfg, key) if current is _MISSING else ""

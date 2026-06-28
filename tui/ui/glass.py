@@ -3,10 +3,8 @@ The Glass Box renderer — answer-level provenance, drawn in the trace-viewer vo
 
 Three stacked blocks: a **trust label** (sources, what left the machine, groundedness, gated
 calls), the **answer** with each inline `[n]` citation colored by the trust of its source
-(green = local + trusted, yellow = network / untrusted origin, red = a span of that source bled
-verbatim into the answer), and a **sources** table. Semantic color only, like the rest of the TUI.
-The red citation + its callout is the whole pitch in one frame: "this clause came from a web page,
-not from you."
+(green = local + trusted, yellow = network / untrusted origin), and a **sources** table.
+Semantic color only, like the rest of the TUI — "this clause cites a web page, not your own data."
 
 Pure presentation over a `glassbox.GlassBox`; assembly lives in `glassbox.py`.
 """
@@ -30,8 +28,6 @@ _GREEN, _YELLOW, _RED = "green", "yellow", "bold red"
 def _facet_style(facet) -> str:
     if facet is None:
         return _DIM
-    if facet.tainted_span:
-        return _RED
     if (not facet.trusted) or facet.origin == "network":
         return _YELLOW
     return _GREEN
@@ -53,7 +49,7 @@ def _render_label(gb) -> None:
     # the label: every count below may be missing data, and a trust surface must say so before
     # making any claim.
     if not gb.complete:
-        _kv("record", "⚠ trace data truncated — sources/taint below are INCOMPLETE", _RED)
+        _kv("record", "⚠ trace data truncated — sources below are INCOMPLETE", _RED)
 
     n = len(gb.sources)
     n_local = len(gb.local_sources)
@@ -73,19 +69,6 @@ def _render_label(gb) -> None:
         _kv("composed by", f"{composer}  ⇅ cloud — your query + context left the machine", _YELLOW)
     else:
         _kv("composed by", f"{composer}  (inference location not recorded for past runs)", _DIM)
-
-    # Local-inference attestation — rendered ONLY when PROVEN (live exact egress slice with zero
-    # llm events + every chat role bound local). None means unknown: say NOTHING — silence must
-    # never imply local. False needs no extra line; the cloud composed-by line above already
-    # states it.
-    li = getattr(gb, "local_inference", None)
-    if isinstance(li, dict) and li.get("local"):
-        models = ", ".join(dict.fromkeys(
-            str(b.get("model"))
-            for b in li.get("models") or []
-            if isinstance(b, dict) and b.get("model") and b.get("role") != "embedder"
-        )) or "local models"
-        _kv("inference", f"✓ computed entirely on this machine ({models})", _GREEN)
 
     # What left the machine this turn.
     if gb.sent_known:
@@ -111,8 +94,8 @@ def _render_label(gb) -> None:
         _kv("grounded", "no ungrounded draft caught (judge ruled it grounded, or wasn't needed)",
             _DIM)
 
-    # Gated calls + the taint headline. The count renders wherever it is KNOWN (live turn, or a
-    # record carrying structured gate events); None = unknown stays silent.
+    # Gated calls. The count renders wherever it is KNOWN (live turn, or a record carrying
+    # structured gate events); None = unknown stays silent.
     if gb.gated is not None:
         _kv("gated calls", str(gb.gated), _DIM if gb.gated == 0 else _YELLOW)
     # The human decisions themselves — the chain-of-custody line: a signed export carrying this
@@ -130,13 +113,6 @@ def _render_label(gb) -> None:
         _kv("human gate",
             f"you rejected {len(rejected)} call{'s' if len(rejected) != 1 else ''} "
             f"({', '.join(rejected)})", _YELLOW)
-    tainted = gb.tainted
-    if tainted:
-        _kv("taint", f"⚠ {len(tainted)} untrusted span(s) reached the answer", _RED)
-    elif gb.complete:
-        _kv("taint", "✓ no untrusted content reached the answer", _GREEN)
-    else:
-        _kv("taint", "? unknown — the truncated record may hide untrusted sources", _YELLOW)
 
 
 def _render_answer(gb) -> None:
@@ -159,12 +135,6 @@ def _render_answer(gb) -> None:
                 pos = m.end()
             row.append(line[pos:], style="default")
             _console.print(row)
-    # Red callouts spelling out each tainted span — the data→answer channel, named.
-    for s in gb.tainted:
-        msg = (f"⚠ tainted [{s.n}]: a span here was planted by {s.tool} — \"{s.tainted_span}\"")
-        for i, chunk in enumerate(textwrap.wrap(msg, width) or [""]):
-            text = ("    " if i == 0 else "      ") + chunk
-            _console.print(Text(text, style=_RED)) if _RICH else print(text)
 
 
 def _render_sources(gb) -> None:
@@ -173,9 +143,7 @@ def _render_sources(gb) -> None:
     section("sources", "/source <n> for the full text behind a citation")
     rows = []
     for s in gb.sources:
-        if s.tainted_span:
-            glyph, gstyle, note = "⛔", _RED, "TAINTED → answer"
-        elif s.origin == "network" or not s.trusted:
+        if s.origin == "network" or not s.trusted:
             glyph, gstyle, note = "◐", _YELLOW, ("untrusted origin" if not s.trusted else "network")
         else:
             glyph, gstyle, note = "✓", _GREEN, "trusted"
@@ -206,7 +174,7 @@ def show_glassbox(gb) -> None:
         foot.append("/trace why", style=_ACCENT)
         foot.append(" decision chain · ", style=_DIM)
         foot.append("/trace export", style=_ACCENT)
-        foot.append(" signs this answer", style=_DIM)
+        foot.append(" records this answer", style=_DIM)
         _console.print(foot)
     else:
-        print("  ╶ /trace why decision chain · /trace export signs this answer")
+        print("  ╶ /trace why decision chain · /trace export records this answer")

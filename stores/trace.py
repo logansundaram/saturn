@@ -216,11 +216,11 @@ class Tracer:
     def end_run(self, run_id: int, status: str, response: str = "") -> None:
         text = response or ""
         # The recorded answer is capped like a delta (_DATA_CAP — it IS the headline record every
-        # after-the-fact surface reads: show_run, the signed export, /glass #id's taint scan).
+        # after-the-fact surface reads: show_run, the export, /glass #id's reconstruction).
         # When it still overflows, the cut gets an explicit write-time marker so the stored row
         # is self-describing: readers render "truncated" / complete=False instead of presenting
-        # a mid-sentence cut as the whole answer, and the export's digest/signature commit the
-        # marker honestly. (The old silent [:2000] cut even lost the Sources: footer.)
+        # a mid-sentence cut as the whole answer, and the export's digest commits the marker
+        # honestly. (The old silent [:2000] cut even lost the Sources: footer.)
         if len(text) > _DATA_CAP:
             text = text[:_DATA_CAP] + f"\n{_RESPONSE_TRUNCATION_MARKER}{_DATA_CAP} chars]"
         # Deliberately EXEMPT from the circuit breaker: end_run is ONE write at turn end (not

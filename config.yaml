@@ -25,8 +25,6 @@ paths:
   exports: logging/exports             # /trace export run records (audit artifacts)
   shell_jobs: logging/shell            # background run_shell job logs (check_shell_job reads them)
   user_commands: database/commands     # user-defined slash-command templates (<name>.md -> /name)
-  signing_key: database/signing_key.json  # this machine's ed25519 audit-signing key (signing.py)
-  egress_log: database/egress.log      # append-only, hash-chained cross-session egress log (egress.py)
 
 # ---------------------------------------------------------------------------
 # Loop / safety runtime knobs (were the MAX_ITERATIONS constant + the gate policy).
@@ -96,17 +94,6 @@ runtime:
   #          regardless of risk tier (one fresh human look at calls whose arguments may derive
   #          from injected content). The safe default.
   quarantine: gate
-  # Signed audit exports (signing.py): in addition to the sha256 integrity digest, sign each
-  # JSON `/trace export` with this machine's ed25519 key so the record carries PROVENANCE — proof
-  # it was produced by the holder of a key that lives only on hardware you own. The public key is
-  # embedded in the export (and printed by `/trace key`); a verifier needs only that to check it.
-  # false emits digest-only exports (the prior behavior). Has no effect if `cryptography` is absent.
-  sign_exports: true
-  # Persistent egress log (egress.py): besides the in-memory session ledger (/privacy egress),
-  # append every egress event to a durable, hash-chained log at paths.egress_log so "what left this
-  # machine" survives across sessions and any edit/reorder/deletion of the middle is detectable
-  # (/privacy egress log · /privacy egress verify). false keeps egress session-only.
-  egress_log: true
   # Trust receipt (receipt.py): append the trust segment to the one-line stats receipt under each
   # answer — `local-only` (or the turn's egress bytes/host summary), blocked attempts, and how
   # many calls faced the approval gate. Every answer proves the posture; false restores the plain

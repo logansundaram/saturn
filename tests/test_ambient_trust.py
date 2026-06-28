@@ -36,10 +36,8 @@ def test_posture_spans_default_posture_is_calm(monkeypatch):
     monkeypatch.setitem(rt, "airgap", False)
     monkeypatch.setitem(rt, "dry_run", False)
     monkeypatch.setitem(rt, "quarantine", "gate")
-    monkeypatch.setitem(rt, "egress_log", True)
-    import trust.trust_report as tr
 
-    monkeypatch.setattr(tr, "_inference", lambda: {"all_local": True, "cloud_providers": []})
+    monkeypatch.setattr(egress, "_inference", lambda: {"all_local": True, "cloud_providers": []})
 
     spans = receipt.posture_spans()
     texts = [t for t, _ in spans]
@@ -47,7 +45,6 @@ def test_posture_spans_default_posture_is_calm(monkeypatch):
     assert ("gate read_only", "ok") == spans[0]
     assert ("inference local", "ok") in spans
     assert ("quarantine gate", "dim") in spans
-    assert ("egress logged", "dim") in spans
     assert "risk" not in kinds  # nothing loud on the safe default posture
     assert not any(t.startswith("⛓") for t in texts)
 
@@ -59,11 +56,9 @@ def test_posture_spans_loud_states_lead_and_warn(monkeypatch):
     monkeypatch.setitem(rt, "dry_run", True)
     monkeypatch.setitem(rt, "quarantine", "off")
     monkeypatch.setitem(rt, "redaction", "off")
-    monkeypatch.setitem(rt, "egress_log", False)
-    import trust.trust_report as tr
 
     monkeypatch.setattr(
-        tr, "_inference", lambda: {"all_local": False, "cloud_providers": ["anthropic"]}
+        egress, "_inference", lambda: {"all_local": False, "cloud_providers": ["anthropic"]}
     )
 
     spans = receipt.posture_spans()
@@ -74,7 +69,6 @@ def test_posture_spans_loud_states_lead_and_warn(monkeypatch):
     assert ("quarantine off", "warn") in spans
     # redaction off only matters when a cloud boundary exists to redact for — here it does
     assert ("redaction off", "warn") in spans
-    assert ("egress log off", "warn") in spans
 
 
 def test_posture_spans_state_the_effective_quarantine_mode(monkeypatch):
@@ -82,9 +76,8 @@ def test_posture_spans_state_the_effective_quarantine_mode(monkeypatch):
     'gate', case is normalized), never echo a raw config string the system ignored: 'quarantine
     none' rendered calm-dim over a system actually running 'gate' is a posture it didn't read."""
     rt = _runtime(monkeypatch)
-    import trust.trust_report as tr
 
-    monkeypatch.setattr(tr, "_inference", lambda: {"all_local": True, "cloud_providers": []})
+    monkeypatch.setattr(egress, "_inference", lambda: {"all_local": True, "cloud_providers": []})
 
     monkeypatch.setitem(rt, "quarantine", "none")  # invalid → the system runs gated
     spans = receipt.posture_spans()
@@ -102,7 +95,7 @@ def test_posture_line_prints_spans_and_pointer(capsys, monkeypatch):
     mod.posture_line()
     out = capsys.readouterr().out
     assert "gate" in out
-    assert "/privacy" in out and "/policy can" in out
+    assert "/privacy" in out and "/policy" in out
 
 
 def test_posture_line_styles_cover_every_kind():
@@ -211,7 +204,7 @@ def test_gate_decision_echo_renders_both_verdicts(capsys):
             {"id": "1", "name": "write_file", "approved": True},
             {"id": "2", "name": "run_shell", "approved": False},
         ],
-        "decision": "partial", "quarantine": True, "taint": [], "step": None,
+        "decision": "partial", "quarantine": True, "step": None,
     }]})
     out = capsys.readouterr().out
     assert "you approved write_file" in out
@@ -255,60 +248,49 @@ def test_split_sources_leaves_anything_else_alone(text):
     assert resp._split_sources(text) == (text, None)
 
 
-def _tainted_box():
-    return glassbox.from_dict({
-        "query": "q", "answer": "a",
-        "sources": [
-            {"n": 1, "label": "web_extract(url='u')", "tool": "web_extract",
-             "origin": "network", "trusted": False, "injection_flagged": False,
-             "tainted_span": "planted text"},
-            {"n": 2, "label": "read_file(path='x')", "tool": "read_file",
-             "origin": "local", "trusted": True, "injection_flagged": False,
-             "tainted_span": None},
+def _provenance_box():
+    """A live Glass Box with one network source ([1] web_extract) and one local trusted source
+    ([2] read_file) — built through the real assembler, no synthetic dict."""
+    from langchain.messages import AIMessage, HumanMessage
+
+    state = {
+        "current_query": "q",
+        "messages": [HumanMessage(content="q"), AIMessage(content="Answer [1][2].")],
+        "tool_results": [
+            "web_extract(url='u') -> some network page body of reasonable length here",
+            "read_file(path='x') -> a local trusted file body of reasonable length here",
         ],
-        "composed_local": True, "composer_label": "m", "sent_bytes": 0,
-        "sent_hosts": [], "sent_known": True, "gated": None, "replans": 0,
-    })
+        "documents_retrieved": [],
+        "tool_events": [{"name": "web_extract"}, {"name": "read_file"}],
+        "replans": 0,
+    }
+    return glassbox.build_from_state(state, egress_events=None, gated=0)
 
 
 def test_facet_annotation_vocabulary():
     resp = importlib.import_module("tui.ui.response")
-    gb = _tainted_box()
+    gb = _provenance_box()
 
-    glyph, style, note = resp._facet_annotation(gb.sources[0])
-    assert (glyph, style, note) == ("⛔", "bold red", "TAINTED → answer")
-    glyph, style, note = resp._facet_annotation(gb.sources[1])
+    glyph, style, note = resp._facet_annotation(gb.sources[0])  # web_extract: network/untrusted
+    assert (glyph, style) == ("◐", "yellow") and "web" in note
+    glyph, style, note = resp._facet_annotation(gb.sources[1])  # read_file: local + trusted
     assert (glyph, style, note) == ("✓", "green", "local")
 
 
 def test_print_sources_colors_by_facet_and_dims_without_provenance(capsys):
     resp = importlib.import_module("tui.ui.response")
-    gb = _tainted_box()
+    gb = _provenance_box()
 
     resp._print_sources(["  [1] web_extract(url='u')", "  [2] read_file(path='x')"], gb)
     out = capsys.readouterr().out
     assert "Sources:" in out
-    assert "⛔ TAINTED → answer" in out
+    assert "◐ web" in out
     assert "✓ local" in out
 
     resp._print_sources(["  [1] web_extract(url='u')"], None)  # no provenance: text only
     out = capsys.readouterr().out
     assert "[1] web_extract(url='u')" in out
-    assert "⛔" not in out and "✓" not in out
-
-
-def test_taint_warning_prints_loudly_and_only_when_tainted(capsys):
-    resp = importlib.import_module("tui.ui.response")
-
-    resp._print_taint_warning(_tainted_box())
-    out = capsys.readouterr().out
-    assert "untrusted content from web_extract reached the answer verbatim" in out
-    assert "planted text" in out and "/glass" in out
-
-    resp._print_taint_warning(None)
-    clean = glassbox.from_dict({"query": "q", "answer": "a", "sources": []})
-    resp._print_taint_warning(clean)
-    assert capsys.readouterr().out == ""
+    assert "◐" not in out and "✓" not in out
 
 
 def test_set_turn_provenance_pops_on_read(isolated_paths):

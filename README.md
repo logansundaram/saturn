@@ -29,30 +29,19 @@ Don't take the claims on faith — run one loop and check each one yourself:
    shows `⇅ N sends · <bytes> → <host>` in yellow, because something *did* leave your machine,
    and the receipt says so instead of hiding it.
 3. **`/glass`** — answer-level provenance: each cited source's origin (local vs network) and
-   trust, and whether any untrusted text bled verbatim into the answer (red, inline).
+   trust, and what left the machine this turn.
 4. **`/privacy egress`** — the per-event ledger: exactly what left, channel / host / bytes.
 5. **Make it ask.** `» save a two-line summary to notes.md` — the approval gate shows the exact
    file diff and waits; bare Enter rejects (the default is always *no*).
 6. **Hold the record.** `/trace export` writes the run's complete record as JSON with a sha256
-   digest and (with `cryptography` installed) an ed25519 signature. Then, from your shell:
+   integrity digest. Then, from your shell:
 
    ```bash
-   saturn verify logging/exports/run_1.json    # exit 0 intact · 1 tampered/forged · 2 unreadable
+   saturn verify logging/exports/run_1.json    # exit 0 intact · 1 tampered · 2 unreadable
    ```
 
-   No `cryptography` installed? A *signed* export exits 1 — fail closed: a signature it can't
-   check is an unverified claim. Install `cryptography`, or use the standalone verifier in the
-   next step, which always checks signatures. (Unsigned-but-intact still exits 0.)
-
-7. **Hand it to someone without Saturn.** Send them the export plus
-   `utilities/saturn_verify.py` (stdlib-only; spec in `utilities/VERIFY_SPEC.md`):
-
-   ```bash
-   python saturn_verify.py run_1.json
-   ```
-
-   They verify the digest and signature with no Saturn install — the transparency claims are
-   third-party-checkable, not screenshots.
+   The digest proves the record wasn't altered after export — tamper-evidence anyone can
+   re-check, not a screenshot.
 
 ---
 
@@ -126,9 +115,6 @@ replay. The point isn't how much Saturn can do — it's that you can see and con
 - **Trust receipt on every answer** — the stats line under each response also says what left
   your machine that turn: `local-only`, or exactly how many bytes went to which host, plus how
   many actions faced the approval gate. The privacy claim, proven per answer.
-- **Policy as a file** — your whole safety posture (approval threshold, per-tool risk levels,
-  shell allowlist, air-gap and redaction modes) exports to one shareable YAML profile
-  (`/policy export`) and applies anywhere — including headless runs (`saturn --policy ci.yaml`).
 - **User-defined commands** — drop a markdown template into `database/commands/` and it becomes
   a slash command (`/brief notes.md`); `$ARGUMENTS` expands, and the template runs as a normal
   gated, traced agent turn. Templates are picked up automatically (no reload command) and listed
@@ -139,11 +125,10 @@ replay. The point isn't how much Saturn can do — it's that you can see and con
   attaches to the turn (`git diff | saturn -p "review this change"`). Gated tools are denied by
   default (no human at the gate) unless you pass `--yolo`. Add `--json` for a machine-readable
   result (answer, plan, tools, tokens, timing, plus a `gates` record of which calls were
-  prompted and denied); `--export <file>` writes the run's signed audit record after the turn;
-  `saturn verify <file>` checks any exported artifact from the shell (exit 0 intact /
-  1 tampered, forged, or carrying a signature that can't be checked here — fail closed /
-  2 unreadable). The CLI is strict: unknown flags exit 2 instead of silently launching the
-  chat loop.
+  prompted and denied); `--export <file>` writes the run's export record (sha256 integrity
+  digest) after the turn; `saturn verify <file>` re-checks an exported record from the shell
+  (exit 0 intact / 1 tampered / 2 unreadable). The CLI is strict: unknown flags exit 2 instead
+  of silently launching the chat loop.
 
 ---
 
@@ -343,18 +328,18 @@ Type `/help` for the full list, or `/<command> --help` for details on any one. H
 | `/tools` | List the agent's tools and their risk tiers. |
 | `/mcp` | MCP server status + the remote tools they add; `reload` after a config edit. |
 | `/memory` | See, add, or delete the facts the agent permanently remembers. |
-| `/policy` | The whole safety posture as one object: bare = status; `risk`/`allow`/`open` are its levers (bare forms report, changing is always explicit); `can` shows the live blast radius — what runs WITHOUT asking, what needs YOUR approval, what CANNOT happen right now; `export`/`import` shareable YAML profiles (also `saturn --policy <file>`). |
+| `/policy` | The whole safety posture as one object: bare = status; `risk`/`allow`/`open` are its levers (bare forms report, changing is always explicit). |
 | `/risk` · `/allow` · `/autoapprove` | Kept for muscle memory — thin views of `/policy` (`risk` / `allow` / `open`), same handlers, zero drift. |
 | `/dryrun` | Plan + decide everything, execute nothing — tool calls stubbed (bare = status readout). |
 | `/source` | Show the full material behind a citation `[n]` of the last answer. |
-| `/glass` | **The Glass Box**: answer-level provenance — each cited source's origin + trust, the human gate decisions, and whether untrusted text reached the answer (also `/trace answer`; `#id` for past runs). |
-| `/privacy` | The privacy surface: what CAN leave (`/privacy`), what DID (`/privacy egress`, incl. the durable hash-chained `log` + `verify`), seal the boundary (`/privacy airgap`), strip secrets from cloud sends (`/privacy redact`), and `report` — the signed trust attestation. |
+| `/glass` | **The Glass Box**: answer-level provenance — each cited source's origin + trust, what left the machine, and the human gate decisions (also `/trace answer`; `#id` for past runs). |
+| `/privacy` | The privacy surface: what CAN leave (`/privacy`), what DID (`/privacy egress`), seal the boundary (`/privacy airgap`), and strip secrets from cloud sends (`/privacy redact`). |
 | `/undo` | Revert the file changes of the last turn that wrote anything. |
 | `/rewind` | Drop the last exchange from the conversation (files untouched — that's `/undo`). |
 | `/retry` | Regenerate the last answer; `/retry full` re-runs the whole turn from scratch. |
 | `/init` | Survey the workspace and draft `SATURDAY.md` standing instructions. |
-| `/trace` | Inspect past runs, tool I/O, LLM calls, cost; `/trace why` explains a run's decisions; `/trace export` writes a signed, tamper-evident run record (with the answer attestation inside); `/trace verify` checks exports AND trust reports; `/trace replay` re-renders an exported record anywhere — no database needed. |
-| `saturn verify <file>` | (shell verb, not a slash command) offline artifact check — digest + signature; exit 0 intact / 1 tampered, forged, or signed-but-uncheckable (no `cryptography` here — fail closed; `utilities/saturn_verify.py` always checks) / 2 unreadable. |
+| `/trace` | Inspect past runs, tool I/O, LLM calls, cost; `/trace why` explains a run's decisions; `/trace export` writes a tamper-evident run record (sha256 integrity digest); `/trace verify` re-checks an export's digest; `/trace replay` re-renders an exported record anywhere — no database needed. |
+| `saturn verify <file>` | (shell verb, not a slash command) offline integrity check of a `/trace export` — recomputes the digest; exit 0 intact / 1 tampered / 2 unreadable. |
 | `/resume` | Continue your last session (autosaved); `save`/`list`/`delete`/`rename`/`<name>` for named sessions. |
 | `/update` | Self-update: pull the latest Saturn (your data is never touched). |
 | `/clear` · `/quit` | Start a fresh conversation / exit. |
@@ -385,8 +370,8 @@ the plan rail, every call traced — rather than hiding them inside a monolithic
 agent.py            # entry point: builds the graph + runs the interactive loop
 config.yaml         # all settings: models, paths, safety, web provider
 core/               # the engine: state, model factory, prompts, budget, compaction
-trust/              # the trust stack: gate policy, egress ledger, quarantine, signing,
-                    #   trust receipt/report, the Glass Box
+trust/              # the trust stack: gate policy, egress ledger, quarantine, integrity
+                    #   digest, trust receipt, the Glass Box
 tools/              # the agent's tools (web, files, shell, calculator, knowledge, memory)
                     #   + the registry and MCP client
 nodes/              # the graph's nodes (ground, plan, agent, tools, synthesize, …)

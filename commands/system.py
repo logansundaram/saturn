@@ -49,7 +49,7 @@ _GATE_VIEWS = ("risk", "allow", "autoapprove")
 _TRUST_MAP = (
     ("posture", "/privacy · /policy"),
     ("activity", "receipt · /glass · /trace"),
-    ("proof", "/trace export · verify · /privacy report"),
+    ("proof", "/trace export · verify"),
 )
 
 

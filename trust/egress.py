@@ -1,10 +1,10 @@
 """
-Egress ledger + air-gap enforcement — the network boundary made visible and verifiable.
+Egress ledger + air-gap enforcement — the network boundary made visible.
 
 The product's privacy proof point used to be *asserted* (`/privacy` lists what CAN leave this
-machine) but never *proven* (what actually left). This module closes that gap. It is the single
+machine) but never *shown* (what actually left). This module closes that gap. It is the single
 chokepoint every outbound network operation reports through, so "nothing leaves your machine"
-becomes an auditable fact rather than a slogan:
+becomes an observable fact rather than a slogan:
 
   - `record(...)`     every successful egress (a web search, an http_request, a remote MCP call,
                       a cloud-model invocation) appends one `EgressEvent` to a process-wide,
@@ -21,34 +21,27 @@ separately in `llms.get_model` (it raises rather than returning a string, since 
 without its model); the `/privacy airgap` command drops the model cache so a cached cloud model
 can't sneak a call through.
 
-The ledger is per-process (one Saturn session), like `budget.py` — a live boundary monitor, not a
-durable audit log (that is `/trace export`). Imports only leaves (config, diag, signing, textutil),
-so any module (web tools, mcp_client, llms) can import it without a cycle.
+The ledger is per-process (one Saturn session), like `budget.py` — a live boundary monitor.
+
+This module also owns the inference-locality classifier (`_inference` + its display companions):
+"where do the words come from" is fundamentally an egress question, and this is where the loopback
+test (`ollama_is_local`) already lives. The posture line, `/privacy`, and the Glass Box all read
+the one classifier here. Imports only leaves (config, diag, textutil), so any module (web tools,
+mcp_client, llms, the TUI) can import it without a cycle.
 """
 
 from __future__ import annotations
 
-import hashlib
-import json
 import os
-import time
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
 from urllib.parse import urlparse
 
-import diag
-from trust import signing
-from config import get_config
+from config import MODEL_ROLES, get_config
 from textutil import truncate
 
 # Hard cap on retained events so a long session can't grow the ledger without bound (oldest drop).
 _MAX_EVENTS = 5000
-
-# A stable id for this process's session, stamped into every disk-logged event so the durable log
-# can attribute each egress to the run it happened in. (Plain module-level datetime/pid — egress.py
-# is an ordinary module, not a workflow script, so wall-clock is available here.)
-_SESSION_ID = f"{datetime.now().strftime('%Y%m%dT%H%M%S')}-{os.getpid()}"
 
 # Egress statuses, for display + filtering.
 SENT = "sent"        # left the machine
@@ -95,14 +88,12 @@ def ollama_is_local() -> bool:
     """Whether Ollama traffic stays on this machine. The whole "local inference" story keys on
     this: an `OLLAMA_HOST` pointing off-machine makes the "local" models network egress like any
     cloud provider — recorded in the ledger, refused under air-gap, and disqualifying for the
-    local-inference attestation. Fails toward NOT local (an unparseable endpoint must never
-    earn a 'local' claim)."""
+    local-inference claim. Fails toward NOT local (an unparseable endpoint must never earn a
+    'local' claim)."""
     endpoint = ollama_endpoint()
     if "://" not in endpoint:
         endpoint = "http://" + endpoint
     try:
-        from urllib.parse import urlparse
-
         name = (urlparse(endpoint).hostname or "").lower()
     except Exception:
         return False
@@ -139,8 +130,7 @@ def record(channel: str, host: str, detail: str = "", *, provider: str = "",
     to a safe default rather than dropping the event — losing the RECORD that something left the
     machine is the one failure a boundary ledger must never have. `host`/`detail` are display
     labels, so they are clipped here: an unbounded detail (a fat model-generated URL or query)
-    would bloat every render AND could push a durable-log line past the tail window the chain
-    appender reads."""
+    would bloat every render."""
     global _SEQ
     try:
         ev = EgressEvent(
@@ -160,317 +150,6 @@ def record(channel: str, host: str, detail: str = "", *, provider: str = "",
     _LEDGER.append(ev)
     if len(_LEDGER) > _MAX_EVENTS:
         del _LEDGER[: len(_LEDGER) - _MAX_EVENTS]
-    _append_disk(ev)
-
-
-# ── persistent, hash-chained egress log (runtime.egress_log) ──────────────────────────────────
-# The in-memory ledger above is per-process — a live boundary monitor. This is its durable twin: an
-# append-only JSONL file at paths.egress_log where "what left this machine" survives across sessions
-# and is TAMPER-EVIDENT. Each line carries `prev` (the previous line's hash) and `h` = sha256(prev +
-# canonical(payload)); a walk of the chain (verify_log) detects any edit, reorder, or deletion of
-# the middle. Truncating the tail is the one thing a self-contained log can't prove against — that
-# needs an external anchor, and signed artifacts now PROVIDE one: every /trace export and trust
-# report embeds `egress_anchor` (log_tip() — the chain head at export time) INSIDE its signed body,
-# so a later tail-truncation of this log contradicts any signed artifact produced after the
-# truncated events (the verifier checks the anchored tip still appears in the chain). Writing is
-# strictly best-effort: losing the live RECORD must never break an op, and neither must the disk log.
-
-
-def _log_path() -> "Path | None":
-    try:
-        return get_config().path("egress_log")
-    except Exception:
-        return None
-
-
-def _disk_enabled() -> bool:
-    return bool(get_config().get("runtime.egress_log", True))
-
-
-def _entry_hash(prev: str, payload: dict) -> str:
-    # signing.canonical_json is THE canonical byte stream every Saturn digest commits to — the
-    # chain must use the same one as trace exports / trust reports so the schemes can never drift.
-    return hashlib.sha256((prev + signing.canonical_json(payload)).encode("utf-8")).hexdigest()
-
-
-def _lock_handle(fh) -> bool:
-    """Best-effort exclusive lock on the open log handle across the read-tip→append window, so two
-    processes (an interactive session + a headless cron run) can't both chain from the same tip and
-    fork the log. Bounded non-blocking retries; if the lock can't be had, the caller SKIPS the
-    durable append (diag-logged) — appending unlocked would chain from an unverified tip, and a
-    forked chain makes verify_log report tampering forever (a permanent false alarm is worse than
-    one missing line; the in-memory ledger still carries the event)."""
-    for _ in range(5):
-        try:
-            if os.name == "nt":
-                import msvcrt
-
-                fh.seek(0)
-                msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
-            else:
-                import fcntl
-
-                fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-            return True
-        except OSError:
-            time.sleep(0.02)
-        except Exception:
-            return False
-    return False
-
-
-def _unlock_handle(fh) -> None:
-    try:
-        if os.name == "nt":
-            import msvcrt
-
-            fh.seek(0)
-            msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
-        else:
-            import fcntl
-
-            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
-    except Exception:
-        pass
-
-
-def _tail_tip(fh, size: int) -> str:
-    """The `h` of the log's last line (the chain tip to extend), read from the open handle.
-    Reads a GROWING tail window: a single record longer than the initial window (e.g. lines
-    written before detail clipping existed) must not be parsed as a mid-line fragment — that
-    would silently restart the chain with prev="" and break verification forever. The window is
-    trustworthy only when it spans the whole file or contains a newline before the tip line."""
-    window = 8192
-    while True:
-        fh.seek(max(0, size - window))
-        tail = fh.read(min(size, window)).decode("utf-8", "replace")
-        lines = [ln for ln in tail.splitlines() if ln.strip()]
-        if window >= size or len(lines) > 1:
-            break
-        window *= 8
-    if not lines:
-        return ""
-    try:
-        return str(json.loads(lines[-1]).get("h", "")) or ""
-    except Exception:
-        return ""
-
-
-# (path, file size, tip hash) after our last append — steady-state appends skip the tail re-read;
-# a size mismatch (another session appended) falls back to reading the real tip from disk.
-_TIP_CACHE: "tuple[str, int, str] | None" = None
-
-
-def _append_disk(ev: EgressEvent) -> None:
-    """Append one event to the durable hash-chained log. Best-effort: any failure is swallowed
-    (logged to diag) so the egress op it accompanies is never disturbed. The handle is locked
-    across read-tip→append so concurrent sessions extend one linear chain; if the lock can't be
-    had the append is SKIPPED (see _lock_handle) — never written unlocked from a stale tip."""
-    global _TIP_CACHE
-    if not _disk_enabled():
-        return
-    path = _log_path()
-    if path is None:
-        return
-    try:
-        payload = asdict(ev)
-        payload.pop("seq", None)  # session-local ordinal, not part of the durable record
-        payload["session"] = _SESSION_ID
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "a+b") as fh:
-            if not _lock_handle(fh):
-                # Another process holds the lock past the retry budget. Never append unlocked:
-                # chaining from a tip that writer is about to move would FORK the hash chain and
-                # turn every future verify into a permanent false tamper alarm. Drop this line
-                # (the in-memory ledger keeps the event) and let the next append re-anchor.
-                diag.log("egress: disk append skipped — log locked by another session")
-                return
-            try:
-                fh.seek(0, os.SEEK_END)
-                size = fh.tell()
-                if size == 0:
-                    prev = ""
-                elif _TIP_CACHE and _TIP_CACHE[0] == str(path) and _TIP_CACHE[1] == size:
-                    prev = _TIP_CACHE[2]
-                else:
-                    prev = _tail_tip(fh, size)
-                payload["prev"] = prev
-                payload["h"] = _entry_hash(
-                    prev, {k: v for k, v in payload.items() if k not in ("prev", "h")}
-                )
-                fh.seek(0, os.SEEK_END)
-                fh.write((json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8"))
-                fh.flush()
-                _TIP_CACHE = (str(path), fh.tell(), payload["h"])
-            finally:
-                _unlock_handle(fh)
-    except Exception as exc:
-        diag.log(f"egress: disk append failed: {exc}")
-
-
-def read_log(limit: "int | None" = None) -> list[dict]:
-    """Parsed lines of the durable log, oldest first (a copy). Empty when logging is off or the file
-    doesn't exist yet. `limit` keeps only the most recent N — and reads only a growing TAIL window
-    of the file for them (the log is append-only and never trimmed, so a full read for the last 30
-    rows would grow without bound across months of sessions)."""
-    path = _log_path()
-    if path is None or not path.exists():
-        return []
-    try:
-        if limit:
-            text = _read_tail_lines(path, limit)
-        else:
-            text = path.read_text(encoding="utf-8")
-    except Exception as exc:
-        diag.log(f"egress: read_log failed: {exc}")
-        return []
-    rows: list[dict] = []
-    for line in text.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            rows.append(json.loads(line))
-        except Exception:
-            continue
-    return rows[-limit:] if limit else rows
-
-
-def _read_tail_lines(path, n_lines: int) -> str:
-    """The last `n_lines`+ lines of `path` as text, via a growing tail window (same technique as
-    _tail_tip). The window is trustworthy once it spans the whole file or starts past a newline —
-    a partial first line is dropped rather than parsed as a mid-line fragment."""
-    with open(path, "rb") as fh:
-        fh.seek(0, os.SEEK_END)
-        size = fh.tell()
-        window = max(8192, n_lines * 512)
-        while True:
-            fh.seek(max(0, size - window))
-            tail = fh.read(min(size, window)).decode("utf-8", "replace")
-            whole = window >= size
-            if whole or tail.count("\n") > n_lines:
-                break
-            window *= 8
-    if whole:
-        return tail
-    # Drop the (possibly partial) first line of a mid-file window.
-    return tail.split("\n", 1)[1] if "\n" in tail else ""
-
-
-def verify_log() -> dict:
-    """Walk the durable log's hash chain and report integrity. Returns a dict:
-      {available, exists, lines, ok, broken_at, sessions, error}
-    `ok` is True iff EVERY raw line parses, recomputes its hash, and links to its predecessor.
-    Unlike the display path (read_log), this walks the raw lines and treats an unparseable one as
-    a broken chain — silently skipping it would let a garbled tail line (or a file replaced
-    wholesale with garbage) verify as '✓ intact', exactly the tamper this log exists to expose.
-    `broken_at` is the 1-based index of the first bad line."""
-    path = _log_path()
-    if path is None:
-        return {"available": False, "exists": False, "ok": True, "lines": 0}
-    if not path.exists():
-        return {"available": True, "exists": False, "ok": True, "lines": 0, "sessions": []}
-
-    try:
-        raw = [ln for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
-    except Exception as exc:
-        return {"available": True, "exists": True, "ok": False, "broken_at": 1, "lines": 0,
-                "error": f"unreadable: {exc}", "sessions": []}
-
-    prev = ""
-    sessions: list[str] = []
-
-    def _broken(i: int, why: str) -> dict:
-        return {"available": True, "exists": True, "ok": False, "broken_at": i, "error": why,
-                "lines": len(raw), "sessions": sorted(set(sessions))}
-
-    for i, line in enumerate(raw, start=1):
-        try:
-            row = json.loads(line)
-        except Exception:
-            return _broken(i, "unparseable line")
-        if not isinstance(row, dict):
-            return _broken(i, "not a record")
-        payload = {k: v for k, v in row.items() if k not in ("prev", "h")}
-        if row.get("prev", "") != prev or row.get("h") != _entry_hash(prev, payload):
-            return _broken(i, "hash mismatch")
-        s = row.get("session")
-        if s:
-            sessions.append(s)
-        prev = row["h"]
-    return {
-        "available": True, "exists": True, "ok": True, "broken_at": None,
-        "lines": len(raw), "sessions": sorted(set(sessions)),
-    }
-
-
-def log_tip() -> "dict | None":
-    """The durable log's current chain head — {"tip_hash", "line_count"} — for embedding as the
-    `egress_anchor` inside a SIGNED artifact's body (a /trace export, a trust report). Anchor
-    semantics: the artifact's digest + signature commit the chain head as it stood at export time,
-    so a later tail-truncation of egress.log (the one tamper a self-contained chain can't expose)
-    contradicts every signed artifact produced after the truncated events — a verifier walks the
-    chain and confirms the anchored tip still appears as some line's `h`.
-
-    Cheap by design: the tip comes from the append cache (or ONE tail read via _tail_tip), never a
-    chain re-walk; the line count is a single binary newline scan. Returns None — the caller omits
-    the field, never writes a fake value — when durable logging is off, no log exists yet, or the
-    tail line is unreadable (an anchor must only ever commit a REAL tip)."""
-    if not _disk_enabled():
-        return None
-    path = _log_path()
-    if path is None or not path.exists():
-        return None
-    try:
-        with open(path, "rb") as fh:
-            fh.seek(0, os.SEEK_END)
-            size = fh.tell()
-            if size == 0:
-                return None
-            if _TIP_CACHE and _TIP_CACHE[0] == str(path) and _TIP_CACHE[1] == size:
-                tip = _TIP_CACHE[2]
-            else:
-                tip = _tail_tip(fh, size)
-            if not tip:
-                return None  # garbled/unreadable tail — never anchor a fake value
-            fh.seek(0)
-            count = 0
-            last = b"\n"
-            while True:
-                chunk = fh.read(1 << 20)
-                if not chunk:
-                    break
-                count += chunk.count(b"\n")
-                last = chunk[-1:]
-            if last != b"\n":
-                count += 1  # a final line without trailing newline still counts
-    except Exception as exc:
-        diag.log(f"egress: log_tip failed: {exc}")
-        return None
-    return {"tip_hash": tip, "line_count": count}
-
-
-def log_summary(rows: "list[dict] | None" = None) -> dict:
-    """Aggregate the DURABLE (cross-session) log for `/privacy egress log` and the trust report.
-    Pass pre-read `rows` (from read_log()) to avoid a second full-file read when the caller
-    already has them."""
-    if rows is None:
-        rows = read_log()
-    sent = [r for r in rows if r.get("status") == SENT]
-    blocked = [r for r in rows if r.get("status") == BLOCKED]
-    hosts = sorted({r.get("host", "?") for r in sent})
-    sessions = sorted({r.get("session", "") for r in rows if r.get("session")})
-    return {
-        "lines": len(rows),
-        "sent": len(sent),
-        "blocked": len(blocked),
-        "bytes": sum(_safe_int(r.get("n_bytes")) for r in sent),
-        "redactions": sum(_safe_int(r.get("redactions")) for r in sent),
-        "hosts": hosts,
-        "sessions": sessions,
-        "first": rows[0].get("ts") if rows else None,
-        "last": rows[-1].get("ts") if rows else None,
-    }
 
 
 def blocked_message(host: str, channel: str = "") -> str:
@@ -554,9 +233,8 @@ def summary() -> dict:
     """Aggregate the ledger for the `/privacy egress` headline: totals, bytes, distinct hosts,
     blocked. Carries `cleared`: whether a `/privacy egress clear` wiped events this session —
     the counts are then SINCE THE CLEAR, not the whole session, and any truth-claiming consumer
-    (the signed trust report embeds this dict verbatim as `egress_session`) must disclose that
-    rather than attest an understated total. The same hazard `cleared_since` guards for per-turn
-    slices, surfaced here for the whole-ledger aggregation."""
+    must disclose that rather than imply an understated total. The same hazard `cleared_since`
+    guards for per-turn slices, surfaced here for the whole-ledger aggregation."""
     agg = summarize_events(_LEDGER)
     by_channel: dict[str, int] = {}
     for e in _LEDGER:
@@ -593,3 +271,65 @@ def cleared_since(mark: int) -> bool:
     may be missing events that really happened. A slice that may have been clear-emptied must be
     treated as UNKNOWN by truth-claiming surfaces, never as 'nothing was sent'."""
     return _CLEARED_AT >= mark > 0
+
+
+# ── inference-locality classifier ────────────────────────────────────────────────────────────────
+# "Where do the words come from" — local (computed on this machine) vs off-machine (a cloud
+# provider, or an Ollama daemon behind a remote OLLAMA_HOST). THE one classifier: the session
+# posture line (receipt.posture_spans), `/privacy`, and the Glass Box all read this — never
+# re-rolled. Lives here because locality IS an egress question and the loopback test
+# (ollama_is_local) already lives in this module.
+
+
+def _inference() -> dict:
+    """Local-vs-off-machine binding map. 'local' means the words are computed ON THIS MACHINE: an
+    Ollama binding only earns it when the endpoint is loopback — a remote OLLAMA_HOST is network
+    inference and classifies 'remote' (off-machine, like 'cloud'), reported with the endpoint so
+    the reader can see where."""
+    cfg = get_config()
+    ollama_local = ollama_is_local()
+    ollama_loc = "local" if ollama_local else "remote"
+    bindings = []
+    for role in MODEL_ROLES:
+        try:
+            spec = cfg.model_for_role(role)
+        except KeyError:
+            continue
+        bindings.append({
+            "role": role,
+            "provider": spec.provider,
+            "model": spec.model,
+            "locality": ollama_loc if spec.provider == "ollama" else "cloud",
+        })
+    try:
+        bindings.append({"role": "embedder", "provider": "ollama",
+                         "model": cfg.embedder_model, "locality": ollama_loc})
+    except Exception:
+        pass
+    cloud = sorted({b["provider"] for b in bindings if b["locality"] == "cloud"})
+    remote = any(b["locality"] == "remote" for b in bindings)
+    out = {"bindings": bindings, "cloud_providers": cloud,
+           "all_local": not cloud and not remote}
+    if remote:
+        out["remote_ollama"] = ollama_endpoint()
+    return out
+
+
+def remote_ollama_label(inf: dict) -> str:
+    """The display label for a remote-Ollama destination (`ollama @ <endpoint>`) — one spelling
+    for every surface that names it (posture line, /privacy tables, the report render)."""
+    return f"ollama @ {inf.get('remote_ollama', '?')}"
+
+
+def offmachine_destinations(inf: "dict | None" = None) -> list[str]:
+    """The off-machine inference destinations as display labels: cloud providers plus a remote
+    Ollama endpoint (`remote_ollama_label`). THE one assembly of the where-list — the session
+    posture line (receipt.posture_spans), /privacy's verdict, all print this, so they can never
+    name different destination sets for the identical posture. Takes the classifier's dict (or
+    computes it fresh); empty when everything is local."""
+    if inf is None:
+        inf = _inference()
+    where = list(inf.get("cloud_providers") or [])
+    if inf.get("remote_ollama"):
+        where.append(remote_ollama_label(inf))
+    return where

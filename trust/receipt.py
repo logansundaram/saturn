@@ -167,7 +167,7 @@ def posture_spans() -> list[tuple[str, str]]:
     all_local = None
     try:
         # The one locality classifier + the one where-list assembly — never re-rolled.
-        from trust.trust_report import _inference, offmachine_destinations
+        from trust.egress import _inference, offmachine_destinations
 
         inf = _inference()
         all_local = bool(inf.get("all_local"))
@@ -204,11 +204,6 @@ def posture_spans() -> list[tuple[str, str]]:
         # Redaction only matters when something cloud-bound exists to redact for.
         spans.append((f"redaction {mode}",
                       "warn" if (mode == "off" and all_local is False) else "dim"))
-    except Exception:
-        pass
-    try:
-        spans.append(("egress logged", "dim") if bool(cfg.get("runtime.egress_log", True))
-                     else ("egress log off", "warn"))
     except Exception:
         pass
     return spans

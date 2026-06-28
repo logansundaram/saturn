@@ -107,7 +107,6 @@ def gate_event(
     approved_ids,
     *,
     quarantine: bool = False,
-    taint: "list[dict] | None" = None,
     step: "str | None" = None,
 ) -> dict:
     """The structured record of ONE human gate decision, appended to state["gate_events"] only
@@ -134,7 +133,6 @@ def gate_event(
         "calls": calls,
         "decision": decision,
         "quarantine": bool(quarantine),
-        "taint": list(taint or []),
         "step": step,
     }
 
@@ -209,27 +207,11 @@ def approval_node(state: AgentState) -> Command[Literal["tools", "agent"]]:
     # the prompt can say why a normally-silent call is suddenly asking.
     escalated = quarantine.gate_pending() if tool_calls else False
 
-    # Per-call taint: untrusted content (web/http/MCP/corpus) recorded this turn now appearing
-    # inside a call's arguments — the data->action channel. Computed for display on every gated
-    # call so the human sees that the command/request echoes content a source planted; in `gate`
-    # mode a tainted call ALSO faces the human even when its tier would auto-approve (surfacing the
-    # channel is the whole point). It is a pure function of the recorded observations + the args —
-    # both stable across a node re-run — so unlike the one-shot injection escalation it needs no
-    # peek/consume dance: it simply recomputes the same way on resume.
-    taint_on = quarantine.active()
-    qgate = quarantine.mode() == "gate"
-    taint = (
-        {tc["id"]: quarantine.taint_scan(tc.get("args") or {}) for tc in tool_calls}
-        if taint_on
-        else {}
-    )
-
     gated = [
         tc
         for tc in tool_calls
         if escalated
         or not policy.approves(tc["name"], risk_of(tc["name"]), tc.get("args"))
-        or (qgate and taint.get(tc["id"]))
     ]
 
     if not gated:
@@ -249,11 +231,6 @@ def approval_node(state: AgentState) -> Command[Literal["tools", "agent"]]:
                     "name": tc["name"],
                     "args": tc["args"],
                     "risk": risk_of(tc["name"]),
-                    "taint": [
-                        {"source": h.source_tool, "preview": h.preview, "span_len": h.span_len}
-                        for h in taint.get(tc["id"], [])
-                    ]
-                    or None,
                 }
                 for tc in gated
             ],
@@ -297,11 +274,6 @@ def approval_node(state: AgentState) -> Command[Literal["tools", "agent"]]:
         gated,
         approved_ids,
         quarantine=bool(escalated),
-        taint=[
-            {"call_id": tc["id"], "source_tool": h.source_tool}
-            for tc in gated
-            for h in taint.get(tc["id"], [])
-        ],
         step=(step or {}).get("label"),
     )
 

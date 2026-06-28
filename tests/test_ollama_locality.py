@@ -4,7 +4,7 @@ Ollama-locality boundary — a remote OLLAMA_HOST is network egress, never "loca
 The local-inference story (posture line, Glass Box attestation, /privacy) keys on
 egress.ollama_is_local(): when the Ollama endpoint is off-machine, chat models are wrapped in
 the cloud boundary proxy (redacted + ledger-recorded), embeddings go through the embeddings
-boundary, the air-gap refuses both, and trust_report._inference classifies the bindings
+boundary, the air-gap refuses both, and egress._inference classifies the bindings
 "remote" so no surface can claim the words were computed on this machine.
 """
 
@@ -44,7 +44,7 @@ def test_ollama_is_local_endpoint_forms(monkeypatch, host, expected):
 
 def test_inference_classifies_remote_ollama(monkeypatch):
     monkeypatch.setenv("OLLAMA_HOST", "http://192.168.1.50:11434")
-    from trust.trust_report import _inference
+    from trust.egress import _inference
 
     inf = _inference()
     assert inf["all_local"] is False
@@ -58,7 +58,7 @@ def test_inference_classifies_remote_ollama(monkeypatch):
 
 def test_inference_no_remote_marker_on_loopback(monkeypatch):
     monkeypatch.delenv("OLLAMA_HOST", raising=False)
-    from trust.trust_report import _inference
+    from trust.egress import _inference
 
     inf = _inference()
     assert "remote_ollama" not in inf
@@ -191,11 +191,10 @@ def test_boundary_records_post_redaction_bytes(monkeypatch, isolated_paths):
 
 
 def test_posture_line_names_remote_endpoint(monkeypatch):
-    import trust.trust_report as tr
     from trust import receipt
 
     monkeypatch.setattr(
-        tr,
+        egress,
         "_inference",
         lambda: {
             "all_local": False,

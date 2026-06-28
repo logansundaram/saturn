@@ -12,8 +12,8 @@ _REDACT_MODES = ("off", "warn", "redact")
 @command(
     "privacy",
     "The privacy surface: what CAN leave this machine, what DID, and the controls that seal it.",
-    usage="/privacy [egress [log|verify|clear|n] | airgap [on|off] [--save] | "
-          "redact [<mode>|preview] [--save] | report [-o <path>]]",
+    usage="/privacy [egress [clear|n] | airgap [on|off] [--save] | "
+          "redact [<mode>|preview] [--save]]",
     details="""
 One front door for the whole network boundary. Bare /privacy answers "what can leave this
 machine right now?"; the subcommands are its verifiable companions — what actually left, the
@@ -29,10 +29,6 @@ seal, and the secret-stripper:
                            with a network monitor and the two agree.
     /privacy egress 20       just the last 20 events
     /privacy egress clear    reset the in-memory ledger for this session
-    /privacy egress log [n]  the DURABLE log: what left across ALL sessions (survives restarts,
-                             append-only, hash-chained) — the in-memory ledger's permanent twin
-    /privacy egress verify   walk the durable log's hash chain and prove no entry was edited,
-                             reordered, or deleted since it was written
 
   /privacy airgap          seal the boundary. With no argument, prints the enforcement posture
                            (what is open vs sealed right now). When ON: web tools refuse, remote
@@ -46,14 +42,9 @@ seal, and the secret-stripper:
                              nothing
     /privacy redact <mode> [--save]   (`--save` with no mode persists the current one unchanged)
 
-  /privacy report          the trust report: ONE signed document gathering every posture above —
-                           inference bindings, gate policy, air-gap/redaction, and what actually
-                           left (this session + the durable log) — into a portable attestation.
-    /privacy report -o <path>   write it as a signed JSON artifact (verify with /trace verify)
-
 Telemetry: none. There is nothing to configure off because nothing phones home.
 
-Related: /dryrun (plan + decide everything, execute nothing) · /trace export (durable audit
+Related: /dryrun (plan + decide everything, execute nothing) · /trace export (a portable run
 record with an integrity digest).
 """,
 )
@@ -66,9 +57,7 @@ def _privacy(ctx, args):
             return _airgap(ctx, args[1:])
         if sub in ("redact", "redaction"):
             return _redact(ctx, args[1:])
-        if sub in ("report", "attest", "attestation"):
-            return _report(ctx, args[1:])
-        _print(f"  unknown subcommand: {sub} — usage: /privacy [egress|airgap|redact|report]")
+        _print(f"  unknown subcommand: {sub} — usage: /privacy [egress|airgap|redact]")
         return
     _overview(ctx)
 
@@ -84,10 +73,10 @@ def _overview(ctx):
     cfg = get_config()
 
     # --- inference ---------------------------------------------------------
-    # trust_report._inference is THE locality classifier (loopback-aware: a remote OLLAMA_HOST
+    # egress._inference is THE locality classifier (loopback-aware: a remote OLLAMA_HOST
     # classifies "remote", never "local") and offmachine_destinations THE where-list assembly —
     # reused here, not re-rolled.
-    from trust.trust_report import _inference, offmachine_destinations
+    from trust.egress import _inference, offmachine_destinations
 
     inf = _inference()
     if inf["all_local"]:
@@ -163,9 +152,6 @@ def _overview(ctx):
         ("sessions", "sessions", ""),
         ("exports", "exports", ""),
         ("gate policy", "permissions", "risk overrides + shell allowlist (/policy)"),
-        ("signing key", "signing_key", "this machine's audit key — private key never leaves"),
-        ("egress log", "egress_log",
-         "retains query/URL detail across sessions; delete the file to start a fresh chain"),
     ):
         try:
             rows.append((label, (str(cfg.path(name)), "dim"), (note, "dim")))
@@ -202,11 +188,6 @@ def _egress(ctx, args):
         _print("  egress ledger cleared for this session.")
         return
 
-    if args and args[0].lower() in ("log", "history", "durable"):
-        return _egress_log(ctx, args[1:])
-    if args and args[0].lower() in ("verify", "check", "audit"):
-        return _egress_verify(ctx)
-
     limit = None
     for a in args:
         if a.lstrip("+-").isdigit():
@@ -224,14 +205,13 @@ def _egress(ctx, args):
         pass
 
     # A clear-emptied ledger must never read as "nothing left this machine" — the counts below
-    # are since the clear, and the durable log is where the full record lives (it is audit,
-    # never cleared). Same unknown-over-local-only contract the receipt and Glass Box apply.
+    # are since the clear. Same unknown-over-local-only contract the receipt and Glass Box apply.
     cleared = bool(s.get("cleared"))
     if not evs:
         if cleared:
             ui.section("egress", "no events since the ledger was cleared" + airgap)
             _print("  the in-memory ledger was cleared this session — earlier egress is not")
-            _print("  shown here; the durable log retains the full record (/privacy egress log).")
+            _print("  shown here.")
         else:
             ui.section("egress", "nothing has left this machine this session" + airgap)
             _print("  the boundary has stayed closed — no web, http, MCP, or cloud-model egress.")
@@ -247,8 +227,7 @@ def _egress(ctx, args):
     )
     ui.section("egress", headline)
     if cleared:
-        _print("  (ledger cleared this session — counts are since the clear; the durable log"
-               " retains the full record)")
+        _print("  (ledger cleared this session — counts are since the clear)")
 
     shown = evs[-limit:] if limit else evs
     if limit and len(evs) > limit:
@@ -270,72 +249,6 @@ def _egress(ctx, args):
     if s["by_channel"]:
         mix = " · ".join(f"{v} {k}" for k, v in sorted(s["by_channel"].items()))
         _print(f"  by channel: {mix}")
-
-    _print("  durable record across sessions: /privacy egress log  ·  verify it: /privacy egress verify")
-
-
-def _egress_log(ctx, args):
-    """`/privacy egress log [n]` — the DURABLE, cross-session egress record (paths.egress_log),
-    the in-memory ledger's twin that survives restarts and is tamper-evident."""
-    from trust import egress
-    from tui import ui
-
-    limit = None
-    for a in args:
-        if a.lstrip("+-").isdigit():
-            limit = max(1, int(a))
-
-    s = egress.log_summary()
-    if s["lines"] == 0:
-        ui.section("egress log", "the durable egress log is empty")
-        _print("  no egress has been recorded to disk yet (or runtime.egress_log is off).")
-        return
-
-    span = ""
-    if s["first"] and s["last"]:
-        span = f"  ·  {s['first'][:10]} → {s['last'][:10]}"
-    ui.section(
-        "egress log",
-        f"{s['sent']} event(s), {_human_bytes(s['bytes'])} sent across {len(s['sessions'])} "
-        f"session(s){span}",
-    )
-
-    rows = []
-    for r in egress.read_log(limit=limit or 30):
-        when = (r.get("ts") or "")[:19].replace("T", " ")
-        status = (
-            ("BLOCKED", ui.risk_style("destructive")) if r.get("status") == egress.BLOCKED
-            else (_human_bytes(r.get("n_bytes")), "dim")
-        )
-        rows.append((when, r.get("channel", "?"), r.get("host", "?"),
-                     str(r.get("detail", ""))[:48], status))
-    ui.table(rows, styles=["dim", "accent", None, None, None])
-    _print(f"  showing the last {len(rows)} of {s['lines']} line(s)  ·  /privacy egress verify "
-           "to check the chain is intact")
-
-
-def _egress_verify(ctx):
-    """`/privacy egress verify` — walk the durable log's hash chain and report whether any line was
-    edited, reordered, or removed."""
-    from trust import egress
-    from tui import ui
-
-    v = egress.verify_log()
-    if not v.get("exists"):
-        ui.section("egress log", "no durable log to verify yet")
-        _print("  nothing has been written to paths.egress_log (or runtime.egress_log is off).")
-        return
-    if v["ok"]:
-        ui.section("egress log", f"✓ intact — {v['lines']} line(s), "
-                                 f"{len(v.get('sessions', []))} session(s)")
-        _print("  every entry's hash recomputes and links to its predecessor: no line in the")
-        _print("  middle of the log was edited, reordered, or deleted since it was written.")
-        _print("  (a truncated tail can't be proven against here — that's the signed /trace")
-        _print("   export's job for the run record.)")
-    else:
-        ui.section("egress log", f"⨯ BROKEN at line {v.get('broken_at')} of {v['lines']}")
-        _print("  the hash chain does not verify — a line was modified, reordered, or removed")
-        _print(f"  at or before entry #{v.get('broken_at')}. Treat the log as compromised.")
 
 
 # ── /privacy airgap — seal the boundary ──────────────────────────────────────────────────────
@@ -404,9 +317,9 @@ def _airgap(ctx, args):
 
 
 def _locality_cell(b: dict, inf: dict, ui):
-    """The styled locality cell for one inference binding (the bare /privacy and /privacy report
-    tables render identically through this)."""
-    from trust.trust_report import remote_ollama_label
+    """The styled locality cell for one inference binding (the /privacy inference table renders
+    through this)."""
+    from trust.egress import remote_ollama_label
 
     if b["locality"] == "local":
         return ("local", ui.risk_style("read_only"))
@@ -417,9 +330,9 @@ def _locality_cell(b: dict, inf: dict, ui):
 
 def _offmachine_roles(cfg):
     """(role, where, model) for every role whose inference LEAVES this machine — cloud-bound
-    roles and Ollama roles behind a remote OLLAMA_HOST (trust_report._inference, the one
-    locality classifier; the endpoint label via remote_ollama_label, the one spelling)."""
-    from trust.trust_report import _inference, remote_ollama_label
+    roles and Ollama roles behind a remote OLLAMA_HOST (egress._inference, the one locality
+    classifier; the endpoint label via remote_ollama_label, the one spelling)."""
+    from trust.egress import _inference, remote_ollama_label
 
     inf = _inference()
     out = []
@@ -432,7 +345,7 @@ def _offmachine_roles(cfg):
 
 
 def _show_posture(ctx, cfg, ui, egress):
-    from trust.trust_report import _inference
+    from trust.egress import _inference
 
     on = bool(cfg.get("runtime.airgap", False))
     inf = _inference()
@@ -447,7 +360,7 @@ def _show_posture(ctx, cfg, ui, egress):
 
     sealed = lambda: ("sealed", ui.risk_style("read_only")) if on else ("open", ui.risk_style("destructive"))
 
-    from trust.trust_report import remote_ollama_label
+    from trust.egress import remote_ollama_label
 
     rows = []
     for b in inf["bindings"]:
@@ -574,101 +487,3 @@ def _redact_preview(ctx, redaction, ui):
     else:
         _print("  mode is `off`: these would be sent UNMODIFIED — use /privacy redact redact")
         _print("  to strip them.")
-
-
-# ── /privacy report — the signed trust attestation ───────────────────────────────────────────
-
-
-def _report(ctx, args):
-    """`/privacy report [-o path]` — gather every trust surface into one document and (when a path
-    is given) write it as a signed, verifiable JSON artifact."""
-    import json
-    from pathlib import Path
-
-    from trust import trust_report
-    from tui import ui
-
-    out_path = None
-    it = iter(args)
-    for a in it:
-        if a.lower() in ("-o", "--out", "--output"):
-            out_path = next(it, None)
-            if out_path is None:
-                _print("  usage: /privacy report [-o <path>] — -o needs a path; nothing written.")
-                return
-
-    report = trust_report.build_report()
-    inf = report["inference"]
-    if inf["all_local"]:
-        verdict = "all inference local — nothing leaves unless a web tool runs"
-    else:
-        # The one where-list assembly — this render, /privacy's verdict, and the posture line
-        # must name the same destination set for the same posture.
-        verdict = ("inference leaves this machine — sends to: "
-                   f"{', '.join(trust_report.offmachine_destinations(inf))}")
-    ui.section("trust report", verdict)
-
-    # Inference
-    _print("  inference")
-    ui.table([(b["role"], b["model"], _locality_cell(b, inf, ui)) for b in inf["bindings"]])
-
-    # Policy / boundary posture
-    pol = report["policy"]
-    bnd = report["boundary"]
-    gate = "OPEN (gate off — nothing prompts)" if pol["gate_off"] else f"prompt above {pol['auto_approve']}"
-    _print("  posture")
-    ui.table([
-        ("approval gate", gate,
-         ("⚠", ui.risk_style("destructive")) if pol["gate_off"] else ("ok", ui.risk_style("read_only"))),
-        ("air-gap", "SEALED" if bnd["airgap"] else "open",
-         ("sealed", ui.risk_style("read_only")) if bnd["airgap"] else ("open", "dim")),
-        ("redaction", (bnd["redaction"], "dim")),
-        ("injection quarantine", (bnd["quarantine"], "dim")),
-        ("risk overrides", (f"{len(pol['risk_overrides'])} tool(s)", "dim")),
-        ("shell allowlist", (f"{len(pol['shell_allow'])} prefix(es)", "dim")),
-    ])
-
-    # Egress — session + durable
-    se = report["egress_session"]
-    du = report["egress_durable"]
-    _print("  egress")
-    chain = ("intact", ui.risk_style("read_only")) if du["chain_ok"] else \
-            (f"BROKEN @ {du['chain_broken_at']}", ui.risk_style("destructive"))
-    ui.table([
-        ("this session",
-         (f"{se['sent']} sent ({_human_bytes(se['bytes'])}), {se['blocked']} blocked", "dim")),
-        ("durable log",
-         (f"{du['sent']} sent over {du['sessions']} session(s), {_human_bytes(du['bytes'])}",
-          "dim")),
-        ("log integrity", "hash chain", chain),
-    ])
-    # The `cleared` marker rides inside the signed body (egress.summary) — disclose it here too,
-    # so the human render never presents a since-the-clear count as the whole session's total.
-    if se.get("cleared"):
-        _print("  (session ledger was cleared this session — the session counts are since the"
-               " clear; the durable log retains the full record)")
-
-    # Signing
-    sg = report["signing"]
-    if sg["available"]:
-        _print(f"  signed by ed25519 key {sg['key_id']}  (publish: /trace key)")
-    else:
-        _print("  unsigned — install `cryptography` to sign this report")
-
-    if out_path:
-        signed = trust_report.sign_report(report)
-        dest = Path(out_path).expanduser()
-        try:
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_text(json.dumps(signed, ensure_ascii=False, indent=2), encoding="utf-8")
-        except OSError as e:
-            _print(f"  could not write {dest}: {e}")
-            return
-        _print("")
-        _print(f"  signed trust report written -> {dest}")
-        _print(f"    sha256 {signed['integrity']['digest']}")
-        if signed.get("signature"):
-            _print(f"    signed   ed25519 by key {signed['signature'].get('key_id', '?')}")
-    else:
-        _print("")
-        _print("  write a signed, portable copy with:  /privacy report -o trust.json")

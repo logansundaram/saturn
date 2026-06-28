@@ -64,10 +64,9 @@ _GLASS_HINT = "/glass: answer provenance"
 
 # ── per-turn answer provenance (the Glass Box, ambient) ───────────────────────────────────────
 # The loop hands the finished turn's state here (set_turn_provenance) just before the final
-# render; finish/response pop it to color the Sources footer by source trust and to call out a
-# tainted answer in red right under the receipt — the Glass Box's headline facts on every answer,
-# no /glass required. Pop-on-read: a stale box can never paint a later answer (error/Ctrl-C turns
-# never set one; a consumer that doesn't render still clears it).
+# render; finish/response pop it to color the Sources footer by source trust — the Glass Box's
+# headline facts on every answer, no /glass required. Pop-on-read: a stale box can never paint a
+# later answer (error/Ctrl-C turns never set one; a consumer that doesn't render still clears it).
 _turn_glass = None
 
 # A footer entry line as synthesize writes it: `  [n] label`.
@@ -76,9 +75,9 @@ _SOURCE_LINE_RE = re.compile(r"^\s*\[(\d+)\]\s")
 
 def set_turn_provenance(state) -> None:
     """Build the live Glass Box for the turn that just finished (trust.glassbox.build_live — the
-    same mark-guarded egress contract `/glass` applies) so the answer render can show source
-    trust and taint natively. Best-effort and additive: any failure leaves the answer rendering
-    exactly as it would without provenance."""
+    same mark-guarded egress contract `/glass` applies) so the answer render can color the
+    Sources footer by source trust natively. Best-effort and additive: any failure leaves the
+    answer rendering exactly as it would without provenance."""
     global _turn_glass
     _turn_glass = None
     try:
@@ -116,10 +115,8 @@ def _split_sources(text: str) -> "tuple[str, list[str] | None]":
 
 
 def _facet_annotation(facet) -> tuple[str, str, str]:
-    """(glyph, style, note) for one source's trust facet — the same green/yellow/red vocabulary
+    """(glyph, style, note) for one source's trust facet — the same green/yellow vocabulary
     the Glass Box renders, compacted for the footer."""
-    if facet.tainted_span:
-        return "⛔", "bold red", "TAINTED → answer"
     if facet.origin == "network" or not facet.trusted:
         note = "web" if facet.origin == "network" else "untrusted origin"
         if facet.injection_flagged:
@@ -162,27 +159,6 @@ def _print_sources(entries: list[str], gb) -> None:
             else:
                 glyph, _style, note = _facet_annotation(facet)
                 print(f"  {ln}   {glyph} {note}")
-
-
-def _print_taint_warning(gb) -> None:
-    """The headline answer-trust fact, surfaced natively: a span of an UNTRUSTED source appears
-    VERBATIM in the answer (the data→answer half of indirect injection — the Glass Box's red
-    facet). Loud, in red, right under the receipt — never parked behind /glass; the pointer is
-    for the full provenance view."""
-    if gb is None or not getattr(gb, "tainted", None):
-        return
-    import textwrap
-
-    width = max(20, _term_width() - 6)
-    for s in gb.tainted:
-        msg = (f"⚠ [{s.n}] untrusted content from {s.tool} reached the answer verbatim: "
-               f"\"{s.tainted_span}\" — /glass for provenance")
-        for i, ln in enumerate(textwrap.wrap(msg, width) or [msg]):
-            text = ("  " if i == 0 else "    ") + ln
-            if _RICH:
-                _console.print(Text(text, style="bold red"))
-            else:
-                print(text)
 
 
 def _print_receipt() -> None:
@@ -274,7 +250,6 @@ def response(text: str) -> None:
             _print_sources(src_lines, gb)
         _console.print()  # let the answer breathe before the receipt
         _print_receipt()
-        _print_taint_warning(gb)
         _first_answer_hint()
         _console.print()  # trailing whitespace before the next prompt
     else:
@@ -284,7 +259,6 @@ def response(text: str) -> None:
         print(text)
         print()
         _print_receipt()
-        _print_taint_warning(gb)
         _first_answer_hint()
         print()
 
@@ -396,7 +370,6 @@ class ResponseStream:
                 _print_sources(src_lines, gb)
             _console.print()
             _print_receipt()
-            _print_taint_warning(gb)
             _first_answer_hint()
             _console.print()
         else:
@@ -408,7 +381,6 @@ class ResponseStream:
                 print(text[len(streamed):].strip("\n"))
                 print()
             _print_receipt()
-            _print_taint_warning(gb)
             _first_answer_hint()
             print()
 

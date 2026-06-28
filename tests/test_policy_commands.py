@@ -2,11 +2,10 @@
 The /policy command namespace (commands/policy.py) — the levers (`risk`, `allow`, `open`) share
 ONE handler with their legacy top-level spellings (/risk, /allow, /autoapprove — zero drift),
 bare /autoapprove and bare /policy open are pure readouts (the gate-flip footgun is gone),
-/policy can derives the blast radius live, /policy export accepts -o, `/policy allow add` is the
-unambiguous add verb (removal verbs route to removal only when the target resolves), the shared
---save grammar is case-insensitive any-position, `--save` with no value persists the CURRENT
-value (mutating nothing live), and report's dangling -o still refuses. Offline: no LLM, no
-network — registry imports with mcp.servers empty.
+`/policy allow add` is the unambiguous add verb (removal verbs route to removal only when the
+target resolves), the shared --save grammar is case-insensitive any-position, and `--save` with
+no value persists the CURRENT value (mutating nothing live). Offline: no LLM, no network —
+registry imports with mcp.servers empty.
 """
 
 import pytest
@@ -241,51 +240,6 @@ def test_bare_open_reports_gate_off(gate, ctx, capsys):
     policy.set_gate_off(False)
 
 
-# ── /policy can — the blast radius, derived live ─────────────────────────────────────────────
-
-
-def test_policy_can_renders_three_sections(gate, ctx, capsys):
-    dispatch("/policy allow git status", ctx)
-    capsys.readouterr()
-    dispatch("/policy can", ctx)
-    out = capsys.readouterr().out
-    assert "failed:" not in out
-    assert "WITHOUT ASKING" in out
-    assert "WITH YOUR APPROVAL" in out
-    assert "CANNOT" in out
-    without, rest = out.split("WITH YOUR APPROVAL", 1)
-    gated_part, cannot = rest.split("CANNOT", 1)
-    # read_only threshold: calculate runs free, write_file faces the gate.
-    assert "calculate" in without
-    assert "write_file" in gated_part
-    # The persisted /allow prefix shows in the no-ask zone.
-    assert "git status" in without
-    # The gate is on, so rejection is a live wall…
-    assert "anything you reject" in cannot
-    # …and the posture footer names the quiet protections.
-    assert "quarantine" in out and "redaction" in out and "export signing" in out
-
-
-def test_policy_can_reflects_threshold(gate, ctx, capsys):
-    policy.set_tier("side_effecting")
-    dispatch("/policy can", ctx)
-    out = capsys.readouterr().out
-    without, _rest = out.split("WITH YOUR APPROVAL", 1)
-    assert "write_file" in without  # moved into the no-ask zone with the threshold
-
-
-def test_policy_can_reflects_airgap_and_dryrun(gate, ctx, capsys, monkeypatch):
-    runtime = gate._data["runtime"]
-    monkeypatch.setitem(runtime, "airgap", True)
-    monkeypatch.setitem(runtime, "dry_run", True)
-    dispatch("/policy can", ctx)
-    out = capsys.readouterr().out
-    assert "DRY-RUN" in out
-    assert "nothing executes" in out
-    cannot = out.split("CANNOT", 1)[1]
-    assert "web_search" in cannot  # web egress refuses under air-gap
-
-
 # ── bare /policy posture: quarantine row + allowlist count ───────────────────────────────────
 
 
@@ -297,35 +251,7 @@ def test_bare_policy_posture_gains_quarantine_and_count(gate, ctx, capsys):
     assert "1 prefix(es)" in out and "git status" in out
 
 
-# ── /policy export: -o/--out/--output + the dangling-flag guard ──────────────────────────────
-
-
-def test_policy_export_dash_o(gate, ctx, capsys, tmp_path):
-    dest = tmp_path / "posture.yaml"
-    dispatch(f"/policy export -o {dest}", ctx)
-    out = capsys.readouterr().out
-    assert "exported" in out
-    assert dest.exists()
-    assert "saturn_policy" in dest.read_text(encoding="utf-8")
-
-
-def test_policy_export_positional_still_works(gate, ctx, capsys, tmp_path):
-    dest = tmp_path / "posture2.yaml"
-    dispatch(f"/policy export {dest}", ctx)
-    capsys.readouterr()
-    assert dest.exists()
-
-
-def test_policy_export_dangling_dash_o_writes_nothing(gate, ctx, capsys):
-    from config import get_config
-
-    dispatch("/policy export -o", ctx)
-    out = capsys.readouterr().out
-    assert "usage" in out and "nothing written" in out
-    assert not (get_config().path("exports") / "policy.yaml").exists()
-
-
-# ── /privacy hygiene: bare --save persists the CURRENT value, report's dangling -o ───────────
+# ── /privacy hygiene: bare --save persists the CURRENT value ─────────────────────────────────
 
 
 def test_airgap_save_without_value_persists_current(gate, ctx, capsys, monkeypatch):
@@ -379,13 +305,6 @@ def test_redact_save_without_mode_persists_current(gate, ctx, capsys, monkeypatc
     assert "no change" in out
     assert gate.get("runtime.redaction") == "off"  # NOT changed
     assert persisted == ["runtime.redaction"]  # the current mode, persisted
-
-
-def test_report_dangling_dash_o_warns_and_writes_nothing(gate, ctx, capsys):
-    dispatch("/privacy report -o", ctx)
-    out = capsys.readouterr().out
-    assert "needs a path" in out and "nothing written" in out
-    assert "sha256" not in out  # the report was not built/signed at all
 
 
 # ── /dryrun: bare = status, explicit on|off mutates ──────────────────────────────────────────

@@ -385,14 +385,10 @@ def _build_parser():
         ),
         epilog=(
             "verbs:\n"
-            "  saturn verify <file>  verify a signed Saturn artifact offline — a /trace export\n"
-            "                        or a /privacy report: recomputes the sha256 integrity\n"
-            "                        digest and checks the ed25519 signature. exit 0 = intact\n"
-            "                        (an unsigned-but-intact artifact prints 'unsigned' and\n"
-            "                        still passes), 1 = digest mismatch, invalid signature, or\n"
-            "                        a signature that cannot be checked here (cryptography not\n"
-            "                        installed — use utilities/saturn_verify.py instead),\n"
-            "                        2 = unreadable / not a Saturn artifact.\n"
+            "  saturn verify <file>  verify a /trace export offline — recomputes the sha256\n"
+            "                        integrity digest and reports whether the content is\n"
+            "                        unchanged since export. exit 0 = intact, 1 = digest\n"
+            "                        mismatch (tampered), 2 = unreadable / not a Saturn export.\n"
             "\n"
             "headless mode (-p):\n"
             "  Read-only tools run freely; gated (side-effecting/destructive) tool calls are\n"
@@ -416,13 +412,8 @@ def _build_parser():
                                     "also emit JSON (status: \"error\") and still exit 1.")
     parser.add_argument("--export", metavar="FILE", default=None,
                                help="With -p: after the turn completes, write the run's complete "
-                                    "export record — signed when runtime.sign_exports is on — to "
-                                    "FILE (the same artifact /trace export writes).")
-    parser.add_argument("--policy", metavar="FILE", default=None,
-                               help="Apply a policy profile (/policy export format) at process "
-                                    "start: gate threshold, risk overrides, shell allowlist, "
-                                    "airgap/redaction — pin the exact safety posture a run "
-                                    "executes under.")
+                                    "export record (with a sha256 integrity digest) to FILE "
+                                    "(the same artifact /trace export writes).")
     parser.add_argument("--replay", metavar="FILE", default=None,
                                help="Replay an exported run record (/trace export) offline — "
                                     "integrity-checked, no database needed — then exit.")
@@ -449,17 +440,14 @@ def _parse_cli(argv=None):
 
 
 def _verify_artifact(path_str) -> int:
-    """`saturn verify <file>` — offline verification of a Saturn audit artifact (a /trace export
-    or a /privacy report; signing.verify_payload accepts both). Mirrors /trace verify's semantics
-    with shell-friendly exit codes: 0 = digest intact AND signature (when present) valid — an
-    unsigned-but-intact artifact prints 'unsigned' and still passes; 1 = digest mismatch, invalid
-    signature, or a signature that CANNOT be checked here (`cryptography` absent — fail closed: a
-    forged record with a recomputed digest and stale signature must never pass the 0-intact /
-    1-tampered contract just because the checker is missing); 2 = usage/read errors. Results
-    print to stdout, errors to stderr."""
+    """`saturn verify <file>` — offline verification of a /trace export's integrity digest.
+    Mirrors /trace verify's semantics with shell-friendly exit codes: 0 = content unchanged since
+    export, 1 = digest mismatch (tampered) or no digest to check, 2 = usage/read errors. Results
+    print to stdout, errors to stderr. Tamper-evidence, not provenance (the ed25519 signing layer
+    was shelved)."""
     import json
 
-    from trust import signing
+    from trust import digest
 
     if not path_str:
         print("usage: saturn verify <file>", file=sys.stderr)
@@ -471,46 +459,22 @@ def _verify_artifact(path_str) -> int:
     except (OSError, json.JSONDecodeError) as e:
         print(f"error: could not read {path}: {e}", file=sys.stderr)
         return 2
-    is_export = isinstance(payload, dict) and payload.get("saturn_trace_export") == 1
-    is_report = isinstance(payload, dict) and payload.get("saturn_trust_report") is not None
-    if not is_export and not is_report:
-        print(f"error: {path.name} is not a Saturn trace export or trust report.",
-              file=sys.stderr)
+    if not (isinstance(payload, dict) and payload.get("saturn_trace_export") == 1):
+        print(f"error: {path.name} is not a Saturn trace export.", file=sys.stderr)
         return 2
 
-    v = signing.verify_payload(payload)
-    kind = "trace export" if is_export else "trust report"
+    v = digest.verify_payload(payload)
     if not v["has_integrity"]:
         print(f"error: {path.name} carries no integrity digest — nothing to verify "
               "(only JSON exports carry one).", file=sys.stderr)
         return 1
-    ok = True
     if v["digest_ok"]:
-        print(f"{path.name}: digest ok ({kind}) — sha256 {v['stored_digest']}")
-    else:
-        ok = False
-        print(f"{path.name}: digest MISMATCH — the record was modified after export.")
-        print(f"  stored   {v['stored_digest']}")
-        print(f"  computed {v['computed_digest']}")
-    if v["signed"]:
-        if not signing.available():
-            # Fail closed: a signature we cannot check is an UNVERIFIED claim — exiting 0 here
-            # would let a forged record (body edited, digest recomputed, stale signature kept)
-            # pass the documented 0-intact / 1-tampered contract.
-            ok = False
-            print("signature present — could NOT be verified here (`cryptography` not "
-                  "installed). Install cryptography, or verify with utilities/saturn_verify.py "
-                  "(its built-in fallback always checks signatures).")
-        elif v.get("signature_ok"):
-            mine = " (this machine's key)" if v.get("signer_is_local") else ""
-            print(f"signature valid — ed25519 key {v.get('key_id', '?')}{mine}")
-        else:
-            ok = False
-            print(f"signature INVALID — does not match the embedded key {v.get('key_id', '?')} "
-                  "(forged, corrupted, or the digest was altered).")
-    else:
-        print("unsigned — sha256 integrity digest only (no signature block).")
-    return 0 if ok else 1
+        print(f"{path.name}: digest ok — sha256 {v['stored_digest']}")
+        return 0
+    print(f"{path.name}: digest MISMATCH — the record was modified after export.")
+    print(f"  stored   {v['stored_digest']}")
+    print(f"  computed {v['computed_digest']}")
+    return 1
 
 
 def _ingest_warning(exc: Exception, *, reachable: "bool | None" = None,
@@ -608,21 +572,9 @@ def main():
 
         sys.exit(0 if render_export(_args.replay) else 1)
 
-    # --- policy profile: pin the gate posture before anything runs ---------------------
-    if _args.policy:
-        from commands.policy import apply_policy_file
-
-        try:
-            _summary = apply_policy_file(_args.policy, save=False)
-        except Exception as exc:
-            print(f"error: could not apply policy profile {_args.policy}: {exc}", file=sys.stderr)
-            sys.exit(1)
-        print(_summary, file=sys.stderr) if _args.prompt else ui.note(_summary)
-
     # --yolo: the CLI view of the gate policy — open the gate up front (threshold ->
     # destructive) so gated calls never interrupt; same mechanism as /autoapprove. Honored in
-    # BOTH modes (after --policy, so an explicit per-run --yolo wins over a profile's
-    # threshold): interactively the status bar derives ⚠ GATE OFF straight from the live
+    # BOTH modes: interactively the status bar derives ⚠ GATE OFF straight from the live
     # threshold, so no extra UI wiring is needed.
     if _args.yolo:
         from trust import policy
@@ -791,9 +743,9 @@ def main():
                 graph.checkpointer.delete_thread(thread_id)
             except Exception:
                 pass
-        # --export: write the run's audit export (signed when runtime.sign_exports is on) only
-        # AFTER the answer is out — a failed write must never cost the user the answer the turn
-        # already produced (error to stderr, exit 1; stdout stays the answer/JSON contract).
+        # --export: write the run's export record (with a sha256 integrity digest) only AFTER the
+        # answer is out — a failed write must never cost the user the answer the turn already
+        # produced (error to stderr, exit 1; stdout stays the answer/JSON contract).
         if _args.export:
             from commands.trace import export_run
 

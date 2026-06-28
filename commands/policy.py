@@ -1,71 +1,17 @@
 """
-/policy — the gate policy as ONE object: its levers, its blast radius, its shareable profile.
+/policy — the gate policy as ONE object: its levers, in one place.
 
 policy.py consolidated the five gate-relaxation mechanisms into one object; this command is that
 object's front door. The levers live here as subcommands (`risk` moves a tool's tier, `allow`
-edits the run_shell prefix allowlist, `open` is the gate-off view), `can` answers "what can this
-thing actually do to me right now", and `export`/`import` turn the whole posture into a file you
-can read, share, and apply — the same profile drives headless runs via `saturn --policy <file>`.
-The historical top-level spellings (/risk, /allow, /autoapprove) stay registered and delegate to
-the exact same handler functions, so the two spellings can never drift.
+edits the run_shell prefix allowlist, `open` is the gate-off view). The historical top-level
+spellings (/risk, /allow, /autoapprove) stay registered and delegate to the exact same handler
+functions, so the two spellings can never drift.
 """
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from commands._framework import command, _print
 from commands._utils import is_list_verb, is_remove_verb, parse_toggle_status, split_save_flag
-
-_PROFILE_HEADER = """\
-# Saturn policy profile — the whole gate posture as one shareable document.
-# Apply with `/policy import <this file>` or `saturn --policy <this file>`.
-"""
-
-
-def apply_policy_file(path_str: str, save: bool = False) -> str:
-    """Load a profile YAML and apply it: policy.apply_profile (threshold + permissions.json +
-    airgap/redaction) then sync the LIVE tool registry so the overrides bite immediately.
-    Returns a one-line summary; raises on an unreadable/invalid profile (the caller reports)."""
-    import yaml
-
-    from trust import policy
-
-    path = Path(path_str).expanduser()
-    profile = yaml.safe_load(path.read_text(encoding="utf-8"))
-    overrides = policy.apply_profile(profile, save=save)
-
-    # Sync the live registry: back to declared tiers, then the profile's overrides — an import
-    # REPLACES the posture (mirrors apply_profile replacing permissions.json), never layers on
-    # whatever /risk edits the session had. Stale names (tools this install doesn't have) are
-    # reported, not applied — the declared fail-closed tier stays in effect.
-    from tools import registry
-
-    for name, tier in registry.DECLARED_RISK.items():
-        registry.TOOL_RISK[name] = tier
-    stale = []
-    applied = 0
-    for name, tier in overrides.items():
-        if name in registry.tools_by_name:
-            registry.TOOL_RISK[name] = tier
-            applied += 1
-        else:
-            stale.append(name)
-
-    # A profile can flip runtime.airgap — drop the model cache so a cloud model built while the
-    # boundary was open can't keep serving calls from llms._DERIVED_CACHE (mirrors the
-    # /privacy airgap toggle, which does exactly this for exactly this reason).
-    from core import llms
-
-    llms.reset_models()
-
-    summary = (
-        f"policy applied from {path.name}: threshold={policy.tier()}, "
-        f"{applied} risk override(s), {len(policy.shell_allow())} shell prefix(es)"
-    )
-    if stale:
-        summary += f"  (ignored overrides for unknown tools: {', '.join(stale)})"
-    return summary
 
 
 # ── /policy risk — one tool's tier (also the legacy /risk) ───────────────────────────────────
@@ -253,185 +199,18 @@ def open_handler(ctx, args):
         _print(f"  auto-approve off — gate threshold restored to `{policy.tier()}`.")
 
 
-# ── /policy can — the blast radius ───────────────────────────────────────────────────────────
-
-
-def can_handler(ctx, args):
-    """`/policy can` — the blast radius: what runs without asking, what faces the gate first, and
-    what cannot happen at all right now. Everything derives live from the one policy object, the
-    live tool registry, the MCP client, and the airgap/dry-run knobs — never a captured snapshot."""
-    from trust import policy
-    from tools import registry
-    from config import get_config
-    from tui import ui
-
-    cfg = get_config()
-    airgap = bool(cfg.get("runtime.airgap", False))
-    dry = bool(cfg.get("runtime.dry_run", False))
-    threshold = policy.tier()
-    gate_open = policy.gate_off()
-
-    headline = ("⚠ GATE OFF — every tool call runs without asking" if gate_open
-                else f"gate prompts above `{threshold}`")
-    if airgap:
-        headline += "  ·  ⛓ AIRGAP sealed"
-    if dry:
-        headline += "  ·  DRY-RUN (nothing executes)"
-    ui.section("blast radius", headline)
-
-    free, gated = [], []
-    for t in registry.tool:
-        risk = registry.risk_of(t.name)
-        (free if policy.auto_approves(risk) else gated).append((t.name, risk))
-
-    def _rows(pairs):
-        return [
-            (name, (risk, ui.risk_style(risk)),
-             ("remote (MCP) — untrusted, fails closed to destructive", "dim")
-             if name.startswith("mcp_") else "")
-            for name, risk in pairs
-        ]
-
-    note = " (dry-run: every call is stubbed — nothing executes)" if dry else ""
-    _print(f"  WITHOUT ASKING — runs the moment the model calls it{note}")
-    rows = _rows(free)
-    for p in policy.shell_allow():
-        rows.append((f"run_shell `{p} …`", ("allow prefix", ui.risk_style("side_effecting")),
-                     ("persisted /policy allow grant — token-boundary, no metacharacters",
-                      "dim")))
-    if rows:
-        ui.table(rows)
-    else:
-        _print("    (nothing — every tool faces the gate first)")
-
-    _print("  WITH YOUR APPROVAL — faces you at the gate first")
-    if gated:
-        ui.table(_rows(gated))
-    elif gate_open:
-        _print("    (nothing — the gate is OFF; /policy open off to restore prompting)")
-    else:
-        _print("    (nothing)")
-
-    _print("  CANNOT (right now)")
-    cannot = []
-    if airgap:
-        cannot.append(("web egress",
-                       "air-gap is ON — web_search / web_extract / http_request refuse"))
-        try:
-            from tools import mcp_client
-
-            remote = [t.name for s in mcp_client.status() if s.transport != "stdio"
-                      for t in s.tools]
-        except Exception:
-            remote = []
-        if remote:
-            cannot.append(("remote MCP", "air-gap is ON — " + ", ".join(remote) + " refuse"))
-        from commands.privacy import _offmachine_roles
-
-        offmachine = _offmachine_roles(cfg)
-        if offmachine:
-            roles = ", ".join(f"{r} ({p}:{m})" for r, p, m in offmachine)
-            cannot.append(("off-machine inference",
-                           f"air-gap is ON — off-machine role(s) refuse to run: {roles}"))
-    if not gate_open:
-        cannot.append(("anything you reject",
-                       f"every call above `{threshold}` faces you first — `n` at the gate "
-                       "stops it"))
-    if cannot:
-        ui.table(cannot)
-    else:
-        _print("    (nothing is structurally blocked — the gate is OFF and the boundary open;")
-        _print("     /policy open off and /privacy airgap on restore the walls)")
-
-    # Effective quarantine mode (quarantine.mode() normalizes case + invalid values to "gate") —
-    # the blast-radius footer must state the mode in force, not echo a raw config string.
-    from trust import quarantine
-
-    qmode = quarantine.mode()
-    rmode = str(cfg.get("runtime.redaction", "off") or "off")
-    try:
-        from trust import signing
-
-        signed = bool(cfg.get("runtime.sign_exports", True)) and signing.available()
-    except Exception:
-        signed = False
-    _print(f"  posture: quarantine {qmode} · redaction {rmode} · export signing "
-           f"{'on' if signed else 'off'}")
-
-
-# ── /policy export · import — the shareable profile ─────────────────────────────────────────
-
-
-def _export(ctx, args):
-    import yaml
-
-    from trust import policy
-    from config import get_config
-
-    dest_str = None
-    positional: list[str] = []
-    it = iter(args)
-    for a in it:
-        if a.lower() in ("-o", "--out", "--output"):
-            dest_str = next(it, None)
-            if dest_str is None:
-                _print("  usage: /policy export [<path> | -o <path>] — -o needs a path; "
-                       "nothing written")
-                return
-        else:
-            positional.append(a)
-    if dest_str is None and positional:
-        dest_str = " ".join(positional)
-    if dest_str:
-        dest = Path(dest_str.strip('"')).expanduser()
-    else:
-        dest = get_config().path("exports") / "policy.yaml"
-    profile = policy.export_profile()
-    try:
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_text(
-            _PROFILE_HEADER + yaml.safe_dump(profile, sort_keys=False, allow_unicode=True),
-            encoding="utf-8",
-        )
-    except OSError as exc:
-        _print(f"  could not write {dest}: {exc}")
-        return
-    _print(f"  policy profile exported -> {dest}")
-    _print("  apply it anywhere: /policy import <file>  ·  saturn --policy <file>")
-
-
-def _import(ctx, args):
-    rest, save = split_save_flag(args)
-    if not rest:
-        _print("  usage: /policy import <file> [--save]")
-        return
-    path = " ".join(rest).strip('"')
-    try:
-        summary = apply_policy_file(path, save=save)
-    except FileNotFoundError:
-        _print(f"  no such file: {path}")
-        return
-    except Exception as exc:
-        _print(f"  could not apply {path}: {exc}")
-        return
-    _print(f"  {summary}")
-    if not save:
-        _print("  (threshold + airgap/redaction set for this session; --save persists them)")
-
-
 # ── the front door ───────────────────────────────────────────────────────────────────────────
 
 
 @command(
     "policy",
-    "The gate policy as one object: its levers, the blast radius, shareable profiles.",
+    "The gate policy as one object: its levers, in one place.",
     usage="/policy [risk <tool> [<tier>|reset] [--save] | "
           "allow [list | <prefix> | add <prefix> | remove <n|prefix>] | "
-          "open [on|off] | can | export [<path> | -o <path>] | import <path> [--save]]",
+          "open [on|off]]",
     details="""
 Every gate-relaxation mechanism (/risk, /allow, /autoapprove, runtime.auto_approve, --yolo) is a
-view of one policy object. This command IS that object's front door — its levers, its blast
-radius, and its file form:
+view of one policy object. This command IS that object's front door — its levers:
 
   /policy                     the live posture: auto-approve threshold, persisted risk overrides,
                               the shell allowlist (with count), airgap + redaction + quarantine.
@@ -452,20 +231,6 @@ radius, and its file form:
                               `destructive` (nothing prompts — the loud banner), `off` restores
                               the prior threshold. Opening is always an explicit verb.
                               (/autoapprove · /yolo are the same handler.)
-  /policy can                 the blast radius: what runs WITHOUT asking, what needs YOUR
-                              approval, what CANNOT happen right now (air-gap, gate) — derived
-                              live from the policy, registry, MCP client, and runtime knobs.
-  /policy export [<path> | -o <path>]
-                              write the posture as a YAML profile (default:
-                              logging/exports/policy.yaml). Shareable + versionable: commit it,
-                              hand it to a teammate, keep a `paranoid.yaml` next to a `ci.yaml`.
-  /policy import <path>       apply a profile. REPLACES the durable policy (permissions.json:
-                              risk overrides + shell allowlist) and sets the threshold and the
-                              airgap/redaction knobs for the session; --save also persists those
-                              knobs to config.yaml. Applies to the live registry immediately.
-
-Headless: `saturn -p "query" --policy <file>` applies a profile at process start — pin the exact
-safety posture a script or CI job runs under instead of choosing between deny-all and --yolo.
 """,
 )
 def _policy_cmd(ctx, args):
@@ -495,7 +260,6 @@ def _policy_cmd(ctx, args):
         _print(f"    redaction              : {cfg.get('runtime.redaction', 'off') or 'off'}")
         # Effective mode, not the raw string — an invalid value runs as "gate" (quarantine.mode).
         _print(f"    quarantine             : {quarantine.mode()}")
-        _print("  blast radius: /policy can  ·  export: /policy export  ·  apply: /policy import <path>")
         return
 
     sub = args[0].lower()
@@ -507,15 +271,9 @@ def _policy_cmd(ctx, args):
         return allow_handler(ctx, rest)
     if sub == "open":
         return open_handler(ctx, rest)
-    if sub == "can":
-        return can_handler(ctx, rest)
-    if sub == "export":
-        return _export(ctx, rest)
-    if sub == "import":
-        return _import(ctx, rest)
 
-    _print(f"  unknown /policy subcommand: {sub!r} — try: risk, allow, open, can, export, "
-           "import (or /policy --help)")
+    _print(f"  unknown /policy subcommand: {sub!r} — try: risk, allow, open "
+           "(or /policy --help)")
 
 
 # ── top-level muscle-memory spellings ─────────────────────────────────────────────────────────

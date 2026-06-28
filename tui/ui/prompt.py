@@ -129,9 +129,9 @@ _POSTURE_LINE_STYLE = {
 
 def posture_line() -> None:
     """One line under the banner stating the live trust posture (trust.receipt.posture_spans):
-    gate tier, inference locality, quarantine/redaction modes, egress log — the ambient,
-    no-command twin of `/privacy` + `/policy`, visible before the first query. Prints nothing if
-    the posture can't be read: a guessed posture is worse than none."""
+    gate tier, inference locality, quarantine/redaction modes — the ambient, no-command twin of
+    `/privacy` + `/policy`, visible before the first query. Prints nothing if the posture can't be
+    read: a guessed posture is worse than none."""
     try:
         from trust import receipt
 
@@ -149,10 +149,10 @@ def posture_line() -> None:
         line.append("   ", style=_DIM)
         line.append("/privacy", style=_ACCENT)
         line.append(" · ", style=_DIM)
-        line.append("/policy can", style=_ACCENT)
+        line.append("/policy", style=_ACCENT)
         _console.print(line)
     else:
-        print("  " + " · ".join(t for t, _ in spans) + "   /privacy · /policy can")
+        print("  " + " · ".join(t for t, _ in spans) + "   /privacy · /policy")
 
 
 # ── input prompt ───────────────────────────────────────────────────────────────

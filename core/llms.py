@@ -189,8 +189,8 @@ def get_tool_model():
     """The agent role's model with the tool registry bound natively (cached).
 
     `get_model` runs first even on a derived-cache hit: its live air-gap guard is what stops a
-    cloud handle cached while the boundary was open from serving calls after it sealed (e.g. a
-    `/policy import` flipping runtime.airgap without anyone dropping the cache)."""
+    cloud handle cached while the boundary was open from serving calls after it sealed (e.g.
+    `/privacy airgap on` flipping runtime.airgap without anyone dropping the cache)."""
     base = get_model("tool_caller")
     if "tool_caller" not in _DERIVED_CACHE:
         # Capability advisories surface at startup via check_models() — no mid-turn print here

@@ -69,10 +69,9 @@ def fmt_args(args: dict, cap: int) -> str:
 
 def iter_strings(value):
     """Every string leaf inside a nested dict/list/tuple value (dict KEYS and scalars skipped —
-    neither can carry a copied span or a secret worth scanning). THE one walker over a tool
-    call's argument tree: the gate's secret scan (redaction.scan_args) and taint scan
-    (quarantine.taint_scan) both use it, so they can never disagree about what counts as
-    argument content."""
+    neither can carry a secret worth scanning). THE one walker over a tool call's argument tree:
+    the gate's secret scan (redaction.scan_args) and the MCP boundary's redaction both use it, so
+    they can never disagree about what counts as argument content."""
     if isinstance(value, str):
         yield value
     elif isinstance(value, dict):
@@ -99,10 +98,8 @@ def map_strings(value, fn):
 
 
 # The separator nodes/tools.py mirrors each executed call into `tool_results` with
-# (`f"{call_repr}{CALL_RESULT_SEP}{observation}"`). One constant + one parser, because TWO
-# downstream surfaces split these strings and must never disagree about where the observation
-# begins: synthesize's Sources labels (the call half) and the Glass Box's taint corpus (the
-# observation half).
+# (`f"{call_repr}{CALL_RESULT_SEP}{observation}"`). One constant + one parser so synthesize's
+# Sources labels recover the call half (the observation half) the same way every time.
 CALL_RESULT_SEP = " -> "
 
 
@@ -110,10 +107,9 @@ def split_call_result(entry) -> "tuple[str, str]":
     """Split one mirrored tool-result entry into (call_repr, observation) — THE one parser of
     the `name(args) -> observation` serialization built in nodes/tools.py. Known edge, shared
     with the construction site: an argument VALUE containing the separator splits early, leaving
-    model-authored text in the observation half — both consumers fail toward caution on it (a
-    mislabeled source at worst, a spurious taint warning at worst; never dropped observation
-    content). An entry with no separator returns (entry, entry): the whole string is the best
-    available answer to either question."""
+    model-authored text in the observation half — the consumer fails toward caution on it (a
+    mislabeled source at worst; never dropped observation content). An entry with no separator
+    returns (entry, entry): the whole string is the best available answer to either question."""
     parts = str(entry).split(CALL_RESULT_SEP, 1)
     if len(parts) == 1:
         return parts[0], parts[0]

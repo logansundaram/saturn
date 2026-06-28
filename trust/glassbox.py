@@ -1,25 +1,22 @@
 """
-The Glass Box — answer-level provenance. `/trace why` shows how the agent worked; this shows
-whether you can trust WHAT it told you.
+The Glass Box — answer-level provenance. `/trace why` shows how the agent worked; this shows where
+what it told you came from.
 
 For one answer it gathers, per cited source: where the source came from (local disk vs the
-network), whether its origin is trusted, whether it tripped the injection scan, and — the headline
-— whether a span of that (untrusted) source appears VERBATIM in the final answer. That last facet
-is the data→answer half of indirect injection: `quarantine.taint_scan` catches untrusted text
-flowing into a tool CALL; the Glass Box catches it flowing into the ANSWER, via the same
-`quarantine.longest_overlap` primitive. Plus the aggregate trust label: how many sources, how many
-left the machine, bytes egressed this turn, whether the groundedness judge weighed in.
+network), whether its origin is trusted, and whether it tripped the injection scan. Plus the
+aggregate trust label: how many sources, how many left the machine, bytes egressed this turn,
+whether the groundedness judge weighed in.
 
 Two entry points feed one assembler:
   - `build_from_state(state, ...)` — the live last turn (exact egress slice available).
   - `build_from_record(query, response, deltas, ...)` — reconstructed from a recorded/exported run
-    (the trace DB already persists every structural input; taint/origin are RECOMPUTED, so no extra
+    (the trace DB already persists every structural input; origin is RECOMPUTED, so no extra
     column is stored — historical runs lack only the exact egress slice, which is inferred from the
     source tools instead).
 
 Numbering matches the answer's inline `[n]` citations exactly: it reuses
 `nodes.synthesize.build_sources`, the same numbering `/source` uses. Imports only leaves
-(egress, quarantine, textutil) + that one pure helper (lazily), so it stays UI-free and testable.
+(egress, quarantine) + that one pure helper (lazily), so it stays UI-free and testable.
 """
 
 from __future__ import annotations
@@ -29,9 +26,7 @@ from dataclasses import dataclass
 
 from trust import egress
 from trust import quarantine
-from textutil import clip, split_call_result
 
-_TAINT_PREVIEW = 80
 _LEADING_IDENT = re.compile(r"\s*([A-Za-z_][A-Za-z0-9_]*)")
 
 
@@ -43,7 +38,6 @@ class SourceFacet:
     origin: str                 # "local" | "network"
     trusted: bool               # not quarantine.is_untrusted(tool)
     injection_flagged: bool     # this observation tripped the injection scan (tool_events)
-    tainted_span: "str | None"  # a span of THIS source present verbatim in the answer, or None
 
 
 @dataclass
@@ -63,9 +57,9 @@ class GlassBox:
     # are indistinguishable here, and the renderer must not claim either.
     replans: int
     # Whether every recorded delta behind this box decoded — False when the trace truncated an
-    # event (stores/trace._DATA_CAP) and sources/taint below may therefore be INCOMPLETE. A
-    # trust surface must say so rather than render '0 sources · no untrusted content' over data
-    # it failed to load.
+    # event (stores/trace._DATA_CAP) and sources below may therefore be INCOMPLETE. A trust
+    # surface must say so rather than render '0 sources · no untrusted content' over data it
+    # failed to load.
     complete: bool = True
     # Flattened per-call human decisions ([{"name", "approved"}]) from the structured
     # gate_events record (nodes/approval.gate_event) — the ONE persisted exception to
@@ -73,16 +67,6 @@ class GlassBox:
     # no gate event exists in the inputs: that is UNKNOWN (an older record, or no prompt fired),
     # never "zero gates" — the renderer says nothing rather than claiming.
     gate_summary: "list[dict] | None" = None
-    # Local-inference attestation: {"local": True, "models": [role bindings]} ONLY when provably
-    # computed entirely on this machine (live turn with the EXACT egress slice, zero llm-channel
-    # events, AND every chat-model role bound local right now); False when a cloud llm event
-    # exists in the slice; None = unknown (no exact slice — history — or a cloud-bound role with
-    # a silent ledger). The renderer must say NOTHING for None — silence never implies local.
-    local_inference: "dict | bool | None" = None
-
-    @property
-    def tainted(self) -> "list[SourceFacet]":
-        return [s for s in self.sources if s.tainted_span]
 
     @property
     def network_sources(self) -> "list[SourceFacet]":
@@ -91,14 +75,6 @@ class GlassBox:
     @property
     def local_sources(self) -> "list[SourceFacet]":
         return [s for s in self.sources if s.origin == "local"]
-
-    def to_dict(self) -> dict:
-        """Plain-dict form (sources flattened too) — the shape embedded INSIDE a signed export
-        as the answer attestation, so the digest/signature commit the answer-level provenance.
-        JSON-safe: nothing but the dataclass fields. `from_dict` is the inverse."""
-        from dataclasses import asdict
-
-        return asdict(self)
 
 
 def _is_network(tool: str) -> bool:
@@ -112,8 +88,8 @@ def _is_network(tool: str) -> bool:
 
 
 def _strip_footer(answer: str) -> str:
-    """The answer prose without the mechanical `Sources:` footer the synthesizer appends — so taint
-    matching and display work on what the model actually wrote, not on the source labels."""
+    """The answer prose without the mechanical `Sources:` footer the synthesizer appends — so
+    display works on what the model actually wrote, not on the source labels."""
     if not answer:
         return ""
     i = answer.rfind("\nSources:")
@@ -155,28 +131,6 @@ def _gate_info(gate_events) -> "tuple[int | None, list[dict] | None]":
     return len(calls), summary
 
 
-def _local_inference(sent_channels) -> "dict | bool | None":
-    """The local-inference attestation for a LIVE turn (exact egress slice in hand): the answer
-    is claimed 'computed entirely on this machine' ONLY when two independent signals agree —
-    the slice carries zero llm-channel events (no cloud model call was recorded) AND every
-    chat-model role binds local right now (trust_report's local-vs-cloud classification, the one
-    home of that logic — reused, not re-rolled). An llm egress event → False. A cloud-bound role
-    with a silent ledger → None: egress recording is best-effort, so the positive claim is
-    withheld (unknown must never render as local). History has no exact slice — callers there
-    leave the field None."""
-    if "llm" in (sent_channels or []):
-        return False
-    try:
-        from trust.trust_report import _inference  # the one locality classifier (leaf, no cycle)
-
-        inf = _inference()
-        if inf.get("all_local"):
-            return {"local": True, "models": list(inf.get("bindings") or [])}
-    except Exception:
-        return None
-    return None
-
-
 def _assemble(query, answer, tool_results, documents_retrieved, tool_events, replans,
               egress_events, gated, complete=True, gate_summary=None) -> GlassBox:
     # Lazy: build_sources lives in synthesize.py (pulls llms/budget) and RETRIEVAL_TOOLS in
@@ -187,7 +141,6 @@ def _assemble(query, answer, tool_results, documents_retrieved, tool_events, rep
 
     prose = _strip_footer(answer or "")
     numbered_tools, numbered_docs, sources = build_sources(tool_results, documents_retrieved)
-    entries = numbered_tools + numbered_docs  # [(n) text] aligned 1:1 with `sources`
 
     # Per-SOURCE event alignment: tool_node appends exactly one tool_events entry per call, and
     # routes each call's observation to tool_results (non-retrieval) or documents_retrieved
@@ -205,57 +158,19 @@ def _assemble(query, answer, tool_results, documents_retrieved, tool_events, rep
         d = idx - len(numbered_tools)
         return doc_evs[d] if d < len(doc_evs) else None
 
-    # First pass: identity per source. Second: one batched overlap scan for the untrusted ones
-    # (longest_overlap_many indexes the constant answer side ONCE instead of per source).
-    rows: list[dict] = []
-    untrusted_obs: list[str] = []
+    facets: list[SourceFacet] = []
     for idx, (n, label) in enumerate(sources):
-        text = entries[idx]
-        prefix = f"[{n}] "
-        obs = text[len(prefix):] if text.startswith(prefix) else text
         ev = _event_for(idx)
         tool = str((ev or {}).get("name") or _source_tool(idx, len(numbered_tools), label))
-        trusted = not quarantine.is_untrusted(tool)
-        rows.append({
-            "n": n, "label": label, "tool": tool, "trusted": trusted,
+        facets.append(SourceFacet(
+            n=n, label=label, tool=tool,
+            origin="network" if _is_network(tool) else "local",
+            trusted=not quarantine.is_untrusted(tool),
             # Event alignment gives the per-observation verdict; without an event (older
             # records) fall back to the coarse by-name flag rather than losing the warning.
-            "flagged": bool(ev.get("quarantine")) if ev is not None else tool in flagged_names,
-            "taint_idx": None,
-        })
-        if not trusted:
-            # Tool entries are `name(args) -> observation` strings (nodes/tools pairs them on
-            # purpose). The call repr before the arrow is the MODEL'S OWN text — its search
-            # query, its URL — not the untrusted observation; leaving it in the taint corpus
-            # makes an answer that merely restates a 40+ char query light up bold red as
-            # 'untrusted content reached the answer verbatim'. Strip it for TOOL sources only
-            # (textutil.split_call_result, THE one parser of that serialization — synthesize's
-            # Sources labels split the same strings, so the two surfaces can never disagree
-            # about where the observation begins); doc passages carry no call repr and must
-            # stay whole. The parser's known edge — an arg VALUE containing the separator
-            # splits early — fails toward caution here (at worst a spurious taint warning) and
-            # never drops genuine observation content. The data→action half already matches
-            # observation-only (quarantine.record_untrusted records the clamped observation),
-            # so this keeps the two halves judging the same content.
-            if idx < len(numbered_tools):
-                obs = split_call_result(obs)[1]
-            rows[-1]["taint_idx"] = len(untrusted_obs)
-            untrusted_obs.append(obs)
-    spans = quarantine.longest_overlap_many(prose, untrusted_obs) if untrusted_obs else []
-
-    facets = [
-        SourceFacet(
-            n=r["n"], label=r["label"], tool=r["tool"],
-            origin="network" if _is_network(r["tool"]) else "local",
-            trusted=r["trusted"],
-            injection_flagged=r["flagged"],
-            tainted_span=(
-                clip(spans[r["taint_idx"]], _TAINT_PREVIEW)
-                if r["taint_idx"] is not None and spans[r["taint_idx"]] else None
-            ),
-        )
-        for r in rows
-    ]
+            injection_flagged=(bool(ev.get("quarantine")) if ev is not None
+                               else tool in flagged_names),
+        ))
 
     # Egress: exact for the live turn (the ledger slice), inferred from source tools otherwise.
     # Same aggregation as the receipt and /privacy egress (egress.summarize_events).
@@ -264,10 +179,8 @@ def _assemble(query, answer, tool_results, documents_retrieved, tool_events, rep
         hosts, sent_bytes = agg["hosts"], agg["bytes"]
         composed_local = "llm" not in agg["channels"]
         sent_known = True
-        local_inference = _local_inference(agg["channels"])
     else:
         hosts, sent_bytes, composed_local, sent_known = [], 0, None, False
-        local_inference = None  # no exact slice — unknown, never claimed
 
     composer_label = ""
     try:
@@ -290,7 +203,6 @@ def _assemble(query, answer, tool_results, documents_retrieved, tool_events, rep
         replans=replans or 0,
         complete=bool(complete),
         gate_summary=gate_summary,
-        local_inference=local_inference,
     )
 
 
@@ -362,57 +274,3 @@ def build_from_record(query, response, deltas, *, gated=None, complete=True) -> 
         gated = ev_count
     return _assemble(query or "", response or "", tool_results, docs, tool_events,
                      replans, None, gated, complete=complete, gate_summary=gate_summary)
-
-
-def from_dict(d: dict) -> GlassBox:
-    """Rebuild a GlassBox from its `to_dict()` form — the export's `answer_attestation` block —
-    so a replay renders the attested answer through the same glass view. Tolerant of missing or
-    malformed keys, failing toward CAUTION/unknown (origin → network, trusted → False, facts →
-    None): a degraded entry must render yellow/unknown, never green/local."""
-    d = d if isinstance(d, dict) else {}
-    facets = []
-    for s in d.get("sources") or []:
-        if not isinstance(s, dict):
-            continue
-        try:
-            n = int(s.get("n") or 0)
-        except (TypeError, ValueError):
-            n = 0
-        facets.append(SourceFacet(
-            n=n,
-            label=str(s.get("label") or ""),
-            tool=str(s.get("tool") or "?"),
-            origin="local" if s.get("origin") == "local" else "network",
-            trusted=bool(s.get("trusted", False)),
-            injection_flagged=bool(s.get("injection_flagged", False)),
-            tainted_span=str(s["tainted_span"]) if s.get("tainted_span") else None,
-        ))
-    gated = d.get("gated")
-    composed_local = d.get("composed_local")
-    local_inference = d.get("local_inference")
-    gate_summary = d.get("gate_summary")
-    try:
-        replans = int(d.get("replans") or 0)
-    except (TypeError, ValueError):
-        replans = 0
-    try:
-        sent_bytes = int(d.get("sent_bytes") or 0)
-    except (TypeError, ValueError):
-        sent_bytes = 0
-    return GlassBox(
-        query=str(d.get("query") or ""),
-        answer=str(d.get("answer") or ""),
-        sources=facets,
-        composed_local=composed_local if isinstance(composed_local, bool) else None,
-        composer_label=str(d.get("composer_label") or ""),
-        sent_bytes=sent_bytes,
-        sent_hosts=[str(h) for h in (d.get("sent_hosts") or [])],
-        sent_known=bool(d.get("sent_known", False)),
-        gated=gated if isinstance(gated, int) and not isinstance(gated, bool) else None,
-        replans=replans,
-        complete=bool(d.get("complete", True)),
-        gate_summary=gate_summary if isinstance(gate_summary, list) else None,
-        local_inference=(
-            local_inference if isinstance(local_inference, (dict, bool)) else None
-        ),
-    )

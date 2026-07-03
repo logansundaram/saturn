@@ -17,7 +17,6 @@ from langgraph.types import interrupt, Command
 import diag
 from trust import policy
 from trust import quarantine
-from config import get_config
 from tools.registry import risk_of
 from core.state import AgentState, TERMINAL_STATUSES, active_step
 
@@ -188,14 +187,6 @@ def approval_node(state: AgentState) -> Command[Literal["tools", "agent"]]:
     to the agent to respond without having acted."""
     last = state["messages"][-1]
     tool_calls = getattr(last, "tool_calls", None) or []
-    cfg = get_config()
-
-    # Dry-run: nothing will actually execute (tool_node stubs every call), so there is no action to
-    # approve — pass straight through to the (stubbing) tool node. This is what lets a dry-run show
-    # the WHOLE intended arc, including gated calls, without prompting the human for actions that
-    # won't happen.
-    if bool(cfg.get("runtime.dry_run", False)):
-        return Command(goto="tools")
 
     # Quarantine escalation (runtime.quarantine = gate): a previous tool result this turn carried
     # instruction-shaped content, so this batch's arguments may derive from injected text — every

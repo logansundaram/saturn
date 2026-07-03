@@ -469,7 +469,7 @@ def test_config_set_near_miss_key_warns_and_leaves_real_key(ctx, capsys, sandbox
 
 
 def test_config_set_new_key_still_takes_effect(ctx, capsys, sandboxed_config):
-    """Default-tolerant knobs (e.g. shell.background) must keep working on a
+    """Default-tolerant knobs must keep working on a
     config.yaml predating them: an absent key warns but still sets."""
     cfg = sandboxed_config
     _config(ctx, ["runtime.brand_new_knob", "true"])

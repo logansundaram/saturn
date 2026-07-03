@@ -41,7 +41,7 @@ what's left is "Saturn minus N leaf modules" (delete in place) or "a different c
 | Replan budget / web-only skip guard | `nodes/agent.py` | Engine | Core | ___ |
 | Mid-turn steering (Esc-with-text → HumanMessage) | `core/plan_ops.py`, `nodes/plan_gate.py` | Engine | Seam | ___ |
 | Plan-review pause (empty-Esc) + editor (add/edit/move/drop/go/abort) | `core/plan_ops.py` | Engine | Seam | ___ |
-| Token budget ceiling (`runtime.token_budget`) | `core/budget.py` | Engine | Leaf | ___ |
+| Token budget ceiling (`runtime.token_budget`) | `core/budget.py` | Engine | Leaf | CUT 2026-07-03 — cloud-spend control for a free-local-token audience; shelf/2026-07-03-runtime-trim |
 | Auto-compaction + history collapse | `core/compaction.py` | Engine | Seam | ___ |
 | `@file` mentions expansion | `core/mentions.py` | Engine | Leaf | ___ |
 | AgentState shape + plan-as-dicts + accumulators | `core/state.py` | Engine | Core | ___ |
@@ -68,12 +68,12 @@ what's left is "Saturn minus N leaf modules" (delete in place) or "a different c
 | Durable hash-chained egress log + chain verify | `trust/egress.py` | Trust | Leaf | SHELVED → phase-3/audit-crypto |
 | Egress-chain anchoring (`log_tip` inside signed artifacts) | `trust/egress.py` | Trust | Leaf | SHELVED → phase-3/audit-crypto |
 | ed25519 audit signing | `trust/signing.py` | Trust | Leaf | SHELVED → phase-3/audit-crypto (replaced by `trust/digest.py`) |
-| Trace exports (integrity digest) | `trust/digest.py`, `commands/trace.py` | Trust | Leaf | KEEP (digest-only; signing shelved) |
+| Trace exports + offline replay | `commands/trace.py` | Trust | Leaf | KEEP (the digest/verify ceremony CUT 2026-07-03 — a digest inside the file it protects isn't tamper-evidence; verification returns in Phase 3 with signing) |
 | Signed trust report | `trust/trust_report.py` | Trust | Leaf | SHELVED → phase-3/audit-crypto |
 | Per-answer trust receipt + session posture line | `trust/receipt.py` | Trust | Seam | KEEP |
 | Secret redaction at the cloud boundary (off/warn/redact) | `trust/redaction.py` | Trust | Seam | KEEP |
 | Air-gap mode | `trust/egress.py`, `commands/privacy.py` | Trust | Seam | KEEP |
-| Dry-run mode (plan everything, execute nothing) | `nodes/*`, `commands/policy.py` | Trust | Seam | KEEP |
+| Dry-run mode (plan everything, execute nothing) | `nodes/*`, `commands/policy.py` | Trust | Seam | CUT 2026-07-03 — redundant with /plan review + the gate; fictional past the first stubbed observation |
 | Standalone offline verifier + published spec | `utilities/saturn_verify.py`, `VERIFY_SPEC.md` | Trust | Leaf | SHELVED → phase-3/audit-crypto |
 | Discovery hints + gate teaching preamble | `trust/receipt.py` | Trust | Leaf | KEEP |
 
@@ -87,7 +87,7 @@ what's left is "Saturn minus N leaf modules" (delete in place) or "a different c
 | `web_search` / `web_extract` / `http_request` (Tavily + DuckDuckGo + httpx) | `tools/web.py` | Product | Leaf | ___ |
 | `read_file` / `write_file` / `edit_file` / `list_directory` / `search_files` / `find_files` | `tools/files.py` | Product | Leaf | ___ |
 | `search_knowledge_base` (RAG) + `remember` / `recall` (memory) | `tools/knowledge.py` | Product | Leaf | ___ |
-| `run_shell` (+ opt-in background jobs: `check_shell_job` / `stop_shell_job`) | `tools/shell.py` | Product | Leaf | ___ |
+| `run_shell` (foreground only — the opt-in background jobs `check_shell_job` / `stop_shell_job` were DELETED 2026-07-03: a detached, timeout-free process is what the gate covers worst) | `tools/shell.py` | Product | Leaf | ___ |
 | MCP client — remote tools as `mcp_<server>_<tool>` | `tools/mcp_client.py` | Product | Seam | ___ |
 | Tool registry + risk declaration + dynamic registration | `tools/toolspec.py`, `tools/registry.py` | Engine | Seam | ___ |
 
@@ -115,7 +115,7 @@ what's left is "Saturn minus N leaf modules" (delete in place) or "a different c
 | `/context` — runtime readout + num_ctx | `runtime.py` | Product | Leaf | ___ |
 | `/compact` — manual compaction | `conversation.py` | Product | Leaf | ___ |
 | `/plan` — view + review/pause/lockstep modes | `plan.py` | Engine | Seam | ___ |
-| `/trace` — observability hub (why/answer/invoke/calls/cost/state/export/verify/key/replay) | `trace.py` | Trust | Seam | ___ |
+| `/trace` — observability hub (why/answer/invoke/calls/cost/state/export/replay) | `trace.py` | Trust | Seam | ___ |
 | `/glass` `/source` — provenance views | `trace.py` | Trust | Leaf | ___ |
 | `/memory` — list/add/forget durable facts | `knowledge.py` | Product | Leaf | ___ |
 | `/mcp` — server status + reload | `runtime.py` | Product | Seam | ___ |
@@ -126,7 +126,7 @@ what's left is "Saturn minus N leaf modules" (delete in place) or "a different c
 | `/init` — survey workspace, draft SATURDAY.md | `knowledge.py` | Product | Leaf | ___ |
 | `/update` — self-update (git pull) | `system.py` | Product | Leaf | ___ |
 | `/privacy` (+ egress / airgap / redact / report) | `privacy.py` | Trust | Seam | ___ |
-| `/dryrun` — execution off switch | `policy.py` | Trust | Seam | ___ |
+| `/dryrun` — execution off switch | `policy.py` | Trust | Seam | CUT 2026-07-03 (with dry-run mode; _RENAMED points at /plan review) |
 | `/resume` — sessions (save/restore/list/delete/rename/autosave) | `conversation.py`, `_session.py` | Product | Leaf | ___ |
 | `/config` (+ setup/doctor, key) — YAML config front end | `config.py` | Dev | Seam | ___ |
 | User-defined slash commands (`database/commands/*.md` → `/name`) | `user_commands.py` | Product | Leaf | CUT — deleted in place 2026-06-28 |
@@ -144,7 +144,7 @@ what's left is "Saturn minus N leaf modules" (delete in place) or "a different c
 | Plan rail rendering | `tui/ui/plan.py` | Product | Seam | ___ |
 | Trace rail (node tree + egress leaves + gate-decision echo + judge verdict) | `tui/ui/trace.py` | Trust | Seam | ___ |
 | Approval prompt UI (diff preview / full-width args / shell grant / secret warn) | `tui/ui/approval.py` | Trust | Seam | ___ |
-| Response stream (token streaming + receipt + sources coloring + taint warning) | `tui/ui/response.py` | Trust | Seam | ___ |
+| Response stream (token streaming + receipt + sources coloring) | `tui/ui/response.py` | Trust | Seam | ___ |
 | Glass Box renderer | `tui/ui/glass.py` | Trust | Leaf | ___ |
 | Listing vocabulary (`section` / `table` / risk styles) | `tui/ui/listing.py` | Product | Leaf | ___ |
 | Prompt (prompt_toolkit: `/cmd`+`@path` highlight, multiline, paste chips, rprompt posture) | `tui/ui/prompt.py` | Product | Seam | ___ |
@@ -174,7 +174,7 @@ what's left is "Saturn minus N leaf modules" (delete in place) or "a different c
 |---|---|---|---|---|
 | Interactive chat loop | `agent.py` | Engine | Core | ___ |
 | Headless `-p` mode (`--json` / `--export`; `--policy` shelved with profiles) | `agent.py` | Product | Seam | ___ |
-| `verify` verb (offline artifact check) | `agent.py` | Trust | Leaf | ___ |
+| `verify` verb (offline artifact check) | `agent.py` | Trust | Leaf | CUT 2026-07-03 (with the digest layer) |
 | `--replay` (render an export offline) | `agent.py` | Trust | Seam | ___ |
 | Piped stdin attach | `agent.py` | Product | Leaf | ___ |
 | `saturn.cmd` / `saturn.sh` launchers + strict argparse | `agent.py` | Dev | Leaf | ___ |

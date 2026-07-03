@@ -199,25 +199,6 @@ def test_approves_tier_threshold_and_allowlist(isolated_paths):
         _restore_tier(prev)
 
 
-def test_allow_prefix_never_covers_background_jobs(isolated_paths):
-    """A prefix granted for bounded foreground runs must not authorize the same command as a
-    detached, timeout-free background job — the semantics the user approved have changed."""
-    prev = policy.tier()
-    try:
-        policy.set_tier("read_only")
-        policy.add_shell_allow("npm")
-        assert policy.approves("run_shell", "destructive", {"command": "npm run dev"})
-        assert not policy.approves(
-            "run_shell", "destructive", {"command": "npm run dev", "background": True}
-        )
-        # An explicit falsy background is still the foreground case.
-        assert policy.approves(
-            "run_shell", "destructive", {"command": "npm run dev", "background": False}
-        )
-    finally:
-        _restore_tier(prev)
-
-
 def test_set_gate_off_round_trip_restores_threshold(isolated_paths):
     """/autoapprove is a view of the threshold: on -> destructive (everything approves),
     off -> the PREVIOUS threshold, not a guess."""

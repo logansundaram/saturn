@@ -13,7 +13,7 @@ from . import _base
 from ._base import (
     Live, Text, _console, _RICH,
     _ACCENT, _DIM, _RAIL, _RISK,
-    _active_ctx_window, _fmt_dur, _human_tokens, _meter_color, _mini_bar,
+    _active_ctx_window, _fmt_dur, _meter_color, _mini_bar,
 )
 
 
@@ -96,20 +96,19 @@ class _StatusBar:
         # Shift+Tab and /config are all views of the same threshold). At `destructive` the gate
         # is not "at a tier", it's OPEN, and the bar must say so loudly for as long as that is
         # true — the /autoapprove banner scrolls away; this indicator doesn't. Leftmost on
-        # purpose: the bar trims from the right edge, and "the gate is open" (with the air-gap /
-        # dry-run flags beside it) must be the last thing a narrow terminal sacrifices.
+        # purpose: the bar trims from the right edge, and "the gate is open" (with the air-gap
+        # flag beside it) must be the last thing a narrow terminal sacrifices.
         bar.append("  ", style=_DIM)
         try:
             from config import get_config
             _cfg = get_config()
             _perm = _cfg.auto_approve
             _airgap = bool(_cfg.get("runtime.airgap", False))
-            _dry = bool(_cfg.get("runtime.dry_run", False))
         except Exception:
             # A facet that can't be read is OMITTED, never guessed (the posture-line rule,
             # receipt.posture_spans): substituting the calm "read_only" here would show a SAFER
             # posture than reality on exactly the surface that exists to shout ⚠ GATE OFF.
-            _perm, _airgap, _dry = None, False, False
+            _perm, _airgap = None, False
         if _perm == "destructive":
             bar.append("⚠ GATE OFF", style=f"bold {_RISK.get('destructive', 'red')}")
         elif _perm is None:
@@ -119,9 +118,6 @@ class _StatusBar:
         if _airgap:
             dot()
             bar.append("⛓ AIRGAP", style=f"bold {_ACCENT}")
-        if _dry:
-            dot()
-            bar.append("DRY-RUN", style=f"bold {_RISK.get('side_effecting', 'yellow')}")
 
         # ── type-ahead ── only present while the user is queuing input mid-turn. Ahead of
         # progress so the line being typed is never the part trimmed by the bar's ellipsis
@@ -152,37 +148,21 @@ class _StatusBar:
             bar.append(f"{tps:.0f} tok/s", style="default")
 
         # ── session ── the turn-spanning gauges, one zone: context fill (it drives the agent, so
-        # it keeps its meter), token spend (core.budget — the ambient twin of /trace cost, the
-        # live numerator of runtime.token_budget when one is set), and the egress counter (the
-        # live twin of /privacy egress — the boundary, visible). Spend and egress appear only
-        # once non-zero, so a fresh, fully-local session stays calm.
+        # it keeps its meter) and the egress counter (the live twin of /privacy egress — the
+        # boundary, visible). Egress appears only once non-zero, so a fresh, fully-local session
+        # stays calm.
         window = status["ctx_window"]
-        try:
-            from core import budget as _budget
-
-            _sp, _cap = _budget.spent(), _budget.limit()
-        except Exception:
-            _sp, _cap = 0, 0
         try:
             from trust import egress as _eg
             _ne = _eg.count()
         except Exception:
             _ne = 0
-        if window or _sp or _ne:
+        if window or _ne:
             zone()
             if window:
                 _append_meter(bar, "ctx", status["ctx_used"] / window * 100, cells=4)
-            if _sp:
-                if window:
-                    dot()
-                bar.append("Σ ", style=_DIM)
-                if _cap:
-                    bar.append(f"{_human_tokens(_sp)}/{_human_tokens(_cap)} tok",
-                               style=_meter_color(_sp / _cap * 100))
-                else:
-                    bar.append(f"{_human_tokens(_sp)} tok", style="default")
             if _ne:
-                if window or _sp:
+                if window:
                     dot()
                 bar.append("⇅ ", style=_DIM)
                 bar.append(f"{_ne} egress", style="default")

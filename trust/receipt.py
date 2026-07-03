@@ -131,9 +131,9 @@ def turn_parts(since_mark: int, gated_calls: int = 0) -> list[str]:
 
 def posture_spans() -> list[tuple[str, str]]:
     """The session's live trust posture as (text, kind) spans — kind ∈ ok|warn|risk|accent|dim.
-    Loud states lead (gate open, air-gap, dry-run — the same flags the status bar and rprompt
-    carry); the calm facts follow (gate tier, inference locality, quarantine, redaction, egress
-    log). Every read is live and best-effort: a facet that can't be derived is OMITTED rather
+    Loud states lead (gate open, air-gap — the same flags the status bar and rprompt
+    carry); the calm facts follow (gate tier, inference locality, quarantine, redaction).
+    Every read is live and best-effort: a facet that can't be derived is OMITTED rather
     than guessed — this line must never claim a posture it didn't read."""
     spans: list[tuple[str, str]] = []
     try:
@@ -158,8 +158,6 @@ def posture_spans() -> list[tuple[str, str]]:
     try:
         if bool(cfg.get("runtime.airgap", False)):
             spans.append(("⛓ airgap", "accent"))
-        if bool(cfg.get("runtime.dry_run", False)):
-            spans.append(("DRY-RUN", "warn"))
     except Exception:
         pass
 

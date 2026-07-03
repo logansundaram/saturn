@@ -92,14 +92,12 @@ def test_posture_flags_read_live_config(monkeypatch):
     rt = get_config()._data.setdefault("runtime", {})
     monkeypatch.setitem(rt, "auto_approve", "read_only")
     monkeypatch.setitem(rt, "airgap", False)
-    monkeypatch.setitem(rt, "dry_run", False)
     assert mod._posture_flags() == []  # default posture: nothing to announce
 
     monkeypatch.setitem(rt, "auto_approve", "destructive")  # the gate is OPEN, not "at a tier"
     monkeypatch.setitem(rt, "airgap", True)
-    monkeypatch.setitem(rt, "dry_run", True)
     flags = mod._posture_flags()
-    assert [k for _, k in flags] == ["gate", "airgap", "dryrun"]
+    assert [k for _, k in flags] == ["gate", "airgap"]
     assert flags[0][0] == "⚠ GATE OFF"
 
 

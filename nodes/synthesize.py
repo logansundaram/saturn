@@ -1,6 +1,5 @@
 import re
 
-from core import budget
 from config import get_config
 from core.state import AgentState, unrun_planned_tools
 from textutil import clip, split_call_result
@@ -8,7 +7,6 @@ from core.llms import (
     get_model,
     extract_tok_per_sec,
     extract_prompt_tokens,
-    extract_total_tokens,
 )
 from core.messages import synthesize_sys_msg
 from langchain.messages import HumanMessage, AIMessage, ToolMessage
@@ -105,7 +103,7 @@ def cancel_orphaned_calls(last) -> list:
     return [
         ToolMessage(
             content=(
-                "Not executed — the turn ended (iteration or token-budget limit) before this "
+                "Not executed — the turn ended (iteration limit) before this "
                 "call could run."
             ),
             tool_call_id=tc["id"],
@@ -160,7 +158,7 @@ def synthesize_node(state: AgentState):
     if isinstance(last, AIMessage) and not getattr(last, "tool_calls", None):
         draft = str(last.content).strip()
 
-    # Forced landing mid-decision: the iteration cap or token budget routed here while the
+    # Forced landing mid-decision: the iteration cap routed here while the
     # trailing AIMessage still carries unanswered tool_calls (route_after_agent checks those
     # bounds before has_tool_calls, deliberately — the bound must stop NEW tool rounds). Close
     # each orphaned call with a cancellation ToolMessage now, or the carried conversation (and
@@ -195,21 +193,6 @@ def synthesize_node(state: AgentState):
             )
         )
 
-    # Dry-run: nothing was actually executed (tool_node stubbed every call). Tell the synthesizer
-    # to report the intended actions as a preview, not to answer as though they had run.
-    if bool(get_config().get("runtime.dry_run", False)):
-        llm_input.append(
-            HumanMessage(
-                content=(
-                    "DRY-RUN MODE: No tool was actually executed this turn — every tool result above "
-                    "is a `[DRY RUN] would execute …` placeholder. Do NOT answer as if the actions "
-                    "were performed or report their results as real. Instead, summarize for the user "
-                    "exactly what you WOULD do to answer their request: the plan and each tool call "
-                    "you intended to make (with its arguments), in order. Make clear nothing was run."
-                )
-            )
-        )
-
     llm_input.append(HumanMessage(content=f"Current user query:\n{query}"))
 
     # Stream the answer so the UI can render it token-by-token: LangGraph surfaces these chunks via
@@ -224,8 +207,6 @@ def synthesize_node(state: AgentState):
         aggregated = chunk if aggregated is None else aggregated + chunk
     if aggregated is None:  # a model that streamed nothing — fall back to a blocking call
         aggregated = model.invoke(llm_input)
-
-    budget.add(extract_total_tokens(aggregated))
 
     # Normalize the aggregated chunk to a plain AIMessage so every downstream type matches the old
     # invoke() path exactly (add_messages, _compact_history's isinstance checks, autosave).

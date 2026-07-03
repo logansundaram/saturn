@@ -1,4 +1,4 @@
 """The engine room: agent state + plan helpers (state), the role->model factory (llms), every
-system prompt (messages), session token budget (budget), history compaction (compaction), the
-pause controller (interrupts), @file mention expansion (mentions), and the plan editor (plan_ops).
+system prompt (messages), history compaction (compaction), @file mention expansion (mentions),
+and the plan-review seam (plan_ops: pause controller + plan editor).
 """

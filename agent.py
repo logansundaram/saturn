@@ -19,7 +19,6 @@ from langgraph.types import Command
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langchain.messages import HumanMessage, AIMessage, AIMessageChunk
 
-from core import budget
 import diag
 from config import get_config
 from core.state import AgentState
@@ -384,12 +383,6 @@ def _build_parser():
             "/quit exits). The flags below are the headless/automation surface."
         ),
         epilog=(
-            "verbs:\n"
-            "  saturn verify <file>  verify a /trace export offline — recomputes the sha256\n"
-            "                        integrity digest and reports whether the content is\n"
-            "                        unchanged since export. exit 0 = intact, 1 = digest\n"
-            "                        mismatch (tampered), 2 = unreadable / not a Saturn export.\n"
-            "\n"
             "headless mode (-p):\n"
             "  Read-only tools run freely; gated (side-effecting/destructive) tool calls are\n"
             "  DENIED by default — there is no human at the approval gate, and safe-by-default\n"
@@ -412,11 +405,11 @@ def _build_parser():
                                     "also emit JSON (status: \"error\") and still exit 1.")
     parser.add_argument("--export", metavar="FILE", default=None,
                                help="With -p: after the turn completes, write the run's complete "
-                                    "export record (with a sha256 integrity digest) to FILE "
+                                    "export record to FILE "
                                     "(the same artifact /trace export writes).")
     parser.add_argument("--replay", metavar="FILE", default=None,
                                help="Replay an exported run record (/trace export) offline — "
-                                    "integrity-checked, no database needed — then exit.")
+                                    "no database needed — then exit.")
     parser.add_argument("--version", action="version", version=f"saturn {__version__}")
     return parser
 
@@ -437,44 +430,6 @@ def _parse_cli(argv=None):
     if args.json and args.prompt is None:
         parser.error("--json only applies to a headless turn — use it with -p/--prompt")
     return args
-
-
-def _verify_artifact(path_str) -> int:
-    """`saturn verify <file>` — offline verification of a /trace export's integrity digest.
-    Mirrors /trace verify's semantics with shell-friendly exit codes: 0 = content unchanged since
-    export, 1 = digest mismatch (tampered) or no digest to check, 2 = usage/read errors. Results
-    print to stdout, errors to stderr. Tamper-evidence, not provenance (the ed25519 signing layer
-    was shelved)."""
-    import json
-
-    from trust import digest
-
-    if not path_str:
-        print("usage: saturn verify <file>", file=sys.stderr)
-        return 2
-    path = Path(path_str.strip('"')).expanduser()
-    try:
-        # utf-8-sig: a BOM (PowerShell 5.1 redirection writes one) must not fail the read.
-        payload = json.loads(path.read_text(encoding="utf-8-sig"))
-    except (OSError, json.JSONDecodeError) as e:
-        print(f"error: could not read {path}: {e}", file=sys.stderr)
-        return 2
-    if not (isinstance(payload, dict) and payload.get("saturn_trace_export") == 1):
-        print(f"error: {path.name} is not a Saturn trace export.", file=sys.stderr)
-        return 2
-
-    v = digest.verify_payload(payload)
-    if not v["has_integrity"]:
-        print(f"error: {path.name} carries no integrity digest — nothing to verify "
-              "(only JSON exports carry one).", file=sys.stderr)
-        return 1
-    if v["digest_ok"]:
-        print(f"{path.name}: digest ok — sha256 {v['stored_digest']}")
-        return 0
-    print(f"{path.name}: digest MISMATCH — the record was modified after export.")
-    print(f"  stored   {v['stored_digest']}")
-    print(f"  computed {v['computed_digest']}")
-    return 1
 
 
 def _ingest_warning(exc: Exception, *, reachable: "bool | None" = None,
@@ -556,14 +511,9 @@ def _read_piped_stdin() -> str:
 
 
 def main():
-    """CLI entry point: parse the command line, then route — the `verify` verb / --replay /
+    """CLI entry point: parse the command line, then route — --replay /
     headless -p / the interactive TUI loop. The flag reference lives in `saturn --help`
     (see _build_parser)."""
-    # `saturn verify <file>` is a VERB, not a flag — intercepted before argparse so the bare
-    # no-args invocation can stay "launch the TUI" without a positional colliding with it.
-    if len(sys.argv) > 1 and sys.argv[1] == "verify":
-        sys.exit(_verify_artifact(" ".join(sys.argv[2:])))
-
     _args = _parse_cli()
 
     # --- replay path: render an exported run record and exit (no graph, no models) -----
@@ -712,7 +662,6 @@ def main():
                         "iterations": state.get("iteration", 0),
                         "context_tokens": state.get("context_tokens", 0),
                         "tok_per_sec": round(float(state.get("tok_per_sec", 0.0) or 0.0), 1),
-                        "session_tokens": budget.spent(),
                         "duration_s": round(_time.perf_counter() - _started, 3),
                         "run_id": run_id,
                         "version": __version__,
@@ -743,7 +692,7 @@ def main():
                 graph.checkpointer.delete_thread(thread_id)
             except Exception:
                 pass
-        # --export: write the run's export record (with a sha256 integrity digest) only AFTER the
+        # --export: write the run's export record only AFTER the
         # answer is out — a failed write must never cost the user the answer the turn already
         # produced (error to stderr, exit 1; stdout stays the answer/JSON contract).
         if _args.export:
@@ -1068,23 +1017,6 @@ def main():
         # live region.
         if (trace_note := _trace_warning(tracer)):
             ui.warn(trace_note)
-
-        # Surface the session token budget (runtime.token_budget) when it bites. Once spent, every
-        # turn force-lands at synthesize without new tool rounds (route_after_agent) — which would
-        # otherwise look like the agent silently refusing to work. Warn-each-turn is deliberate:
-        # the condition persists until the user raises or clears the budget.
-        if budget.exceeded():
-            ui.warn(
-                f"session token budget spent ({_human_int(budget.spent())} of "
-                f"{_human_int(budget.limit())} tok) — turns now answer from what's already "
-                "gathered, with no new tool calls. Raise or clear it with "
-                "`/config runtime.token_budget <n|0>`."
-            )
-        elif budget.near():
-            ui.note(
-                f"session token budget {budget.spent() / budget.limit() * 100:.0f}% used "
-                f"({_human_int(budget.spent())}/{_human_int(budget.limit())} tok)."
-            )
 
         # If this turn pushed the context past the compaction threshold, summarize older turns now so
         # the next turn starts with a smaller window (best-effort; see _maybe_autocompact). Runs after

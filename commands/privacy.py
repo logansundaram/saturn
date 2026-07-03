@@ -44,8 +44,7 @@ seal, and the secret-stripper:
 
 Telemetry: none. There is nothing to configure off because nothing phones home.
 
-Related: /dryrun (plan + decide everything, execute nothing) · /trace export (a portable run
-record with an integrity digest).
+Related: /trace export (a portable, replayable run record).
 """,
 )
 def _privacy(ctx, args):

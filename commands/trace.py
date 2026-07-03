@@ -8,7 +8,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from trust import digest
 from commands._framework import command, _print
 from stores.trace import decode_json, parse_ts
 from textutil import clip as _clip, fmt_args
@@ -169,24 +168,33 @@ def _to_int(s) -> Optional[int]:
         return None
 
 
-# --- /trace export · /trace verify ------------------------------------------------------------
+# --- /trace export ------------------------------------------------------------------------------
 # One run's complete record (run + events + LLM calls) written to a self-contained file. JSON is
-# the audit format — canonical, with a tamper-evident sha256 digest that `/trace verify` recomputes
-# (integrity, not provenance — the ed25519 signing layer was shelved). --md renders a
-# human-readable report instead (no digest).
+# the record format /trace replay renders offline; --md renders a human-readable report instead.
+# (The sha256 integrity digest + the verify flows — /trace verify, saturn verify — were CUT
+# 2026-07-03: a digest stored inside the file it protects verifies after any edit that recomputes
+# it, so it only ever caught accidental corruption; real verification returns in Phase 3 with
+# signing. Legacy exports still carry `integrity`/`signature` blocks — replay ignores them.)
 
-# The canonical-digest scheme + version stamp live in digest.py (the one home for the byte stream
-# every verification reproduces) — these aliases keep this module's call sites readable.
-_saturn_version = digest.saturn_version
-_canonical_digest = digest.canonical_digest
+# The versioned artifact-format marker embedded in every export (layout versioning).
+ARTIFACT_FORMAT = "saturn-artifact/1"
+
+
+def _saturn_version() -> str:
+    """The running Saturn version for stamping exports — read off the already-loaded agent module
+    (importing agent.py here would be heavy and double-imports under `python agent.py`)."""
+    for name in ("__main__", "agent"):
+        v = getattr(sys.modules.get(name), "__version__", None)
+        if v:
+            return str(v)
+    return "unknown"
 
 
 def _export_payload(run, events, calls) -> dict:
     run_id, query, started_at, ended_at, status, response = run
     payload = {
         "saturn_trace_export": 1,
-        # The versioned artifact-format marker; verify flows accept exports with and without it.
-        "format": digest.ARTIFACT_FORMAT,
+        "format": ARTIFACT_FORMAT,
         "saturn_version": _saturn_version(),
         "exported_at": datetime.now().astimezone().isoformat(timespec="seconds"),
         "run": {
@@ -309,9 +317,6 @@ def export_run(
     if fmt_md:
         dest.write_text(_export_markdown(payload), encoding="utf-8")
     else:
-        # Tamper-evident integrity digest over the canonical body (content unchanged?), which
-        # /trace verify recomputes. Not provenance — the ed25519 signing layer was shelved.
-        payload["integrity"] = {"algorithm": "sha256", "digest": _canonical_digest(payload)}
         dest.write_text(
             json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
         )
@@ -365,8 +370,7 @@ def _export(ctx, args):
     _print(f"  run #{run_id} exported -> {dest}")
     _print(f"    {len(payload['events'])} event(s), {len(payload['llm_calls'])} LLM call(s)")
     if not fmt_md:
-        _print(f"    sha256 {payload['integrity']['digest']}")
-        _print("    (tamper-evident — re-check it later with: /trace verify <file>)")
+        _print("    (replayable offline: /trace replay <file>, or saturn --replay <file>)")
 
 
 # --- /trace replay · saturn --replay -----------------------------------------------------------
@@ -393,11 +397,10 @@ def export_rows(payload: dict):
 
 
 def render_export(path_str: str) -> bool:
-    """Load an exported run record, verify its digest, and replay it via ui.show_run. Used by
+    """Load an exported run record and replay it via ui.show_run. Used by
     `/trace replay <file>` and the `saturn --replay <file>` CLI flag. Diagnostics (unreadable
-    file, not an export, the integrity failure banner) go to STDERR so a piped stdout stays the
-    rendered run; returns False on a file that can't be rendered (the CLI exits non-zero on it).
-    Strict pass/fail lives in `saturn verify`, not here — a failed digest still renders, loudly."""
+    file, not an export) go to STDERR so a piped stdout stays the
+    rendered run; returns False on a file that can't be rendered (the CLI exits non-zero on it)."""
     from tui import ui
 
     path = Path(path_str.strip('"')).expanduser()
@@ -412,21 +415,6 @@ def render_export(path_str: str) -> bool:
               file=sys.stderr)
         return False
 
-    # Integrity first — a replay states up front whether the record it renders is intact. A
-    # failed digest still renders (the content may be exactly what you need to inspect), loudly.
-    # digest.verify_payload pops integrity off a copy before recomputing — the rule every
-    # verifier shares.
-    v = digest.verify_payload(payload)
-    if v["has_integrity"]:
-        if v["digest_ok"]:
-            _print(f"  ✓ integrity verified — sha256 {v['computed_digest'][:16]}…")
-        else:
-            print(f"  ⨯ INTEGRITY FAILURE — {path.name} was modified after export "
-                  "(rendering anyway; do not treat it as an authentic record).",
-                  file=sys.stderr)
-    else:
-        _print("  (no integrity digest — an unverifiable record; JSON exports carry one)")
-
     run_tuple, rows = export_rows(payload)
     _print(f"  replaying exported record: {path.name}  "
            f"(saturn {payload.get('saturn_version', '?')}, exported {payload.get('exported_at', '?')})")
@@ -440,35 +428,6 @@ def _replay(ctx, args):
         _print("  usage: /trace replay <exported .json file>")
         return
     render_export(" ".join(args))
-
-
-def _verify(ctx, args):
-    if not args:
-        _print("  usage: /trace verify <exported .json file>")
-        return
-    path = Path(" ".join(args).strip('"')).expanduser()
-    try:
-        # utf-8-sig: a BOM (PowerShell 5.1 redirection writes one) must not fail the read.
-        payload = json.loads(path.read_text(encoding="utf-8-sig"))
-    except (OSError, json.JSONDecodeError) as e:
-        _print(f"  could not read {path}: {e}")
-        return
-    if not (isinstance(payload, dict) and payload.get("saturn_trace_export") == 1):
-        _print(f"  {path.name} is not a Saturn trace export (see /trace export).")
-        return
-    # digest.verify_payload pops the integrity block off a copy before recomputing — the rule
-    # every verifier shares. Tamper-evidence (content unchanged since export), not provenance.
-    v = digest.verify_payload(payload)
-    if not v["has_integrity"]:
-        _print(f"  {path.name} carries no integrity digest (a --md report? only JSON exports do).")
-        return
-    if v["digest_ok"]:
-        _print(f"  ✓ {path.name} verifies — sha256 {v['stored_digest']}")
-        _print(f"    run #{payload['run']['run_id']}, recorded {payload['run']['started_at']}")
-    else:
-        _print(f"  ⨯ {path.name} DOES NOT verify — the record was modified after export.")
-        _print(f"    stored   {v['stored_digest']}")
-        _print(f"    computed {v['computed_digest']}")
 
 
 def _verbosity(ctx, args):
@@ -741,7 +700,7 @@ def _state(ctx, args):
     "trace",
     "Observability hub: drill-down of recorded runs + live trace control.",
     usage="/trace [#id | -l [n] | why | answer | invoke | calls | cost | state"
-          " | export | verify | replay | on|off|full]",
+          " | export | replay | on|off|full]",
     details="""
 Expands one recorded run from the trace database (database/db.sqlite) into the full replay the
 live trace abbreviates: the query, every node with its step time and metrics, the plan as it
@@ -777,19 +736,14 @@ Subviews:
   /trace state         dump the live AgentState (message count, plan steps, tools called, etc.)
                        pass --full to also dump the raw state dict
   /trace export [#id]  write a run's complete record (events + tool I/O + LLM calls) to a
-                       self-contained file under logging/exports/ — JSON with a sha256 integrity
-                       digest (tamper-evident: it proves the record was not altered after export);
-                       --md for a readable markdown report; -o <path> to choose the destination.
-                       The record you can hand to someone else (also: saturn -p "..." --export
-                       <file> writes the same artifact after a headless turn).
-  /trace verify <file> recompute an exported record's digest and report whether the content is
-                       unchanged since export — a modified record fails loudly (also: saturn
-                       verify <file> straight from the shell, with script-friendly exit codes:
-                       0 intact, 1 tampered, 2 unreadable).
+                       self-contained file under logging/exports/ — JSON is the replayable
+                       record; --md for a readable markdown report; -o <path> to choose the
+                       destination. The record you can hand to someone else (also: saturn -p
+                       "..." --export <file> writes the same artifact after a headless turn).
   /trace replay <file> replay an exported record OFFLINE through the same drill-down view —
-                       integrity-checked first, no database needed. What makes an export
-                       shareable: anyone can replay a run you hand them (also: saturn --replay
-                       <file> straight from the shell).
+                       no database needed. What makes an export shareable: anyone can replay
+                       a run you hand them (also: saturn --replay <file> straight from the
+                       shell).
 
 Live trace verbosity (controls what scrolls during a turn; recording is always on):
 
@@ -809,8 +763,6 @@ def _trace(ctx, args):
         return _show_llm_calls(ctx, args[1:])
     if args and args[0].lower() in ("export", "--export"):
         return _export(ctx, args[1:])
-    if args and args[0].lower() in ("verify", "--verify"):
-        return _verify(ctx, args[1:])
     if args and args[0].lower() in ("replay", "--replay"):
         return _replay(ctx, args[1:])
     if args and args[0].lower() in ("calls", "io"):

@@ -1,8 +1,7 @@
 """
 Trace replay (commands.trace.export_rows / render_export) and the /source citation drill-down
-(commands.trace.lookup_source) — the pure halves of both features. Plus the two stdout-honesty
-guards: the attestation caption tracks the verify VERDICT (a tampered export never prints a
-trust-affirming caption), and `/trace export -o` refuses a missing/flag-shaped path.
+(commands.trace.lookup_source) — the pure halves of both features. Plus the stdout-honesty
+guard: `/trace export -o` refuses a missing/flag-shaped path.
 """
 
 import json
@@ -12,7 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from commands.trace import lookup_source
-from commands.trace import _canonical_digest, _export, export_rows, render_export
+from commands.trace import _export, export_rows, render_export
 
 
 # --- replay ----------------------------------------------------------------------------------
@@ -44,28 +43,14 @@ def test_export_rows_shapes_match_show_run():
     assert rows[1][4] is None                 # None data stays None
 
 
-def test_render_export_verifies_and_renders(tmp_path, capsys):
+def test_render_export_renders(tmp_path, capsys):
     payload = _payload()
-    payload["integrity"] = {"algorithm": "sha256", "digest": _canonical_digest(_payload())}
     f = tmp_path / "run_7.json"
     f.write_text(json.dumps(payload), encoding="utf-8")
     assert render_export(str(f)) is True
     out = capsys.readouterr().out
-    assert "integrity verified" in out
+    assert "replaying exported record" in out
     assert "run #7" in out
-
-
-def test_render_export_flags_tampering(tmp_path, capsys):
-    payload = _payload()
-    payload["integrity"] = {"algorithm": "sha256", "digest": _canonical_digest(_payload())}
-    payload["run"]["response"] = "5"  # tamper after digest
-    f = tmp_path / "run_7.json"
-    f.write_text(json.dumps(payload), encoding="utf-8")
-    assert render_export(str(f)) is True  # still renders, loudly
-    captured = capsys.readouterr()
-    # The failure banner is a DIAGNOSTIC: stderr, so a piped stdout stays the rendered run.
-    assert "INTEGRITY FAILURE" in captured.err
-    assert "INTEGRITY FAILURE" not in captured.out
 
 
 def test_render_export_rejects_non_exports(tmp_path, capsys):

@@ -31,8 +31,6 @@ _PLANNER_TOOL_HINTS = {
     "matches — use before reading whole files).",
     "find_files": "find workspace files by NAME with a glob pattern (when the path is unknown).",
     "calculate": "evaluate a precise arithmetic expression.",
-    "check_shell_job": "check the status/output of a background shell job started by run_shell.",
-    "stop_shell_job": "stop a running background shell job.",
     "remember": "save a durable fact/preference about the user to persistent memory (across sessions).",
     "recall": "look up facts previously saved to persistent memory.",
 }

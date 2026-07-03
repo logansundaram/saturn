@@ -54,4 +54,4 @@ jobs:
           cd "$RUNNER_TEMP"
           ./venv/bin/saturn --version
           ./venv/bin/saturn --help > /dev/null
-          ./venv/bin/python -c "from trust import digest; assert digest.canonical_digest({'x': 1})"
+          ./venv/bin/python -c "from trust import policy; assert callable(policy.approves)"

@@ -1,6 +1,5 @@
 """
-Shell / code-execution tools — `run_shell` (+ the background-job pair `check_shell_job` /
-`stop_shell_job`).
+Shell / code-execution tool — `run_shell`.
 
 The agent's escape hatch (roadmap Tier 3 #10): the one tool that can run anything the host shell
 can — scripts, build/test commands, git, package managers, a quick one-off bit of code. That reach
@@ -23,174 +22,23 @@ are combined and returned with the exit code; the
 tool_node clamps the observation before it enters context (gotcha #5), so a runaway command can't
 overflow the window.
 
-Background — `run_shell(background=True)` is the escape hatch from that timeout for processes
-MEANT to outlive the turn (dev servers, watchers, long builds): the command starts detached, its
-output streams to a log under `paths.shell_jobs`, and the agent checks/stops it later via the
-job tools (see the "background jobs" section below). Still `destructive` — the gate shows the
-exact command either way; backgrounding changes the lifetime, not the trust boundary.
-OPT-IN (`shell.background`, default off — read default-tolerantly, so a config.yaml predating
-the key behaves as false): when off, `run_shell(background=True)` refuses instead of detaching
-and the job tools are never registered — a default install exposes no detached-process surface
-at all. The decision is made ONCE, at import (`_ENABLED_AT_IMPORT`): registration AND run_shell's
-refusal both pin to that snapshot, so a live `/config shell.background true` mid-session cannot
-half-enable the surface (detaching a process while check_shell_job/stop_shell_job were never
-registered). Flip the knob + restart, like any tool-surface change.
+Every run is a bounded FOREGROUND run: the process lives and dies inside the turn the user
+approved. (Detached background jobs — `run_shell(background=true)` + `check_shell_job`/
+`stop_shell_job` — were DELETED 2026-07-03: a detached, timeout-free process is exactly what the
+gate's approve-this-command model covers worst; preserved on `shelf/2026-07-03-runtime-trim`.)
 """
 
-import atexit
-import itertools
 import os
 import signal
 import subprocess
 import sys
-import time
-from pathlib import Path
-
-from langchain.tools import tool as _lc_tool
 
 from config import get_config
-from textutil import truncate
 from tools.toolspec import register_tool
 
 # Fallback when config.yaml has no `shell.timeout` (or an invalid one). Mirrors the local-helper
 # style web.py uses for its own knobs — no config.py property needed for a single tool-local value.
 _DEFAULT_TIMEOUT = 60
-
-def _background_enabled() -> bool:
-    """The `shell.background` knob (config.py reads it default-tolerantly: absent = False).
-    Read once, at import, into `_ENABLED_AT_IMPORT` — never live (see below)."""
-    return get_config().background_jobs
-
-
-# THE backgrounding decision, pinned at import. Both consumers — the job tools' registration at
-# the bottom of this file AND run_shell's runtime refusal — read this snapshot, never the live
-# knob: a mid-session `/config shell.background true` must not let the next
-# run_shell(background=true) DETACH a process while check_shell_job/stop_shell_job were never
-# registered (the success message would even coach the model into calling a tool the registry
-# errors on as unknown). Half-enabled is worse than off; enable + restart is the only path.
-_ENABLED_AT_IMPORT = _background_enabled()
-
-
-# ── background jobs ────────────────────────────────────────────────────────────────────────────
-# `run_shell(background=True)` starts a command DETACHED from the turn: the call returns
-# immediately with a job id while the process keeps running (a dev server, a long build), its
-# output captured to a log file under `paths.shell_jobs` (logging/shell/). `check_shell_job`
-# (read_only) reports status + the log tail; `stop_shell_job` (side_effecting — still gated under
-# the default policy) kills the job's whole process tree. Jobs are session-scoped on purpose: any
-# still running when Saturn exits are terminated by the atexit hook below — a trust-focused agent
-# must never leave invisible processes running after the user closes it. The log files remain for
-# post-mortem reading.
-_JOBS: "dict[int, dict]" = {}
-_JOB_IDS = itertools.count(1)
-_ATEXIT_ARMED = False
-
-# How much of a job's log check_shell_job returns (the tail — the most recent output). The
-# tool_node clamp would bound it anyway; reading only the tail also keeps file IO small.
-_LOG_TAIL_BYTES = 8000
-
-
-def _jobs_dir() -> Path:
-    """Where job logs land (`paths.shell_jobs`, default logging/shell). Falls back beside the
-    database dir for a user config.yaml written before the key existed — a missing path must
-    degrade, not break backgrounding."""
-    cfg = get_config()
-    try:
-        d = cfg.path("shell_jobs")
-    except KeyError:
-        d = cfg.path("database").parent / "logging" / "shell"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
-
-
-def _arm_atexit() -> None:
-    """Install the session-end cleanup once: kill any still-running background jobs so quitting
-    Saturn never leaves orphaned processes behind. Best-effort — exit must never hang on it."""
-    global _ATEXIT_ARMED
-    if _ATEXIT_ARMED:
-        return
-    _ATEXIT_ARMED = True
-
-    def _cleanup():
-        for job in _JOBS.values():
-            try:
-                if job["proc"].poll() is None:
-                    _kill_tree(job["proc"])
-            except Exception:
-                pass
-            _close_log(job)
-
-    atexit.register(_cleanup)
-
-
-def _close_log(job: dict) -> None:
-    fh = job.get("fh")
-    if fh is not None:
-        try:
-            fh.close()
-        except Exception:
-            pass
-        job["fh"] = None
-
-
-def _job_status(job: dict) -> str:
-    """One-word state + exit code when finished. Also closes the log handle the first time a
-    finished job is observed, so the file is fully flushed for reading."""
-    code = job["proc"].poll()
-    if code is None:
-        return "running"
-    _close_log(job)
-    return f"exited with code {code}"
-
-
-def _log_tail(job: dict) -> str:
-    """The most recent output from the job's log file, decoded tolerantly (the process writes raw
-    bytes; the workspace and shells emit non-UTF-8 sequences)."""
-    try:
-        raw = Path(job["log"]).read_bytes()
-    except OSError:
-        return "(no output captured yet)"
-    if not raw:
-        return "(no output yet)"
-    tail = raw[-_LOG_TAIL_BYTES:]
-    text = tail.decode("utf-8", errors="replace").strip()
-    if len(raw) > _LOG_TAIL_BYTES:
-        return f"... [showing the last {_LOG_TAIL_BYTES} bytes of {len(raw)}] ...\n{text}"
-    return text
-
-
-def _start_background(command: str, argv, popen_kwargs: dict) -> str:
-    """Launch `command` detached and register it in the session job table. The log file receives
-    the process's combined stdout+stderr directly (byte-level — no pipe to drain, so nothing
-    blocks and nothing is lost if Saturn is busy)."""
-    job_id = next(_JOB_IDS)
-    log_path = _jobs_dir() / f"job_{job_id}.log"
-    fh = open(log_path, "wb")
-    header = f"$ {command}\n[started {time.strftime('%Y-%m-%d %H:%M:%S')}]\n\n"
-    fh.write(header.encode("utf-8"))
-    fh.flush()
-
-    popen_kwargs = dict(popen_kwargs)
-    # Replace the pipes with the log file; drop the text decoding (the file takes raw bytes).
-    popen_kwargs.update(stdout=fh, stderr=subprocess.STDOUT)
-    for k in ("text", "encoding", "errors"):
-        popen_kwargs.pop(k, None)
-
-    proc = subprocess.Popen(argv, **popen_kwargs)
-    _JOBS[job_id] = {
-        "proc": proc,
-        "command": command,
-        "log": str(log_path),
-        "started": time.time(),
-        "fh": fh,
-    }
-    _arm_atexit()
-    return (
-        f"[job {job_id}] started in the background (pid {proc.pid}).\n"
-        f"Output is being captured to {log_path}.\n"
-        f"Check on it with check_shell_job(job_id={job_id}); stop it with "
-        f"stop_shell_job(job_id={job_id}). Background jobs still running when the session ends "
-        "are terminated."
-    )
 
 
 def _timeout() -> "float | None":
@@ -234,19 +82,9 @@ def _format(returncode: int, stdout: str, stderr: str) -> str:
     return f"{header}\n{body}" if body else f"{header} (no output)"
 
 
-# Appended to run_shell's model-facing description only when the knob allows backgrounding — a
-# default-off install must not coach the model into a call run_shell will refuse.
-_BACKGROUND_DOC = (
-    " Set `background=true` for a long-running process (a server, a watcher, a long build): the"
-    " call returns immediately with a job id, output is captured to a log file, and you check on"
-    " or stop it later with check_shell_job / stop_shell_job — never run a server in the"
-    " foreground, it will just time out; check the job's status rather than assuming it ran."
-    " Background jobs are terminated when the session ends."
-)
-
-
-def run_shell(command: str, background: bool = False):
-    """Runs a shell command on the host machine and returns its combined stdout+stderr plus the exit code. Use this for anything no other tool covers: running scripts or quick one-off code, build/test commands, git, package managers, inspecting the system. `command` is a single command line interpreted by the host's default shell (PowerShell on Windows, /bin/sh on Unix) — chain steps with the shell's own operators (`;`, `&&`, `|`). It runs inside the workspace directory by default. This is a powerful, irreversible action and always requires user approval; do not assume it succeeded — check the returned exit code."""
+@register_tool("destructive")
+def run_shell(command: str):
+    """Runs a shell command on the host machine and returns its combined stdout+stderr plus the exit code. Use this for anything no other tool covers: running scripts or quick one-off code, build/test commands, git, package managers, inspecting the system. `command` is a single command line interpreted by the host's default shell (PowerShell on Windows, /bin/sh on Unix) — chain steps with the shell's own operators (`;`, `&&`, `|`). It runs inside the workspace directory by default and is terminated if it outlives the shell timeout — never start a server or watcher with it. This is a powerful, irreversible action and always requires user approval; do not assume it succeeded — check the returned exit code."""
     timeout = _timeout()
     try:
         workspace = get_config().path("workspace")
@@ -279,19 +117,6 @@ def run_shell(command: str, background: bool = False):
             # Own session = own process group, so a timeout can kill the whole tree (_kill_tree).
             popen_kwargs["start_new_session"] = True
 
-        # Detached mode: start the job, return its handle immediately — no timeout applies (the
-        # whole point is outliving the turn). Same gate, same argv, same workspace cwd. Opt-in:
-        # the refusal pins to the IMPORT-TIME snapshot, not the live knob — a mid-session config
-        # flip must not detach a process the never-registered job tools can't check or stop.
-        if background:
-            if not _ENABLED_AT_IMPORT:
-                return (
-                    "background jobs are disabled — backgrounding requires shell.background: "
-                    "true at startup; set it in config.yaml and restart. Run the command in "
-                    "the foreground instead."
-                )
-            return _start_background(command, argv, popen_kwargs)
-
         # Popen + communicate (not subprocess.run): on timeout we need the child's pid to kill
         # its whole process tree — run() kills only the direct child, leaving grandchildren alive.
         proc = subprocess.Popen(argv, **popen_kwargs)
@@ -312,81 +137,3 @@ def run_shell(command: str, background: bool = False):
         return _format(proc.returncode, stdout, stderr)
     except Exception as exc:  # never let a shell failure kill the turn — report it to the agent
         return f"Shell execution failed: {exc}"
-
-
-# The docstring above IS the model-facing tool description, so it must be final before the
-# LangChain wrap reads it — backgrounding is advertised only when the knob allows the call.
-if _ENABLED_AT_IMPORT:
-    run_shell.__doc__ += _BACKGROUND_DOC
-run_shell = register_tool("destructive")(run_shell)
-
-
-def _fmt_runtime(seconds: float) -> str:
-    if seconds < 60:
-        return f"{seconds:.0f}s"
-    if seconds < 3600:
-        return f"{seconds / 60:.1f}m"
-    return f"{seconds / 3600:.1f}h"
-
-
-def check_shell_job(job_id: int = 0):
-    """Checks on background shell jobs started with run_shell(background=true). With a job_id, returns that job's status (running, or its exit code) plus the most recent output from its log. With job_id=0 (the default), lists every background job this session with its status. Read-only — looking never affects the job."""
-    try:
-        if not _JOBS:
-            return "No background jobs have been started this session."
-        if not job_id:
-            lines = ["Background jobs this session:"]
-            for jid, job in sorted(_JOBS.items()):
-                runtime = _fmt_runtime(time.time() - job["started"])
-                lines.append(
-                    f"  [job {jid}] {_job_status(job)} · {runtime} · {truncate(job['command'], 80)}"
-                )
-            lines.append("Pass a job_id for that job's output.")
-            return "\n".join(lines)
-        job = _JOBS.get(int(job_id))
-        if job is None:
-            known = ", ".join(str(j) for j in sorted(_JOBS)) or "none"
-            return f"No background job {job_id} (known jobs: {known})."
-        status = _job_status(job)
-        runtime = _fmt_runtime(time.time() - job["started"])
-        return (
-            f"[job {job_id}] {status} ({runtime} since start)\n"
-            f"command: {job['command']}\n"
-            f"log: {job['log']}\n\n"
-            f"{_log_tail(job)}"
-        )
-    except Exception as exc:
-        return f"check_shell_job failed: {exc}"
-
-
-def stop_shell_job(job_id: int):
-    """Stops a background shell job started with run_shell(background=true), killing its whole process tree (the job and anything it spawned). Use check_shell_job first to confirm which job to stop. The job's log file is kept for reading after the stop."""
-    try:
-        job = _JOBS.get(int(job_id))
-        if job is None:
-            known = ", ".join(str(j) for j in sorted(_JOBS)) or "none"
-            return f"No background job {job_id} (known jobs: {known})."
-        if job["proc"].poll() is not None:
-            return f"[job {job_id}] already {_job_status(job)} — nothing to stop."
-        _kill_tree(job["proc"])
-        try:
-            job["proc"].wait(timeout=10)
-        except Exception:
-            pass
-        _close_log(job)
-        status = _job_status(job)
-        return f"[job {job_id}] stopped ({status}). Log kept at {job['log']}."
-    except Exception as exc:
-        return f"stop_shell_job failed: {exc}"
-
-
-# The job tools exist only when backgrounding does: with shell.background off (the default) they
-# never enter the registry — the planner catalog, /tools, and the gate never see them. The plain
-# LangChain wrap on the off path keeps one import surface for direct callers (tests) without
-# touching the registry collections.
-if _ENABLED_AT_IMPORT:
-    check_shell_job = register_tool("read_only")(check_shell_job)
-    stop_shell_job = register_tool("side_effecting")(stop_shell_job)
-else:
-    check_shell_job = _lc_tool(check_shell_job)
-    stop_shell_job = _lc_tool(stop_shell_job)

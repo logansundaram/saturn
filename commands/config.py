@@ -306,8 +306,8 @@ def _config(ctx, args):
         _print(f"  {key} is a list, not a scalar setting — edit config.yaml by hand")
         return
 
-    # A key the config has never seen still sets — the default-tolerant knobs (shell.background,
-    # paths.*) and absent per-tier role leaves must keep working on a config.yaml predating
+    # A key the config has never seen still sets — the default-tolerant knobs and absent
+    # per-tier role leaves must keep working on a config.yaml predating
     # them — but the success-shaped line is replaced
     # with a plain warning so a misspelled safety knob can't masquerade as applied. The
     # suggestion snapshots the leaf list BEFORE the set, so the typo never suggests itself.

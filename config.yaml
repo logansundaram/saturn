@@ -23,7 +23,6 @@ paths:
   snapshots: database/snapshots        # per-turn pre-write file snapshots (/undo)
   permissions: database/permissions.json  # persisted /risk overrides + /allow shell prefixes
   exports: logging/exports             # /trace export run records (audit artifacts)
-  shell_jobs: logging/shell            # background run_shell job logs (check_shell_job reads them)
 
 # ---------------------------------------------------------------------------
 # Loop / safety runtime knobs (were the MAX_ITERATIONS constant + the gate policy).
@@ -53,12 +52,6 @@ runtime:
   # compaction always runs; this is the heavier LLM summary. `/compact` triggers it on demand.
   auto_compact: true
   compact_threshold: 0.85
-  # Session token budget: total tokens (input + output, summed over this session's agent +
-  # synthesizer LLM calls — best-effort accounting, see budget.py) the agent may spend before the
-  # loop stops starting new tool rounds and wraps every turn up at synthesize immediately (the
-  # same forced landing as max_iterations). Mainly a cost ceiling for cloud-bound tiers; the
-  # status warning at the prompt explains when it bites. 0 disables.
-  token_budget: 0
   # Answer provenance: number the gathered tool results/retrieved documents handed to the
   # synthesizer, ask it to cite the matching [n] inline, and append a mechanical "Sources" footer
   # mapping each number to the tool call/document behind it. false restores unadorned answers.
@@ -69,11 +62,6 @@ runtime:
   # on|off`; `/privacy airgap` (bare) proves the current posture. Every blocked attempt shows in
   # `/privacy egress`.
   airgap: false
-  # Dry-run: when true, the agent plans and decides exactly as normal but NO tool actually executes —
-  # tool_node stubs every call with `[DRY RUN] would execute …` and synthesize reports the intended
-  # actions rather than answering as if they ran. A true counterfactual: see the whole arc (plan +
-  # every intended call with its exact args) before approving anything. Toggle with `/dryrun on|off`.
-  dry_run: false
   # Outbound redaction for cloud-bound roles (cloud-hybrid tier): strip secrets (API keys, tokens,
   # private keys, JWTs, emails) from prompts+context before they reach a cloud model. One of:
   #   off    no scan (default — a fully-local tier never leaves the machine anyway)
@@ -168,14 +156,10 @@ mcp:
 #   run_shell is registered `destructive`, so it ALWAYS hits the approval gate — the gate (the
 #   user seeing + approving the exact command), not a path jail, is the safety boundary.
 #   timeout: seconds before a running command is killed, so a hung or interactive command can't
-#            wedge the turn (mirrors runtime.llm_timeout). <=0 disables. Does NOT apply to
-#            run_shell(background=true) jobs — those are meant to outlive the turn; their logs
-#            land under paths.shell_jobs and any still running at quit are terminated.
+#            wedge the turn (mirrors runtime.llm_timeout). <=0 disables.
 # ---------------------------------------------------------------------------
 shell:
   timeout: 60
-  # Background jobs (run_shell(background=true) + check_shell_job/stop_shell_job): off by default — when off, run_shell refuses to detach and the job tools aren't registered (flip + restart to enable).
-  background: false
 
 # ---------------------------------------------------------------------------
 # Hardware-tier presets. Each maps the agent's roles -> concrete models.

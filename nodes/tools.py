@@ -13,7 +13,6 @@ from langchain.messages import ToolMessage
 
 from trust import egress
 from trust import quarantine
-from config import get_config
 from tools.registry import tools_by_name, RETRIEVAL_TOOLS
 from core.state import AgentState
 from textutil import CALL_RESULT_SEP, clip, fmt_args, head_tail
@@ -109,12 +108,6 @@ def tool_node(state: AgentState):
         tc for tc in (getattr(last, "tool_calls", None) or []) if tc["id"] not in answered
     ]
 
-    # Dry-run: decide everything, execute nothing. Each pending call is stubbed with an explicit
-    # "would execute" observation (no side effects, no network, no file writes) so the agent can lay
-    # out its whole intended arc and synthesize can report it. The plan still advances mechanically
-    # (tools_called is recorded) so the loop progresses and terminates exactly as a real turn would.
-    dry_run = bool(get_config().get("runtime.dry_run", False))
-
     tool_messages = []
     tools_called = []
     tool_results = []
@@ -128,22 +121,16 @@ def tool_node(state: AgentState):
         ok = True
         egress_mark = egress.next_seq()  # anything recorded past this seq belongs to THIS call
         start = time.perf_counter()
-        if dry_run:
-            observation = (
-                f"[DRY RUN] would execute {_fmt_call(name, args)} — not run "
-                "(no side effects, no network, no files touched)."
-            )
+        selected = tools_by_name.get(name)
+        if selected is None:
+            observation = f"Error: unknown tool '{name}'."
+            ok = False
         else:
-            selected = tools_by_name.get(name)
-            if selected is None:
-                observation = f"Error: unknown tool '{name}'."
+            try:
+                observation = selected.invoke(args)
+            except Exception as exc:  # surface tool errors to the model instead of crashing
+                observation = f"Error calling {name}: {exc}"
                 ok = False
-            else:
-                try:
-                    observation = selected.invoke(args)
-                except Exception as exc:  # surface tool errors to the model instead of crashing
-                    observation = f"Error calling {name}: {exc}"
-                    ok = False
         dur = time.perf_counter() - start
 
         observation = str(observation)
@@ -157,7 +144,7 @@ def tool_node(state: AgentState):
         # explicit data-not-instructions markers before the model sees it. Clean content passes
         # through byte-identical. See quarantine.py.
         q_kinds: list[str] = []
-        if ok and not dry_run and quarantine.active() and quarantine.is_untrusted(name):
+        if ok and quarantine.active() and quarantine.is_untrusted(name):
             # Scan an untrusted result (web/http/MCP/corpus) for instruction-shaped content (the
             # data-as-instructions check) and fence it before the model sees it.
             findings = quarantine.scan(clamped)

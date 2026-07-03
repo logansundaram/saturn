@@ -7,7 +7,7 @@ compacted to a `[paste #N +L lines]` chip so a wall of code doesn't flood the pr
 text is kept aside, re-expanded into the message at submit, and Ctrl+E with the cursor on the chip
 re-expands it in place for editing. Falls back to rich's (or plain) input() without prompt_toolkit.
 `banner` prints the two-line session header. The live
-posture flags (⚠ GATE OFF / ⛓ AIRGAP / DRY-RUN) ride the prompt's right edge as the rprompt —
+posture flags (⚠ GATE OFF / ⛓ AIRGAP) ride the prompt's right edge as the rprompt —
 the status bar that carries them mid-turn is torn down around every input(), exactly when the
 user picks their next action; the plain fallback prints them as one line above the prompt.
 """
@@ -49,15 +49,15 @@ _ptk_session = None  # one PromptSession for the process -> free line history ac
 
 
 # ── posture at the prompt ──────────────────────────────────────────────────────
-# The status bar's loud posture flags (⚠ GATE OFF / ⛓ AIRGAP / DRY-RUN) are transient — the bar
+# The status bar's loud posture flags (⚠ GATE OFF / ⛓ AIRGAP) are transient — the bar
 # tears down around every input(), which is exactly when the user picks their next action. These
 # re-derive the same live reads (no new state, same keys and threshold logic as the bar) for the
 # `»` prompt: prompt_toolkit renders them as the rprompt; the plain fallback prints one short
 # line above the prompt only when at least one flag is active.
 def _posture_flags() -> list[tuple[str, str]]:
-    """Active posture flags as (label, kind) pairs — kind ∈ gate|airgap|dryrun. Read live each
+    """Active posture flags as (label, kind) pairs — kind ∈ gate|airgap. Read live each
     call, exactly like the status bar: the policy threshold at `destructive` means the gate is
-    OPEN; air-gap and dry-run come straight off the runtime knobs."""
+    OPEN; air-gap comes straight off the runtime knob."""
     flags: list[tuple[str, str]] = []
     try:
         from config import get_config
@@ -67,8 +67,6 @@ def _posture_flags() -> list[tuple[str, str]]:
             flags.append(("⚠ GATE OFF", "gate"))
         if bool(cfg.get("runtime.airgap", False)):
             flags.append(("⛓ AIRGAP", "airgap"))
-        if bool(cfg.get("runtime.dry_run", False)):
-            flags.append(("DRY-RUN", "dryrun"))
     except Exception:
         return []
     return flags
@@ -78,7 +76,6 @@ def _posture_flags() -> list[tuple[str, str]]:
 _POSTURE_STYLE = {
     "gate": f"bold {_RISK.get('destructive', 'red')}",
     "airgap": f"bold {_ACCENT}",
-    "dryrun": f"bold {_RISK.get('side_effecting', 'yellow')}",
 }
 
 
@@ -172,13 +169,11 @@ if _PTK:
         "paste": "reverse ansibrightblack",  # the [paste #N …] chip — reads as one atomic token
         "posture.gate": "ansired bold",
         "posture.airgap": "ansicyan bold",
-        "posture.dryrun": "ansiyellow bold",
         "posture.sep": "ansibrightblack",
     })
 
     # kind -> rprompt style class (the ptk twin of _POSTURE_STYLE).
-    _POSTURE_PTK = {"gate": "class:posture.gate", "airgap": "class:posture.airgap",
-                    "dryrun": "class:posture.dryrun"}
+    _POSTURE_PTK = {"gate": "class:posture.gate", "airgap": "class:posture.airgap"}
 
     def _posture_rprompt():
         """rprompt fragments for the `»` line — a callable, so the flags are re-derived live on
@@ -513,7 +508,7 @@ def prompt(command_meta=None) -> str:
     Shift+Enter / Ctrl+Enter / Ctrl+J / Alt+Enter (POSIX fallback: backslash+Enter) insert a
     newline. A large paste renders as a `[paste #N …]` chip (Ctrl+E on it re-expands for editing)
     and is swapped back to the full text in the returned line. Active posture flags (gate off /
-    air-gap / dry-run) render live at the line's right edge (rprompt). Without prompt_toolkit,
+    air-gap) render live at the line's right edge (rprompt). Without prompt_toolkit,
     falls back to rich/plain input (posture printed above the prompt only when something is
     active). Returns the raw line (slash-command + @mention handling happen upstream)."""
     _live_stop()  # never read a line under an active Live (also clears a bar left by an error)

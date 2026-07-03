@@ -35,7 +35,6 @@ def gate(isolated_paths, monkeypatch):
     runtime = cfg._data.setdefault("runtime", {})
     monkeypatch.setitem(runtime, "auto_approve", "read_only")
     monkeypatch.setitem(runtime, "airgap", False)
-    monkeypatch.setitem(runtime, "dry_run", False)
     monkeypatch.setattr(policy, "_tier_before_gate_off", None)
     return cfg
 
@@ -307,24 +306,11 @@ def test_redact_save_without_mode_persists_current(gate, ctx, capsys, monkeypatc
     assert persisted == ["runtime.redaction"]  # the current mode, persisted
 
 
-# ── /dryrun: bare = status, explicit on|off mutates ──────────────────────────────────────────
+# ── /dryrun: CUT 2026-07-03 — the old spelling lands on a moved-pointer, never a flip ────────
 
 
-def test_dryrun_bare_is_status_explicit_mutates(gate, ctx, capsys):
-    dispatch("/dryrun", ctx)
-    out = capsys.readouterr().out
-    assert "dry-run" in out.lower()
-    assert gate.get("runtime.dry_run") is False  # untouched
-
+def test_dryrun_is_a_renamed_pointer_not_a_command(gate, ctx, capsys):
     dispatch("/dryrun on", ctx)
-    assert gate.get("runtime.dry_run") is True
-    assert "DRY-RUN ON" in capsys.readouterr().out  # the banner survives on actual change
-    dispatch("/dryrun off", ctx)
-    assert gate.get("runtime.dry_run") is False
-
-
-def test_dryrun_unrecognized_arg_is_usage_not_flip(gate, ctx, capsys):
-    dispatch("/dryrun maybe", ctx)
     out = capsys.readouterr().out
-    assert "usage" in out
-    assert gate.get("runtime.dry_run") is False  # untouched (parse_toggle_status -> "invalid")
+    assert "moved" in out and "plan review" in out
+    assert gate.get("runtime.dry_run") is None  # the knob no longer exists, nothing was set

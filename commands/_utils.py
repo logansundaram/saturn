@@ -9,7 +9,7 @@ from config import MODEL_ROLES as _ROLES  # noqa: E402
 
 
 def parse_toggle_status(args: list[str]) -> "bool | str | None":
-    """THE on/off grammar for every status-or-set command (/dryrun, /policy open, /plan review,
+    """THE on/off grammar for every status-or-set command (/policy open, /plan review,
     /plan lockstep, /privacy airgap): no argument -> None, a STATUS readout — bare is NEVER a
     flip, mutation is always an explicit verb; on/true/yes/1 -> True; off/false/no/0 -> False;
     anything else -> "invalid" (the caller prints usage). Trailing tokens are "invalid" too —

@@ -118,10 +118,16 @@ _RENAMED = {
     # /commands was never a real command — point the habit at the command list.
     "commands": "help",
     "cmds": "help",
+    # /dryrun CUT 2026-07-03 — /plan review + the per-call gate are the surviving
+    # intent-before-execution surfaces.
+    "dryrun": "plan review",
+    "dry": "plan review",
 }
 
 # A second, parenthesized line for redirects whose one-line pointer doesn't tell the whole story.
-_RENAMED_NOTES: dict[str, str] = {}
+_DRYRUN_NOTE = ("dry-run mode was removed — /plan review pauses at every step boundary, and the "
+                "approval gate shows every gated call before it runs")
+_RENAMED_NOTES: dict[str, str] = {"dryrun": _DRYRUN_NOTE, "dry": _DRYRUN_NOTE}
 
 
 def _print_renamed(key: str) -> bool:

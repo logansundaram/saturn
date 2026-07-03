@@ -103,13 +103,7 @@ def approves(name: str, risk: str, args: "dict | None" = None) -> bool:
     if auto_approves(risk):
         return True
     if name == "run_shell":
-        call_args = args or {}
-        # /allow prefixes were granted for ordinary foreground runs, bounded by shell.timeout.
-        # background=True changes the semantics of the same command (detached, timeout-free job),
-        # so it always faces the human regardless of any matching prefix.
-        if call_args.get("background"):
-            return False
-        command = str(call_args.get("command", ""))
+        command = str((args or {}).get("command", ""))
         return shell_allowed(command) is not None
     return False
 

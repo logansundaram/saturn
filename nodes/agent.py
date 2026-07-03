@@ -18,10 +18,8 @@ from core.llms import (
     get_tool_model,
     extract_tok_per_sec,
     extract_prompt_tokens,
-    extract_total_tokens,
 )
 from config import get_config
-from core import budget
 from core.state import AgentState, unrun_planned_tools, active_step
 from core.messages import (
     agent_sys_msg,
@@ -122,9 +120,6 @@ def agent_node(state: AgentState):
     ]
 
     response = get_tool_model().invoke(messages)
-    # Feed the session token budget (runtime.token_budget; best-effort — see budget.py). The
-    # enforcement lives in route_after_agent, which stops new tool rounds once the budget is spent.
-    budget.add(extract_total_tokens(response))
 
     updates = {
         "messages": [response],
@@ -155,12 +150,6 @@ def route_after_agent(state: AgentState) -> str:
     max_iterations = get_config().max_iterations
 
     if iteration >= max_iterations:
-        return "synthesize"
-    # Session token budget spent (runtime.token_budget) — stop starting new tool rounds (and the
-    # nudge/replan escalations below) and wrap the turn up now, exactly like the iteration cap.
-    # synthesize's honesty note covers any planned gather this cuts off, and the loop warns the
-    # user after the turn (agent.main) so the sudden landing is explained.
-    if budget.exceeded():
         return "synthesize"
     if has_tool_calls:
         return "approval"

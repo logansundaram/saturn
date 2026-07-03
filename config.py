@@ -216,14 +216,6 @@ class Config:
         return self.num_ctx_override or self.capability_of(model).context_window
 
     @property
-    def background_jobs(self) -> bool:
-        """Whether `run_shell` may detach background jobs (`shell.background`). Default OFF, read
-        default-tolerantly — a config.yaml predating the key behaves as false. The job tools'
-        registration is decided at import (tools/shell.py); run_shell re-checks live for
-        its refusal."""
-        return bool(self.get("shell.background", False))
-
-    @property
     def llm_timeout(self) -> "float | None":
         """Read timeout (seconds) for a single local-model call (`runtime.llm_timeout`), or None to
         disable. Bounds a wedged Ollama daemon so a turn fails cleanly instead of hanging forever;

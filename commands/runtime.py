@@ -329,19 +329,6 @@ def _context(ctx, args):
             source = f"auto · {model_id('tool_caller')} capability"
         per_role = {role: cfg.num_ctx_for(model_id(role)) for role in _ROLES}
         ui.show_context(window, used, source, per_role)
-        # Session token budget (runtime.token_budget) — shown only when one is set, with the
-        # enforcement consequence spelled out once it has actually been spent.
-        from core import budget
-
-        if budget.limit():
-            pct = budget.spent() / budget.limit() * 100
-            line = (
-                f"  token budget: {budget.spent():,} / {budget.limit():,} session tokens"
-                f" ({pct:.0f}%)"
-            )
-            if budget.exceeded():
-                line += " — SPENT: turns answer without new tool calls"
-            _print(line)
         # The hardware half of the runtime readout (absorbed from the old /system).
         from tui.system_monitor import get_system_metrics
 

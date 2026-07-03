@@ -1,5 +1,5 @@
 """nodes/synthesize.cancel_orphaned_calls — the forced-landing orphan guard. When the
-iteration cap or token budget routes to synthesize while the trailing AIMessage still carries
+iteration cap routes to synthesize while the trailing AIMessage still carries
 tool_calls, every call must get a cancellation ToolMessage, or the carried conversation (and its
 autosave) holds an assistant tool_use with no tool_result — a hard provider error next turn."""
 

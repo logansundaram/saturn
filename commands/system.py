@@ -33,7 +33,7 @@ from commands._session import write_autosave
 _GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("conversation", ("clear", "compact", "resume", "retry", "rewind")),
     ("knowledge & workspace", ("docs", "init", "memory", "undo")),
-    ("trust & control", ("allow", "autoapprove", "dryrun", "plan", "policy", "privacy", "risk")),
+    ("trust & control", ("allow", "autoapprove", "plan", "policy", "privacy", "risk")),
     ("observability & proof", ("context", "glass", "mcp", "models", "source", "tools", "trace")),
     ("system", ("config", "help", "quit", "update")),
 )
@@ -44,11 +44,11 @@ _GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
 _GATE_VIEWS = ("risk", "allow", "autoapprove")
 
 # The three-line trust-stack map /help opens with: where the boundary POSTURE is set, where the
-# live ACTIVITY shows, and where the verifiable PROOF comes from.
+# live ACTIVITY shows, and where the shareable RECORD comes from.
 _TRUST_MAP = (
     ("posture", "/privacy · /policy"),
     ("activity", "receipt · /glass · /trace"),
-    ("proof", "/trace export · verify"),
+    ("record", "/trace export · replay"),
 )
 
 

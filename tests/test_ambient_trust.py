@@ -34,7 +34,6 @@ def test_posture_spans_default_posture_is_calm(monkeypatch):
     rt = _runtime(monkeypatch)
     monkeypatch.setitem(rt, "auto_approve", "read_only")
     monkeypatch.setitem(rt, "airgap", False)
-    monkeypatch.setitem(rt, "dry_run", False)
     monkeypatch.setitem(rt, "quarantine", "gate")
 
     monkeypatch.setattr(egress, "_inference", lambda: {"all_local": True, "cloud_providers": []})
@@ -53,7 +52,6 @@ def test_posture_spans_loud_states_lead_and_warn(monkeypatch):
     rt = _runtime(monkeypatch)
     monkeypatch.setitem(rt, "auto_approve", "destructive")  # the gate is OPEN, not "at a tier"
     monkeypatch.setitem(rt, "airgap", True)
-    monkeypatch.setitem(rt, "dry_run", True)
     monkeypatch.setitem(rt, "quarantine", "off")
     monkeypatch.setitem(rt, "redaction", "off")
 
@@ -64,7 +62,6 @@ def test_posture_spans_loud_states_lead_and_warn(monkeypatch):
     spans = receipt.posture_spans()
     assert spans[0] == ("⚠ GATE OFF", "risk")
     assert ("⛓ airgap", "accent") in spans
-    assert ("DRY-RUN", "warn") in spans
     assert ("inference cloud: anthropic", "warn") in spans
     assert ("quarantine off", "warn") in spans
     # redaction off only matters when a cloud boundary exists to redact for — here it does
@@ -341,7 +338,7 @@ def test_build_live_treats_a_cleared_slice_as_unknown(monkeypatch, isolated_path
     assert gb.sent_known is False
 
 
-# --- the status bar's session spend --------------------------------------------------------------
+# --- the status bar's posture zone ---------------------------------------------------------------
 
 def test_statusbar_unreadable_posture_is_unknown_never_calm(monkeypatch):
     # A config read failing mid-refresh must NOT render the calm `read_only` tier — that would
@@ -360,21 +357,3 @@ def test_statusbar_unreadable_posture_is_unknown_never_calm(monkeypatch):
     plain = sb._StatusBar().__rich__().plain
     assert "read_only" not in plain
     assert "posture ?" in plain
-
-
-def test_statusbar_renders_session_token_spend(monkeypatch):
-    sb = importlib.import_module("tui.ui.statusbar")
-    if not sb._RICH:
-        pytest.skip("rich not available")
-    from core import budget
-
-    budget.reset()
-    try:
-        budget.add(2500)
-        rt = _runtime(monkeypatch)
-        monkeypatch.setitem(rt, "token_budget", 0)
-        assert "Σ 2.5k tok" in sb._StatusBar().__rich__().plain
-        monkeypatch.setitem(rt, "token_budget", 10000)
-        assert "Σ 2.5k/10k tok" in sb._StatusBar().__rich__().plain
-    finally:
-        budget.reset()

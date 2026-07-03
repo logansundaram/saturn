@@ -1,6 +1,6 @@
 """
 The saturn CLI surface (agent.py): strict argument parsing (a typo'd invocation must exit 2,
-never silently launch the TUI), the `saturn verify <file>` verb, piped-stdin attachment for
+never silently launch the TUI), piped-stdin attachment for
 headless turns, BOM-tolerant artifact reads, the shared export_run payload builder, and the
 benchmark --strict failure decision. Offline — tests call the functions directly, never a
 subprocess.
@@ -13,7 +13,6 @@ import sqlite3
 import pytest
 
 import agent
-from trust import digest
 from commands import trace as trace_cmd
 
 
@@ -71,15 +70,15 @@ def test_help_exits_0_and_documents_the_surface(capsys):
         agent._parse_cli(["--help"])
     assert exc.value.code == 0
     out = capsys.readouterr().out
-    assert "saturn verify" in out          # the verb is in the epilog
     assert "interactive" in out.lower()    # no-args = interactive mode is documented
 
 
-# --- the verify verb ----------------------------------------------------------------------
+# --- exported artifacts ---------------------------------------------------------------------
 
 def _artifact():
-    """A minimal trace-export artifact with a fresh sha256 integrity digest."""
-    payload = {
+    """A minimal trace-export artifact (the verify/digest layer was CUT 2026-07-03 — exports
+    are plain replayable records; a legacy `integrity` block is tolerated, ignored)."""
+    return {
         "saturn_trace_export": 1,
         "saturn_version": "0.1.0",
         "exported_at": "2026-06-11T00:00:00",
@@ -88,44 +87,6 @@ def _artifact():
         "events": [],
         "llm_calls": [],
     }
-    payload["integrity"] = {"algorithm": "sha256", "digest": digest.canonical_digest(payload)}
-    return payload
-
-
-def test_verify_verb_intact_exits_0(isolated_paths, tmp_path, capsys):
-    f = tmp_path / "run_3.json"
-    f.write_text(json.dumps(_artifact()), encoding="utf-8")
-    assert agent._verify_artifact(str(f)) == 0
-    assert "digest ok" in capsys.readouterr().out
-
-
-def test_verify_verb_tampered_digest_exits_1(isolated_paths, tmp_path, capsys):
-    payload = _artifact()
-    payload["run"]["response"] = "tampered"
-    f = tmp_path / "bad.json"
-    f.write_text(json.dumps(payload), encoding="utf-8")
-    assert agent._verify_artifact(str(f)) == 1
-    assert "MISMATCH" in capsys.readouterr().out
-
-
-def test_verify_verb_usage_and_read_errors_exit_2(tmp_path, capsys):
-    assert agent._verify_artifact(None) == 2                          # no file argument
-    assert agent._verify_artifact("") == 2
-    assert agent._verify_artifact(str(tmp_path / "missing.json")) == 2
-    junk = tmp_path / "junk.json"
-    junk.write_text('{"foo": 1}', encoding="utf-8")
-    assert agent._verify_artifact(str(junk)) == 2                     # not a Saturn export
-    err = capsys.readouterr().err
-    assert "usage: saturn verify" in err
-    assert "could not read" in err
-    assert "not a Saturn" in err
-
-
-def test_verify_verb_reads_bom_files(tmp_path):
-    # PowerShell 5.1 redirection prepends a BOM — the verify verb must still read the artifact.
-    f = tmp_path / "bom.json"
-    f.write_text(json.dumps(_artifact()), encoding="utf-8-sig")
-    assert agent._verify_artifact(str(f)) == 0
 
 
 def test_render_export_reads_bom_files(tmp_path, capsys):
@@ -133,7 +94,21 @@ def test_render_export_reads_bom_files(tmp_path, capsys):
     f = tmp_path / "bom_export.json"
     f.write_text(json.dumps(payload), encoding="utf-8-sig")
     assert trace_cmd.render_export(str(f)) is True
-    assert "integrity verified" in capsys.readouterr().out
+    assert "replaying exported record" in capsys.readouterr().out
+
+
+def test_render_export_tolerates_legacy_integrity_block(tmp_path, capsys):
+    # Exports written before the 2026-07-03 cut carry `integrity` (and possibly `signature`)
+    # blocks — replay must render them unchanged, neither verifying nor choking.
+    payload = _artifact()
+    payload["integrity"] = {"algorithm": "sha256", "digest": "0" * 64}
+    payload["signature"] = {"algorithm": "ed25519", "sig": "legacy"}
+    f = tmp_path / "legacy.json"
+    f.write_text(json.dumps(payload), encoding="utf-8")
+    assert trace_cmd.render_export(str(f)) is True
+    out = capsys.readouterr().out
+    assert "replaying exported record" in out
+    assert "integrity" not in out.lower()
 
 
 # --- piped stdin --------------------------------------------------------------------------
@@ -264,17 +239,18 @@ def _seed_run_db(tmp_path) -> str:
     return str(db)
 
 
-def test_export_run_writes_verifiable_artifact(isolated_paths, tmp_path):
+def test_export_run_writes_replayable_artifact(isolated_paths, tmp_path):
     db = _seed_run_db(tmp_path)
     dest = tmp_path / "out" / "run_1.json"
     written, payload = trace_cmd.export_run(db, 1, dest=dest)
     assert written == dest and dest.exists()
     on_disk = json.loads(dest.read_text(encoding="utf-8"))
-    v = digest.verify_payload(on_disk)
-    assert v["has_integrity"] and v["digest_ok"]
+    assert on_disk["saturn_trace_export"] == 1
+    assert on_disk["format"] == trace_cmd.ARTIFACT_FORMAT
+    assert "integrity" not in on_disk  # the digest ceremony is gone — a plain record
     assert payload["run"]["run_id"] == 1
-    # End to end: the artifact the headless --export flag writes passes the verify verb.
-    assert agent._verify_artifact(str(dest)) == 0
+    # End to end: the artifact the headless --export flag writes replays offline.
+    assert trace_cmd.render_export(str(dest)) is True
 
 
 def test_export_run_latest_and_default_dest(isolated_paths, tmp_path):
@@ -323,26 +299,12 @@ def test_benchmark_trust_failures_decision():
                 "gate": {"policy_default": False, "missed": ["write_file"]}}
     assert benchmark.trust_failures(elevated) == []
 
-    # A runtime.token_budget spent BEFORE a bait force-lands it searchless: those grade
-    # budget_capped (reported), never ungrounded (failed). Mirror of the elevated-gate rule.
-    capped = {"grounding": {"ungrounded": 0, "budget_capped": 4, "token_budget": 50000},
-              "gate": {"policy_default": True, "missed": []}}
-    assert benchmark.trust_failures(capped) == []
 
-    # But a cap crossed DURING a bait's own turn is budget_ambiguous: the grade can't tell a
-    # forced landing from uncaught confabulation, and an ambiguous trust grade FAILS --strict —
-    # excusing it would let a bait whose own synthesize spend crossed the cap mask real
-    # confabulation the judge missed under budget.
-    ambiguous = {"grounding": {"ungrounded": 0, "budget_ambiguous": 1, "token_budget": 50000},
-                 "gate": {"policy_default": True, "missed": []}}
-    assert benchmark.trust_failures(ambiguous)
-
-
-# --- trust-benchmark budget grading ----------------------------------------------------------
+# --- trust-benchmark grading -----------------------------------------------------------------
 
 def _fake_trust_entry(query):
     """The minimal run_query entry shape the trust grader reads: no search ran, no replan,
-    nothing gated — the shape that grades 'ungrounded' unless the budget posture excuses it."""
+    nothing gated — the shape that grades 'ungrounded'."""
     return {
         "status": "ok",
         "query": query,
@@ -354,72 +316,15 @@ def _fake_trust_entry(query):
     }
 
 
-def test_trust_benchmark_budget_capped_not_ungrounded(monkeypatch):
-    """With runtime.token_budget spent, a searchless bait grades budget_capped: excluded from
-    the ungrounded count (so --strict cannot fail on it), excluded from the grounded-rate
-    denominator, and the posture is recorded in the summary like the gate's `policy`."""
+def test_trust_benchmark_searchless_bait_grades_ungrounded(monkeypatch):
+    """A searchless, replan-less bait grades ungrounded and fails --strict."""
     import benchmark
 
-    monkeypatch.setattr(benchmark.budget, "exceeded", lambda: True)
-    monkeypatch.setattr(benchmark.budget, "limit", lambda: 5000)
-    monkeypatch.setattr(benchmark, "run_query", lambda graph, q: _fake_trust_entry(q))
-
-    out = benchmark.run_trust_benchmark(object())
-    g = out["summary"]["grounding"]
-    assert all(e["verdict"] == "budget_capped" for e in out["grounding_results"])
-    assert g["ungrounded"] == 0
-    assert g["budget_capped"] == len(benchmark.GROUNDING_BAIT)
-    assert g["token_budget"] == 5000
-    # Every bait was budget-capped: no meaningful grade remains, so no rate is asserted.
-    assert g["grounded_rate"] is None
-    assert benchmark.trust_failures(out["summary"]) == []
-
-
-def test_trust_benchmark_budget_crossed_mid_turn_is_ambiguous_and_fails_strict(monkeypatch):
-    """A ceiling crossed DURING a bait's own turn is NOT the clean pre-turn excuse: the crossing
-    may have happened in synthesize, after routing already gave the judge its full under-budget
-    chance and it missed — so that bait grades budget_ambiguous (excluded from the rate like
-    budget_capped, but FAILED by --strict: an ambiguous trust grade is a failed one). Baits
-    after it saw the budget spent before their turn and stay budget_capped (excused)."""
-    import benchmark
-
-    calls = {"n": 0}
-
-    def crossing_exceeded():
-        # False only on the very first check (the pre-turn snapshot of bait #1); True after —
-        # simulating the budget being crossed during bait #1's turn.
-        calls["n"] += 1
-        return calls["n"] > 1
-
-    monkeypatch.setattr(benchmark.budget, "exceeded", crossing_exceeded)
-    monkeypatch.setattr(benchmark.budget, "limit", lambda: 5000)
-    monkeypatch.setattr(benchmark, "run_query", lambda graph, q: _fake_trust_entry(q))
-
-    out = benchmark.run_trust_benchmark(object())
-    g = out["summary"]["grounding"]
-    assert out["grounding_results"][0]["verdict"] == "budget_ambiguous"
-    assert all(e["verdict"] == "budget_capped" for e in out["grounding_results"][1:])
-    assert g["ungrounded"] == 0
-    assert g["budget_ambiguous"] == 1
-    assert g["budget_capped"] == len(benchmark.GROUNDING_BAIT) - 1
-    # The ambiguous grade is the --strict failure — the masking case this distinction closes.
-    assert any("budget_ambiguous" in f for f in benchmark.trust_failures(out["summary"]))
-
-
-def test_trust_benchmark_no_budget_grades_unchanged(monkeypatch):
-    """With no budget set (the default), the searchless bait still grades ungrounded and still
-    fails --strict — the budget_capped verdict must never excuse real confabulation."""
-    import benchmark
-
-    monkeypatch.setattr(benchmark.budget, "exceeded", lambda: False)
-    monkeypatch.setattr(benchmark.budget, "limit", lambda: 0)
     monkeypatch.setattr(benchmark, "run_query", lambda graph, q: _fake_trust_entry(q))
 
     out = benchmark.run_trust_benchmark(object())
     g = out["summary"]["grounding"]
     assert g["ungrounded"] == len(benchmark.GROUNDING_BAIT)
-    assert g["budget_capped"] == 0
-    assert g["token_budget"] == 0
     assert g["grounded_rate"] == 0.0
     assert benchmark.trust_failures(out["summary"])
 

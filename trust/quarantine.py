@@ -83,7 +83,7 @@ _PATTERNS: list[tuple[str, "re.Pattern[str]"]] = [
         r"(?:system\s+prompt|initial\s+instructions)\b", re.IGNORECASE)),
     # Fetched content naming Saturn's own mutating tools as calls is a coercion attempt, not data.
     ("tool-coercion", re.compile(
-        r"\b(?:run_shell|write_file|edit_file|http_request|stop_shell_job)\s*\(", re.IGNORECASE)),
+        r"\b(?:run_shell|write_file|edit_file|http_request)\s*\(", re.IGNORECASE)),
     ("urgent-imperative", re.compile(
         r"\byou\s+must\s+(?:now\s+)?(?:run|execute|call|invoke|use)\b", re.IGNORECASE)),
     # The heading form matches only a role-word heading standing ALONE on its line (chat-template

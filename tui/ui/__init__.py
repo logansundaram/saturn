@@ -41,10 +41,10 @@ frame. Specifics:
     stays readable on a wide terminal. The trust-colored Sources block and the receipt — trust
     facts first (`local-only` / sends / gated), dim run stats after — close every answer.
   - A single-line **status bar** is pinned at the bottom of the screen for the duration of a turn
-    (`rich.live.Live`): **posture** (the gate tier — `⚠ GATE OFF` when open — plus ⛓ AIRGAP /
-    DRY-RUN while they hold; leftmost so right-edge trimming sacrifices it last) │ **type-ahead**
+    (`rich.live.Live`): **posture** (the gate tier — `⚠ GATE OFF` when open — plus ⛓ AIRGAP
+    while it holds; leftmost so right-edge trimming sacrifices it last) │ **type-ahead**
     (only while queuing input) │ **progress** (`▸node · iter · tools · elapsed · tok/s`) │
-    **session** (`ctx NN% ▰▱` meter · `Σ` token spend · `⇅` egress count, each only once it has
+    **session** (`ctx NN% ▰▱` meter · `⇅` egress count, each only once it has
     something to say) │ **hardware** (bare load-colored `cpu/ram/gpu/vram NN%`, sampled
     off-thread so nvidia-smi never stalls the render) │ the dim key legend, last on purpose. It's
     no-wrap + ellipsis so a narrow terminal trims the right edge rather than wrapping; transient,

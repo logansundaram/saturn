@@ -73,6 +73,16 @@ def show_node(node: str, delta: dict | None = None) -> None:
         return
     if node in _base._FOLD_NODES and _base._VERBOSITY != "verbose":
         return
+    # rectify passes through after EVERY step; a quiet pass (no revision, no cancellation) is
+    # plumbing — fold it like ground/update_plan. When it FIRED (rectify=true, or it cancelled
+    # remaining steps via a plan delta) it is signal and renders with its annotation leaf below.
+    if (
+        node == "rectify"
+        and not (delta or {}).get("rectify")
+        and not (delta or {}).get("plan")
+        and _base._VERBOSITY != "verbose"
+    ):
+        return
 
     delta = delta or {}
     # Feed the pinned status bar from whatever this delta carried.
@@ -99,12 +109,11 @@ def show_node(node: str, delta: dict | None = None) -> None:
         _base._trace_started = True
     _emit(_node_line(node, dur, delta))
 
-    # Live reasoning: when the agent thinks out loud BEFORE acting (text content alongside its
-    # tool calls), surface it as a dim leaf under the agent's rail line — the "why" behind the
-    # tool sub-tree that follows. Text-only agent messages are skipped: a draft answer flows into
-    # synthesize (which the user sees), and showing it here would print it twice.
-    if node == "agent":
-        _render_agent_reasoning(delta.get("messages") or [])
+    # Live reasoning: the execute node's pre-action thinking (text alongside its tool call) AND a
+    # pure reasoning step's result (which otherwise surfaces only inside the final answer) both
+    # render as a dim leaf under the execute rail line — the "why"/"what" of the step.
+    if node == "execute":
+        _render_execute_reasoning(delta.get("messages") or [])
 
     if delta.get("tool_events"):
         _render_tool_events(delta["tool_events"])
@@ -135,12 +144,13 @@ def _node_leaf(text: str, style: str) -> None:
             _emit(f"  {_RAIL_GLYPH}   {prefix}{ln}")
 
 
-def _render_agent_reasoning(messages: list) -> None:
-    """Render the agent's pre-action reasoning (the text content of a tool-calling AIMessage) as
-    dim, wrapped leaf lines under the agent's trace row. Quietly does nothing when the message
-    has no text or no tool calls."""
+def _render_execute_reasoning(messages: list) -> None:
+    """Render the execute node's message text as dim, wrapped leaf lines under its trace row:
+    the pre-action reasoning of a tool step (the text alongside the tool call — the same words
+    the gate's `e(xplain)` shows) or the produced result of a pure reasoning step. Quietly does
+    nothing when the message has no text."""
     msg = messages[-1] if messages else None
-    if msg is None or not getattr(msg, "tool_calls", None):
+    if msg is None:
         return
     text = msg.content if isinstance(getattr(msg, "content", ""), str) else str(getattr(msg, "content", ""))
     text = " ".join(text.split())
@@ -153,18 +163,27 @@ def _render_trust_annotations(node: str, delta: dict) -> None:
     """The trust-stack annotations a node's delta carries, rendered identically in the live rail
     and the /trace replay — the moments that used to be invisible without a command:
 
-      - under `replan`, the judge's verdict: the delta carries `replans` only when the judge
-        found the draft UNGROUNDED and inserted a search (the grounded/skip path updates
-        nothing, so all the rail can honestly say there is "no escalation");
+      - under `rectify`, the verdict when it FIRED: the plan must change (rectify=true, with the
+        recorded reasoning) or remaining steps were cancelled after a guarded/missing-item
+        outcome (a plan delta with rectify=false);
+      - under `replan`, the revision: the remaining steps were redrafted (the delta carries the
+        new plan; an empty redraft honestly says the plan was kept);
       - under `approval`, the echo of each HUMAN gate decision (state["gate_events"]): the
         interactive prompt scrolls away with the turn, so this leaf is the transcript's
         permanent record of who allowed what — green for approved, red for rejected, with the
         quarantine escalation named when one forced the prompt."""
+    if node == "rectify":
+        reason = " ".join(str(delta.get("reasoning") or "").split())
+        if delta.get("rectify"):
+            _node_leaf(_truncate(f"rectify: plan must change — {reason}", _REASONING_CAP), "yellow")
+        elif delta.get("plan"):
+            _node_leaf(_truncate(f"rectify: retired the remaining steps — {reason}",
+                                 _REASONING_CAP), "yellow")
     if node == "replan":
-        if delta.get("replans"):
-            _node_leaf("judge: draft answer ungrounded — inserted a web search step", "yellow")
+        if delta.get("plan"):
+            _node_leaf("replan: remaining steps redrafted", "yellow")
         else:
-            _node_leaf("judge: draft answer accepted (no escalation)", _DIM)
+            _node_leaf("replan: redraft came back empty — plan kept as-is", _DIM)
     for ev in delta.get("gate_events") or []:
         if not isinstance(ev, dict):
             continue

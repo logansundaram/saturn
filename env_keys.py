@@ -15,11 +15,11 @@ Extensible by design
 To make a new key manageable, add one `ManagedKey` to `KNOWN_KEYS`:
 
     ManagedKey(
-        name="MISTRAL_API_KEY",           # the env var
-        label="Mistral",                  # human name for listings
-        purpose="Mistral-backed models",  # what it unlocks
-        url="https://console.mistral.ai/api-keys",
-        on_change=_reset_models,          # drop any client that captured the old value
+        name="SOME_API_KEY",              # the env var
+        label="SomeService",              # human name for listings
+        purpose="what it unlocks",
+        url="https://example.com/api-keys",
+        on_change=_reset_web_clients,     # drop any client that captured the old value
     )
 
 The `/config key` command reads this registry to drive its listing, validation, and help — nothing
@@ -59,12 +59,6 @@ def _reset_web_clients() -> None:
     reset_web_clients()
 
 
-def _reset_models() -> None:
-    from core.llms import reset_models
-
-    reset_models()
-
-
 @dataclass(frozen=True)
 class ManagedKey:
     """A known API key the agent uses. `on_change` (optional) drops whatever cached the old value
@@ -81,7 +75,11 @@ class ManagedKey:
 
 # The registry the /config key command renders and validates against. Add a row to expose a new
 # key. Order matters for detect(): it checks prefixes in registry order, so a more specific
-# prefix (sk-ant-) must come before a generic one it would also match (sk-).
+# prefix must come before a generic one it would also match.
+# (The Anthropic + OpenAI ManagedKeys — prefixes sk-ant- / sk-, on_change=_reset_models — were
+# removed with the cloud-model shelve, 2026-07-03: with no cloud provider to bind, the keys
+# unlocked nothing. Restore those two rows when cloud support returns; a key already sitting in
+# a user's .env is untouched and simply reads as unmanaged until then.)
 KNOWN_KEYS: tuple[ManagedKey, ...] = (
     ManagedKey(
         name="TAVILY_API_KEY",
@@ -91,23 +89,6 @@ KNOWN_KEYS: tuple[ManagedKey, ...] = (
         url="https://app.tavily.com/home",
         prefix="tvly-",
         on_change=_reset_web_clients,
-    ),
-    ManagedKey(
-        name="ANTHROPIC_API_KEY",
-        label="Anthropic",
-        purpose="cloud models for the cloud-hybrid tier (planner/synthesizer)",
-        url="https://console.anthropic.com/settings/keys",
-        prefix="sk-ant-",
-        on_change=_reset_models,
-    ),
-    ManagedKey(
-        name="OPENAI_API_KEY",
-        label="OpenAI",
-        purpose="OpenAI-backed cloud models — any role bound to `provider: openai` in a tier "
-        "(needs `pip install langchain-openai`)",
-        url="https://platform.openai.com/api-keys",
-        prefix="sk-",
-        on_change=_reset_models,
     ),
 )
 

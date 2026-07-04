@@ -1,9 +1,11 @@
 """
-Outbound redaction — strip secrets from text before it leaves the machine to a cloud model.
+Outbound redaction — strip secrets from text before it leaves the machine to an off-machine model.
 
-The cloud-hybrid tier is the credibility gap in a privacy-first agent: the moment a role is bound
-to Anthropic/OpenAI, your prompts + context cross the network. This module is the guard on that
-boundary. It scans outgoing message content for things that should never leave — API keys, bearer
+An off-machine inference endpoint is the credibility gap in a privacy-first agent: the moment
+prompts + context cross the network, the boundary needs a guard. Today that boundary is a REMOTE
+Ollama (`OLLAMA_HOST` off-machine) plus the http/sse MCP arg scan and the gate's secret warning —
+cloud providers are SHELVED (2026-07-03), and when they return this module guards them again
+unchanged. It scans outgoing message content for things that should never leave — API keys, bearer
 tokens, private-key blocks, JWTs, emails — and, depending on `runtime.redaction`, either reports
 them or replaces them with a `[REDACTED:<kind>]` placeholder before the send.
 

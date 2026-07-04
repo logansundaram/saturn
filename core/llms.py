@@ -6,11 +6,16 @@ module resolves each role to a concrete model against the active hardware tier i
 `config.yaml` and builds the LangChain chat model. Swapping hardware is a config edit; graph
 code never names a model.
 
-Provider abstraction: Ollama goes through `ChatOllama` directly (the confirmed-working local
-path); any other provider goes through LangChain's `init_chat_model`, so OpenAI/Anthropic/etc.
-are just config. Built models are cached per (provider, model) so repeated `get_model` calls in
-the loop are free; `reset_models()` clears the cache after a live model change (the `/model`
-command).
+Providers: Ollama only. **Cloud model support (Anthropic/OpenAI via `init_chat_model`) is
+SHELVED (2026-07-03)** — the edge is local-first, and carrying a cloud path that nothing on the
+tier presets exercises cost audit surface for no product. A role bound to a non-ollama provider
+(an old config, or a hand edit) refuses to build with a pointer at `/models`; `check_models`
+surfaces the same at startup. The network-boundary machinery is NOT shelved — `_CloudBoundaryModel`
+still wraps a remote-OLLAMA_HOST daemon (redaction + egress + air-gap), and reintroducing cloud
+later is: restore `_build`'s `init_chat_model` branch + the provider key/package checks in
+`check_models` + the Anthropic/OpenAI ManagedKeys in env_keys.py (see the Roadmap note).
+Built models are cached per (provider, model); `reset_models()` clears the cache after a live
+model change (the `/model` command).
 
 Capability descriptors come from config; the MVP requires native tool-calling + structured
 output for the loop-driving roles, and we warn (not crash) if a bound model lacks them.
@@ -26,8 +31,6 @@ from langchain_ollama import ChatOllama, OllamaEmbeddings
 from trust import egress
 from trust import redaction
 from config import MODEL_ROLES, get_config
-from tools.registry import tool
-from core.state import Plan, ReplanVerdict
 
 
 def _approx_bytes(messages) -> int:
@@ -44,18 +47,18 @@ def _approx_bytes(messages) -> int:
 
 
 class _CloudBoundaryModel:
-    """Thin proxy around a cloud chat model that makes the network boundary observable + safe.
-
-    EVERY cloud model call (any node — planner, agent, judge, synthesizer) funnels through one of
-    these because `_build` wraps every non-Ollama model in it, so this is the single place to:
-      - record the egress to the ledger (`egress.record`) — what left, where to, how big; and
-      - run the outgoing messages through `redaction.process_messages` first, stripping secrets
+    """Thin proxy around an off-machine chat model that makes the network boundary observable +
+    safe. Its one live user today is a REMOTE Ollama (OLLAMA_HOST off-machine) via `_wrap_ollama`
+    — cloud providers are SHELVED (2026-07-03), and when they return, `_build` wraps them here
+    again (this class is the reintroduction seam; do not delete it with the shelve). Every call
+    through it:
+      - records the egress to the ledger (`egress.record`) — what left, where to, how big; and
+      - runs the outgoing messages through `redaction.process_messages` first, stripping secrets
         when `runtime.redaction` is on.
     Everything else (bind_tools, with_structured_output, attribute access) delegates to the inner
     model and re-wraps any derived runnable so the boundary survives `.bind_tools(...)` /
     `.with_structured_output(...)`. LOOPBACK Ollama models are never wrapped — there is no
-    boundary; a REMOTE Ollama (OLLAMA_HOST off-machine) is wrapped exactly like a cloud provider,
-    with the real endpoint as the ledger host."""
+    boundary."""
 
     def __init__(self, inner, provider: str, model: str, host: str = ""):
         self._inner = inner
@@ -124,47 +127,47 @@ def _wrap_ollama(m, model: str):
     return _CloudBoundaryModel(m, "ollama", model, host=f"ollama @ {egress.ollama_endpoint()}")
 
 
-def _build(provider: str, model: str):
-    if provider == "ollama":
-        # Bind num_ctx to the effective window (runtime.num_ctx override, else the model's declared
-        # window) so it actually runs at the size the UI gauges against — Ollama otherwise silently
-        # caps at 2048, making the context-fill % lie. /context drops the cache to rebind live.
-        # client_kwargs carries the request timeout (guards a wedged daemon; see _ollama_client_kwargs).
-        return _wrap_ollama(
-            ChatOllama(
-                model=model,
-                num_ctx=get_config().num_ctx_for(model),
-                **_ollama_client_kwargs(),
-            ),
-            model,
-        )
-    # Any other provider (cloud): lean on LangChain's universal initializer, then wrap it in the
-    # cloud boundary proxy so every call is redacted (per runtime.redaction) and recorded to the
-    # egress ledger. Local Ollama above is never wrapped — it never leaves the machine.
-    from langchain.chat_models import init_chat_model
+def _cloud_shelved_error(role: str, provider: str, model: str) -> RuntimeError:
+    """The one refusal a cloud-bound role gets (cloud support SHELVED 2026-07-03 — local-first
+    is the edge; see the module docstring for the reintroduction seam)."""
+    return RuntimeError(
+        f"Cloud model support is shelved — role '{role}' is bound to {provider}:{model}, which "
+        f"cannot run. Bind it to a local Ollama model (`/models {role} <id>`, or switch tiers "
+        f"with `/models tier`)."
+    )
 
-    return _CloudBoundaryModel(init_chat_model(model, model_provider=provider), provider, model)
+
+def _build(provider: str, model: str):
+    if provider != "ollama":
+        # Unreachable through get_model (it refuses first); kept fail-closed so no future caller
+        # can build a cloud client past the shelve.
+        raise _cloud_shelved_error("?", provider, model)
+    # Bind num_ctx to the effective window (runtime.num_ctx override, else the model's declared
+    # window) so it actually runs at the size the UI gauges against — Ollama otherwise silently
+    # caps at 2048, making the context-fill % lie. /context drops the cache to rebind live.
+    # client_kwargs carries the request timeout (guards a wedged daemon; see _ollama_client_kwargs).
+    return _wrap_ollama(
+        ChatOllama(
+            model=model,
+            num_ctx=get_config().num_ctx_for(model),
+            **_ollama_client_kwargs(),
+        ),
+        model,
+    )
 
 
 def get_model(role: str):
     """Return the chat model bound to `role` under the active tier (cached).
 
-    Air-gap enforcement for cloud roles lives here (not in a wrapper) because a cached cloud model
-    would otherwise sneak a call through after the gate engaged: when `runtime.airgap` is on and the
-    role is cloud-bound, refuse to hand back a model at all — the turn fails with an actionable
-    message instead of quietly reaching the network. `/privacy airgap` drops the cache so this
-    re-checks."""
+    A role bound to a non-ollama provider refuses here — cloud model support is SHELVED
+    (2026-07-03; an old config.yaml carrying a cloud-hybrid binding still loads, it just can't
+    run). Air-gap enforcement for a remote OLLAMA_HOST also lives here (not in a wrapper)
+    because a cached remote handle would otherwise sneak a call through after the gate engaged.
+    `/privacy airgap` drops the cache so this re-checks."""
     spec = get_config().model_for_role(role)
-    if spec.provider != "ollama" and egress.airgap_on():
-        egress.record("llm", f"{spec.provider} API", f"{role} → {spec.model}",
-                      provider=spec.provider, status=egress.BLOCKED)
-        raise RuntimeError(
-            f"Air-gap is ON — role '{role}' is bound to a cloud model "
-            f"({spec.provider}:{spec.model}), which cannot run with network egress blocked. "
-            f"Switch to an all-local tier (`/models tier` lists them) or turn it off with "
-            f"`/privacy airgap off`."
-        )
-    if spec.provider == "ollama" and not egress.ollama_is_local() and egress.airgap_on():
+    if spec.provider != "ollama":
+        raise _cloud_shelved_error(role, spec.provider, spec.model)
+    if not egress.ollama_is_local() and egress.airgap_on():
         # An off-machine OLLAMA_HOST makes the "local" model network egress — same refusal as a
         # cloud role, with the endpoint named so the fix is obvious.
         egress.record("llm", f"ollama @ {egress.ollama_endpoint()}", f"{role} → {spec.model}",
@@ -185,72 +188,11 @@ def model_id(role: str) -> str:
     return get_config().model_for_role(role).model
 
 
-def get_tool_model():
-    """The agent role's model with the tool registry bound natively (cached).
-
-    `get_model` runs first even on a derived-cache hit: its live air-gap guard is what stops a
-    cloud handle cached while the boundary was open from serving calls after it sealed (e.g.
-    `/privacy airgap on` flipping runtime.airgap without anyone dropping the cache)."""
-    base = get_model("tool_caller")
-    if "tool_caller" not in _DERIVED_CACHE:
-        # Capability advisories surface at startup via check_models() — no mid-turn print here
-        # (print collides with the rich.Live TUI; see the diag.log design rule).
-        _DERIVED_CACHE["tool_caller"] = base.bind_tools(tool)
-    return _DERIVED_CACHE["tool_caller"]
-
-
-def get_plan_model():
-    """The planner role's model constrained to emit a structured Plan (cached; the unconditional
-    get_model call keeps the live air-gap guard in front of the derived cache — see
-    get_tool_model).
-
-    Ollama is most reliable with method="json_schema" (constrains generation at the server);
-    other providers use the default structured-output method."""
-    base = get_model("planner")
-    if "planner" not in _DERIVED_CACHE:
-        spec = get_config().model_for_role("planner")
-        if spec.provider == "ollama":
-            _DERIVED_CACHE["planner"] = base.with_structured_output(
-                Plan, method="json_schema"
-            )
-        else:
-            _DERIVED_CACHE["planner"] = base.with_structured_output(Plan)
-    return _DERIVED_CACHE["planner"]
-
-
-def get_judge_model():
-    """The judge role's model constrained to emit a structured ReplanVerdict (cached).
-
-    Powers the in-loop replan node (nodes/replan.py): the verifier/repair step that
-    decides whether the agent's draft answer is grounded or needs an inserted web-search step.
-    Mirrors get_plan_model — Ollama uses method="json_schema" for server-constrained generation."""
-    spec = get_config().model_for_role("judge")
-    # Live air-gap guard even on a derived-cache hit (see get_tool_model). Unconditional: a
-    # cloud-bound judge AND an Ollama judge behind a remote OLLAMA_HOST both cross the boundary
-    # (the guard lives in get_model; a loopback Ollama judge passes through untouched).
-    get_model("judge")
-    if "judge" not in _DERIVED_CACHE:
-        if spec.provider == "ollama":
-            # A dedicated temperature-0 instance: groundedness is a classification, so we want a
-            # stable verdict, not sampled variety (at the default temperature the same draft flips
-            # grounded/ungrounded run to run). Built separately from the shared get_model base —
-            # on single-model tiers every role shares one ChatOllama, so lowering temperature there
-            # would change planner/agent/synthesizer sampling too.
-            base = _wrap_ollama(
-                ChatOllama(
-                    model=spec.model,
-                    num_ctx=get_config().num_ctx_for(spec.model),
-                    temperature=0,
-                    **_ollama_client_kwargs(),
-                ),
-                spec.model,
-            )
-            _DERIVED_CACHE["judge"] = base.with_structured_output(
-                ReplanVerdict, method="json_schema"
-            )
-        else:
-            _DERIVED_CACHE["judge"] = get_model("judge").with_structured_output(ReplanVerdict)
-    return _DERIVED_CACHE["judge"]
+# (get_tool_model / get_plan_model / get_judge_model were removed with the 2026-07-03 engine
+# transplant: structured judgments now go through core/structured.py — flat schemas + shape hints
+# + salvage parsing over get_model(role), with per-attempt temperature riding the invoke kwargs —
+# and the execute node binds ONE tool per call (nodes/execute._generate_tool_call), never the
+# whole registry.)
 
 
 class _EmbeddingsBoundary:
@@ -414,30 +356,27 @@ def _model_present(required: str, have: set[str]) -> bool:
     return _norm(required) in {_norm(h) for h in have}
 
 
-# Cloud providers and the env var that unlocks them (mirrors env_keys.KNOWN_KEYS; extend together).
-_PROVIDER_KEY = {"anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY"}
-# ... and the LangChain integration package each provider needs (init_chat_model imports it lazily,
-# so a missing one otherwise surfaces as an ImportError mid-turn instead of at startup).
-_PROVIDER_PKG = {"anthropic": "langchain_anthropic", "openai": "langchain_openai"}
-
-
 def check_models() -> list[str]:
     """Startup health report for the active tier. Returns a list of human-readable PROBLEM strings
     (empty when all is well): the Ollama daemon being down, local model tags not pulled, or a
-    missing API key for a cloud-bound role. Non-fatal — `agent.main` prints these as warnings and
-    continues (a degraded tier still runs the commands/REPL; the first affected turn fails cleanly
-    rather than the app refusing to start)."""
+    role still bound to a (shelved) cloud provider. Non-fatal — `agent.main` prints these as
+    warnings and continues (a degraded tier still runs the commands/REPL; the first affected turn
+    fails cleanly rather than the app refusing to start)."""
     cfg = get_config()
     problems: list[str] = []
 
     need_ollama: list[str] = []
-    cloud: dict[str, set[str]] = {}
     for role in MODEL_ROLES:
         spec = cfg.model_for_role(role)
         if spec.provider == "ollama":
             need_ollama.append(spec.model)
         else:
-            cloud.setdefault(spec.provider, set()).add(spec.model)
+            # Cloud support is SHELVED (2026-07-03): a binding a pre-shelve config still carries
+            # loads fine but cannot run — say so at startup, not as a mid-turn failure.
+            problems.append(
+                f"role '{role}' is bound to {spec.provider}:{spec.model} — cloud model support "
+                f"is shelved; rebind it to a local Ollama model (`/models {role} <id>`)"
+            )
     need_ollama.append(cfg.embedder_model)  # embeddings always run through Ollama
     need_ollama = sorted(set(need_ollama))
 
@@ -453,25 +392,6 @@ def check_models() -> list[str]:
             for m in need_ollama:
                 if not _model_present(m, have):
                     problems.append(f"model not pulled: `{m}`  →  run `ollama pull {m}`")
-
-    if cloud:
-        import importlib.util
-
-        import env_keys
-
-        for provider, models in sorted(cloud.items()):
-            key = _PROVIDER_KEY.get(provider)
-            if key and not env_keys.is_set(key):
-                problems.append(
-                    f"{provider} model(s) {', '.join(sorted(models))} need {key} — "
-                    f"set it with `/config key set {key} <value>`"
-                )
-            pkg = _PROVIDER_PKG.get(provider)
-            if pkg and importlib.util.find_spec(pkg) is None:
-                problems.append(
-                    f"{provider} model(s) {', '.join(sorted(models))} need the "
-                    f"`{pkg.replace('_', '-')}` package — run `pip install {pkg.replace('_', '-')}`"
-                )
 
     # Capability advisories for the loop-driving roles. These used to print lazily on a model's
     # first use (mid-turn, colliding with the live TUI); surfacing them here puts them next to

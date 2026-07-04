@@ -307,24 +307,12 @@ def test_mcp_unknown_subcommand_errors_instead_of_silent_status(ctx, capsys):
     assert "unknown subcommand" in out and "/mcp [list | reload]" in out
 
 
-# --- /models --provider: the named-flag spelling of the bare positional ----------------------
+# --- /models: local-only binds (the --provider grammar left with the cloud shelve) -----------
 
-def test_models_provider_flag_binds_provider_form(ctx, capsys, monkeypatch, models_env,
-                                                  recording_persist):
-    from config import get_config
-
-    cfg = get_config()
-    roles = cfg._data["tiers"][cfg.active_tier]["roles"]
-    monkeypatch.setitem(roles, "planner", roles["planner"])
-
-    _models(ctx, ["planner", "claude-x", "--provider", "anthropic"])
-    assert cfg.get(f"tiers.{cfg.active_tier}.roles.planner") == {
-        "provider": "anthropic", "model": "claude-x",
-    }
-
-
-def test_models_provider_flag_and_positional_must_agree(ctx, capsys, monkeypatch, models_env,
-                                                        recording_persist):
+def test_models_provider_flag_refused_everywhere(ctx, capsys, monkeypatch, models_env,
+                                                 recording_persist):
+    """Cloud model support is shelved (2026-07-03) and the --provider grammar was swept with it:
+    the flag refuses loudly in ANY position/form, and nothing mutates."""
     from config import get_config
 
     cfg = get_config()
@@ -332,13 +320,19 @@ def test_models_provider_flag_and_positional_must_agree(ctx, capsys, monkeypatch
     monkeypatch.setitem(roles, "planner", roles["planner"])
     before = cfg.get(f"tiers.{cfg.active_tier}.roles.planner")
 
-    _models(ctx, ["planner", "claude-x", "openai", "--provider", "anthropic"])
-    assert "disagree" in _out(capsys)
+    for form in (["planner", "claude-x", "--provider", "anthropic"],
+                 ["planner", "claude-x", "--provider"],
+                 ["tier", cfg.active_tier, "--provider", "anthropic"]):
+        _models(ctx, list(form))
+        out = _out(capsys)
+        assert "--provider was removed" in out and "local Ollama" in out
     assert cfg.get(f"tiers.{cfg.active_tier}.roles.planner") == before  # nothing bound
+    assert recording_persist == []
 
 
-def test_models_dangling_provider_flag_refuses(ctx, capsys, monkeypatch, models_env,
-                                               recording_persist):
+def test_models_bare_positional_provider_refused(ctx, capsys, monkeypatch, models_env,
+                                                 recording_persist):
+    """The legacy bare 3rd-arg provider spelling is gone too — too many arguments, no bind."""
     from config import get_config
 
     cfg = get_config()
@@ -346,21 +340,24 @@ def test_models_dangling_provider_flag_refuses(ctx, capsys, monkeypatch, models_
     monkeypatch.setitem(roles, "planner", roles["planner"])
     before = cfg.get(f"tiers.{cfg.active_tier}.roles.planner")
 
-    _models(ctx, ["planner", "claude-x", "--provider"])
-    assert "needs a value" in _out(capsys)
+    _models(ctx, ["planner", "claude-x", "anthropic"])
+    out = _out(capsys)
+    assert "too many arguments" in out
     assert cfg.get(f"tiers.{cfg.active_tier}.roles.planner") == before
 
 
-def test_models_provider_flag_refused_on_tier_and_embedder(ctx, capsys, monkeypatch, models_env,
-                                                           recording_persist):
+def test_models_scalar_bind_replaces_a_legacy_cloud_mapping(ctx, capsys, monkeypatch, models_env,
+                                                            recording_persist):
+    """Rebinding a role that still carries a pre-shelve {provider, model} cloud mapping writes a
+    plain local scalar over it — rebinding IS how a stale mapping gets fixed."""
     from config import get_config
 
     cfg = get_config()
-    monkeypatch.setitem(cfg._data, "active_tier", cfg._data["active_tier"])
+    roles = cfg._data["tiers"][cfg.active_tier]["roles"]
+    monkeypatch.setitem(roles, "planner", {"provider": "anthropic", "model": "claude-x"})
 
-    _models(ctx, ["tier", cfg.active_tier, "--provider", "anthropic"])
-    assert "--provider applies to role bindings" in _out(capsys)
-    assert recording_persist == []
+    _models(ctx, ["planner", "local-x"])
+    assert cfg.get(f"tiers.{cfg.active_tier}.roles.planner") == "local-x"
 
 
 # --- /config rides the shared --save grammar (split_save_flag) -------------------------------

@@ -151,7 +151,7 @@ def test_approval_escalation_survives_node_rerun(monkeypatch, gate_mode):
     cmd = ap.approval_node(state)
     assert "payload" in seen, "the re-run must still gate (and re-interrupt) the batch"
     assert seen["payload"]["quarantine"]["flags"], "the prompt context must carry the flags"
-    assert cmd.goto == "agent"  # fully rejected — back to the agent, the calls never run
+    assert cmd.goto == "update_plan"  # fully rejected — recorded as a skipped incident, never run
     # A full rejection must NOT spend the escalation: the agent re-issuing the same
     # injection-steered call next iteration has to face the human again, not auto-approve
     # past their 'no'.

@@ -188,7 +188,8 @@ def drop_last_turn(ctx) -> "str | None":
     fresh["current_query"] = ""
     fresh["plan"] = []
     fresh["iteration"] = 0
-    fresh["agent_nudges"] = 0
+    fresh["rectify"] = False
+    fresh["reasoning"] = ""
     fresh["replans"] = 0
     fresh["tools_called"] = []
     fresh["tool_results"] = []

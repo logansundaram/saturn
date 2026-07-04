@@ -20,11 +20,13 @@ def test_key_line_set_is_ok_with_no_fix_arrow():
 
 
 def test_key_line_missing_required_gets_the_fix_arrow():
+    # No key is currently required (cloud shelved — _required_keys is always empty), but the
+    # rendering seam stays: a name in the required set gets the fix arrow.
     line = config_cmd._key_line(
-        "ANTHROPIC_API_KEY", False, frozenset({"ANTHROPIC_API_KEY"})
+        "SOME_REQUIRED_KEY", False, frozenset({"SOME_REQUIRED_KEY"})
     )
     assert "MISSING" in line
-    assert "-> /config key set ANTHROPIC_API_KEY" in line
+    assert "-> /config key set SOME_REQUIRED_KEY" in line
 
 
 def test_key_line_optional_tavily_names_the_keyless_fallback():
@@ -34,20 +36,41 @@ def test_key_line_optional_tavily_names_the_keyless_fallback():
     assert "->" not in line  # fix-arrow vocabulary reserved for genuinely broken items
 
 
-def test_key_line_optional_unused_provider_key_is_not_a_gap():
-    line = config_cmd._key_line("OPENAI_API_KEY", False, frozenset())
+def test_key_line_optional_unlisted_key_is_not_a_gap():
+    line = config_cmd._key_line("SOME_OTHER_KEY", False, frozenset())
     assert line.startswith("optional")
     assert "not needed by the active tier" in line
     assert "->" not in line
 
 
-def test_required_keys_derive_from_the_active_tier():
+def test_required_keys_empty_under_the_cloud_shelve():
+    # Cloud model support is shelved (2026-07-03): even a legacy config still carrying a cloud
+    # binding requires no key — the binding itself can't run (check_models reports it; the key
+    # would unlock nothing).
     cfg = _cfg("hybrid", {
         "local": _tier("tiny"),
         "hybrid": _tier("tiny", planner={"provider": "anthropic", "model": "cloud"}),
     })
-    assert config_cmd._required_keys(cfg) == {"ANTHROPIC_API_KEY"}
+    assert config_cmd._required_keys(cfg) == set()
     assert config_cmd._required_keys(_cfg("local", {"local": _tier("tiny")})) == set()
+
+
+def test_check_models_reports_a_shelved_cloud_binding(monkeypatch):
+    """A pre-shelve config with a cloud-bound role must surface at startup as an actionable
+    problem, not as a mid-turn failure."""
+    import config as config_mod
+    from core import llms
+
+    cfg = _cfg("hybrid", {
+        "hybrid": _tier("tiny", planner={"provider": "anthropic", "model": "claude-x"}),
+    })
+    cfg._data["tiers"]["hybrid"]["embedder"] = "tiny-embed"
+    monkeypatch.setattr(config_mod, "_config", cfg, raising=False)
+    monkeypatch.setattr(llms, "list_local_models", lambda: [])
+    monkeypatch.setattr(llms, "ollama_reachable", lambda: True)
+    problems = llms.check_models()
+    assert any("cloud model support is shelved" in p and "planner" in p for p in problems)
+    assert not any("ANTHROPIC" in p for p in problems)  # no key demand for a shelved binding
 
 
 # --- doctor: tier-honesty closing line ------------------------------------------------------

@@ -97,7 +97,9 @@ def test_node_approve_all_records_event(monkeypatch):
 def test_node_reject_all_records_event(monkeypatch):
     _gate_everything(monkeypatch, False)
     cmd = approval_node(_node_state(list(_CALLS)))
-    assert cmd.goto == "agent"  # fully-rejected batch goes back to the agent
+    # A fully-rejected batch goes to the recorder: the decline lands on the current step as a
+    # `skipped` incident, and rectify retires the remaining plan.
+    assert cmd.goto == "update_plan"
     (ev,) = cmd.update["gate_events"]
     assert ev["decision"] == "rejected"
     assert all(not c["approved"] for c in ev["calls"])
@@ -197,16 +199,17 @@ def test_why_verification_prints_negative_case(capsys):
     _render_why(ui, run, [], [])
     out = capsys.readouterr().out
     assert "verification" in out
-    assert "groundedness judge did not run — no ungrounded draft was caught." in out
+    assert "rectify judge did not run — every step resolved mechanically." in out
 
 
-def test_why_verification_prints_judge_verdict(capsys):
+def test_why_verification_prints_rectify_verdict(capsys):
     from commands.trace import _render_why
     from tui import ui
 
     run = (4, "q", None, None, "ok", "an answer")
-    calls = [(1, "replan", json.dumps({"content": "ungrounded: never looked it up"}))]
+    calls = [(1, "rectify", json.dumps(
+        {"content": '{"reasoning":"never looked it up","rectify":true}'}))]
     _render_why(ui, run, [], calls)
     out = capsys.readouterr().out
-    assert "groundedness judge: ungrounded: never looked it up" in out
+    assert "rectify:" in out and "never looked it up" in out
     assert "did not run" not in out

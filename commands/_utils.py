@@ -10,7 +10,7 @@ from config import MODEL_ROLES as _ROLES  # noqa: E402
 
 def parse_toggle_status(args: list[str]) -> "bool | str | None":
     """THE on/off grammar for every status-or-set command (/policy open, /plan review,
-    /plan lockstep, /privacy airgap): no argument -> None, a STATUS readout — bare is NEVER a
+    /privacy airgap): no argument -> None, a STATUS readout — bare is NEVER a
     flip, mutation is always an explicit verb; on/true/yes/1 -> True; off/false/no/0 -> False;
     anything else -> "invalid" (the caller prints usage). Trailing tokens are "invalid" too —
     `/policy open on garbage` must not open the gate on the strength of a half-parsed line —
@@ -32,7 +32,7 @@ def split_save_flag(args: list[str]) -> "tuple[list[str], bool]":
     """Split the standalone `--save` / `-s` persist flag out of `args`: case-insensitive, any
     position, exact token only. Returns (remaining args, flag present?). THE one --save parser —
     every command that persists a session edit to config.yaml reads the flag through this, so
-    `/plan lockstep --save` and `/privacy airgap --save` can never disagree about what counts as
+    `/context --save` and `/privacy airgap --save` can never disagree about what counts as
     the flag. Shared convention for `--save` with NO explicit value: persist the CURRENT value
     (it mutates nothing live, so it is safe everywhere) — never refuse, never flip."""
     rest = [a for a in args if a.lower() not in ("--save", "-s")]

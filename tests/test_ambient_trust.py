@@ -209,14 +209,21 @@ def test_gate_decision_echo_renders_both_verdicts(capsys):
     assert "quarantine escalation" in out
 
 
-def test_replan_verdict_leaf_is_honest_both_ways(capsys):
+def test_rectify_and_replan_leaves_are_honest(capsys):
     tr = importlib.import_module("tui.ui.trace")
 
+    tr._render_trust_annotations("rectify", {"rectify": True, "reasoning": "resolve the ref"})
+    assert "plan must change" in capsys.readouterr().out
+    tr._render_trust_annotations("rectify", {"rectify": False, "plan": [{"step_id": 1}],
+                                             "reasoning": "action guarded"})
+    assert "retired the remaining steps" in capsys.readouterr().out
+    tr._render_trust_annotations("rectify", {"rectify": False, "reasoning": "pending"})
+    assert capsys.readouterr().out == "", "a quiet rectify pass renders nothing"
+    tr._render_trust_annotations("replan", {"plan": [{"step_id": 1}], "replans": 1})
+    assert "redrafted" in capsys.readouterr().out
     tr._render_trust_annotations("replan", {"replans": 1})
-    assert "ungrounded" in capsys.readouterr().out
-    tr._render_trust_annotations("replan", {})
-    assert "accepted" in capsys.readouterr().out
-    tr._render_trust_annotations("agent", {})  # other nodes say nothing
+    assert "plan kept" in capsys.readouterr().out
+    tr._render_trust_annotations("execute", {})  # other nodes say nothing
     assert capsys.readouterr().out == ""
 
 

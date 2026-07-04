@@ -1,10 +1,10 @@
 """
-The /plan and /context command surfaces after the June 2026 recipes cut: removed recipe
-subcommands print a migration note, bare `review`/`lockstep` report status (explicit on|off
-mutates; the shared parse_toggle_status grammar), `--save` persists runtime.lockstep /
-runtime.num_ctx via config.persist (the shared split_save_flag grammar: case-insensitive, any
-position; with no value it persists the CURRENT one), the `/context compact` forwarding is
-gone, and plan_node always drafts (no seed seam).
+The /plan and /context command surfaces after the 2026-07-03 clean sweep: removed subcommands
+(recipes, lockstep, `/context compact`) are plain unknown-argument errors — no legacy pointer
+stubs — and nothing they name mutates. Bare `review` reports status (explicit on|off mutates;
+the shared parse_toggle_status grammar), `--save` persists runtime.num_ctx via config.persist
+(the shared split_save_flag grammar: case-insensitive, any position; with no value it persists
+the CURRENT one), and plan_node always drafts (no seed seam).
 """
 
 import pytest
@@ -41,29 +41,36 @@ def _out(capsys) -> str:
     return capsys.readouterr().out
 
 
-# --- recipes cut -------------------------------------------------------------------------------
+# --- removed subcommands: clean-sweep — an unknown verb errors, no legacy pointers --------------
 
-def test_removed_recipe_subcommands_print_migration_note(ctx, capsys):
-    for sub in ("save", "recipes", "run"):
-        _plan(ctx, [sub, "weekly-brief"])
+def test_removed_plan_subcommands_error_as_unknown(ctx, capsys, recording_persist):
+    """The legacy pointer stubs (recipes 2026-06-11, lockstep 2026-07-03) were swept with the
+    new-version cleanup: a removed verb is just an unknown subcommand, and nothing mutates."""
+    from config import get_config
+
+    for sub in ("save", "recipes", "run", "lockstep"):
+        _plan(ctx, [sub, "whatever"])
         out = _out(capsys)
-        assert "plan recipes were removed" in out
+        assert "unknown /plan subcommand" in out
+        assert "review, pause" in out  # the live verbs are named
     assert ctx.requeue is None  # nothing is queued to run
+    assert recording_persist == []  # nothing persists
+    assert "lockstep" not in get_config()._data.get("runtime", {})  # never (re)creates the key
+    assert not hasattr(get_config(), "lockstep")  # the property is gone with the feature
 
 
 def test_plan_node_always_drafts(monkeypatch):
+    from core.structured import _PlanOut
     from nodes import plan as plan_mod
 
     assert not hasattr(plan_mod, "seed_next_plan")  # the recipe seam is gone
 
-    class _NoModel:
-        def invoke(self, prompt):
-            raise RuntimeError("tests never reach a model")
-
-    monkeypatch.setattr(plan_mod, "get_plan_model", lambda: _NoModel())
+    # The hardened structured call degrading to its empty default (no model reachable) must
+    # still yield a plan — the generic fallback step.
+    monkeypatch.setattr(plan_mod, "structured", lambda *a, **k: _PlanOut())
     delta = plan_mod.plan_node({"context": "", "current_query": "q"})
-    # drafted (here: the no-model generic fallback) — there is no seed to consume
     assert delta["plan"][0]["label"] == "Resolve the user's request"
+    assert delta["plan"][0]["result"] is None  # the data-bus pointer marks it un-run
 
 
 # --- /plan review: bare = status, explicit on|off mutates ---------------------------------------
@@ -82,80 +89,14 @@ def test_plan_review_bare_reports_without_flipping(ctx, capsys):
     assert ctx.review_plan is False
 
 
-# --- /plan lockstep: bare = status, on|off mutates, --save persists ------------------------------
+# --- /context: compact forwarding gone (swept), --save persists num_ctx --------------------------
 
-def test_plan_lockstep_bare_reports_without_flipping(ctx, capsys, monkeypatch):
-    from config import get_config
-
-    cfg = get_config()
-    monkeypatch.setitem(cfg._data["runtime"], "lockstep", True)
-    _plan(ctx, ["lockstep"])
-    out = _out(capsys)
-    assert "on" in out and "on|off to change" in out
-    assert cfg.lockstep is True  # unchanged
-
-    _plan(ctx, ["lockstep", "off"])
-    assert cfg.lockstep is False
-
-
-def test_plan_lockstep_save_persists(ctx, capsys, monkeypatch, recording_persist):
-    from config import get_config
-
-    cfg = get_config()
-    monkeypatch.setitem(cfg._data["runtime"], "lockstep", True)
-    _plan(ctx, ["lockstep", "off", "--save"])
-    assert cfg.lockstep is False
-    assert recording_persist == ["runtime.lockstep"]
-
-
-def test_plan_lockstep_no_save_does_not_persist(ctx, capsys, monkeypatch, recording_persist):
-    from config import get_config
-
-    monkeypatch.setitem(get_config()._data["runtime"], "lockstep", True)
-    _plan(ctx, ["lockstep", "off"])
-    assert recording_persist == []
-
-
-def test_plan_lockstep_bare_save_persists_current_value(ctx, capsys, monkeypatch,
-                                                        recording_persist):
-    """`--save` with no on|off persists the CURRENT value (the shared convention) — never a
-    flip, never a refusal."""
-    from config import get_config
-
-    cfg = get_config()
-    monkeypatch.setitem(cfg._data["runtime"], "lockstep", True)
-    _plan(ctx, ["lockstep", "--save"])
-    assert cfg.lockstep is True  # unchanged
-    assert recording_persist == ["runtime.lockstep"]
-
-
-def test_plan_lockstep_save_flag_case_insensitive(ctx, capsys, monkeypatch, recording_persist):
-    from config import get_config
-
-    cfg = get_config()
-    monkeypatch.setitem(cfg._data["runtime"], "lockstep", True)
-    _plan(ctx, ["lockstep", "off", "--SAVE"])  # split_save_flag: case-insensitive, any position
-    assert cfg.lockstep is False
-    assert recording_persist == ["runtime.lockstep"]
-
-
-def test_plan_lockstep_unrecognized_arg_is_usage_not_flip(ctx, capsys, monkeypatch,
-                                                          recording_persist):
-    from config import get_config
-
-    monkeypatch.setitem(get_config()._data["runtime"], "lockstep", True)
-    _plan(ctx, ["lockstep", "maybe"])
-    assert "usage" in _out(capsys)
-    assert get_config().lockstep is True  # untouched (parse_toggle_status -> "invalid")
-    assert recording_persist == []
-
-
-# --- /context: compact forwarding removed, --save persists num_ctx -------------------------------
-
-def test_context_compact_forwarding_removed(ctx, capsys, no_model_rebuild):
+def test_context_compact_is_just_an_unknown_arg(ctx, capsys, no_model_rebuild):
+    """The old `/context compact` pointer stub was swept with the new-version cleanup: the
+    argument is not a size, so plain usage prints and nothing compacts or mutates."""
     _context(ctx, ["compact"])
     out = _out(capsys)
-    assert "removed" in out and "/compact" in out  # a pointer, not a forwarded compaction
+    assert "not a size" in out and "usage" in out
 
 
 def test_context_set_size_session_only(ctx, capsys, monkeypatch, no_model_rebuild,

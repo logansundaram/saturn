@@ -28,11 +28,10 @@ paths:
 # Loop / safety runtime knobs (were the MAX_ITERATIONS constant + the gate policy).
 # ---------------------------------------------------------------------------
 runtime:
-  max_iterations: 8
-  # Lockstep execution: when true the agent works the plan one step at a time (strongly directed
-  # to the current step) so the plan is followed closely; when false it free-runs with only a soft
-  # next-step pointer. Toggle live with `/plan lockstep on|off`.
-  lockstep: true
+  # Execute-pass cap for the plan/execute engine (2026-07-03): one pass ≈ one plan step, so this
+  # bounds the longest plan (incl. replan-expanded fan-outs) a single turn may run. Every early
+  # landing is disclosed by synthesize's incidents block.
+  max_iterations: 16
   # Tools AT OR BELOW this risk tier run without prompting; anything riskier hits the
   # approval gate. One of: read_only | side_effecting | destructive.
   auto_approve: read_only
@@ -164,15 +163,16 @@ shell:
 # ---------------------------------------------------------------------------
 # Hardware-tier presets. Each maps the agent's roles -> concrete models.
 #
-# A role value is either:
-#   - a bare string  -> a model id served by the tier's default `provider`, or
-#   - a mapping      -> {provider: <name>, model: <id>}  (per-role provider override,
-#                        e.g. cloud-hybrid pointing `planner` at Anthropic while the rest
-#                        stay local).
+# A role value is a model id served by the tier's `provider` (ollama). The mapping form
+# ({provider: <name>, model: <id>}) still parses for old configs, but CLOUD PROVIDERS ARE
+# SHELVED (2026-07-03, local-first): a non-ollama binding refuses to run with a pointer at
+# /models. The cloud-hybrid preset left with the shelve.
 #
-# Roles: planner (drafts the plan, structured output), tool_caller (the ReAct agent,
-# native tool-calling), synthesizer (final answer), utility (cheap background tasks like
-# document summaries), judge (verifier/repair — unwired for now). `embedder` is separate.
+# Roles: planner (drafts + redrafts the plan, structured output), tool_caller (the execute
+# node: per-step reasoning + single-tool constrained calls, native tool-calling), synthesizer
+# (final answer), utility (cheap background tasks like document summaries), judge (the engine's
+# judgment calls: the rectify verdict, the resolution presence check, the semantic write gate).
+# `embedder` is separate.
 # ---------------------------------------------------------------------------
 tiers:
   # All roles share one local model. Lightest footprint. Must stay in sync with the model list
@@ -188,10 +188,11 @@ tiers:
       judge: gemma4:e4b
     embedder: qwen3-embedding:8b
 
-  # The machine this repo runs on today. All roles share qwen3.5:9b — a capable ~9B local
-  # model with reliable native tool-calling + structured output, which the living-plan loop
-  # leans on hard (the planner's structured Plan and the agent's native tool calls). Bump the
+  # The machine this repo runs on today. All roles share one capable local model with reliable
+  # native tool-calling + structured output, which the plan/execute engine leans on. Bump the
   # ids here when larger local tags are pulled — no code changes needed.
+  # (The cloud-hybrid preset — planner/synthesizer on Anthropic — was removed with the
+  # cloud-model shelve, 2026-07-03.)
   workstation:
     provider: ollama
     roles:
@@ -202,25 +203,12 @@ tiers:
       judge: "qwen3.6:27b"
     embedder: qwen3-embedding:8b
 
-  # Heavy reasoning roles go to a cloud model; everything else stays local. Requires the
-  # provider's LangChain package + API key (e.g. `pip install langchain-anthropic` +
-  # ANTHROPIC_API_KEY — set keys with `/config key set …`). Any init_chat_model provider works
-  # the same way: e.g. {provider: openai, model: gpt-4o} + langchain-openai + OPENAI_API_KEY.
-  cloud-hybrid:
-    provider: ollama
-    roles:
-      planner:     {provider: anthropic, model: claude-sonnet-4-6}
-      synthesizer: {provider: anthropic, model: claude-sonnet-4-6}
-      tool_caller: gemma4:e4b
-      utility:     gemma4:e4b
-      judge:       gemma4:e4b
-    embedder: qwen3-embedding:8b
-
 # ---------------------------------------------------------------------------
-# Capability descriptors, keyed by model id. The MVP REQUIRES native tool-calling +
-# structured output; get_model() warns if a model bound to a
+# Capability descriptors, keyed by model id. The engine REQUIRES native tool-calling +
+# structured output; check_models() warns if a model bound to a
 # role that needs a capability lacks it. Unknown models fall back to the conservative
 # defaults in config.py (tools + structured output assumed true, vision false).
+# (The claude-sonnet / gpt-4o entries left with the cloud-model shelve, 2026-07-03.)
 # ---------------------------------------------------------------------------
 capabilities:
   "gemma4:e2b":
@@ -238,13 +226,3 @@ capabilities:
     supports_structured_output: true
     context_window: 32768
     supports_vision: false
-  "claude-sonnet-4-6":
-    supports_tools: true
-    supports_structured_output: true
-    context_window: 200000
-    supports_vision: true
-  "gpt-4o":
-    supports_tools: true
-    supports_structured_output: true
-    context_window: 128000
-    supports_vision: true

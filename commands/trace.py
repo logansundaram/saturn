@@ -455,7 +455,7 @@ def _verbosity(ctx, args):
         level = ui.verbosity()
         detail = (
             "every node + full timings" if level == "verbose"
-            else "plan · agent · tools · synthesize (plumbing folded)"
+            else "plan · execute · tools · synthesize (plumbing folded)"
         )
         _print(f"  live trace on — {level}: {detail}.")
 
@@ -529,7 +529,8 @@ def _collect_tools(events):
 
 def _render_why(ui, run, events, calls):
     run_id, query, _started, _ended, status, response = run
-    _GLYPH = {"pending": "○", "active": "▸", "done": "✓", "skipped": "—"}
+    _GLYPH = {"pending": "○", "active": "▸", "done": "✓", "skipped": "—",
+              "blocked": "⊘", "error": "✗", "cancelled": "−"}
 
     ui.section(f"why · run #{run_id}", f"status: {status or '?'}")
 
@@ -547,12 +548,12 @@ def _render_why(ui, run, events, calls):
             _print(f"    {glyph} {s.get('step_id')}. {s.get('label')}{tool}")
         _print("")
 
-    # How it reasoned — the agent steps + the groundedness judge, from the recorded LLM I/O.
+    # How it reasoned — the execute steps + the rectify verdicts, from the recorded LLM I/O.
     step = 0
-    judged = None
+    verdicts: list[str] = []
     for _seq, node, output in calls:
         out = decode_json(output, {})
-        if node == "agent":
+        if node == "execute":
             step += 1
             content = _clip(out.get("content", ""), 240)
             tcs = out.get("tool_calls") or []
@@ -567,8 +568,10 @@ def _render_why(ui, run, events, calls):
                 _print(f"      → chose to call: {names}")
             elif not content:
                 _print(f"    step {step}: (finished — no further action)")
-        elif node == "replan":
-            judged = out.get("content", "")
+        elif node in ("rectify", "replan"):
+            content = str(out.get("content", "") or "").strip()
+            if content:
+                verdicts.append(f"{node}: {content}")
     if step:
         _print("")
 
@@ -590,10 +593,11 @@ def _render_why(ui, run, events, calls):
     # it, and why must match). Silence here used to read as "maybe checked, maybe not" — a trust
     # surface can't leave that ambiguous.
     _print("  verification")
-    if judged:
-        _print(f"    groundedness judge: {_clip(judged, 160)}")
+    if verdicts:
+        for v in verdicts[-3:]:
+            _print(f"    {_clip(v, 160)}")
     else:
-        _print("    groundedness judge did not run — no ungrounded draft was caught.")
+        _print("    rectify judge did not run — every step resolved mechanically.")
     _print("")
 
     # Provenance footer of the answer, if the synthesizer attached one (the [n] → source map).
@@ -722,8 +726,8 @@ Subviews:
 
   /trace why [#id]     decision provenance: not WHAT happened but WHY — the plan it drafted, the
                        model's recorded reasoning + tool choice at each step, the evidence the
-                       answer was built from, the groundedness judge's verdict, and the cited
-                       sources. Defaults to the last run.
+                       answer was built from, the rectify verdicts (plan revisions and why), and
+                       the cited sources. Defaults to the last run.
   /trace answer [#id]  the Glass Box (also: /glass): answer-level provenance — each cited source's
                        origin (local vs network) and trust, and what left the machine. Bare = the
                        live last turn; #id reconstructs a recorded run. (/source <n> prints the
@@ -748,7 +752,7 @@ Subviews:
 Live trace verbosity (controls what scrolls during a turn; recording is always on):
 
   /trace off    only the final response prints — runs quietly
-  /trace on     normal: plan · agent · tools · synthesize (plumbing nodes folded)  [default]
+  /trace on     normal: plan · execute · tools · synthesize (plumbing nodes folded)  [default]
   /trace full   verbose: every node line, including folded plumbing + full timings
 """,
 )
@@ -930,7 +934,7 @@ def _show_llm_calls(ctx, args):
     details="""
 The answer-level companion to /trace. For one answer it shows, per cited source: where it came
 from (local disk vs the network) and whether its origin is trusted. Plus the trust label: how many
-sources, what left the machine this turn, whether the groundedness judge weighed in, and how many
+sources, what left the machine this turn, whether rectify revised the plan mid-run, and how many
 calls faced the approval gate.
 
   /glass         the live last turn (exact egress slice)

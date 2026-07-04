@@ -1,7 +1,7 @@
 import re
 
 from config import get_config
-from core.state import AgentState, unrun_planned_tools
+from core.state import AgentState, incident_steps, unfinished_steps
 from textutil import clip, split_call_result
 from core.llms import (
     get_model,
@@ -25,6 +25,15 @@ _MAX_SOURCE_LABEL = 100
 # The `[source: name, page N]` markers search_knowledge_base prepends to each retrieved chunk
 # (tools/knowledge.py) — the provenance labels for retrieval observations.
 _DOC_SOURCE_RE = re.compile(r"\[source: ([^\]]+)\]")
+
+# Caps for the plan-outcomes block: a tool step's full observation already rides the numbered
+# "Tool results" section, so its row here is a short pointer; a reasoning step's result exists
+# ONLY on the step, so it gets the full (but still bounded) text.
+_TOOL_STEP_RESULT_CAP = 400
+_REASONING_STEP_RESULT_CAP = 2000
+
+# Read-back cap for the verified-writes ground-truth block.
+_VERIFY_CAP = 300
 
 
 def _label_clamp(label: str, cap: int = _MAX_SOURCE_LABEL) -> str:
@@ -94,6 +103,74 @@ def _gathered_section(items, numbered, citations, name):
     return HumanMessage(content=f"{name}:\n" + "\n\n".join(map(str, items)))
 
 
+def plan_outcomes_block(plan) -> str:
+    """The completed plan as a step -> outcome narrative — the engine's data bus rendered for
+    the synthesizer. A reasoning step's result exists ONLY here (it never rode tool_results), so
+    it gets the fuller cap; a tool step's row is a bounded pointer to the numbered sections.
+    A step that never ran says so explicitly."""
+    lines = []
+    for s in plan or []:
+        result = s.get("result")
+        if result is None:
+            outcome = "(never ran — the turn ended before this step)"
+        else:
+            cap = (
+                _REASONING_STEP_RESULT_CAP
+                if not s.get("intended_tool")
+                else _TOOL_STEP_RESULT_CAP
+            )
+            outcome = clip(" ".join(str(result).split()), cap)
+        lines.append(f"- {s.get('label')} -> {outcome}")
+    return "\n".join(lines) or "(no steps were run)"
+
+
+def incidents_block(plan) -> list[str]:
+    """One line per incident the answer must disclose: steps that were skipped, blocked,
+    errored, cancelled — or never ran at all (iteration cap / abort)."""
+    out = [
+        f"step {s.get('step_id')} ({s.get('label')}): {s.get('result')}"
+        for s in incident_steps(plan)
+    ]
+    out += [
+        f"step {s.get('step_id')} ({s.get('label')}): never ran — the turn ended before it"
+        for s in unfinished_steps(plan)
+    ]
+    return out
+
+
+def verify_writes(state: AgentState) -> str:
+    """Ground truth for the answer's file claims: re-read every file this turn actually wrote
+    (successful write_file/edit_file calls, from tool_events) and quote what it NOW contains —
+    so the answer describes real file contents, not the step log's intentions. Best-effort:
+    an unreadable file just drops out of the block."""
+    lines: list[str] = []
+    seen: set = set()
+    for ev in state.get("tool_events") or []:
+        if not isinstance(ev, dict) or not ev.get("ok"):
+            continue
+        if ev.get("name") not in ("write_file", "edit_file"):
+            continue
+        args = ev.get("args") or {}
+        path = args.get("file_path")
+        if not path or path in seen:
+            continue
+        # The tools report refusals as ordinary strings (ok=True), so check the result text for
+        # a success marker before quoting the file as "written".
+        preview = str(ev.get("result") or "")
+        if not (preview.startswith("File ") or preview.startswith("Content appended")
+                or preview.startswith("Edited ")):
+            continue
+        seen.add(path)
+        try:
+            from tools.registry import tools_by_name
+
+            content = str(tools_by_name["read_file"].invoke({"file_path": path})).strip()
+        except Exception:
+            continue
+        lines.append(f"- {path} now contains: {clip(content, _VERIFY_CAP)!r}")
+    return "\n".join(lines)
+
+
 def cancel_orphaned_calls(last) -> list:
     """Cancellation ToolMessages for a trailing AIMessage's unanswered tool_calls (empty when
     there are none). Nothing can have answered a TRAILING message's calls, so every call gets
@@ -116,6 +193,7 @@ def cancel_orphaned_calls(last) -> list:
 def synthesize_node(state: AgentState):
     query = state["current_query"]
     context = state["context"]
+    plan = state.get("plan", [])
     tool_results = state.get("tool_results", [])
     documents_retrieved = state.get("documents_retrieved", [])
 
@@ -133,6 +211,12 @@ def synthesize_node(state: AgentState):
     if context:
         llm_input.append(HumanMessage(content=f"Relevant context:\n{context}"))
 
+    # The completed plan — the data bus — as a step -> outcome narrative. Reasoning-step results
+    # live ONLY here; tool observations are pointed at the numbered sections below.
+    llm_input.append(
+        HumanMessage(content="Completed steps and results:\n" + plan_outcomes_block(plan))
+    )
+
     # Tools first, then documents — build_sources numbers in exactly this order, so the section
     # order is load-bearing for the inline [n] markers.
     section = _gathered_section(tool_results, numbered_tools, citations, "Tool results")
@@ -146,52 +230,41 @@ def synthesize_node(state: AgentState):
     if section is not None:
         llm_input.append(section)
 
-    # The agent's draft answer — its final no-tool-call message. This is the exact text the
-    # replan judge verified for groundedness, so the shipped answer must BUILD ON it rather than
-    # be re-derived blind: regenerating from scratch paid a second full generation for nothing
-    # and could introduce new claims the judge never saw. Absent on the paths that never produced
-    # a draft (abort at the plan gate, iteration cap hit mid-tool-round) — those synthesize from
-    # the gathered material alone, exactly as before.
+    # Ground truth for written files: what they ACTUALLY contain now — the answer must describe
+    # file contents from this, never from the step log's intentions.
+    verified = verify_writes(state)
+    if verified:
+        llm_input.append(
+            HumanMessage(
+                content="Ground truth — files written during the plan ACTUALLY contain "
+                "the following now; describe file contents from this, not from "
+                "the step log:\n" + verified
+            )
+        )
+
+    # Incidents: actions that did NOT complete (gate rejections, write-gate skips, errors,
+    # cancellations, never-ran steps). The answer must state these plainly — an incident does
+    # not cancel the rest of the request, but it must never be presented as done.
+    incidents = incidents_block(plan)
+    if incidents:
+        llm_input.append(
+            HumanMessage(
+                content="INCIDENTS — these actions did NOT complete. State plainly what "
+                "was not done and why; do NOT claim any of these succeeded. An "
+                "incident does not cancel the rest of the request: still answer "
+                "it from the results of the steps that DID complete:\n"
+                + "\n".join(incidents)
+            )
+        )
+
+    # Forced landing mid-decision: the iteration cap can route here while the trailing AIMessage
+    # still carries an unanswered tool_call. Close each orphaned call with a cancellation
+    # ToolMessage now, or the carried conversation (and its autosave) holds an assistant
+    # tool_use with no tool_result — a hard 400 on the next cloud-provider turn and a /resume
+    # that reproduces it.
     msgs = state.get("messages", [])
     last = msgs[-1] if msgs else None
-    draft = ""
-    if isinstance(last, AIMessage) and not getattr(last, "tool_calls", None):
-        draft = str(last.content).strip()
-
-    # Forced landing mid-decision: the iteration cap routed here while the
-    # trailing AIMessage still carries unanswered tool_calls (route_after_agent checks those
-    # bounds before has_tool_calls, deliberately — the bound must stop NEW tool rounds). Close
-    # each orphaned call with a cancellation ToolMessage now, or the carried conversation (and
-    # its autosave) holds an assistant tool_use with no tool_result — a hard 400 on the next
-    # cloud-provider turn and a /resume that reproduces it.
     cancelled = cancel_orphaned_calls(last)
-    if draft:
-        llm_input.append(
-            HumanMessage(
-                content=(
-                    "Draft answer from the reasoning loop (already checked against the gathered "
-                    "results — build on it, do not contradict it):\n" + draft
-                )
-            )
-        )
-
-    # If we arrive here with a planned gathering step still un-run (the agent gave up and the
-    # nudge budget was exhausted), be honest about the gap instead of asserting the information
-    # doesn't exist — the failure mode this whole guard exists to avoid.
-    incomplete = unrun_planned_tools(state.get("plan", []), state.get("tools_called", []))
-    if incomplete:
-        labels = "; ".join(f"{s.get('label')} (needed `{s.get('intended_tool')}`)" for s in incomplete)
-        llm_input.append(
-            HumanMessage(
-                content=(
-                    "NOTE: the plan included information-gathering step(s) that were not "
-                    f"completed this turn: {labels}. If the gathered results above are not "
-                    "sufficient to answer, say plainly that you were unable to complete that "
-                    "lookup — do NOT state that the information does not exist or that nothing "
-                    "is available, since the lookup was not actually carried out."
-                )
-            )
-        )
 
     llm_input.append(HumanMessage(content=f"Current user query:\n{query}"))
 
@@ -211,6 +284,13 @@ def synthesize_node(state: AgentState):
     # Normalize the aggregated chunk to a plain AIMessage so every downstream type matches the old
     # invoke() path exactly (add_messages, _compact_history's isinstance checks, autosave).
     content = aggregated.content if isinstance(aggregated.content, str) else str(aggregated.content)
+
+    # A mechanical incidents note under the answer, mirroring the prompt-level disclosure: the
+    # user sees what could not be completed even when the model soft-pedals it.
+    if incidents and content.strip():
+        content = content.rstrip() + "\n\nNote — the following could not be completed:\n" + "\n".join(
+            f"- {i}" for i in incidents
+        )
 
     # Append the provenance footer to the RECORDED answer (state/trace/autosave/headless all carry
     # it). The live token stream has already rendered without it, so the loop re-renders the final

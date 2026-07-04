@@ -10,8 +10,8 @@ showing you **every step it takes** and pausing for your approval before anythin
 outside world. Nothing is a black box: you watch the plan it draws up and the tools it calls,
 and any run can be replayed afterward.
 
-It runs on **local models** (via [Ollama](https://ollama.com)) by default, so your data stays on
-your machine; cloud models are an opt-in upgrade when you want more horsepower, never a requirement.
+It runs entirely on **local models** (via [Ollama](https://ollama.com)) — your data stays on
+your machine, and no API key is required for anything.
 
 ---
 
@@ -230,18 +230,17 @@ pip install -r requirements.txt
 > `prompt_toolkit` (live command highlighting) and `tavily-python` (premium web search) are
 > optional — Saturn runs fine without either.
 
-### 3. (Optional) Add API keys
+### 3. (Optional) Add an API key
 
-Web search works out of the box with **no key** (keyless DuckDuckGo). To upgrade to Tavily, or
-to use cloud models, add keys — easiest via the built-in command once you're running:
+Web search works out of the box with **no key** (keyless DuckDuckGo). To upgrade to Tavily,
+add its key — easiest via the built-in command once you're running:
 
 ```
-/config key set TAVILY_API_KEY    tvly-...        # premium web search/extract/research
-/config key set ANTHROPIC_API_KEY sk-ant-...      # cloud models (cloud-hybrid tier)
+/config key set TAVILY_API_KEY    tvly-...        # premium web search/extract
 /config key                                       # list keys and whether each is set
 ```
 
-These are saved to a `.env` file in the repo root and applied immediately.
+Keys are saved to a `.env` file in the repo root and applied immediately.
 
 ### 4. Run it
 
@@ -281,12 +280,11 @@ everything else is a turn for the agent.
 
 Everything lives in **`config.yaml`**:
 
-- **`active_tier`** — which hardware preset is live (`laptop`, `workstation`, `cloud-hybrid`).
+- **`active_tier`** — which hardware preset is live (`laptop`, `workstation`).
 - **`tiers`** — maps each role (planner / tool_caller / synthesizer / …) to a concrete model, so
   swapping hardware is a one-line change.
 - **`runtime`** — loop and safety knobs: `max_iterations`, `auto_approve` (the approval policy),
-  `num_ctx` (context window), `lockstep`, `token_budget` (a hard session spend ceiling — useful
-  with cloud models), `citations` (inline source citations in answers).
+  `num_ctx` (context window), `citations` (inline source citations in answers).
 - **`web`** — search backend: `auto` (prefer Tavily if a key exists, else DuckDuckGo), `tavily`,
   or `duckduckgo`.
 
@@ -319,7 +317,7 @@ Type `/help` for the full list, or `/<command> --help` for details on any one. H
 | `/models` | List installed Ollama models; switch what drives each role (`--save` persists a binding to `config.yaml`). |
 | `/config` | View/edit settings and **API keys** (`/config key …`); `/config setup` is the health check. |
 | `/context` | Runtime readout (context window + fill, CPU/RAM/GPU); resize the window (`--save` persists). |
-| `/plan` | Show the plan; control review mode, mid-run pause, and lockstep (bare subcommands report status; `--save` persists lockstep). |
+| `/plan` | Show the plan; control review mode and the mid-run pause (bare subcommands report status). |
 | `/docs` | The knowledge base: list documents, `add <path>`, `remove <name>`, `sync`. |
 | `/tools` | List the agent's tools and their risk tiers. |
 | `/mcp` | MCP server status + the remote tools they add; `reload` after a config edit. |
@@ -329,7 +327,7 @@ Type `/help` for the full list, or `/<command> --help` for details on any one. H
 | `/dryrun` | Plan + decide everything, execute nothing — tool calls stubbed (bare = status readout). |
 | `/source` | Show the full material behind a citation `[n]` of the last answer. |
 | `/glass` | **The Glass Box**: answer-level provenance — each cited source's origin + trust, what left the machine, and the human gate decisions (also `/trace answer`; `#id` for past runs). |
-| `/privacy` | The privacy surface: what CAN leave (`/privacy`), what DID (`/privacy egress`), seal the boundary (`/privacy airgap`), and strip secrets from cloud sends (`/privacy redact`). |
+| `/privacy` | The privacy surface: what CAN leave (`/privacy`), what DID (`/privacy egress`), seal the boundary (`/privacy airgap`), and strip secrets from off-machine sends (`/privacy redact`). |
 | `/undo` | Revert the file changes of the last turn that wrote anything. |
 | `/rewind` | Drop the last exchange from the conversation (files untouched — that's `/undo`). |
 | `/retry` | Regenerate the last answer; `/retry full` re-runs the whole turn from scratch. |
@@ -363,21 +361,24 @@ the plan rail, every call traced — rather than hiding them inside a monolithic
 ## Project layout
 
 ```
-agent.py            # entry point: builds the graph + runs the interactive loop
+agent.py            # entry point: routes the command line into app/
+app/                # the application shell: CLI, graph assembly, turn driver, REPL
 config.yaml         # all settings: models, paths, safety, web provider
-core/               # the engine: state, model factory, prompts, budget, compaction
-trust/              # the trust stack: gate policy, egress ledger, quarantine, integrity
-                    #   digest, trust receipt, the Glass Box
-tools/              # the agent's tools (web, files, shell, calculator, knowledge, memory)
+core/               # the engine room: state, model factory, prompts, structured output
+trust/              # the trust stack: gate policy, egress ledger, quarantine,
+                    #   trust receipt, the Glass Box
+tools/              # the agent's tools (web, files, shell, calculator, knowledge)
                     #   + the registry and MCP client
-nodes/              # the graph's nodes (ground, plan, agent, tools, synthesize, …)
-commands/           # slash commands (one module per command)
+nodes/              # the graph's nodes (ground, plan, execute, tools, rectify, synthesize, …)
+commands/           # slash commands (one module per /help theme)
 stores/             # persistence: RAG, document manifests, durable memory, trace
 tui/                # the terminal UI / live trace rail
+docs/               # ARCHITECTURE.md — the code map for reading the source by hand
 database/           # your data: documents/, workspace/, memory/, caches, trace DB
 ```
 
-See **`CLAUDE.md`** for a deep architectural tour (including the roadmap).
+See **`docs/ARCHITECTURE.md`** for the guided code map, and **`CLAUDE.md`** for the deep
+architectural reference (including the roadmap).
 
 ---
 

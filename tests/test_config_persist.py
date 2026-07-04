@@ -11,7 +11,7 @@ active_tier: workstation
 
 runtime:
   max_iterations: 8  # the loop cap
-  lockstep: true
+  auto_compact: true
   num_ctx: null
 
 web:
@@ -41,8 +41,8 @@ def test_set_scalar_top_level_key():
 
 
 def test_set_scalar_bool_and_null():
-    out = _set_yaml_scalar(SAMPLE, "runtime.lockstep", False)
-    assert "lockstep: false" in out
+    out = _set_yaml_scalar(SAMPLE, "runtime.auto_compact", False)
+    assert "auto_compact: false" in out
     out = _set_yaml_scalar(SAMPLE, "runtime.num_ctx", 16384)
     assert "num_ctx: 16384" in out
 

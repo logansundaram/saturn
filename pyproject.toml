@@ -12,7 +12,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "saturn-agent"
-version = "0.1.0"  # keep in sync with __version__ in agent.py
+version = "0.1.0"  # keep in sync with __version__ in app/__init__.py (re-exported by agent.py)
 description = "Saturn — a private, local-first AI agent for the terminal. Every step it takes is visible and auditable; nothing leaves your machine without your approval."
 readme = "README.md"
 license = "MIT"
@@ -76,8 +76,8 @@ saturn = "agent:main"
 py-modules = ["agent", "config", "diag", "env_keys", "textutil"]
 
 [tool.setuptools.packages.find]
-include = ["commands*", "core*", "trust*", "tools*", "nodes*", "stores*", "tui*"]
-namespaces = true  # stores/tui are implicit namespace packages (no __init__.py)
+include = ["app*", "commands*", "core*", "trust*", "tools*", "nodes*", "stores*", "tui*"]
+namespaces = true
 
 [tool.setuptools.data-files]
 # Lands at <venv>/share/saturn/ — config.py seeds SATURDAY_HOME/config.yaml from it on first run.

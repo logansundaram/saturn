@@ -1,17 +1,43 @@
 import time
+
 import diag
 from langchain.messages import HumanMessage
-from core.state import AgentState, steps_to_dicts
-from core.llms import get_plan_model
+
+from core.state import AgentState
 from core.messages import planner_sys_msg
+from core.structured import (
+    _PlanOut,
+    PLAN_SHAPE,
+    plan_format,
+    registered_tools,
+    structured,
+    to_steps,
+)
+
+
+def _fallback_plan() -> list[dict]:
+    """One generic step so the engine can still resolve the request when the planner emits
+    nothing parseable — the execute node treats a tool-less step as pure reasoning."""
+    return [
+        {
+            "step_id": 1,
+            "label": "Resolve the user's request",
+            "status": "pending",
+            "intended_tool": None,
+            "result": None,
+            "needs_resolution": False,
+        }
+    ]
 
 
 def plan_node(state: AgentState):
-    """Draft the initial living plan: a short, ordered list of steps with human-readable
-    labels. The plan is advisory and will be revised in-loop by update_plan.
+    """Draft the plan: an ordered list of one-action steps, each naming the ONE tool it calls
+    (or none for pure reasoning). The plan is the engine's data bus — each step's result is
+    recorded on it as it executes — so plan quality directly drives execution.
 
-    If the local model fails to emit valid structured output, fall back to a single generic
-    step rather than aborting the turn — the agent loop can still resolve the request."""
+    Structured output goes through the hardened path (core/structured.py: flat schema, shape
+    hint, JSON salvage, temp-escalating retries); a total parse failure degrades to a single
+    generic step rather than aborting the turn."""
     start = time.perf_counter()
 
     prompt = [
@@ -24,29 +50,19 @@ def plan_node(state: AgentState):
         ),
     ]
 
-    # Small local models (gemma4:e4b, the laptop tier) intermittently emit invalid JSON for the
-    # Plan schema. Sampling differs run to run, so retry once — a second pass frequently parses —
-    # before falling back to a single generic step so the loop can still resolve the request.
-    plan = []
-    for attempt in range(2):
-        try:
-            result = get_plan_model().invoke(prompt)
-            plan = steps_to_dicts(result.steps)
-            if plan:
-                break
-        except Exception as exc:
-            diag.log(f"plan_node : structured-output attempt {attempt + 1} failed ({exc})")
+    draft = structured(
+        "planner",
+        prompt,
+        _PlanOut,
+        plan_format(sorted(registered_tools())),
+        PLAN_SHAPE,
+        default=_PlanOut(),
+    )
+    plan = to_steps(draft)
 
     if not plan:
         diag.log("plan_node : falling back to a single generic step")
-        plan = [
-            {
-                "step_id": 1,
-                "label": "Resolve the user's request",
-                "status": "pending",
-                "intended_tool": None,
-            }
-        ]
+        plan = _fallback_plan()
 
     diag.log(f"plan_node : {time.perf_counter() - start:.4f}s ({len(plan)} steps)")
     return {"plan": plan}

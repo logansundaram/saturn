@@ -5,7 +5,7 @@ what it told you came from.
 For one answer it gathers, per cited source: where the source came from (local disk vs the
 network), whether its origin is trusted, and whether it tripped the injection scan. Plus the
 aggregate trust label: how many sources, how many left the machine, bytes egressed this turn,
-whether the groundedness judge weighed in.
+whether rectify revised the plan mid-run.
 
 Two entry points feed one assembler:
   - `build_from_state(state, ...)` — the live last turn (exact egress slice available).
@@ -51,10 +51,9 @@ class GlassBox:
     sent_hosts: "list[str]"
     sent_known: bool            # exact egress available (live turn) vs inferred from tools (history)
     gated: "int | None"         # calls that faced the approval gate (None = not recorded/history)
-    # How many times the replan judge found a draft UNGROUNDED and inserted a search. NOTE: the
-    # state does NOT record the judge ruling a draft grounded (that path leaves replans at 0),
-    # so 0 means "no ungrounded draft was caught" — judge-verified-grounded and judge-never-ran
-    # are indistinguishable here, and the renderer must not claim either.
+    # How many times rectify sent the plan back for revision (replan ran). NOTE: a quiet pass
+    # records nothing, so 0 means "no revision happened" — it must never be rendered as
+    # "verified correct"; the renderer says only what the state records.
     replans: int
     # Whether every recorded delta behind this box decoded — False when the trace truncated an
     # event (stores/trace._DATA_CAP) and sources below may therefore be INCOMPLETE. A trust

@@ -1,5 +1,11 @@
 # Saturn — Feature Inventory
 
+> **Historical snapshot (pre-2026-07-03).** This worksheet drove the keep/cut/re-derive
+> decision that led to the engine transplant; it describes the OLD living-plan ReAct engine
+> (`nodes/agent.py`, lockstep/nudge machinery — all since replaced or deleted). Kept for the
+> record only. For the current layout, read `docs/ARCHITECTURE.md`; for the authoritative dev
+> reference, `CLAUDE.md`.
+
 A complete map of what's in the codebase today, for the **keep / cut / re-derive** decision.
 Sort each row's **Disposition** as `KEEP`, `CUT`, or `?`. Once it's filled in we can see whether
 what's left is "Saturn minus N leaf modules" (delete in place) or "a different core" (rebuild earns it).

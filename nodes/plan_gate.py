@@ -1,27 +1,30 @@
 """
 plan_gate node — the human-in-the-loop *plan-review* checkpoint.
 
-It sits at every step boundary of the living-plan loop (after `plan`, and after each
-`update_plan`), immediately before the agent acts. Almost always it's a no-op pass-through: it
-checks whether a pause has been *requested* and, if not, returns `{}` and control flows to `agent`.
+It sits at every step boundary of the plan/execute loop (after `plan`, after `replan`, and after
+each rectify cycle that continues), immediately before the execute node acts. Almost always it's
+a no-op pass-through: it checks whether a pause has been *requested* and, if not, returns `{}`
+and control flows to `execute`.
 
 When a pause IS requested it raises a LangGraph `interrupt()` carrying the current plan, so the
 driver (`agent.run_turn`) can hand it to the user, who inspects/edits the plan and resumes. On
 resume the (possibly edited) plan is written back into state and execution continues from the
 current step with the corrected plan — or, if the user aborted, routing falls through to
-`synthesize`. This is what lets a hallucinated or wrong plan be fixed mid-flight instead of running
-to a bad conclusion (see the brittleness notes in CLAUDE.md).
+`synthesize`. This is what lets a hallucinated or wrong plan be fixed mid-flight instead of
+running to a bad conclusion.
 
 Two independent trigger seams feed it, by design, so the *source* of a pause is modular:
-  - external / async / between-turns: the shared `interrupts.PauseController` (the mid-turn Esc key,
+  - external / async / between-turns: the shared `plan_ops.PauseController` (the mid-turn Esc key,
     handled by `typeahead.InputQueue`, and the `/plan pause` + `/plan review` commands), and
   - in-graph: the `state["pause_requested"]` flag — the seam a future LLM-initiated
     "request a plan review" node/tool would set. The gate handles both identically.
 
 The same controller carries a *third*, non-pausing action: **mid-turn steering** (`source="steer"`,
-the typed correction in `reason`). When the user types a correction during execution and hits Esc
-(`typeahead.InputQueue`), the gate injects it as a HumanMessage so the agent's next pass heeds it,
-then clears the request and passes straight through — the running turn is adjusted, not interrupted.
+the typed correction in `reason`). Under the plan/execute engine (2026-07-03 transplant) a steer
+rides the REPLAN seam: the gate records the correction into the conversation (a HumanMessage, so
+history/compaction/recap see it), sets `rectify=True` with the correction as `reasoning`, and
+`route_after_gate` sends the turn through `replan` — the remaining steps are redrafted around the
+user's correction, then execution continues. The running turn is adjusted, not interrupted.
 
 Determinism across the interrupt: a resumed `interrupt()` re-executes its node from the top, so the
 path to the `interrupt()` call must be the same on the re-run. The controller is read
@@ -32,16 +35,16 @@ the state flag doesn't change mid-node — so `should_pause` evaluates the same 
 from langchain.messages import HumanMessage
 from langgraph.types import interrupt
 
-from core.state import AgentState, active_step, STEER_PREFIX
+from core.state import AgentState, current_step, STEER_PREFIX
 from core.plan_ops import get_pause_controller
 
 
 def plan_gate_node(state: AgentState):
     controller = get_pause_controller()
 
-    # Mid-turn steering: a correction the user typed during execution (Esc with text). Inject it as
-    # a HumanMessage so the agent's next pass adjusts course, then clear the request and pass through
-    # — steering edits the running turn WITHOUT interrupting it (unlike the review pause below). No
+    # Mid-turn steering: a correction the user typed during execution (Esc with text). Record it
+    # in the conversation AND arm a replan with the correction as the revision instruction —
+    # steering edits the running turn WITHOUT interrupting it (unlike the review pause below). No
     # interrupt() here, so the determinism caveat below doesn't apply to this branch.
     req = controller.peek()
     if req is not None and req.source == "steer" and req.reason:
@@ -50,14 +53,26 @@ def plan_gate_node(state: AgentState):
         # state.is_steer_message — the consumers that slice the conversation at HumanMessage
         # boundaries (/rewind, /retry full, _compact_history, the grounding recap) skip it.
         note = f"\n{STEER_PREFIX} {req.reason}"
-        # Carry the correction on the LAST message rather than appending a fresh HumanMessage: after
-        # a tool round (and at the first boundary) the trailing message is already user-role, and a
-        # second consecutive user turn is rejected by providers that require role alternation (e.g.
-        # Anthropic on the cloud tier). add_messages overwrites by id, so the edited copy replaces it.
+        steer_updates = {
+            "rectify": True,
+            "reasoning": (
+                "Mid-task steering correction from the user: "
+                f"{req.reason}\nRedraft the remaining steps to honor this correction."
+            ),
+        }
+        # Carry the correction on the LAST message rather than appending a fresh HumanMessage:
+        # at the first boundary the trailing message is already user-role, and a second
+        # consecutive user turn is rejected by providers that require role alternation (e.g.
+        # Anthropic on the cloud tier). add_messages overwrites by id, so the edited copy
+        # replaces it.
         last = state["messages"][-1] if state.get("messages") else None
         if isinstance(last, HumanMessage) and getattr(last, "id", None):
-            return {"messages": [HumanMessage(content=str(last.content) + note, id=last.id)]}
-        return {"messages": [HumanMessage(content=note.lstrip())]}
+            steer_updates["messages"] = [
+                HumanMessage(content=str(last.content) + note, id=last.id)
+            ]
+        else:
+            steer_updates["messages"] = [HumanMessage(content=note.lstrip())]
+        return steer_updates
 
     # Decide whether to pause from the two seams. Kept side-effect-free so it's identical on a
     # post-interrupt re-execution (see module docstring).
@@ -77,7 +92,7 @@ def plan_gate_node(state: AgentState):
             "type": "plan_review",
             "plan": plan,
             "reason": reason,
-            "active_step": active_step(plan),
+            "active_step": current_step(plan),
             "iteration": state.get("iteration", 0),
         }
     )
@@ -105,7 +120,10 @@ def plan_gate_node(state: AgentState):
 
 
 def route_after_gate(state: AgentState) -> str:
-    """After the gate: abort -> wrap up at synthesize; otherwise -> act on the (current) plan."""
+    """After the gate: abort -> wrap up at synthesize; a steer armed a replan -> revise the
+    remaining steps first; otherwise -> execute the current step."""
     if state.get("aborted"):
         return "synthesize"
-    return "agent"
+    if state.get("rectify"):
+        return "replan"
+    return "execute"

@@ -94,7 +94,7 @@ _DATA_CAP = 16000
 
 
 def _json_default(o):
-    # Messages -> "AIMessage: <content> [tool_calls: ...]"; PlanStep/pydantic -> dict; else -> str.
+    # Messages -> "AIMessage: <content> [tool_calls: ...]"; pydantic objects -> dict; else -> str.
     # We fold the tool-call decision into the string so a content-less tool-calling turn still
     # records WHAT the agent decided to do (the live tool tree shows it; the replay needs it too).
     if hasattr(o, "content"):

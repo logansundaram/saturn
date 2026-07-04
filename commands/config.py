@@ -193,9 +193,10 @@ API keys live in .env, not config.yaml, so they have their own subcommand (alrea
                                     removal verb — remove/rm/delete/del/forget/drop — works)
   /config key tavily                show one key (masked)
 
-Known keys: TAVILY_API_KEY (web tools; optional — they fall back to keyless search without it),
-ANTHROPIC_API_KEY (cloud-hybrid tier). Add more by registering a ManagedKey in env_keys.py.
-A custom (unmanaged) env var can still be stored by typing its name in ALL CAPS.
+Known keys: TAVILY_API_KEY (web tools; optional — they fall back to keyless search without it).
+Add more by registering a ManagedKey in env_keys.py. A custom (unmanaged) env var can still be
+stored by typing its name in ALL CAPS. (The Anthropic/OpenAI keys left with the cloud-model
+shelve, 2026-07-03 — an already-set key in .env is untouched, just unmanaged.)
 
 Model/tier keys rebuild the cached models on next use; an embedder change re-embeds the corpus.
 To change model bindings specifically, /models is the friendlier front end.
@@ -352,18 +353,11 @@ _OPTIONAL_KEY_NOTES = {"TAVILY_API_KEY": "keyless fallback active"}
 
 
 def _required_keys(cfg) -> set[str]:
-    """The env keys the ACTIVE tier genuinely needs: one per cloud provider bound to a role.
-    Everything else is optional — Tavily has a keyless fallback, and an unused provider's key
-    unlocks nothing the current tier runs."""
-    from config import MODEL_ROLES
-    from core.llms import _PROVIDER_KEY
-
-    needed: set[str] = set()
-    for role in MODEL_ROLES:
-        key = _PROVIDER_KEY.get(cfg.model_for_role(role).provider)
-        if key:
-            needed.add(key)
-    return needed
+    """The env keys the ACTIVE tier genuinely needs. With cloud model support SHELVED
+    (2026-07-03) no binding can require a key — every managed key is optional (Tavily has a
+    keyless fallback). Kept as the seam: when cloud returns, this re-derives one required key
+    per cloud provider bound to a role (via the restored llms provider→key table)."""
+    return set()
 
 
 def _key_line(name: str, is_set: bool, required) -> str:

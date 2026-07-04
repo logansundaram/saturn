@@ -1,106 +1,118 @@
 """
-replan node — the in-loop verifier/repair step (the `judge` role).
+Replan node — rewrites the REMAINING plan when rectify (or a mid-turn steer) says it must change
+(the 2026-07-03 engine transplant; replaces the single-purpose groundedness judge, whose job now
+lives in RECTIFY_SYS's current/external-facts rule).
 
-This is the LLM-driven plan reviser the mechanical `update_plan` deliberately is NOT (see the
-note in update_plan.py): it can INSERT a step mid-loop, not just advance statuses. It runs only
-when the agent has finished with no tool calls and the mechanical nudge had nothing planned left
-to escalate to (`route_after_agent`), so the common path never pays for it twice.
+Completed steps are kept verbatim (their results are the data bus — never re-run, never
+redescribed); the planner redrafts everything still pending, with `state["reasoning"]` (rectify's
+verdict, or the user's steering correction) as the revision instruction. The instruction block
+teaches the hard-won lessons: replace references with EXACT names from the results, never invent
+or substitute, expand fan-outs one concrete step per item, each calculation its own step, writes
+last and value-free.
 
-What it fixes: the agent answers a question that depends on current/external/specific facts
-(rankings, "best X", prices, news, a person/product) straight from its own knowledge — either
-because the planner never planned a gathering step, or because a knowledge-base lookup came back
-irrelevant. The judge inspects that draft answer; if it is ungrounded it inserts a `web_search`
-step into the plan as the new active step and routes back to `agent`, which then actually runs
-the search and re-answers with real results. A grounded answer passes straight through to
-synthesize untouched.
-
-Gated by REPLAN_BUDGET (in nodes/agent.py's route_after_agent) so a stubborn model can't
-loop, and skipped when a web_search already ran this turn (re-searching the same turn won't help —
-synthesize's honesty note covers that case instead). LLM-driven plan revision is only reliable on
-a capable model; on the workstation tier (qwen3.5:9b) structured output holds, and a failure here
-degrades safely to synthesize rather than aborting the turn.
-"""
+Bounded by rectify.MAX_REPLANS; a failed redraft degrades to the untouched plan (the engine
+keeps executing the pending steps as they were)."""
 
 import time
+
 import diag
-from typing import Literal
+from langchain.messages import HumanMessage
 
-from langchain.messages import AIMessage, HumanMessage
-from langgraph.types import Command
+from core.messages import planner_sys_msg
+from core.plan_context import original_request, plan_txt
+from core.state import AgentState
+from core.structured import (
+    _PlanOut,
+    PLAN_SHAPE,
+    plan_format,
+    registered_tools,
+    structured,
+    to_steps,
+)
 
-from core.state import AgentState, active_step
-from core.llms import get_judge_model
-from core.messages import judge_sys_msg
-from core.plan_ops import add_step
-from tools.registry import RETRIEVAL_TOOLS
-
-# External-gathering tools: if ANY of these already ran this turn, escalating to a fresh web_search
-# won't rescue the answer — re-searching in circles. The web tools aren't retrieval-flagged (their
-# results aren't recorded as documents), so union them with the retrieval set explicitly.
-_GATHERING_TOOLS = {"web_search", "web_extract"} | set(RETRIEVAL_TOOLS)
-
-
-def _draft_answer(state: AgentState) -> str:
-    """The agent's just-produced no-tool answer (the last AIMessage) — what we're judging."""
-    last = state["messages"][-1] if state.get("messages") else None
-    if isinstance(last, AIMessage):
-        return str(last.content or "")
-    return ""
+# Hard cap on freshly drafted steps per replan — a runaway fan-out must not mint a 40-step plan.
+_MAX_NEW_STEPS = 10
 
 
-def replan_node(state: AgentState) -> Command[Literal["agent", "synthesize"]]:
-    """Judge the draft answer; if it's ungrounded, insert a web_search step and loop back."""
-    start = time.perf_counter()
-
-    plan = state.get("plan", [])
-    draft = _draft_answer(state)
-
-    # Re-searching within the same turn won't rescue an answer the model already deemed thin after
-    # a web round — let synthesize handle it honestly instead of escalating in circles.
-    if _GATHERING_TOOLS & set(state.get("tools_called", [])) or not draft.strip():
-        diag.log(f"replan_node : {time.perf_counter() - start:.4f}s (skipped)")
-        return Command(goto="synthesize")
-
-    gathered = state.get("tool_results", []) + state.get("documents_retrieved", [])
-    judge_input = [judge_sys_msg]
-    if state.get("context"):
-        judge_input.append(HumanMessage(content=f"Grounding context:\n{state['context']}"))
-    if gathered:
-        judge_input.append(
-            HumanMessage(content="Gathered this turn:\n" + "\n\n".join(map(str, gathered)))
-        )
-    else:
-        judge_input.append(HumanMessage(content="Gathered this turn: (nothing — no tools ran)"))
-    judge_input.append(HumanMessage(content=f"User request:\n{state['current_query']}"))
-    judge_input.append(HumanMessage(content=f"Draft answer:\n{draft}"))
-
-    try:
-        verdict = get_judge_model().invoke(judge_input)
-    except Exception as exc:
-        # A structured-output failure must never strand the turn — accept the draft.
-        diag.log(f"replan_node : judge failed ({exc}); accepting draft -> synthesize")
-        return Command(goto="synthesize")
-
-    if verdict.grounded or not (verdict.search_query or "").strip():
-        diag.log(f"replan_node : {time.perf_counter() - start:.4f}s (grounded)")
-        return Command(goto="synthesize")
-
-    # Ungrounded: insert the web_search at the current step's position so it becomes the active
-    # step the agent works next (after it runs, update_plan advances past it to the remaining work).
-    # NOTE: web_search is the ONLY repair this node knows. That's deliberate for the MVP (the
-    # ungrounded case is almost always "asserted a current/external fact without looking it up"),
-    # but it's a coupling to revisit if you add tools: an answer that really needs the knowledge
-    # base or a URL extract can't be repaired here — extend ReplanVerdict to carry a tool choice.
-    query = verdict.search_query.strip()
-    cur = active_step(plan)
-    at = cur.get("step_id") if cur else None
-    new_plan = add_step(plan, f"Search the web: {query}", "web_search", at=at)
-
-    diag.log(f"replan_node : {time.perf_counter() - start:.4f}s (escalate -> web_search)")
-    # Reset agent_nudges so the freshly inserted step gets its own full NUDGE_BUDGET. Otherwise a
-    # nudge budget already spent earlier this turn leaves zero budget to make the model honor the
-    # judge's inserted search, and route_after_agent silently falls through to synthesize.
-    return Command(
-        goto="agent",
-        update={"plan": new_plan, "replans": state.get("replans", 0) + 1, "agent_nudges": 0},
+def _revision_instruction(state: AgentState) -> str:
+    return (
+        f"The plan so far:\n{plan_txt(state.get('plan') or [])}\n\n"
+        f"It needs fixing: {state.get('reasoning') or '(no reason recorded)'}\n\n"
+        "Produce ALL the remaining steps needed to FULLY complete the request, "
+        "replacing the pending ones. Do not repeat completed steps. Include every "
+        "read, calculation, and the final write the request requires, in order.\n"
+        "Replace EVERY reference with the EXACT name/value from the results above — "
+        "e.g. 'the last CSV the manifest lists' becomes the real filename like "
+        "revenue_q3.csv. Never restate a reference and never invent a "
+        "name that is not in the results.\n"
+        "If the results show the referenced item does NOT exist — the search/read "
+        "returned only unrelated content (a value labeled as something else, a file "
+        "that merely looks related) — do NOT substitute it and do NOT add steps to "
+        "hunt in other files: emit a single 'none' step stating the item was not "
+        "found, and drop any write step that depended on it.\n"
+        "If a step says to act 'for each' item in a list you already have, expand it "
+        "into ONE concrete read step plus ONE compute step PER item (using the exact "
+        "filenames), then any comparison/write step. The items are already known — do "
+        "NOT add a step to list or re-discover them.\n"
+        "A read_file step only READS a file — never describe a read step as computing "
+        "a total; each total/sum is its own calculate step after that file's read. E.g. for "
+        "a.csv and b.csv: 'Read a.csv' (read_file), 'Sum the revenue column "
+        "of a.csv' (calculate), 'Read b.csv' (read_file), 'Sum the revenue column "
+        "of b.csv' (calculate), then the comparison as a 'none' step. If the comparison "
+        "itself needs arithmetic (a difference, 'by how much'), that arithmetic is "
+        "its own calculate step BEFORE the final none step — never done in prose.\n"
+        "If a step failed because the shell lacks a tool (bc, python), do NOT retry it "
+        "in the shell — arithmetic is a calculate step over the numbers already read.\n"
+        "Order matters: compute a grand total or comparison ONLY after every per-item "
+        "value is computed, and put any write step LAST. In a write/report step, do "
+        "NOT embed specific numbers in the description — say 'write the totals from the "
+        "previous steps' so the real computed values are used, not guessed ones."
     )
+
+
+def replan_node(state: AgentState):
+    start = time.perf_counter()
+    plan = state.get("plan") or []
+    done = [dict(s) for s in plan if s.get("result") is not None]
+
+    draft = structured(
+        "planner",
+        [
+            planner_sys_msg(),
+            HumanMessage(content=original_request(state)),
+            HumanMessage(content=_revision_instruction(state)),
+        ],
+        _PlanOut,
+        plan_format(sorted(registered_tools())),
+        PLAN_SHAPE,
+        default=_PlanOut(),
+    )
+
+    done_descs = {str(s.get("label") or "").strip().lower() for s in done}
+    new_steps = [
+        s for s in to_steps(draft)
+        if str(s.get("label") or "").strip().lower() not in done_descs
+    ]
+    if not new_steps:
+        # A failed/empty redraft keeps the pending steps as they were — degrading to the old
+        # plan beats stranding the turn (and beats silently dropping the remaining work).
+        diag.log(f"replan_node : {time.perf_counter() - start:.4f}s (empty redraft — plan kept)")
+        return {
+            "replans": state.get("replans", 0) + 1,
+            "rectify": False,
+            "reasoning": "",
+        }
+
+    merged = done + new_steps[:_MAX_NEW_STEPS]
+    for i, s in enumerate(merged, 1):
+        s["step_id"] = i
+    diag.log(
+        f"replan_node : {time.perf_counter() - start:.4f}s "
+        f"({len(done)} kept + {len(merged) - len(done)} redrafted)"
+    )
+    return {
+        "plan": merged,
+        "replans": state.get("replans", 0) + 1,
+        "rectify": False,
+        "reasoning": "",
+    }

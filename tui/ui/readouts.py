@@ -138,7 +138,7 @@ def show_models(models, bindings: dict, active_tier: str, embedder: str,
                 print(f"  {_RAIL_GLYPH} {idx}{m.name:<26}{m.size_h:>7}  {meta:<14}{emb}{bound}")
 
     # Role bindings summary — the full role list, even for roles whose model isn't pulled locally
-    # (e.g. a cloud-hybrid anthropic binding won't appear in the installed list above).
+    # (a bound tag that hasn't been `ollama pull`ed won't appear in the installed list above).
     if bindings:
         _emit("  bindings:")
         for role, mid in bindings.items():

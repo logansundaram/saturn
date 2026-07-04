@@ -84,14 +84,14 @@ def _render_label(gb) -> None:
     else:
         _kv("left machine", "no network sources", _GREEN)
 
-    # Groundedness — `replans` counts UNGROUNDED verdicts only; the judge ruling a draft grounded
-    # leaves it at 0, so 0 cannot be rendered as either "verified" or "not triggered". Say what
-    # the state actually records, nothing more.
+    # Self-correction — `replans` counts the times rectify sent the plan back for revision (a
+    # placeholder resolved, a dead end retried, a missing lookup added). A quiet pass records
+    # nothing, so 0 cannot be rendered as "verified correct". Say what the state records.
     if gb.replans:
-        _kv("grounded", f"⚠ judge caught an ungrounded draft — {gb.replans} "
-                        f"follow-up search{'es' if gb.replans > 1 else ''} inserted", _YELLOW)
+        _kv("rectified", f"⚠ rectify revised the plan {gb.replans} "
+                         f"time{'s' if gb.replans > 1 else ''} mid-run", _YELLOW)
     else:
-        _kv("grounded", "no ungrounded draft caught (judge ruled it grounded, or wasn't needed)",
+        _kv("rectified", "no plan revision needed (every step resolved as planned)",
             _DIM)
 
     # Gated calls. The count renders wherever it is KNOWN (live turn, or a record carrying

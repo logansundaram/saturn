@@ -10,8 +10,6 @@ Runtime-inventory commands — what the agent is running on and with, in one mod
 
 from __future__ import annotations
 
-from typing import Optional
-
 from commands._framework import command, _print
 from commands._utils import _ROLES, _resync_rag_after_model_change, is_list_verb, split_save_flag
 from tools.registry import tool as TOOLS, risk_of
@@ -55,25 +53,19 @@ def _tools(ctx, args):
 _BIND_TARGETS = ("all", *_ROLES, "embedder")
 
 
-def _set_role_binding(cfg, role: str, model: str, provider: Optional[str]) -> None:
-    key = f"tiers.{cfg.active_tier}.roles.{role}"
-    if provider:
-        cfg.set(key, {"provider": provider, "model": model})
-    else:
-        cfg.set(key, model)
-
-
 def _persist_bindings(cfg, keys: list[str]) -> None:
     """Persist session-set binding keys to config.yaml through the one persist seam (the same
-    machinery as /config <key> --save). A provider-form {provider, model} binding is a container,
-    not a scalar leaf — _persist_key reports it as session-only instead of failing the command."""
+    machinery as /config <key> --save)."""
     from commands.config import _persist_key
 
     for key in keys:
         _persist_key(cfg, key)
 
 
-def _bind(cfg, target: str, model: str, provider: Optional[str] = None, *, save: bool = False) -> None:
+def _bind(cfg, target: str, model: str, *, save: bool = False) -> None:
+    """Bind a role / all roles / the embedder to a local Ollama model id (a bare scalar in
+    config.yaml). A legacy {provider, model} cloud mapping on the role is simply overwritten —
+    cloud support is shelved (2026-07-03), and rebinding is how a stale mapping gets fixed."""
     from core.llms import reset_models
 
     tag = "" if save else " (session only)"
@@ -92,15 +84,14 @@ def _bind(cfg, target: str, model: str, provider: Optional[str] = None, *, save:
 
     if target == "all":
         for role in _ROLES:
-            _set_role_binding(cfg, role, model, provider)
+            cfg.set(f"tiers.{cfg.active_tier}.roles.{role}", model)
         reset_models()
         _print(f"  all roles -> {model} on tier '{cfg.active_tier}'{tag}.")
         keys = [f"tiers.{cfg.active_tier}.roles.{role}" for role in _ROLES]
     else:
-        _set_role_binding(cfg, target, model, provider)
+        cfg.set(f"tiers.{cfg.active_tier}.roles.{target}", model)
         reset_models()
-        bound = f"{provider}:{model}" if provider else model
-        _print(f"  {target} -> {bound} on tier '{cfg.active_tier}'{tag}.")
+        _print(f"  {target} -> {model} on tier '{cfg.active_tier}'{tag}.")
         keys = [f"tiers.{cfg.active_tier}.roles.{target}"]
     if save:
         _persist_bindings(cfg, keys)
@@ -144,7 +135,7 @@ def _models_picker(ctx, cfg, local, *, save: bool = False) -> None:
     "models",
     "List installed models; pick or switch what drives each role / the embedder.",
     aliases=("model",),
-    usage="/models [list] | /models <role|all|embedder> <id> [--provider <p>] [--save] | /models tier <name> [--save]",
+    usage="/models [list] | /models <role|all|embedder> <id> [--save] | /models tier <name> [--save]",
     details="""
 With no args, pings the local Ollama daemon, renders every installed model (size, params,
 quantization, and what each currently drives) as a numbered table, then drops into an interactive
@@ -156,8 +147,7 @@ trailing --save like the direct forms below.
 You can also bind directly, without the picker:
   /models list                       just the table + bindings, no picker (`ls` works too)
   /models all <id> [--save]          point every role at one model
-  /models <role> <id> [--provider <p>] [--save]  re-point one role (bare id = tier default
-                                     provider; the provider also works as a bare 3rd arg)
+  /models <role> <id> [--save]       re-point one role
   /models embedder <id> [--save]     switch the embedding model (re-embeds the corpus)
   /models tier <name> [--save]       switch the whole hardware tier
 
@@ -165,11 +155,12 @@ Roles: planner, tool_caller, synthesizer, utility, judge.
 
 Every switch is session-only by default and rebuilds the cached models on next use; append --save
 to also write the change back to config.yaml in place (the same dotted key(s) the session edit
-sets, via the /config <key> --save machinery). A provider-form {provider, model} binding has no
-scalar leaf to write — --save reports it and leaves config.yaml for a hand edit. Any change that
-moves the embedder re-embeds the document corpus. An explicit provider (--provider, or a bare
-3rd arg on a single role) writes the cross-provider {provider, model} form, e.g.:
-  /models planner claude-sonnet-4-6 --provider anthropic
+sets, via the /config <key> --save machinery). Any change that moves the embedder re-embeds the
+document corpus.
+
+Models are local Ollama ids only — cloud model support is SHELVED (2026-07-03, local-first is
+the edge), and the old --provider grammar left with it. Rebinding a role that still carries a
+legacy {provider, model} cloud mapping (a pre-shelve config.yaml) replaces it with the local bind.
 """,
 )
 def _models(ctx, args):
@@ -182,27 +173,11 @@ def _models(ctx, args):
 
     args, save = split_save_flag(args)
 
-    # The named `--provider <name>` flag (industry spelling of the bare positional 3rd arg) —
-    # split out up front like --save, so it works in any position on the binding forms.
-    provider_flag: Optional[str] = None
-    rest: list[str] = []
-    it = iter(args)
-    for a in it:
-        if a.lower() == "--provider":
-            provider_flag = next(it, None)
-            if provider_flag is None or provider_flag.startswith("-"):
-                _print("  usage: /models <role|all> <model_id> --provider <name> — "
-                       "--provider needs a value")
-                return
-        else:
-            rest.append(a)
-    args = rest
-
-    # --provider only modifies a role/all binding — refuse every form that would silently
-    # drop it (picker, list, tier, embedder), never a guess.
-    if provider_flag and (not args or args[0].lower() not in ("all", *_ROLES)):
-        _print(f"  --provider applies to role bindings ({', '.join(_ROLES)}, or all) — "
-               "usage: /models <role|all> <model_id> --provider <name>")
+    # The old cross-provider grammar (--provider <p> / a bare provider as 3rd arg) left with the
+    # cloud-model shelve (2026-07-03): refuse it loudly rather than binding something surprising.
+    if any(a.lower() == "--provider" for a in args):
+        _print("  --provider was removed with the cloud-model shelve — models are local Ollama "
+               "ids only; usage: /models <role|all> <model_id> [--save]")
         return
 
     if not args:
@@ -249,9 +224,9 @@ def _models(ctx, args):
 
     if sub == "all":
         if len(args) < 2:
-            _print("  usage: /models all <model_id> [--provider <name>] [--save]")
+            _print("  usage: /models all <model_id> [--save]")
             return
-        _bind(cfg, "all", args[1], provider_flag, save=save)
+        _bind(cfg, "all", args[1], save=save)
         return
 
     role = sub
@@ -259,24 +234,16 @@ def _models(ctx, args):
         _print(f"  unknown target: {role} (roles: {', '.join(_ROLES)}; or 'all'/'embedder'/'tier'/'list')")
         return
     if len(args) < 2:
-        _print(f"  usage: /models {role} <model_id> [--provider <name>] [--save]")
+        _print(f"  usage: /models {role} <model_id> [--save]")
         return
-    new_model = args[1]
-
     if len(args) > 2:
-        # The legacy bare positional. Given alongside the flag, they must agree — never guess.
-        if provider_flag and args[2].lower() != provider_flag.lower():
-            _print(f"  provider given twice and they disagree: {args[2]!r} vs --provider "
-                   f"{provider_flag!r} — pick one.")
-            return
-        provider = args[2]
-    elif provider_flag:
-        provider = provider_flag
-    else:
-        existing = cfg.get(f"tiers.{cfg.active_tier}.roles.{role}")
-        provider = existing.get("provider") if isinstance(existing, dict) else None
-
-    _bind(cfg, role, new_model, provider, save=save)
+        # The old bare-positional provider spelling — gone with the cloud shelve.
+        _print(f"  too many arguments — usage: /models {role} <model_id> [--save] "
+               "(the provider argument was removed with the cloud-model shelve).")
+        return
+    # A scalar bind; if the role still carried a legacy {provider, model} cloud mapping
+    # (pre-shelve config.yaml), this simply replaces it — rebinding IS the fix.
+    _bind(cfg, role, args[1], save=save)
 
 
 # ── /context ─────────────────────────────────────────────────────────────────────────────────
@@ -345,10 +312,6 @@ def _context(ctx, args):
         return
 
     arg = args[0].lower()
-    if arg in ("compact", "summarize"):
-        _print("  /context compact was removed — use /compact to summarize older turns.")
-        return
-
     if arg in ("auto", "default", "reset", "off"):
         cfg.set("runtime.num_ctx", None)
         reset_models()

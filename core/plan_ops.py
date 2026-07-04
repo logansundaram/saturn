@@ -6,9 +6,11 @@ drift — the prompt you get mid-turn understands exactly the same `add`/`edit`/
 `tool`/`status` words you'd document for `/plan`.
 
 The plan is the same plain-dict shape used everywhere else in state:
-`{step_id, label, status, intended_tool}` (see state.py). These functions
-are pure: they take a plan list and return a NEW edited list (the caller decides whether to commit
-it), so they're trivially testable and never mutate the live plan in place by surprise.
+`{step_id, label, status, intended_tool, result, needs_resolution}` (see state.py — the plan is
+the engine's data bus; `result` is None until a step runs). These functions are pure: they take a
+plan list and return a NEW edited list (the caller decides whether to commit it), so they're
+trivially testable and never mutate the live plan in place by surprise. The editor never touches
+`result` — editing a completed step's label keeps its recorded outcome.
 
 `step_id` is treated as a 1-based position and renumbered after any structural change, so the ids a
 user sees in the rendered plan always match what they type. Editing a step preserves its `status`
@@ -28,11 +30,13 @@ import threading
 from dataclasses import dataclass
 from typing import Optional
 
-_VALID_STATUS = ("pending", "active", "done", "skipped")
+_VALID_STATUS = ("pending", "active", "done", "skipped", "blocked", "error", "cancelled")
 
 
 def normalize(plan: Optional[list[dict]]) -> list[dict]:
-    """Return a clean copy of the plan with every field present and `step_id`s renumbered 1..N."""
+    """Return a clean copy of the plan with every field present and `step_id`s renumbered 1..N.
+    `result` survives untouched (it is the data bus — a completed step's recorded outcome), and
+    a step whose status fell outside the vocabulary resets to pending WITHOUT clearing it."""
     out: list[dict] = []
     for i, step in enumerate(plan or [], start=1):
         status = step.get("status")
@@ -42,6 +46,8 @@ def normalize(plan: Optional[list[dict]]) -> list[dict]:
                 "label": str(step.get("label", "")).strip() or f"Step {i}",
                 "status": status if status in _VALID_STATUS else "pending",
                 "intended_tool": step.get("intended_tool") or None,
+                "result": step.get("result"),
+                "needs_resolution": bool(step.get("needs_resolution")),
             }
         )
     return out
@@ -77,7 +83,8 @@ def add_step(
     """Insert a new pending step. `at` is a 1-based position (default: append)."""
     plan = [dict(s) for s in plan]
     step = {"step_id": 0, "label": label.strip(), "status": "pending",
-            "intended_tool": intended_tool or None}
+            "intended_tool": intended_tool or None, "result": None,
+            "needs_resolution": False}
     if at is None or at > len(plan):
         plan.append(step)
     else:
@@ -128,7 +135,7 @@ COMMAND_HELP = (
     "add <label> [::tool]    append a step (optionally with an intended tool)",
     "edit <id> <label>       relabel step #id",
     "tool <id> <name|none>   set or clear step #id's intended tool",
-    "status <id> <status>    set step status (pending|active|done|skipped)",
+    "status <id> <status>    set step status (pending|active|done|skipped|blocked|error|cancelled)",
     "move <id> <pos>         move step #id to position pos",
     "drop <id>               remove step #id",
 )
@@ -184,7 +191,7 @@ def apply_command(plan: list[dict], line: str) -> tuple[list[dict], str]:
 
     if verb == "status":
         if len(rest) < 2:
-            raise ValueError("usage: status <id> <pending|active|done|skipped>")
+            raise ValueError("usage: status <id> <pending|active|done|skipped|blocked|error|cancelled>")
         sid = _parse_id(rest[0])
         return set_status(plan, sid, rest[1].lower()), f"step #{sid} status -> {rest[1].lower()}"
 

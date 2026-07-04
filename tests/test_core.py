@@ -1,15 +1,15 @@
 """
 Unit tests for the brittle pure-logic core of the loop — the parts whose bugs don't crash but
-silently corrupt behaviour (plan accounting, history compaction, observation clamping).
+silently corrupt behaviour (the plan data bus, history compaction, observation clamping).
 
 Deliberately dependency-light: every function under test is pure (or near-pure), so these need no
 Ollama, no network, no checkpointer. Runnable two ways:
     python tests/test_core.py     # standalone, no pytest required
     pytest tests/                 # if pytest is installed
 
-Coverage maps to the fixes in the brittleness pass:
-  - unrun_planned_tools / update_plan_node : multi-step same-tool plans no longer collapse (#4),
-    the progress fallback can't mis-credit (#5), update_plan doesn't mutate in place (#6).
+Coverage (2026-07-03 engine transplant):
+  - current_step / update_plan_node : the plan-as-data-bus pointer + the mechanical recorder
+    (result written onto the current step, status derived from the observation).
   - _compact_history : older turns collapse but the most recent scratchpad is retained.
   - _clamp_observation : large tool output can't overflow the context window.
   - planner tool catalog : built from the live registry (no drift when tools are added).
@@ -23,93 +23,79 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from langchain.messages import HumanMessage, AIMessage, ToolMessage
 
-from core.state import unrun_planned_tools
+from core.state import current_step, unfinished_steps, incident_steps
 from nodes.update_plan import update_plan_node
 from nodes.tools import _clamp_observation, _MAX_OBSERVATION
 
 
-def _step(step_id, status, tool):
-    return {"step_id": step_id, "label": f"step {step_id}", "status": status, "intended_tool": tool}
+def _step(step_id, tool=None, result=None, status="pending"):
+    return {"step_id": step_id, "label": f"step {step_id}", "status": status,
+            "intended_tool": tool, "result": result, "needs_resolution": False}
 
 
-# --- #4: multi-step same-tool plans (positional, not set-membership) -----------------------
-def test_unrun_two_same_tool_one_call_leaves_second_pending():
-    plan = [_step(1, "done", "web_search"), _step(2, "pending", "web_search")]
-    pending = unrun_planned_tools(plan, ["web_search"])
-    assert [s["step_id"] for s in pending] == [2], "second search must still be pending after one call"
+# --- the data-bus pointer: result-is-None marks the step being executed ---------------------
+def test_current_step_is_first_without_result():
+    plan = [_step(1, result="done a", status="done"), _step(2), _step(3)]
+    assert current_step(plan)["step_id"] == 2
+    assert current_step([_step(1, result="x", status="done")]) is None
+    assert current_step([]) is None and current_step(None) is None
 
 
-def test_unrun_two_same_tool_two_calls_clears_both():
-    plan = [_step(1, "done", "web_search"), _step(2, "pending", "web_search")]
-    assert unrun_planned_tools(plan, ["web_search", "web_search"]) == []
+def test_unfinished_and_incident_views():
+    plan = [
+        _step(1, result="ok", status="done"),
+        _step(2, result="declined", status="skipped"),
+        _step(3),
+    ]
+    assert [s["step_id"] for s in unfinished_steps(plan)] == [3]
+    assert [s["step_id"] for s in incident_steps(plan)] == [2]
 
 
-def test_unrun_ignores_no_tool_and_terminal_steps():
-    plan = [_step(1, "pending", None), _step(2, "skipped", "web_search"), _step(3, "pending", "calculate")]
-    pending = unrun_planned_tools(plan, [])
-    assert [s["step_id"] for s in pending] == [3]  # only the un-run tool step
+# --- the mechanical recorder: observation -> current step's result + derived status ----------
+def _tool_round(plan, observation, name="web_search"):
+    """A state as it looks after tools ran: the call answered by a trailing ToolMessage."""
+    return {
+        "plan": plan,
+        "messages": [
+            HumanMessage("q"),
+            AIMessage("", tool_calls=[{"name": name, "args": {}, "id": "c1"}]),
+            ToolMessage(observation, tool_call_id="c1", name=name),
+        ],
+    }
 
 
-# --- #4/#5/#6: update_plan positional advance, fallback, no in-place mutation ---------------
-def test_update_plan_advances_one_step_per_call():
-    plan = [_step(1, "active", "web_search"), _step(2, "pending", "web_search"), _step(3, "pending", "write_file")]
-    out1 = update_plan_node({"plan": plan, "tools_called": ["web_search"]})["plan"]
-    assert [(s["step_id"], s["status"]) for s in out1] == [(1, "done"), (2, "active"), (3, "pending")]
-    out2 = update_plan_node({"plan": out1, "tools_called": ["web_search", "web_search"]})["plan"]
-    assert [(s["step_id"], s["status"]) for s in out2] == [(1, "done"), (2, "done"), (3, "active")]
+def test_update_plan_records_result_on_current_step():
+    plan = [_step(1, "web_search"), _step(2, "calculate")]
+    out = update_plan_node(_tool_round(plan, "search results here"))["plan"]
+    assert out[0]["result"] == "search results here"
+    assert out[0]["status"] == "done"
+    assert out[1]["result"] is None, "only the current step records"
+
+
+def test_update_plan_derives_incident_statuses():
+    plan = [_step(1, "run_shell")]
+    out = update_plan_node(_tool_round(plan, "Error calling run_shell: boom"))["plan"]
+    assert out[0]["status"] == "error"
+    plan = [_step(1, "write_file")]
+    decline = ("Execution declined by the user. Do not retry this action; tell the user you "
+               "did not perform it.")
+    out = update_plan_node(_tool_round(plan, decline, name="write_file"))["plan"]
+    assert out[0]["status"] == "skipped", "a gate rejection records as a skipped incident"
 
 
 def test_update_plan_does_not_mutate_input():
-    plan = [_step(1, "active", "web_search"), _step(2, "pending", "web_search")]
+    plan = [_step(1, "web_search")]
     before = [dict(s) for s in plan]
-    update_plan_node({"plan": plan, "tools_called": ["web_search"]})
+    update_plan_node(_tool_round(plan, "result"))
     assert plan == before, "update_plan must work on a copy, not mutate state in place"
 
 
-def test_update_plan_fallback_advances_active_when_no_match():
-    # A tool round happened but matched no planned intended_tool -> advance the active step only.
-    plan = [_step(1, "active", "write_file"), _step(2, "pending", None)]
-    out = update_plan_node({"plan": plan, "tools_called": ["calculate"]})["plan"]
-    assert out[0]["status"] == "done" and out[1]["status"] == "active"
-
-
-# --- reject -> skip the rejected step so the plan can't re-demand it (no re-approve loop) --------
-def test_rejected_step_is_skipped_so_plan_advances():
-    from nodes.approval import _skip_rejected_steps
-
-    plan = [_step(1, "active", "write_file"), _step(2, "pending", "web_search")]
-    out = _skip_rejected_steps(plan, ["write_file"])
-    assert out[0]["status"] == "skipped", "the rejected tool's step retires"
-    assert out[1]["status"] == "pending", "later, un-rejected work is untouched"
-    # The skipped step is no longer un-run work, so route_after_agent won't nudge for it.
-    assert [s["step_id"] for s in unrun_planned_tools(out, [])] == [2]
-
-
-def test_rejected_step_skip_is_positional_for_same_tool():
-    from nodes.approval import _skip_rejected_steps
-
-    # Two same-tool steps, one rejection -> only the first non-terminal one retires.
-    plan = [_step(1, "active", "write_file"), _step(2, "pending", "write_file")]
-    out = _skip_rejected_steps(plan, ["write_file"])
-    assert [(s["step_id"], s["status"]) for s in out] == [(1, "skipped"), (2, "pending")]
-
-
-def test_rejected_step_skip_falls_back_to_active_when_no_tool_match():
-    from nodes.approval import _skip_rejected_steps
-
-    # The agent called a tool the planner didn't anticipate; skip the active step it was driving.
-    plan = [_step(1, "active", "write_file"), _step(2, "pending", None)]
-    out = _skip_rejected_steps(plan, ["some_other_tool"])
-    assert out[0]["status"] == "skipped" and out[1]["status"] == "pending"
-
-
-def test_rejected_step_skip_does_not_mutate_input():
-    from nodes.approval import _skip_rejected_steps
-
-    plan = [_step(1, "active", "write_file")]
-    before = [dict(s) for s in plan]
-    _skip_rejected_steps(plan, ["write_file"])
-    assert plan == before, "must work on a copy, not mutate state in place"
+def test_update_plan_noop_without_observation_or_pending_step():
+    # No trailing ToolMessage -> nothing to record.
+    assert update_plan_node({"plan": [_step(1)], "messages": [HumanMessage("q")]}) == {}
+    # Every step already has a result -> nothing to record onto.
+    done = [_step(1, result="x", status="done")]
+    assert update_plan_node(_tool_round(done, "obs")) == {}
 
 
 # --- _compact_history: keep the most recent scratchpad, collapse older turns ----------------
@@ -149,14 +135,21 @@ def test_clamp_long_observation_truncated_with_marker():
     assert out.startswith("x") and out.endswith("x")  # head + tail preserved
 
 
-# --- planner catalog stays in sync with the live registry -----------------------------------
-def test_planner_catalog_lists_every_registered_tool():
+# --- planner prompt stays in sync with the live registry ------------------------------------
+def test_planner_prompt_lists_every_registered_tool():
     from core import messages
     from tools import registry
 
-    catalog = messages._tool_catalog()
+    prompt = messages.planner_sys_msg().content
     for t in registry.tool:
-        assert t.name in catalog, f"{t.name} missing from planner catalog (drift!)"
+        assert t.name in prompt, f"{t.name} missing from planner prompt (drift!)"
+    # ...and the same names reach the constrained decoder's enum + the normalizer.
+    from core.structured import plan_format, registered_tools
+
+    enum = plan_format(sorted(registered_tools()))
+    enum = enum["properties"]["plan"]["items"]["properties"]["tool"]["enum"]
+    for t in registry.tool:
+        assert t.name in enum, f"{t.name} missing from the plan schema enum (drift!)"
 
 
 # --- #5: registration decorator keeps the registry views consistent -------------------------
@@ -333,7 +326,7 @@ def test_escape_with_text_steers_empty_reviews():
 
 def test_plan_gate_injects_steer_and_consumes_request():
     from core import plan_ops as interrupts
-    from nodes.plan_gate import plan_gate_node
+    from nodes.plan_gate import plan_gate_node, route_after_gate
 
     c = interrupts.get_pause_controller()
     c.clear()
@@ -342,6 +335,12 @@ def test_plan_gate_injects_steer_and_consumes_request():
     assert "messages" in upd, "a steer is injected as a message update"
     assert "focus on cost" in upd["messages"][0].content
     assert not c.pending(), "the steer request is consumed (won't re-inject next boundary)"
+    # The steer arms a replan with the correction as the revision instruction, and the gate's
+    # router honors it (the remaining steps are redrafted around the user's words).
+    assert upd["rectify"] is True and "focus on cost" in upd["reasoning"]
+    assert route_after_gate({"rectify": True}) == "replan"
+    assert route_after_gate({}) == "execute"
+    assert route_after_gate({"aborted": True}) == "synthesize"
 
 
 # --- Tier 2 #5: write_file diff preview (pure diff classification) ------------------------------

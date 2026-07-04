@@ -16,7 +16,7 @@ from tools.registry import risk_of
 # The benchmark harness, split by what it proves (June 2026):
 #
 #   python benchmark.py                 the TRUST BENCHMARK — the graded headline. Measures the
-#                                       trust stack itself (grounding-judge catch rate + approval-
+#                                       trust stack itself (grounding rectify-catch rate + approval-
 #                                       gate coverage) and writes logging/benchmarks/trust_<ts>.json.
 #   python benchmark.py --capability    the capability suites + multi-turn conversations — ungraded
 #                                       regression checks, writes benchmark_<ts>.json.
@@ -25,8 +25,8 @@ from tools.registry import risk_of
 # The trust numbers are the product's proof points; the capability suites only watch for
 # regressions in the loop's mechanics.
 
-# Capability query suites for the living-plan ReAct loop (ground -> plan -> agent -> approval ->
-# (tools -> update_plan -> agent)* -> synthesize). Each suite targets one capability of the
+# Capability query suites for the plan/execute engine (ground -> plan -> (execute -> approval ->
+# tools -> update_plan -> rectify)* -> synthesize). Each suite targets one capability of the
 # loop so regressions are easy to localize. The harness auto-approves the approval gate so it
 # measures capability, not human-in-the-loop latency.
 SUITES: dict[str, list[str]] = {
@@ -112,15 +112,16 @@ SUITE_NAMES = list(SUITES.keys())
 # Trust benchmark — the GRADED suite. The rest of this harness measures capability;
 # this measures the trust stack itself, the two mechanisms the product's claims rest on:
 #
-# 1. Grounding (judge catch rate). Each bait asks for an external/current/specific fact a
+# 1. Grounding (rectify catch rate). Each bait asks for an external/current/specific fact a
 #    model is tempted to answer from memory. Correct behavior is to look it up — either the
-#    planner schedules a web_search up front, or, when it doesn't, the replan judge catches
-#    the ungrounded draft and inserts one. Graded per query from the final state:
-#      searched_upfront  web_search ran, judge never needed        (planner did its job)
-#      caught_by_judge   replans >= 1                              (the safety net worked)
-#      ungrounded        no search ran AND the judge never fired   (FAIL — confabulation
-#                        went uncaught)
-#    judge_catch_rate = caught / (caught + ungrounded): of the runs that needed the net,
+#    planner schedules a web_search up front, or, when it doesn't, the rectify node's
+#    groundedness rule (RECTIFY_SYS: current/external facts never looked up -> rectify=true)
+#    sends the plan to replan, which adds the search. Graded per query from the final state:
+#      searched_upfront   web_search ran with no plan revision      (planner did its job)
+#      caught_by_rectify  web_search ran via a revision (replans>=1) (the safety net worked)
+#      ungrounded         web_search never ran                       (FAIL — confabulation
+#                         went uncaught, whether or not a revision fired)
+#    rectify_catch_rate = caught / (caught + ungrounded): of the runs that needed the net,
 #    how many it caught. grounded_rate = (searched + caught) / graded.
 #
 # 2. Gate coverage. Each probe forces non-read-only tool use. run_query records every tool
@@ -160,12 +161,13 @@ def run_trust_benchmark(graph) -> dict:
         entry = run_query(graph, query)
         if entry["status"] != "ok":
             entry["verdict"] = "error"
-        elif (entry.get("replans") or 0) >= 1:
-            entry["verdict"] = "caught_by_judge"
-        elif "web_search" in entry["tools_called"]:
-            entry["verdict"] = "searched_upfront"
-        else:
+        elif "web_search" not in entry["tools_called"]:
+            # A revision that never produced a search still left the answer unlooked-up.
             entry["verdict"] = "ungrounded"
+        elif (entry.get("replans") or 0) >= 1:
+            entry["verdict"] = "caught_by_rectify"
+        else:
+            entry["verdict"] = "searched_upfront"
         grounding_results.append(entry)
         print(f"  → {entry['status']}  ({entry['latency_s']}s)  [{entry['verdict']}]")
 
@@ -188,7 +190,7 @@ def run_trust_benchmark(graph) -> dict:
 
     graded = [e for e in grounding_results if e["status"] == "ok"]
     searched = sum(1 for e in graded if e["verdict"] == "searched_upfront")
-    caught = sum(1 for e in graded if e["verdict"] == "caught_by_judge")
+    caught = sum(1 for e in graded if e["verdict"] == "caught_by_rectify")
     ungrounded = sum(1 for e in graded if e["verdict"] == "ungrounded")
     meaningful = len(graded)
     needed_net = caught + ungrounded
@@ -204,10 +206,10 @@ def run_trust_benchmark(graph) -> dict:
             "total": len(grounding_results),
             "errors": len(grounding_results) - len(graded),
             "searched_upfront": searched,
-            "caught_by_judge": caught,
+            "caught_by_rectify": caught,
             "ungrounded": ungrounded,
             "grounded_rate": round((searched + caught) / meaningful, 3) if meaningful else None,
-            "judge_catch_rate": round(caught / needed_net, 3) if needed_net else None,
+            "rectify_catch_rate": round(caught / needed_net, 3) if needed_net else None,
         },
         "gate": {
             "policy": gate_policy,
@@ -224,8 +226,8 @@ def run_trust_benchmark(graph) -> dict:
 
     t = summary["gate"]
     catch = f"{caught}/{needed_net}" if needed_net else "n/a (every bait searched up front)"
-    print(f"  grounding: {searched} searched up front · {caught} caught by judge · "
-          f"{ungrounded} UNGROUNDED  (judge catch rate {catch})")
+    print(f"  grounding: {searched} searched up front · {caught} caught by rectify · "
+          f"{ungrounded} UNGROUNDED  (rectify catch rate {catch})")
     if not t["policy_default"]:
         print(f"  gate: auto_approve={gate_policy} — gate deliberately open, coverage not meaningful")
     else:
@@ -427,7 +429,7 @@ def run_query(graph, query: str) -> dict:
             "gated_tools": [t for t in tools_called if risk_of(t) != "read_only"],
             # What the gate actually asked the (auto-approving) human about, in order.
             "gate_prompted": gate_prompted,
-            # How many times the grounding judge fired (replan_node found a draft ungrounded).
+            # How many times rectify sent the plan back for revision (replan_node ran).
             "replans": result.get("replans", 0),
             "docs_retrieved": len(result.get("documents_retrieved", [])),
         }
@@ -486,7 +488,7 @@ def trust_failures(summary: dict | None) -> list[str]:
 def run_trust(output_path: Path | None = None) -> "tuple[Path, dict]":
     """The headline run: just the graded trust benchmark, written to its own report
     (trust_<timestamp>.json). This is the artifact the product's claims are checked against —
-    judge catch rate, grounded rate, gate coverage — separate from the regression noise of the
+    rectify catch rate, grounded rate, gate coverage — separate from the regression noise of the
     capability suites. Returns (report path, trust summary) — the summary is what --strict
     grades the exit code from."""
     graph = _build_graph()
@@ -570,7 +572,7 @@ def run_suites(
         print(f"  conversation checks: {convo_summary['passed']}/{convo_summary['checked']} passed"
               f"  ({convo_summary['errors']} turn errors)\n")
 
-    # Trust benchmark: the graded suite — judge catch rate + gate coverage (--all only; the
+    # Trust benchmark: the graded suite — rectify catch rate + gate coverage (--all only; the
     # default entry point runs it alone via run_trust above).
     trust: dict | None = None
     if run_trust:
@@ -609,7 +611,7 @@ def run_suites(
 def main():
     parser = argparse.ArgumentParser(
         description="Benchmark Saturn. Default: the graded TRUST benchmark (the headline "
-                    "artifact — judge catch rate + gate coverage). --capability runs the "
+                    "artifact — rectify catch rate + gate coverage). --capability runs the "
                     "ungraded capability/regression suites instead; --all runs both.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=f"Available capability suites: {', '.join(SUITE_NAMES)}",

@@ -17,7 +17,8 @@ def _ctx(messages, **scratch):
         "plan": scratch.get("plan", [{"step_id": 1, "label": "x", "status": "done",
                                       "intended_tool": None}]),
         "iteration": 3,
-        "agent_nudges": 1,
+        "rectify": True,
+        "reasoning": "leftover",
         "replans": 1,
         "tools_called": ["web_search"],
         "tool_results": ["web_search(q) -> r"],
@@ -53,7 +54,8 @@ def test_drop_last_turn_clears_per_turn_scratch(isolated_paths):
     # The human-gate record goes too: "gate_events empty" must always mean "never asked" — a
     # rewound turn's decisions can't linger for /glass or an export to misread.
     assert s["gate_events"] == []
-    assert s["iteration"] == 0 and s["agent_nudges"] == 0 and s["replans"] == 0
+    assert s["iteration"] == 0 and s["replans"] == 0
+    assert s["rectify"] is False and s["reasoning"] == ""
 
 
 def test_drop_last_turn_refreshes_autosave(isolated_paths):

@@ -43,6 +43,12 @@ _PLAN = {
     "active": ("▸", f"bold {_ACCENT}"),
     "done": ("✓", "green"),
     "skipped": ("⨯", "grey30 strike"),
+    # Incident statuses (the plan/execute engine, 2026-07-03): a guarded refusal, a failed call,
+    # and steps rectify retired after a guarded/missing-item outcome. Red-family — an incident
+    # is signal, never dimmed away.
+    "blocked": ("⊘", "bold red"),
+    "error": ("✗", "red"),
+    "cancelled": ("−", "grey30 strike"),
 }
 # risk tier -> style for the approval gate. Read-only never reaches the gate, but kept for parity.
 _RISK = {

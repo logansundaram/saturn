@@ -1,5 +1,5 @@
 """
-Slash-command layer for the interactive CLI loop (`agent.py`).
+Slash-command layer for the interactive CLI loop (app/repl.py).
 
 A package of themed modules (consolidated 2026-06-11 from one-file-per-command): each module
 under commands/ groups the commands of one /help theme and shares the dispatch framework from

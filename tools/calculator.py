@@ -40,6 +40,23 @@ _UNARY_OPS = {ast.UAdd: operator.pos, ast.USub: operator.neg}
 # Resource bounds: a math helper must never hang or OOM the turn (9**9**9**9).
 _MAX_EXPR_LEN = 1000
 _MAX_POW_EXP = 10_000
+# Result-SIZE bound for integer exponentiation: the exponent cap alone lets a nested
+# (9**9999)**9999 pass both checks — each exponent ≤ 10k — while computing a ~3×10^8-bit
+# integer (minutes of CPU / OOM) on this ungated read_only tool. bit_length(base)×exp bounds
+# the result cheaply before any work happens; 1M bits keeps every sane calculation legal.
+_MAX_POW_BITS = 1_000_000
+
+
+def _check_pow(base, exp) -> None:
+    """Both halves of the pow resource bound (shared by the ** operator and the pow() builtin)."""
+    if abs(exp) > _MAX_POW_EXP:
+        raise ValueError(f"exponent too large (limit {_MAX_POW_EXP})")
+    if isinstance(base, int) and isinstance(exp, int) and exp > 1:
+        if base.bit_length() * exp > _MAX_POW_BITS:
+            raise ValueError(
+                f"result too large (base of {base.bit_length()} bits raised to {exp} "
+                f"exceeds the {_MAX_POW_BITS}-bit result limit)"
+            )
 
 
 def _number(value):
@@ -56,8 +73,7 @@ def _eval_node(node):
         if isinstance(node.op, ast.Pow):
             base = _number(_eval_node(node.left))
             exp = _number(_eval_node(node.right))
-            if abs(exp) > _MAX_POW_EXP:
-                raise ValueError(f"exponent too large (limit {_MAX_POW_EXP})")
+            _check_pow(base, exp)
             return base ** exp
         fn = _BIN_OPS.get(type(node.op))
         if fn is None:
@@ -75,16 +91,17 @@ def _eval_node(node):
         kwargs = {kw.arg: _eval_node(kw.value) for kw in node.keywords if kw.arg}
         if node.func.id == "pow":
             # The pow() builtin is the ** operator with a function-call spelling — it must share
-            # the _MAX_POW_EXP bound, or pow(9, 99999999) recreates the exact resource bomb the
-            # ast.Pow branch above refuses (tiny expression, ~95-million-digit result). The
-            # exponent may arrive positionally OR as a keyword (pow takes base/exp/mod keywords),
-            # so resolve both forms. The 3-arg modular form stays unbounded on purpose: modular
-            # exponentiation is cheap at any exponent, and it is the one reason pow() exists here
-            # at all (2-arg use is already covered by **).
+            # the _check_pow bounds, or pow(9, 99999999) / pow(9**9999, 9999) recreate the exact
+            # resource bombs the ast.Pow branch above refuses. The base/exponent may arrive
+            # positionally OR as keywords (pow takes base/exp/mod), so resolve both forms. The
+            # 3-arg modular form stays unbounded on purpose: modular exponentiation is cheap at
+            # any exponent, and it is the one reason pow() exists here at all (2-arg use is
+            # already covered by **).
+            base = args[0] if args else kwargs.get("base")
             exp = args[1] if len(args) > 1 else kwargs.get("exp")
             has_mod = len(args) > 2 or "mod" in kwargs
-            if exp is not None and not has_mod and abs(_number(exp)) > _MAX_POW_EXP:
-                raise ValueError(f"exponent too large (limit {_MAX_POW_EXP})")
+            if exp is not None and not has_mod:
+                _check_pow(_number(base) if base is not None else 0, _number(exp))
         return _ALLOWED_FUNCS[node.func.id](*args, **kwargs)
     if isinstance(node, (ast.Tuple, ast.List)):
         # Argument sequences for sum/min/max, e.g. sum([1, 2, 3]).

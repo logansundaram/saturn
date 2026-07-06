@@ -158,15 +158,12 @@ class AgentState(TypedDict):
     # steps. Bounded by MAX_REPLANS (nodes/rectify.py). Reset to 0 per turn.
     replans: int
 
-    # Plan-review interrupt (see nodes/plan_gate.py). `pause_requested` is the IN-GRAPH
-    # trigger seam: any node/tool (today none; later an LLM-initiated "review the plan" step) can
-    # set it True to make the next plan_gate pause. External/async pauses (keyboard, /plan
-    # pause|review) come through the plan_ops.PauseController instead — the gate checks both.
-    # `pause_reason` is the human-readable why shown at the prompt. `aborted` is set by the gate
-    # when the user abandons the turn at the review prompt, routing the loop to synthesize. All
-    # three reset per turn.
-    pause_requested: bool
-    pause_reason: str
+    # Plan-review interrupt (see nodes/plan_gate.py). Pauses arrive through the shared
+    # plan_ops.PauseController (keyboard Esc, /plan pause|review); `aborted` is set by the gate
+    # when the user abandons the turn at the review prompt, routing the loop to synthesize.
+    # Reset per turn. (The speculative in-graph `pause_requested`/`pause_reason` seam was
+    # deleted 2026-07-04 — nothing ever set it; a future LLM-initiated pause uses the same
+    # controller.)
     aborted: bool
 
     # Trace / transparency accumulators. The engine consumes observations via the plan's step

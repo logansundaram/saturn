@@ -27,6 +27,7 @@ from pathlib import Path
 
 import diag
 from config import get_config
+from textutil import clip
 
 # How many snapshot batches (turns that wrote files) to retain.
 _KEEP_BATCHES = 20
@@ -50,7 +51,7 @@ def begin_turn(query: str = "") -> None:
     global _pending, _active_dir
     _pending = {
         "id": datetime.now().strftime("%Y%m%d-%H%M%S-%f"),
-        "query": " ".join(query.split())[:200],
+        "query": clip(query, 200),  # textutil.clip — the one whitespace-collapse+cap idiom
     }
     _active_dir = None
 

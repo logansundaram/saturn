@@ -203,10 +203,17 @@ def approval_node(state: AgentState) -> Command[Literal["tools", "update_plan"]]
     if approved_ids == gated_ids:
         return Command(goto="tools", update={"gate_events": [event]})
 
-    # Decline ONLY the rejected calls (orphaned tool_calls break the next model turn).
+    # Decline ONLY the rejected calls (orphaned tool_calls break the next model turn). The
+    # structural outcome stamp (same contract as nodes/tools.py) is what the recorder keys the
+    # `skipped` status off; the DECLINE_TEXT prefix stays as belt-and-braces only.
     rejected = [tc for tc in gated if tc["id"] not in approved_ids]
     decline = [
-        ToolMessage(content=DECLINE_TEXT, tool_call_id=tc["id"], name=tc["name"])
+        ToolMessage(
+            content=DECLINE_TEXT,
+            tool_call_id=tc["id"],
+            name=tc["name"],
+            additional_kwargs={"saturn_status": "skipped"},
+        )
         for tc in rejected
     ]
     update = {"messages": decline, "gate_events": [event]}

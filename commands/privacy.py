@@ -89,9 +89,12 @@ def _overview(ctx):
     ui.table([(b["role"], b["model"], _locality_cell(b, inf, ui)) for b in inf["bindings"]])
 
     # --- web egress ---------------------------------------------------------
-    provider = str(cfg.get("web.provider", "auto"))
-    tavily = env_keys.is_set("TAVILY_API_KEY")
-    backend = "Tavily" if (provider == "tavily" or (provider == "auto" and tavily)) else "DuckDuckGo (keyless)"
+    # The backend web_search would use RIGHT NOW (tools/web.search_backend — the tool's own
+    # decision, including the session latch a dead/quota'd Tavily key trips), never re-derived
+    # from config+key alone: this readout must not contradict the egress ledger.
+    from tools.web import search_backend
+
+    backend = "Tavily" if search_backend() == "tavily" else "DuckDuckGo (keyless)"
     _print("  web egress (only when the agent uses a web tool — every call shows in /trace)")
     ui.table(
         [

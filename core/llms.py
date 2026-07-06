@@ -86,6 +86,18 @@ class _CloudBoundaryModel:
     async def ainvoke(self, input, *args, **kwargs):
         return await self._inner.ainvoke(self._outgoing(input), *args, **kwargs)
 
+    async def astream(self, input, *args, **kwargs):
+        async for chunk in self._inner.astream(self._outgoing(input), *args, **kwargs):
+            yield chunk
+
+    def batch(self, inputs, *args, **kwargs):
+        # Through invoke one input at a time so EVERY input is redacted + recorded — the inner
+        # model's batch would take the whole list past the boundary in one unobserved call.
+        return [self.invoke(i, *args, **kwargs) for i in inputs]
+
+    async def abatch(self, inputs, *args, **kwargs):
+        return [await self.ainvoke(i, *args, **kwargs) for i in inputs]
+
     def bind_tools(self, *args, **kwargs):
         return _CloudBoundaryModel(
             self._inner.bind_tools(*args, **kwargs), self._provider, self._model, self._host
@@ -96,8 +108,22 @@ class _CloudBoundaryModel:
             self._inner.with_structured_output(*args, **kwargs), self._provider, self._model, self._host
         )
 
+    # Network entry points this proxy does NOT cover fail CLOSED: __getattr__ used to hand them
+    # back bound to the INNER model, so a future caller (or a LangChain runnable composition)
+    # would send unredacted, unrecorded content — the exact leak the boundary exists to prevent.
+    # Nothing in the repo calls these today; a new caller gets a loud pointer, never a bypass.
+    _UNGUARDED = frozenset({
+        "generate", "agenerate", "generate_prompt", "agenerate_prompt",
+        "transform", "atransform", "batch_as_completed", "abatch_as_completed",
+    })
+
     def __getattr__(self, name):
-        # Anything we don't override (get_name, config_specs, etc.) defers to the inner model.
+        if name in _CloudBoundaryModel._UNGUARDED:
+            raise AttributeError(
+                f"_CloudBoundaryModel does not expose {name!r}: it would bypass the "
+                "redaction/egress boundary — use invoke/stream/astream/batch instead"
+            )
+        # Anything else we don't override (get_name, config_specs, etc.) defers to the inner model.
         return getattr(self._inner, name)
 
 
@@ -113,8 +139,6 @@ def _ollama_client_kwargs() -> dict:
 
 # (provider, model) -> BaseChatModel.  Cleared by reset_models().
 _MODEL_CACHE: dict[tuple[str, str], object] = {}
-# Derived handles (bound tools / structured output) are cached separately and also cleared.
-_DERIVED_CACHE: dict[str, object] = {}
 
 
 def _wrap_ollama(m, model: str):
@@ -224,6 +248,16 @@ class _EmbeddingsBoundary:
         self._gate([text])
         return self._inner.embed_query(text)
 
+    async def aembed_documents(self, texts):
+        # Without this override the Embeddings base-class async default runs against the INNER
+        # object (self=inner), skipping the air-gap raise and the ledger entirely.
+        self._gate(texts)
+        return await self._inner.aembed_documents(texts)
+
+    async def aembed_query(self, text):
+        self._gate([text])
+        return await self._inner.aembed_query(text)
+
     def __getattr__(self, name):
         return getattr(self._inner, name)
 
@@ -243,7 +277,6 @@ def reset_models() -> None:
     """Drop all cached models so the next get_* call rebuilds from current config. Called
     after a live model/tier change (e.g. the /models slash command)."""
     _MODEL_CACHE.clear()
-    _DERIVED_CACHE.clear()
 
 
 # ── local (Ollama) model discovery ────────────────────────────────────────────

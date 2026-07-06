@@ -16,11 +16,11 @@ from commands._session import (
     _autosave_file,
     _read_session,
     _session_file,
-    _session_payload,
     _sessions_dir,
     _swap_to_messages,
     clear_autosave,
     write_autosave,
+    write_session_file,
 )
 from commands._utils import LIST_VERBS, REMOVE_VERBS
 from textutil import clip
@@ -466,7 +466,6 @@ def _refuse_reserved_stem(path) -> bool:
 
 
 def _save_named(ctx, args):
-    import json
     from datetime import datetime
 
     messages = ctx.state.get("messages", [])
@@ -479,7 +478,7 @@ def _save_named(ctx, args):
     if _refuse_reserved_stem(path):
         return
     existed = path.exists()
-    path.write_text(json.dumps(_session_payload(messages), indent=2), encoding="utf-8")
+    write_session_file(path, messages)
     note = " (overwrote existing)" if existed else ""
     _print(f"  saved {len(messages)} message(s) -> {path.name}{note}")
     _print(f"  restore it with /resume {path.stem}")

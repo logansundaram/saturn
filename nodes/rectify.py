@@ -37,6 +37,7 @@ pauses + steering keep their seam) -> execute; else synthesize. The iteration ca
 (config runtime.max_iterations, counted in execute passes) and MAX_REPLANS bound every loop edge.
 """
 
+import re
 import time
 
 import diag
@@ -44,7 +45,13 @@ from langchain.messages import HumanMessage
 
 from config import get_config
 from core.messages import RECTIFY_SYS, RESOLVE_CHECK_SYS
-from core.plan_context import original_request, plan_txt, results_block
+from core.plan_context import (
+    SEARCH_TOOLS,
+    WRITE_TOOLS,
+    original_request,
+    plan_txt,
+    results_block,
+)
 from core.state import AgentState
 from core.structured import (
     RectifyBool,
@@ -61,11 +68,15 @@ from core.structured import (
 # synthesize instead of spinning.
 MAX_REPLANS = 5
 
-# Steps whose evidence quality arms the LLM presence check (see step 2 above).
-_SEARCH_TOOLS = {"search_knowledge_base", "search_files", "find_files", "web_search"}
+# SEARCH_TOOLS (arms the LLM presence check) and WRITE_TOOLS (exempt from forced resolution)
+# come from core/plan_context — THE one home for the engine's tool classifications, shared with
+# execute's write gate and synthesize's write verification.
 # Dead ends from these tools are retryable ONCE — a wrong pattern/scope may hide real data.
 _RETRYABLE = ("run_shell", "search_files", "find_files", "list_directory")
-_WRITE_TOOLS = ("write_file", "edit_file")
+
+# run_shell's observation header (tools/shell.py _format). Anchored at the start so a transcript
+# that merely MENTIONS "exit code 128" mid-output never reads as a failed run.
+_EXIT_CODE_RE = re.compile(r"\[exit code (\d+)\]")
 
 
 def _cancel_remaining(plan: list[dict], text: str) -> list[dict]:
@@ -82,8 +93,8 @@ def _cancel_remaining(plan: list[dict], text: str) -> list[dict]:
 def rectify_node(state: AgentState):
     start = time.perf_counter()
     plan = state.get("plan") or []
-    if not plan or state.get("replans", 0) >= MAX_REPLANS:
-        return {"rectify": False, "reasoning": "no plan / replan budget spent"}
+    if not plan:
+        return {"rectify": False, "reasoning": "no plan"}
 
     pending = any(s.get("result") is None for s in plan)
     last_done = None
@@ -92,10 +103,16 @@ def rectify_node(state: AgentState):
             break
         last_done = s
     res = str(last_done.get("result") or "") if last_done else ""
-    failed = bool(last_done) and (not res.strip() or res.lower().startswith("error"))
+    failed = bool(last_done) and (
+        not res.strip()
+        or last_done.get("status") == "error"
+        or res.lower().startswith("error")
+    )
 
     # 1. A guarded action (gate rejection, write-gate skip, BLOCKED refusal) ends the run:
-    #    report it, do not retry or substitute.
+    #    report it, do not retry or substitute. Checked BEFORE the replan budget (branch order
+    #    is load-bearing, gotcha #8): a rejection recorded after the budget is spent must still
+    #    cancel the remaining steps, not leave them mislabeled "never ran".
     if last_done is not None and last_done.get("status") in ("skipped", "blocked"):
         diag.log(f"rectify_node : {time.perf_counter() - start:.4f}s (guarded -> cancel)")
         return {
@@ -104,13 +121,17 @@ def rectify_node(state: AgentState):
             "reasoning": "action guarded; report it, do not retry or substitute",
         }
 
+    # Replan budget spent: no further revision — route_after_rectify lands at synthesize.
+    if state.get("replans", 0) >= MAX_REPLANS:
+        return {"rectify": False, "reasoning": "replan budget spent"}
+
     # 2. The next step is a deferred reference — resolve it (or report the item missing).
     nxt = next((s for s in plan if s.get("result") is None), None)
-    if nxt is not None and nxt.get("intended_tool") not in _WRITE_TOOLS:
+    if nxt is not None and nxt.get("intended_tool") not in WRITE_TOOLS:
         done_before = any(s.get("result") is not None for s in plan[: plan.index(nxt)])
         if done_before and nxt.get("needs_resolution"):
             searched = any(
-                s.get("intended_tool") in _SEARCH_TOOLS and s.get("result") is not None
+                s.get("intended_tool") in SEARCH_TOOLS and s.get("result") is not None
                 for s in plan
             )
             check = (
@@ -166,6 +187,7 @@ def rectify_node(state: AgentState):
     #    real data); a read_file miss or an empty knowledge-base search is a genuine absence.
     rl = res.strip().lower()
     first = rl.splitlines()[0] if rl else ""
+    exit_m = _EXIT_CODE_RE.match(rl)  # the run_shell header, anchored at the observation start
     dead_end = (
         first in ("", "0", "0.0", "[]", "none", "no results", "no matches")
         or "not found" in rl
@@ -173,7 +195,7 @@ def rectify_node(state: AgentState):
         or "not a directory" in rl
         or rl.startswith("no matches for")
         or rl.startswith("no files matching")
-        or "exit code 1" in rl
+        or bool(exit_m and int(exit_m.group(1)) != 0)
     )
     if (
         not pending

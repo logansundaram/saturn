@@ -8,13 +8,20 @@ synthesize.
 
 Intentionally MECHANICAL, no LLM: the current step is the first with `result` None (execute only
 ever emits a call for that step), the observation is the trailing ToolMessage(s) the tool node
-(or the approval gate's decline) just appended, and the status derives from the observation text:
+(or the approval gate's decline) just appended, and the status is read off each message's
+STRUCTURAL stamp (`additional_kwargs["saturn_status"]`, set by the producer at the moment the
+outcome was known — nodes/tools.py for tool rounds, nodes/approval.py for declines):
 
-    decline ToolMessage (approval rejection)  -> skipped   (a guarded outcome; rectify cancels
-                                                            the rest and the answer reports it)
-    "BLOCKED..."                              -> blocked
-    "error..." / "Error calling ..."          -> error
-    anything else                             -> done
+    approval decline               -> skipped   (a guarded outcome; rectify cancels the rest
+                                                 and the answer reports it)
+    air-gap refusal (egress slice) -> blocked
+    tool raised / unknown tool     -> error
+    anything else                  -> done
+
+Status is NEVER sniffed out of observation text: a successful read of a file whose content
+happens to start with "ERROR:" or "Blocked …" must not fail its step (and the air-gap refusal
+string never started with "blocked" anyway — the old text contract was dead). The one textual
+fallback kept is the DECLINE_TEXT prefix, belt-and-braces for an unstamped decline.
 
 This replaced the positional-multiset status walkers (old gotcha #6): with the result recorded
 on the step itself there is no cross-walker accounting to keep in sync.
@@ -27,21 +34,22 @@ from langchain.messages import ToolMessage
 
 from core.plan_context import clean
 from core.state import AgentState
+from nodes.approval import DECLINE_TEXT
 
-# The approval gate's decline text (nodes/approval.py DECLINE_TEXT) starts with this — the
-# recorder keys the `skipped` status off it so a rejection is an incident, never a "done".
-_DECLINE_PREFIX = "Execution declined by the user"
+# When several trailing ToolMessages record onto one step (a mixed approval decision leaves a
+# decline + a result), the guarded/failed outcome wins: a rejection must never be averaged away
+# by a sibling call's success.
+_STATUS_RANK = {"done": 0, "error": 1, "blocked": 2, "skipped": 3}
 
 
-def _status_for(observation: str) -> str:
-    text = observation.strip()
-    low = text.lower()
-    if text.startswith(_DECLINE_PREFIX):
+def _status_of(msg: ToolMessage) -> str:
+    """One message's outcome: the producer's structural stamp, else the decline prefix
+    (belt-and-braces for an unstamped decline), else done."""
+    stamped = (getattr(msg, "additional_kwargs", None) or {}).get("saturn_status")
+    if stamped in _STATUS_RANK:
+        return stamped
+    if str(msg.content).strip().startswith(DECLINE_TEXT):
         return "skipped"
-    if low.startswith("blocked"):
-        return "blocked"
-    if low.startswith("error"):
-        return "error"
     return "done"
 
 
@@ -55,20 +63,22 @@ def update_plan_node(state: AgentState):
     # The observation: every trailing ToolMessage (normally exactly one — execute emits a single
     # call per step; a mixed approval decision can leave a decline + a result, joined in order).
     msgs = state.get("messages") or []
-    parts: list[str] = []
+    trailing: list[ToolMessage] = []
     for m in reversed(msgs):
         if isinstance(m, ToolMessage):
-            parts.append(str(m.content))
+            trailing.append(m)
             continue
         break
-    if not parts:
+    if not trailing:
         return {}  # nothing to record (defensive — the graph only routes here after a round)
 
-    observation = "\n\n".join(reversed(parts))
+    trailing.reverse()
+    observation = "\n\n".join(str(m.content) for m in trailing)
+    status = max((_status_of(m) for m in trailing), key=_STATUS_RANK.__getitem__)
     plan = [dict(s) for s in plan]  # work on a copy — never mutate state's plan in place
     step = plan[idx]
     step["result"] = clean(observation)
-    step["status"] = _status_for(observation)
+    step["status"] = status
 
     diag.log(
         f"update_plan_node : {time.perf_counter() - start:.4f}s "

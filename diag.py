@@ -33,6 +33,12 @@ _LOG_DIR = _resolve_log_dir()
 _logger: logging.Logger | None = None
 
 
+def log_dir() -> Path:
+    """THE logging directory (clone: repo logging/; wheel: SATURDAY_HOME/logging). Public so
+    other log sinks (mcp_client's mcp.log) share one resolution instead of hand-copying it."""
+    return _LOG_DIR
+
+
 def _get() -> logging.Logger:
     """Lazily build the singleton file logger (and an optional stderr echo under SATURDAY_DEBUG)."""
     global _logger

@@ -116,6 +116,44 @@ def split_call_result(entry) -> "tuple[str, str]":
     return parts[0], parts[1]
 
 
+# The `[source: name, page N]` provenance marker search_knowledge_base prepends to each
+# retrieved chunk. One builder + one parser (tools/knowledge.py builds it, nodes/synthesize.py's
+# Sources labels parse it back) so the two sides can't drift — the CALL_RESULT_SEP treatment.
+DOC_SOURCE_RE = re.compile(r"\[source: ([^\]]+)\]")
+
+
+def doc_source_label(name, page=None) -> str:
+    """Render the provenance marker for one retrieved chunk."""
+    inner = str(name or "unknown")
+    if page:
+        inner += f", page {page}"
+    return f"[source: {inner}]"
+
+
+def parse_doc_sources(text) -> "list[str]":
+    """The distinct marker names inside one retrieval observation, in first-seen order."""
+    names: list[str] = []
+    for m in DOC_SOURCE_RE.finditer(str(text)):
+        name = m.group(1).strip()
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
+def mask_secret(value) -> str:
+    """A display-safe preview of a secret — THE one masking rule (env_keys' key listing and
+    trust/redaction's findings each hand-rolled their own, with different exposure envelopes:
+    3+4 vs 6+2 visible characters, and a short secret partially shown on one surface but fully
+    masked on the other; a tightening decision made once must reach both). ≤8 chars shows
+    nothing; longer shows the first 4 + last 2."""
+    s = " ".join(str(value or "").split())
+    if not s:
+        return ""
+    if len(s) <= 8:
+        return "****"
+    return f"{s[:4]}…{s[-2:]}"
+
+
 def safe_stem(name, fallback: str) -> str:
     """Sanitize a user-supplied name to a safe filename stem: path parts dropped, a trailing
     `.json` stripped (so `brief.json` and `brief` resolve identically), every other special

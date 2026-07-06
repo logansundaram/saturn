@@ -15,7 +15,9 @@ source keeps the useful part of the result intact).
 """
 
 import fnmatch
+import os
 import re
+from pathlib import Path
 
 from textutil import truncate
 from tools.toolspec import register_tool
@@ -176,31 +178,39 @@ def search_files(pattern: str, directory: str = ".", file_glob: str = "*"):
 
     matches: list[str] = []
     truncated = False
-    for path in sorted(target_path.rglob("*")):
-        if len(matches) >= _SEARCH_MAX_MATCHES:
-            truncated = True
+    # Walk lazily (sorted per directory for a stable order) instead of materializing + sorting
+    # the entire recursive tree up front — with `sorted(rglob("*"))` the match cap could only
+    # save file reads, never the full walk+sort of a large workspace.
+    for dirpath, dirnames, filenames in os.walk(target_path):
+        if truncated:
             break
-        if not path.is_file() or not fnmatch.fnmatch(path.name, file_glob):
-            continue
-        try:
-            if path.stat().st_size > _SEARCH_MAX_FILE_BYTES or _is_binary(path):
-                continue
-            text = path.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            continue
-        rel = path.relative_to(workspace).as_posix()
-        in_file = 0
-        for lineno, line in enumerate(text.splitlines(), 1):
-            if not rx.search(line):
-                continue
-            matches.append(f"{rel}:{lineno}: {truncate(line.strip(), _SEARCH_MAX_LINE)}")
-            in_file += 1
-            if in_file >= _SEARCH_MAX_PER_FILE:
-                matches.append(f"{rel}: … more matches in this file (capped at {_SEARCH_MAX_PER_FILE})")
-                break
+        dirnames.sort()
+        for fname in sorted(filenames):
             if len(matches) >= _SEARCH_MAX_MATCHES:
                 truncated = True
                 break
+            if not fnmatch.fnmatch(fname, file_glob):
+                continue
+            path = Path(dirpath) / fname
+            try:
+                if path.stat().st_size > _SEARCH_MAX_FILE_BYTES or _is_binary(path):
+                    continue
+                text = path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            rel = path.relative_to(workspace).as_posix()
+            in_file = 0
+            for lineno, line in enumerate(text.splitlines(), 1):
+                if not rx.search(line):
+                    continue
+                matches.append(f"{rel}:{lineno}: {truncate(line.strip(), _SEARCH_MAX_LINE)}")
+                in_file += 1
+                if in_file >= _SEARCH_MAX_PER_FILE:
+                    matches.append(f"{rel}: … more matches in this file (capped at {_SEARCH_MAX_PER_FILE})")
+                    break
+                if len(matches) >= _SEARCH_MAX_MATCHES:
+                    truncated = True
+                    break
 
     if not matches:
         return f"No matches for /{pattern}/ in {directory!r} (files matching {file_glob!r})."

@@ -59,6 +59,25 @@ def test_norm_tool_maps_synonyms_and_rejects_junk():
     assert st.norm_tool("web_search|calculate", valid) == "web_search"
 
 
+def test_norm_tool_degenerate_emissions_never_crash():
+    # A leading pipe / bare "=" / whitespace once raised IndexError out of to_steps and killed
+    # the whole turn — exactly the ignores-the-grammar input class this layer exists to absorb.
+    valid = {"calculate", "web_search"}
+    assert st.norm_tool("|web_search", valid) is None
+    assert st.norm_tool("=", valid) is None
+    assert st.norm_tool("   ", valid) is None
+
+
+def test_invoke_kwargs_carry_num_ctx_for_ollama_roles():
+    # Invoke-time `options` REPLACES ChatOllama's constructor options (the only home of the
+    # configured num_ctx), so the window must ride every options dict or the daemon silently
+    # reverts to its ~2048 default and front-truncates the prompt.
+    kw = st._invoke_kwargs("planner", None, 0.0)
+    assert kw, "the shipped config binds planner to Ollama"
+    assert kw["options"]["temperature"] == 0.0
+    assert kw["options"].get("num_ctx", 0) > 0
+
+
 def test_to_steps_builds_data_bus_dicts():
     draft = st._PlanOut(plan=[
         st._PlanItem(description="Read a.txt", tool="read_file", needs_resolution=False),
@@ -97,6 +116,21 @@ def test_coerce_args_missing_required_returns_none():
     assert tool_args.coerce_args("write_file", {"file_path": "a.txt"}) is None  # no content
     assert tool_args.coerce_args("read_file", {"nonsense": "x"}) is None
     assert tool_args.coerce_args("read_file", "not-a-dict") is None
+
+
+def test_coerce_args_empty_string_is_a_value_where_it_means_something():
+    # Deleting text and creating an empty file are legitimate calls — "" must count as present
+    # for edit_file.new_string / write_file.content, not as a missing value to retry forever.
+    assert tool_args.coerce_args(
+        "edit_file", {"file_path": "a.txt", "old_string": "TODO", "new_string": ""}
+    ) == {"file_path": "a.txt", "old_string": "TODO", "new_string": ""}
+    assert tool_args.coerce_args(
+        "write_file", {"file_path": "empty.txt", "content": ""}
+    ) == {"file_path": "empty.txt", "content": ""}
+    # But an empty ANCHOR is still missing (edit_file would refuse it anyway).
+    assert tool_args.coerce_args(
+        "edit_file", {"file_path": "a.txt", "old_string": "", "new_string": "x"}
+    ) is None
 
 
 def test_coerce_args_zero_required_and_unknown_tools():
@@ -142,6 +176,20 @@ def test_plan_txt_marks_pending_and_done():
     txt = plan_context.plan_txt(plan)
     assert "[DONE] tool=read_file" in txt and "result: data" in txt
     assert "[PENDING] tool=calculate" in txt
+
+
+def test_plan_txt_caps_done_results():
+    # Several ~12k clamped observations rendered uncapped would overflow the judge/replan
+    # prompts on a small window and front-truncate the system prompt.
+    plan = [_step(1, "read_file", result="A" * 20000, status="done")]
+    txt = plan_context.plan_txt(plan)
+    assert "…(truncated)" in txt and len(txt) < 2000
+
+
+def test_exec_context_callout_is_bounded():
+    plan = [_step(1, "read_file", result="B" * 20000, status="done"), _step(2, "calculate")]
+    ctx = plan_context.exec_context(_state(plan), plan[1])
+    assert len(ctx) < 8000, "the previous-step callout must not re-send a full clamped observation"
 
 
 # ── nodes/execute: step dispatch + routing ────────────────────────────────────────────────────
@@ -248,6 +296,30 @@ def test_write_gate_blocks_when_judge_says_absent(monkeypatch):
     assert blocked and "not present in the gathered" in blocked
 
 
+def test_write_gate_mechanical_zero_is_a_value_not_an_absence(monkeypatch):
+    # "compute 17-17, write the result" — a computed 0 (or an empty-looking literal) on a
+    # mechanical read-and-compute plan must write, not skip: the gate only arms when a search
+    # ran or a step failed.
+    def boom(*a, **k):
+        raise AssertionError("no LLM for a read-and-compute plan")
+
+    monkeypatch.setattr(ex, "structured", boom)
+    plan = [_step(1, "calculate", result="0", status="done"), _step(2, "write_file")]
+    assert ex._write_gate(_state(plan), plan[1]) is None
+
+
+def test_write_gate_armed_zero_goes_to_the_judge_not_the_skip(monkeypatch):
+    # With a search upstream, a computed 0 is judged (present/absent), never mechanically
+    # skipped as "empty" — 0 is a value.
+    monkeypatch.setattr(
+        ex, "structured", lambda *a, **k: st.WriteGate(present=True, evidence="count is 0")
+    )
+    plan = [_step(1, "search_files", result="3 hits", status="done"),
+            _step(2, "calculate", result="0", status="done"),
+            _step(3, "write_file")]
+    assert ex._write_gate(_state(plan), plan[2]) is None
+
+
 # ── nodes/rectify: the deterministic short-circuits, in priority order ────────────────────────
 
 
@@ -344,6 +416,34 @@ def test_rectify_budget_spent_short_circuits(monkeypatch):
     _no_llm(monkeypatch)
     out = rc.rectify_node(_state([_step(1)], replans=rc.MAX_REPLANS))
     assert out["rectify"] is False and "budget" in out["reasoning"]
+
+
+def test_rectify_guarded_cancel_wins_over_spent_budget(monkeypatch):
+    # Branch order is load-bearing (gotcha #8): a gate rejection recorded AFTER the replan
+    # budget is spent must still cancel the remaining steps ("cancelled: a prior guarded
+    # action…"), not leave them mislabeled "never ran".
+    _no_llm(monkeypatch)
+    plan = [_step(1, "run_shell", result="Execution declined by the user.", status="skipped"),
+            _step(2, "read_file")]
+    out = rc.rectify_node(_state(plan, replans=rc.MAX_REPLANS))
+    assert out["rectify"] is False
+    assert out["plan"][1]["status"] == "cancelled"
+    assert "guarded" in out["reasoning"]
+
+
+def test_rectify_shell_exit_code_is_anchored_to_the_header(monkeypatch):
+    # A SUCCESSFUL run whose output merely mentions "exit code 128" mid-transcript is not a
+    # dead end — only the [exit code N] header run_shell itself prepends counts.
+    monkeypatch.setattr(rc, "structured",
+                        lambda *a, **k: st.RectifyBool(rectify=False, reasoning="fine"))
+    ok_run = "[exit code 0]\nci log: previous job failed with exit code 128"
+    plan = [_step(1, "run_shell", result=ok_run, status="done")]
+    assert rc.rectify_node(_state(plan))["rectify"] is False
+    # A genuinely failed run IS the retryable dead end.
+    _no_llm(monkeypatch)
+    plan = [_step(1, "run_shell", result="[exit code 2] (no output)", status="done")]
+    out = rc.rectify_node(_state(plan, replans=0))
+    assert out["rectify"] is True and "came up empty" in out["reasoning"]
 
 
 def test_route_after_rectify_bounds_and_routes():

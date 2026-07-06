@@ -32,7 +32,14 @@ from langchain.messages import AIMessage, HumanMessage
 from config import get_config
 from core.llms import get_model, extract_tok_per_sec, extract_prompt_tokens
 from core.messages import EXECUTE_TOOL_SYS, EXECUTE_REASONING_SYS, WRITE_GATE_SYS
-from core.plan_context import clean, exec_context, original_request, results_block
+from core.plan_context import (
+    SEARCH_TOOLS,
+    WRITE_TOOLS,
+    clean,
+    exec_context,
+    original_request,
+    results_block,
+)
 from core.state import AgentState
 from core.structured import (
     WriteGate,
@@ -43,16 +50,17 @@ from core.structured import (
 )
 from core.tool_args import coerce_args, parse_text_call, schema_hint
 
-# The steps the semantic write gate fronts, and the gathering tools whose presence arms it
-# (a plan that only read files the user named has no presence question to judge).
-_WRITE_TOOLS = ("write_file", "edit_file")
-_SEARCH_TOOLS = {"search_knowledge_base", "search_files", "find_files", "web_search"}
+# The steps the semantic write gate fronts (WRITE_TOOLS), and the gathering tools whose
+# presence arms it (SEARCH_TOOLS) — both from core/plan_context, THE one home for the engine's
+# tool classifications (rectify and synthesize key off the same sets).
 
 # Temperature escalation for the constrained tool-call generation: deterministic first, then
 # sampled variety — a failed parse at 0.0 usually reproduces byte-identically.
 _ATTEMPT_TEMPS = (0.0, 0.5, 0.7)
 
-_EMPTY_MARKERS = {"", "[]", "()", "{}", "0", "0.0", "none"}
+# NOTE: no numeric zeros here — "0"/"0.0" from an upstream calculate is a COMPUTED VALUE, not a
+# missing one (write "the count" when the count is 0 is a legitimate write, not a fabrication).
+_EMPTY_MARKERS = {"", "[]", "()", "{}", "none"}
 
 
 def _is_empty_result(res) -> bool:
@@ -74,12 +82,15 @@ def _write_gate(state: AgentState, step: dict) -> "str | None":
     done = [s for s in plan if s is not step and s.get("result") is not None]
     if not done:
         return None
-    searched = any(s.get("intended_tool") in _SEARCH_TOOLS for s in done)
+    searched = any(s.get("intended_tool") in SEARCH_TOOLS for s in done)
     failed = any(
         s.get("status") == "error" or str(s.get("result") or "").lower().startswith("error")
         for s in done
     )
-    if not (searched or failed) and not _is_empty_result(done[-1].get("result")):
+    if not (searched or failed):
+        # A purely mechanical plan (read files the user named, compute from them) never pays
+        # for the gate — including its empty-looking results: a computed 0 or an empty diff is
+        # a real value, not a missing one. Arming requires a search or a failure upstream.
         return None
     if _is_empty_result(done[-1].get("result")):
         return (
@@ -164,7 +175,11 @@ def _generate_tool_call(tool, context: str):
                 **_invoke_kwargs("tool_caller", None, temp),
             )
         except Exception as exc:
-            return None, f"error: {type(exc).__name__}: {exc}", None
+            # A transient provider error (an Ollama timeout) must not spend the whole step —
+            # keep escalating through the remaining attempts like _reasoning_call does.
+            diag.log(f"execute_node : tool-call attempt at temp {temp} failed ({exc})")
+            problem = f"{type(exc).__name__}: {exc}"
+            continue
         content = getattr(resp, "content", "")
         content = content if isinstance(content, str) else str(content)
         calls = [{"args": tc.get("args")} for tc in (getattr(resp, "tool_calls", None) or [])]
@@ -181,7 +196,16 @@ def _generate_tool_call(tool, context: str):
             text_fallback = content.strip() or text_fallback
             problem = "no tool call emitted"
         block = context + "\n\n" + schema_hint(tool.name, problem)
-    return None, text_fallback or f"error: {problem}", resp
+    if text_fallback:
+        # The step's tool was never called — the prose is NOT a tool observation, and recording
+        # it as a plain "done" result would feed unverified text into later steps' contexts as
+        # ground data (and present e.g. a write step as completed when no file was touched).
+        # The "error:" prefix makes the recorder mark the step an incident the answer discloses.
+        return None, (
+            "error: the step's tool was never called — the model answered in text instead: "
+            + text_fallback
+        ), resp
+    return None, f"error: {problem}", resp
 
 
 def execute_node(state: AgentState):
@@ -219,7 +243,7 @@ def execute_node(state: AgentState):
 
     # Write/edit steps face the semantic write gate BEFORE a call is generated: a write whose
     # value the gathered results don't actually contain is skipped, not laundered through.
-    if tool_name in _WRITE_TOOLS:
+    if tool_name in WRITE_TOOLS:
         blocked = _write_gate(state, state_plan[idx])
         if blocked is not None:
             step["result"] = blocked

@@ -9,8 +9,9 @@ The plan is the same plain-dict shape used everywhere else in state:
 `{step_id, label, status, intended_tool, result, needs_resolution}` (see state.py — the plan is
 the engine's data bus; `result` is None until a step runs). These functions are pure: they take a
 plan list and return a NEW edited list (the caller decides whether to commit it), so they're
-trivially testable and never mutate the live plan in place by surprise. The editor never touches
-`result` — editing a completed step's label keeps its recorded outcome.
+trivially testable and never mutate the live plan in place by surprise. Editing a completed
+step's label keeps its recorded outcome; the ONE editor verb that touches `result` is
+`set_status`, which keeps the status/result pairing intact (see its docstring).
 
 `step_id` is treated as a 1-based position and renumbered after any structural change, so the ids a
 user sees in the rendered plan always match what they type. Editing a step preserves its `status`
@@ -30,7 +31,11 @@ import threading
 from dataclasses import dataclass
 from typing import Optional
 
-_VALID_STATUS = ("pending", "active", "done", "skipped", "blocked", "error", "cancelled")
+from core.state import TERMINAL_STATUSES
+
+# The one status vocabulary, derived from core/state.py's declaration — a hand-copied tuple here
+# would silently launder any status added there back to "pending" on the next review edit.
+_VALID_STATUS = ("pending", "active") + tuple(TERMINAL_STATUSES)
 
 
 def normalize(plan: Optional[list[dict]]) -> list[dict]:
@@ -107,10 +112,21 @@ def set_tool(plan: list[dict], step_id: int, tool: Optional[str]) -> list[dict]:
 
 
 def set_status(plan: list[dict], step_id: int, status: str) -> list[dict]:
+    """Set a step's status, keeping the status/result pairing intact (gotcha #6): the execution
+    pointer is `result is None`, so a TERMINAL status on an un-run step must also stamp a result
+    — without one the engine re-selects the step, flips it back to `active`, and RUNS it,
+    silently discarding the user's edit. Symmetrically, `pending`/`active` clears the result so
+    a retired step becomes runnable again."""
     if status not in _VALID_STATUS:
         raise ValueError(f"status must be one of {', '.join(_VALID_STATUS)}")
     plan = [dict(s) for s in plan]
-    plan[_index_of(plan, step_id)]["status"] = status
+    step = plan[_index_of(plan, step_id)]
+    step["status"] = status
+    if status in TERMINAL_STATUSES:
+        if step.get("result") is None:
+            step["result"] = f"marked {status} at plan review — the step did not run"
+    else:
+        step["result"] = None
     return plan
 
 
@@ -227,15 +243,15 @@ def _tool_note(tool: Optional[str]) -> str:
 # The *user-initiated* trigger — a daemon thread that watches the console during a turn and
 # calls `controller.request(...)` when the pause key (**Esc**) is pressed — lives in
 # `typeahead.py`'s `InputQueue`, the single console reader for the duration of a turn. A console
-# that can't be polled degrades to a no-op there, and the gate still works via `/plan pause`,
-# `/plan review`, or the in-graph `state["pause_requested"]`.
+# that can't be polled degrades to a no-op there, and the gate still works via `/plan pause` and
+# `/plan review`.
 #
 # Why a singleton rather than threading the controller through graph state/config: the CLI runs
 # exactly one turn at a time (blocking), so a single shared controller is unambiguous, needs no
 # serialization through the checkpointer, and keeps the gate node a pure `state -> updates`
-# function. The graph-state field `pause_requested` is the *other* seam — an in-graph source
-# (e.g. a future LLM `request_plan_review` tool/node) can set it and the same gate handles it
-# identically. See `nodes/plan_gate.py`.
+# function. This is THE one pause seam — a future in-graph source (e.g. an LLM
+# `request_plan_review` tool/node) calls `request()` on this same controller. See
+# `nodes/plan_gate.py`.
 
 
 @dataclass(frozen=True)

@@ -58,8 +58,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Only needed if a tier binds a role to a cloud provider (the cloud-hybrid tier).
-cloud = ["langchain-anthropic>=1.0.0", "langchain-openai>=1.0.0"]
+# (The `cloud` extra left with the 2026-07-03 cloud-model shelve: core/llms refuses any
+# non-ollama binding, so the packages could never be exercised — restore the extra alongside
+# the documented reintroduction seam in core/llms.py when cloud support returns.)
 # Dev-only: the unit test suite (tests/).
 dev = ["pytest>=8.0"]
 

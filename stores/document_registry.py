@@ -98,13 +98,11 @@ def remove_rag_document(source: str) -> None:
 
 
 def read_workspace_manifest() -> str:
-    manifest = _workspace_manifest()
-    return manifest.read_text(encoding="utf-8") if manifest.exists() else ""
+    return _read_manifest_text(_workspace_manifest())
 
 
 def read_documents_manifest() -> str:
-    manifest = _documents_manifest()
-    return manifest.read_text(encoding="utf-8") if manifest.exists() else ""
+    return _read_manifest_text(_documents_manifest())
 
 
 _META_FIELD_RE = re.compile(r"\*\*(\w+)\*\*:\s*([^|]+?)\s*(?:\||$)")
@@ -142,6 +140,15 @@ def manifest_entries(text: str) -> list[dict]:
 # Keyed by basename (matching the manifest's `### <name>` entries).
 _SUMMARY_CACHE_FILE = "summaries.json"
 
+# mtime-validated in-memory memos: syncing N files used to re-read + re-parse the whole
+# summaries.json and re-read the whole manifest PER FILE (O(N²) bytes as they grow), and ground
+# re-read both manifests every turn. One stat per read validates the memo; the mtime check (not
+# a blind cache) keeps a hand-edited file honest. Keyed by path so isolated test configs and a
+# live `/config paths.*` change each get their own slot. Writes stay per-change (an LLM summary
+# is expensive — batching writes to a sync-end flush would lose them all on a crash).
+_summary_mem: "dict[str, tuple[int, dict]]" = {}
+_manifest_mem: "dict[str, tuple[int, str]]" = {}
+
 
 def _summary_cache_path() -> Path:
     return get_config().path("cache") / _SUMMARY_CACHE_FILE
@@ -149,18 +156,55 @@ def _summary_cache_path() -> Path:
 
 def _read_summary_cache() -> dict:
     p = _summary_cache_path()
-    if p.exists():
-        try:
-            return json.loads(p.read_text(encoding="utf-8"))
-        except Exception:
-            pass
-    return {}
+    key = str(p)
+    try:
+        mtime = p.stat().st_mtime_ns
+    except OSError:  # absent (or unreadable) file: nothing cached
+        _summary_mem.pop(key, None)
+        return {}
+    hit = _summary_mem.get(key)
+    if hit is not None and hit[0] == mtime:
+        return hit[1]
+    try:
+        cache = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        cache = {}
+    _summary_mem[key] = (mtime, cache)
+    return cache
 
 
 def _write_summary_cache(cache: dict) -> None:
     p = _summary_cache_path()
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps(cache, indent=2), encoding="utf-8")
+    try:
+        _summary_mem[str(p)] = (p.stat().st_mtime_ns, cache)
+    except OSError:
+        _summary_mem.pop(str(p), None)
+
+
+def _read_manifest_text(path: Path) -> str:
+    key = str(path)
+    try:
+        mtime = path.stat().st_mtime_ns
+    except OSError:  # no manifest yet
+        _manifest_mem.pop(key, None)
+        return ""
+    hit = _manifest_mem.get(key)
+    if hit is not None and hit[0] == mtime:
+        return hit[1]
+    text = path.read_text(encoding="utf-8")
+    _manifest_mem[key] = (mtime, text)
+    return text
+
+
+def _write_manifest_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    try:
+        _manifest_mem[str(path)] = (path.stat().st_mtime_ns, text)
+    except OSError:
+        _manifest_mem.pop(str(path), None)
 
 
 def _summarize(content: str, filename: str) -> str:
@@ -174,23 +218,24 @@ def _summarize(content: str, filename: str) -> str:
         return hit["summary"]
 
     try:
-        # Import here to avoid circular import at module load time. Summaries are a cheap
-        # background task -> the `utility` role.
+        # Import here to avoid circular import at module load time (core.messages pulls the
+        # live tool registry, which imports tools/files.py, which imports this module).
+        # Summaries are a cheap background task -> the `utility` role.
         from core.llms import get_model
+        from core.messages import DOC_SUMMARY_PROMPT
 
         start = time.perf_counter()
         msg = HumanMessage(
-            content=(
-                f"Summarize the following document in 1-2 sentences. "
-                f"Be specific: name what information it contains, not just its topic. "
-                f"Document name: {filename}\n\n{content[:4000]}"
-            )
+            content=DOC_SUMMARY_PROMPT.format(filename=filename, content=content[:4000])
         )
         response = get_model("utility").invoke([msg])
         diag.log(
             f"document_registry summary ({filename}) : {time.perf_counter() - start:.4f}s"
         )
-        summary = response.content.strip()
+        # Collapse to ONE line: the manifest locates entry boundaries by "\n### " searches, so a
+        # multi-line summary containing a markdown heading would forge a boundary and corrupt
+        # the manifest ground loads every turn (untrusted document text steers this summary).
+        summary = " ".join(str(response.content).split())
     except Exception as exc:
         diag.log(f"document_registry: summary failed for {filename}: {exc}")
         return "No summary available."
@@ -201,7 +246,9 @@ def _summarize(content: str, filename: str) -> str:
 
 
 def _upsert(manifest_path: Path, filename: str, content: str, suffix: str) -> None:
-    summary = _summarize(content, filename)
+    # The one-line collapse also runs here so a MULTI-LINE summary cached by an older version
+    # can't forge a "\n### " entry boundary on its way into the manifest.
+    summary = " ".join(str(_summarize(content, filename)).split())
     size_kb = len(content.encode()) / 1024
 
     entry_body = (
@@ -212,13 +259,11 @@ def _upsert(manifest_path: Path, filename: str, content: str, suffix: str) -> No
     )
     full_entry = f"### {filename}\n{entry_body}\n"
 
-    manifest_path.parent.mkdir(parents=True, exist_ok=True)
-
-    if not manifest_path.exists():
-        manifest_path.write_text(_MANIFEST_HEADER + full_entry, encoding="utf-8")
+    content_text = _read_manifest_text(manifest_path)
+    if not content_text:
+        _write_manifest_text(manifest_path, _MANIFEST_HEADER + full_entry)
         return
 
-    content_text = manifest_path.read_text(encoding="utf-8")
     marker = f"### {filename}\n"
 
     if marker in content_text:
@@ -234,14 +279,12 @@ def _upsert(manifest_path: Path, filename: str, content: str, suffix: str) -> No
     else:
         content_text = content_text.rstrip("\n") + "\n\n" + full_entry + "\n"
 
-    manifest_path.write_text(content_text, encoding="utf-8")
+    _write_manifest_text(manifest_path, content_text)
 
 
 def _remove_entry(manifest_path: Path, filename: str) -> None:
     """Delete the `### <filename>` block from a manifest, if present. Inverse of `_upsert`."""
-    if not manifest_path.exists():
-        return
-    text = manifest_path.read_text(encoding="utf-8")
+    text = _read_manifest_text(manifest_path)
     marker = f"### {filename}\n"
     if marker not in text:
         return
@@ -252,4 +295,4 @@ def _remove_entry(manifest_path: Path, filename: str) -> None:
         text = text[:start_idx].rstrip("\n") + "\n"
     else:
         text = text[:start_idx] + rest[next_entry + 1 :]
-    manifest_path.write_text(text, encoding="utf-8")
+    _write_manifest_text(manifest_path, text)

@@ -10,7 +10,7 @@ from typing import Optional
 
 from commands._framework import command, _print
 from stores.trace import decode_json, parse_ts
-from textutil import clip as _clip, fmt_args
+from textutil import CALL_RESULT_SEP, clip as _clip, fmt_args
 
 
 @contextmanager
@@ -77,7 +77,9 @@ def _calls(ctx, args):
         glyph = "✓" if ev.get("ok", True) else "⨯"
         dur = ev.get("dur")
         dur_s = f"{dur:.2f}s" if isinstance(dur, (int, float)) else "  -  "
-        call_repr, _, observation = (full or "").partition(" -> ")
+        # CALL_RESULT_SEP — the one constant nodes/tools.py builds these entries with; a
+        # hand-typed " -> " literal here silently stops splitting if the separator ever changes.
+        call_repr, _, observation = (full or "").partition(CALL_RESULT_SEP)
         if not call_repr:
             call_repr = ev.get("name", "?")
             observation = ev.get("result", "")
@@ -166,6 +168,71 @@ def _to_int(s) -> Optional[int]:
         return int(str(s).strip().lstrip("#"))
     except (TypeError, ValueError):
         return None
+
+
+def _parse_run_selector(args, *, consume=None):
+    """THE run-selector grammar, shared by every /trace subview (was five hand-kept copies that
+    had already drifted: _why/_answer didn't take -r, and invoke reused run_id as the list
+    count). Recognized everywhere:
+
+        -r/--run <id> · #<id> · bare integer   -> run_id  (bare digits are RUN IDS — except in
+                                                  list mode, where a bare digit is the COUNT)
+        -l/--list/list/ls                      -> list_mode
+
+    `consume(low, arg, it)` is an optional hook for command-specific tokens (--md, -o <path>,
+    --full); return True when the hook handled the token (it may pull a value from `it`).
+    Anything unrecognized prints the shared "ignoring" note. Returns (run_id, count, list_mode);
+    `count` is only ever set in list mode."""
+    run_id: Optional[int] = None
+    bare: Optional[int] = None
+    list_mode = False
+    it = iter(args)
+    for a in it:
+        low = a.lower()
+        if consume is not None and consume(low, a, it):
+            continue
+        if low in ("-l", "--list", "list", "ls"):
+            list_mode = True
+        elif low in ("-r", "--run"):
+            rid = _to_int(next(it, ""))
+            if rid is not None:
+                run_id = rid
+        elif a.startswith("#"):
+            rid = _to_int(a)
+            if rid is not None:
+                run_id = rid
+        elif a.lstrip("+-").isdigit():
+            bare = int(a)
+        else:
+            _print(f"  ignoring unrecognized argument: {a!r}")
+    if bare is not None and not list_mode and run_id is None:
+        run_id = bare
+    return run_id, (bare if list_mode else None), list_mode
+
+
+def _load_run(conn, run_id, *,
+              columns="run_id, query, started_at, ended_at, status, response",
+              latest_from="runs",
+              empty_msg="  (no runs recorded yet)",
+              hint="/trace -l"):
+    """THE latest-run fallback + row loader (was five hand-kept copies of MAX(run_id) + the
+    per-id SELECT + the two error prints). `latest_from` lets /trace invoke default to the
+    newest run that HAS llm_calls. Returns (run_id, row); row is None (after printing why)
+    when there is nothing to show. `columns`/`latest_from` are code-controlled literals, never
+    user input."""
+    if run_id is None:
+        row = conn.execute(f"SELECT MAX(run_id) FROM {latest_from}").fetchone()
+        run_id = row[0] if row else None
+        if run_id is None:
+            _print(empty_msg)
+            return None, None
+    run = conn.execute(
+        f"SELECT {columns} FROM runs WHERE run_id = ?", (run_id,)
+    ).fetchone()
+    if not run:
+        _print(f"  no run #{run_id} — try {hint} to list recorded runs.")
+        return run_id, None
+    return run_id, run
 
 
 # --- /trace export ------------------------------------------------------------------------------
@@ -325,32 +392,29 @@ def export_run(
 
 def _export(ctx, args):
     fmt_md = False
-    run_id: Optional[int] = None
     out_path: Optional[str] = None
-    it = iter(args)
-    for a in it:
-        low = a.lower()
+    bad_out = False
+
+    def consume(low, a, it):
+        nonlocal fmt_md, out_path, bad_out
         if low in ("--md", "-m", "md", "markdown"):
             fmt_md = True
-        elif low in ("-o", "--out", "--output"):
+            return True
+        if low in ("-o", "--out", "--output"):
             out_path = next(it, None)
             # A dangling -o must not silently write the default, and a flag-shaped "path"
             # (-o --md) is a swallowed flag, not a destination — refuse both before any
             # DB/file work.
             if out_path is None or out_path.startswith("-"):
-                _print("  usage: /trace export [#id] [--md] [-o <path>] — -o needs a path; "
-                       "nothing written")
-                return
-        elif low in ("-r", "--run"):
-            rid = _to_int(next(it, ""))
-            if rid is not None:
-                run_id = rid
-        elif a.startswith("#") or a.lstrip("+-").isdigit():
-            rid = _to_int(a)
-            if rid is not None:
-                run_id = rid
-        else:
-            _print(f"  ignoring unrecognized argument: {a!r}")
+                bad_out = True
+            return True
+        return False
+
+    run_id, _count, _list = _parse_run_selector(args, consume=consume)
+    if bad_out:
+        _print("  usage: /trace export [#id] [--md] [-o <path>] — -o needs a path; "
+               "nothing written")
+        return
 
     try:
         dest, payload = export_run(
@@ -468,25 +532,13 @@ def _verbosity(ctx, args):
 def _why(ctx, args):
     from tui import ui
 
-    run_id: Optional[int] = None
-    for a in args:
-        rid = _to_int(a) if (a.startswith("#") or a.lstrip("+-").isdigit()) else None
-        if rid is not None:
-            run_id = rid
+    run_id, _count, _list = _parse_run_selector(args)
 
     with _connect(ctx.db_path) as conn:
-        if run_id is None:
-            row = conn.execute("SELECT MAX(run_id) FROM runs").fetchone()
-            run_id = row[0] if row else None
-            if run_id is None:
-                _print("  (no runs recorded yet — ask something first)")
-                return
-        run = conn.execute(
-            "SELECT run_id, query, started_at, ended_at, status, response FROM runs WHERE run_id = ?",
-            (run_id,),
-        ).fetchone()
-        if not run:
-            _print(f"  no run #{run_id} — try /trace -l to list recorded runs.")
+        run_id, run = _load_run(
+            conn, run_id, empty_msg="  (no runs recorded yet — ask something first)"
+        )
+        if run is None:
             return
         events = conn.execute(
             "SELECT seq, node, summary, data FROM events WHERE run_id = ? ORDER BY seq, id",
@@ -627,11 +679,7 @@ def _answer(ctx, args):
     from tui import ui
     from trust import glassbox
 
-    run_id: Optional[int] = None
-    for a in args:
-        rid = _to_int(a) if (a.startswith("#") or a.lstrip("+-").isdigit()) else None
-        if rid is not None:
-            run_id = rid
+    run_id, _count, _list = _parse_run_selector(args)
 
     state = ctx.state or {}
     # "Live" means THIS process ran the last turn: the per-turn accumulators (or current_query)
@@ -652,17 +700,11 @@ def _answer(ctx, args):
 
     # Otherwise reconstruct from the recorded run (last, or the requested #id).
     with _connect(ctx.db_path) as conn:
-        if run_id is None:
-            row = conn.execute("SELECT MAX(run_id) FROM runs").fetchone()
-            run_id = row[0] if row else None
-            if run_id is None:
-                _print("  (no runs recorded yet — ask something first)")
-                return
-        run = conn.execute(
-            "SELECT run_id, query, response FROM runs WHERE run_id = ?", (run_id,)
-        ).fetchone()
-        if not run:
-            _print(f"  no run #{run_id} — try /trace -l to list recorded runs.")
+        run_id, run = _load_run(
+            conn, run_id, columns="run_id, query, response",
+            empty_msg="  (no runs recorded yet — ask something first)",
+        )
+        if run is None:
             return
         events = conn.execute(
             "SELECT data FROM events WHERE run_id = ? ORDER BY seq, id", (run_id,)
@@ -782,30 +824,7 @@ def _trace(ctx, args):
                                      "true", "false", "yes", "no"):
         return _verbosity(ctx, args)
 
-    list_mode = False
-    run_id: Optional[int] = None
-    bare: Optional[int] = None
-    it = iter(args)
-    for a in it:
-        low = a.lower()
-        if low in ("-l", "--list", "list", "ls"):
-            list_mode = True
-        elif low in ("-r", "--run"):
-            rid = _to_int(next(it, ""))
-            if rid is not None:
-                run_id = rid
-        elif a.startswith("#"):
-            rid = _to_int(a)
-            if rid is not None:
-                run_id = rid
-        elif a.lstrip("+-").isdigit():
-            bare = int(a)
-        else:
-            _print(f"  ignoring unrecognized argument: {a!r}")
-
-    n: Optional[int] = bare if list_mode else None
-    if bare is not None and not list_mode and run_id is None:
-        run_id = bare
+    run_id, count, list_mode = _parse_run_selector(args)
 
     with _connect(ctx.db_path) as conn:
         if list_mode:
@@ -813,7 +832,7 @@ def _trace(ctx, args):
                 "SELECT run_id, started_at, status, query, "
                 "(SELECT COUNT(*) FROM events e WHERE e.run_id = r.run_id) AS n_events "
                 "FROM runs r ORDER BY run_id DESC LIMIT ?",
-                (max(1, n or 10),),
+                (max(1, count or 10),),
             ).fetchall()
             if not rows:
                 _print("  (no runs recorded yet)")
@@ -824,18 +843,8 @@ def _trace(ctx, args):
                 _print(f"    #{rid:<4} {when}  {str(status):<7} {n_events:>2}ev  {_clip(query, 56)}")
             return
 
-        if run_id is None:
-            row = conn.execute("SELECT MAX(run_id) FROM runs").fetchone()
-            run_id = row[0] if row else None
-            if run_id is None:
-                _print("  (no runs recorded yet)")
-                return
-        run = conn.execute(
-            "SELECT run_id, query, started_at, ended_at, status, response FROM runs WHERE run_id = ?",
-            (run_id,),
-        ).fetchone()
-        if not run:
-            _print(f"  no run #{run_id} — try /trace -l to list recorded runs.")
+        run_id, run = _load_run(conn, run_id)
+        if run is None:
             return
         events = conn.execute(
             "SELECT seq, ts, node, summary, data FROM events WHERE run_id = ? ORDER BY seq, id",
@@ -852,27 +861,15 @@ def _show_llm_calls(ctx, args):
     from tui import ui
 
     full = False
-    list_mode = False
-    run_id: Optional[int] = None
-    it = iter(args)
-    for a in it:
-        low = a.lower()
+
+    def consume(low, a, it):
+        nonlocal full
         if low in ("--full", "-f", "full"):
             full = True
-        elif low in ("-l", "--list", "list", "ls"):
-            list_mode = True
-        elif low in ("-r", "--run"):
-            rid = _to_int(next(it, ""))
-            if rid is not None:
-                run_id = rid
-        elif a.startswith("#"):
-            rid = _to_int(a)
-            if rid is not None:
-                run_id = rid
-        elif a.lstrip("+-").isdigit():
-            run_id = int(a)
-        else:
-            _print(f"  ignoring unrecognized argument: {a!r}")
+            return True
+        return False
+
+    run_id, count, list_mode = _parse_run_selector(args, consume=consume)
 
     with _connect(ctx.db_path) as conn:
         # The llm_calls table is created by the Tracer at startup; guard anyway for a stale DB.
@@ -888,7 +885,7 @@ def _show_llm_calls(ctx, args):
                 "SELECT c.run_id, COUNT(*) AS n, COALESCE(SUM(c.dur), 0), r.query "
                 "FROM llm_calls c LEFT JOIN runs r ON r.run_id = c.run_id "
                 "GROUP BY c.run_id ORDER BY c.run_id DESC LIMIT ?",
-                (max(1, run_id or 10),),
+                (max(1, count or 10),),
             ).fetchall()
             if not rows:
                 _print("  (no LLM calls recorded yet)")
@@ -898,19 +895,12 @@ def _show_llm_calls(ctx, args):
                 _print(f"    #{rid:<4} {n:>2} call(s)  {float(dur or 0):>6.1f}s  {_clip(query, 50)}")
             return
 
-        if run_id is None:
-            row = conn.execute("SELECT MAX(run_id) FROM llm_calls").fetchone()
-            run_id = row[0] if row else None
-            if run_id is None:
-                _print("  (no LLM calls recorded yet — run a query first)")
-                return
-
-        run = conn.execute(
-            "SELECT run_id, query, started_at, ended_at, status, response FROM runs WHERE run_id = ?",
-            (run_id,),
-        ).fetchone()
-        if not run:
-            _print(f"  no run #{run_id} — try /trace invoke -l to list runs with LLM calls.")
+        run_id, run = _load_run(
+            conn, run_id, latest_from="llm_calls",
+            empty_msg="  (no LLM calls recorded yet — run a query first)",
+            hint="/trace invoke -l",
+        )
+        if run is None:
             return
         calls = conn.execute(
             "SELECT seq, ts, node, model, dur, prompt_tokens, output_tokens, input, output, status "

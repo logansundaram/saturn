@@ -10,6 +10,7 @@ Remembered facts are also injected into the grounding context each turn, so `rec
 for searching a large memory or confirming a specific detail.
 """
 
+from textutil import doc_source_label
 from tools.toolspec import register_tool
 
 from stores.memory_registry import add_memory, search_memory
@@ -27,10 +28,11 @@ def search_knowledge_base(query: str):
     docs = get_vector_store().similarity_search(query, k=retrieval_k())
     if not docs:
         return "No relevant documents found in the knowledge base."
+    # textutil.doc_source_label — the one builder of the `[source: …]` marker synthesize's
+    # Sources labels parse back (parse_doc_sources); construction and parsing can't drift.
     return "\n\n".join(
-        f"[source: {d.metadata.get('source', 'unknown')}"
-        + (f", page {d.metadata['page']}" if d.metadata.get("page") else "")
-        + f"]\n{d.page_content}"
+        doc_source_label(d.metadata.get("source", "unknown"), d.metadata.get("page"))
+        + f"\n{d.page_content}"
         for d in docs
     )
 

@@ -111,17 +111,9 @@ def _llm_summary(older: list) -> str:
     import time
 
     from core.llms import get_model
+    from core.messages import COMPACTION_PROMPT  # lazy: messages pulls the live tool registry
 
-    prompt = HumanMessage(
-        content=(
-            "You are compacting an assistant conversation to save context-window space. Summarize "
-            "the exchange below into a dense, factual brief a capable assistant could use to continue "
-            "the conversation seamlessly. Preserve: concrete facts and figures established, decisions "
-            "and conclusions reached, the user's stated preferences and constraints, important file or "
-            "tool results, and any open/unfinished threads. Drop pleasantries and small talk. Write "
-            "terse bullet points with no preamble.\n\n=== CONVERSATION ===\n" + _transcript(older)
-        )
-    )
+    prompt = HumanMessage(content=COMPACTION_PROMPT + _transcript(older))
     start = time.perf_counter()
     out = get_model("utility").invoke([prompt]).content
     diag.log(f"compaction: summarized {len(older)} msg(s) in {time.perf_counter() - start:.2f}s")

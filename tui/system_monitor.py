@@ -5,6 +5,10 @@ import subprocess
 
 import psutil
 
+# Resolved ONCE at import: shutil.which is a full PATH scan, and the status-bar sampler calls
+# get_system_metrics every ~1.5s — the binary doesn't appear mid-session.
+_NVIDIA_SMI = shutil.which("nvidia-smi")
+
 
 @dataclass
 class SystemMetrics:
@@ -25,11 +29,11 @@ def get_system_metrics() -> SystemMetrics:
     total_vram_gb = None
     vram_used_gb = None
 
-    if shutil.which("nvidia-smi"):
+    if _NVIDIA_SMI:
         try:
             result = subprocess.run(
                 [
-                    "nvidia-smi",
+                    _NVIDIA_SMI,
                     "--query-gpu=utilization.gpu,memory.used,memory.total",
                     "--format=csv,noheader,nounits",
                 ],

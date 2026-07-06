@@ -1,8 +1,7 @@
-import re
-
 from config import get_config
+from core.plan_context import WRITE_TOOLS
 from core.state import AgentState, incident_steps, unfinished_steps
-from textutil import clip, split_call_result
+from textutil import clip, parse_doc_sources, split_call_result
 from core.llms import (
     get_model,
     extract_tok_per_sec,
@@ -22,9 +21,6 @@ from langchain.messages import HumanMessage, AIMessage, ToolMessage
 # pre-citation prompt sections and an unadorned answer.
 
 _MAX_SOURCE_LABEL = 100
-# The `[source: name, page N]` markers search_knowledge_base prepends to each retrieved chunk
-# (tools/knowledge.py) — the provenance labels for retrieval observations.
-_DOC_SOURCE_RE = re.compile(r"\[source: ([^\]]+)\]")
 
 # Caps for the plan-outcomes block: a tool step's full observation already rides the numbered
 # "Tool results" section, so its row here is a short pointer; a reasoning step's result exists
@@ -49,12 +45,10 @@ def _tool_source_label(result) -> str:
 
 def _doc_source_label(observation) -> str:
     """Provenance label for one retrieval observation: the distinct `[source: …]` names inside it
-    (one search_knowledge_base call returns several chunks, usually from a handful of files)."""
-    names: list[str] = []
-    for m in _DOC_SOURCE_RE.finditer(str(observation)):
-        name = m.group(1).strip()
-        if name and name not in names:
-            names.append(name)
+    (one search_knowledge_base call returns several chunks, usually from a handful of files).
+    Parsed via textutil.parse_doc_sources — the parse half of the marker pair knowledge.py
+    builds with doc_source_label, so the two sides can't drift."""
+    names = parse_doc_sources(observation)
     if names:
         return _label_clamp("knowledge base: " + ", ".join(names))
     return "knowledge base passage"
@@ -148,17 +142,25 @@ def verify_writes(state: AgentState) -> str:
     for ev in state.get("tool_events") or []:
         if not isinstance(ev, dict) or not ev.get("ok"):
             continue
-        if ev.get("name") not in ("write_file", "edit_file"):
+        if ev.get("name") not in WRITE_TOOLS:
             continue
         args = ev.get("args") or {}
         path = args.get("file_path")
         if not path or path in seen:
             continue
         # The tools report refusals as ordinary strings (ok=True), so check the result text for
-        # a success marker before quoting the file as "written".
+        # the EXACT success markers (tools/files.py return strings). A loose "File " prefix
+        # would also match edit_file's "File not found: …" failure and quote a file the failed
+        # edit never touched.
         preview = str(ev.get("result") or "")
-        if not (preview.startswith("File ") or preview.startswith("Content appended")
-                or preview.startswith("Edited ")):
+        if not preview.startswith(
+            (
+                "File overwritten successfully",
+                "File created successfully",
+                "Content appended",
+                "Edited ",
+            )
+        ):
             continue
         seen.add(path)
         try:

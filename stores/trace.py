@@ -14,6 +14,8 @@ import sqlite3
 from datetime import datetime
 from time import perf_counter
 
+from textutil import head_tail, map_strings
+
 
 # ── read-side helpers (shared by /trace in commands and the tui replay views) ──
 def decode_json(data, default):
@@ -109,10 +111,15 @@ def _json_default(o):
     return str(o)
 
 
+# Per-string-leaf cap when a delta overruns _DATA_CAP (see _summarize).
+_LEAF_CAP = 2000
+
+
 def _summarize(delta: dict) -> tuple[str, str]:
     parts = []
     if delta.get("plan"):
-        parts.append("plan=[" + "; ".join(f"{s['status']}:{s['label']}" for s in delta["plan"]) + "]")
+        parts.append("plan=[" + "; ".join(
+            f"{s.get('status', '?')}:{s.get('label', '?')}" for s in delta["plan"]) + "]")
     if delta.get("tools_called"):
         parts.append("tools=" + ", ".join(delta["tools_called"]))
     if "iteration" in delta:
@@ -120,7 +127,17 @@ def _summarize(delta: dict) -> tuple[str, str]:
     if "messages" in delta:
         parts.append(f"+{len(delta['messages'])}msg")
     summary = " | ".join(parts) or "(update)"
-    data = json.dumps(delta, default=_json_default)[:_DATA_CAP]
+    data = json.dumps(delta, default=_json_default)
+    if len(data) > _DATA_CAP:
+        # Clip long string LEAVES and re-encode instead of slicing the JSON text: a mid-token
+        # cut stores an undecodable blob (decode_json -> default), degrading /trace replays and
+        # Glass Box reconstruction to INCOMPLETE. Leaf-clipping keeps the record parseable.
+        try:
+            clipped = map_strings(json.loads(data), lambda s: head_tail(s, _LEAF_CAP))
+            data = json.dumps(clipped)
+        except Exception:
+            pass
+        data = data[:_DATA_CAP]  # last-resort bound (e.g. a plan with hundreds of steps)
     return summary, data
 
 
@@ -180,8 +197,11 @@ class Tracer:
         self._seq += 1
         if self._broken:
             return
-        summary, data = _summarize(delta or {})
         try:
+            # Inside the guard on purpose: _summarize serializes arbitrary node deltas (a
+            # circular structure, an exotic object) and the watcher must never take down the
+            # watched — an encode failure trips the breaker like any write failure.
+            summary, data = _summarize(delta or {})
             self.conn.execute(
                 "INSERT INTO events (run_id, seq, ts, node, summary, data) VALUES (?, ?, ?, ?, ?, ?)",
                 (run_id, self._seq, datetime.now().isoformat(), node, summary, data),

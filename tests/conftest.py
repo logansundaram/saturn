@@ -1,10 +1,11 @@
 """
 Shared pytest fixtures.
 
-The suite tests the INVARIANT / SECURITY surfaces the docs call load-bearing (the positional
-plan-accounting walkers, the shell allowlist matcher, the observation clamp, the surgical YAML
-persist, the snapshot/undo layer) plus the pure helpers behind newer features (citations,
-RAG loaders, sessions). Everything runs offline: no test calls
+The suite tests the INVARIANT / SECURITY surfaces the docs call load-bearing (the plan/execute
+engine's data-bus invariants — test_engine.py, which replaced the deleted positional
+plan-accounting walkers' tests in the 2026-07-03 transplant — the shell allowlist matcher, the
+observation clamp, the surgical YAML persist, the snapshot/undo layer) plus the pure helpers
+behind newer features (citations, RAG loaders, sessions). Everything runs offline: no test calls
 an LLM, the network, or the embedder.
 
 `isolated_paths` points every `paths.*` entry in the live config at a throwaway tmp directory so

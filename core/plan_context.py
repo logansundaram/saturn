@@ -13,11 +13,23 @@ needs_resolution} — see core/state.py) so they are trivially testable offline.
 from __future__ import annotations
 
 from config import get_config
+from textutil import head_tail
 
 # Cap each earlier result inside the results block. The full observation still lives on the step
 # (and in tool_results for synthesize's numbered sections); this bound keeps a per-step context
 # from re-sending every prior read in full.
 _RESULT_CAP = 800
+
+# The "previous step" callout carries more of its result than the block (it is the referent of
+# "the previous step's result" in step labels), but still bounded — a ~12k clamped observation
+# must not ride every per-step prompt in full.
+_CALLOUT_CAP = 4000
+
+# THE engine-wide tool classifications (one home — execute's write gate, rectify's resolution
+# exemption, and synthesize's write verification all key off these; a copy per node is how a
+# new tool silently escapes one of the three).
+WRITE_TOOLS = ("write_file", "edit_file")
+SEARCH_TOOLS = {"search_knowledge_base", "search_files", "find_files", "web_search"}
 
 
 def original_request(state) -> str:
@@ -73,14 +85,17 @@ def exec_context(state, step) -> str:
         last = prior[-1]
         parts.append(
             f'The immediately preceding step ("the previous step") was: '
-            f"{last.get('label')}\n  its result: {str(last.get('result') or '').strip()}"
+            f"{last.get('label')}\n  its result: "
+            f"{head_tail(str(last.get('result') or '').strip(), _CALLOUT_CAP)}"
         )
     parts.append(f"Your current step: {step.get('label')}")
     return "\n\n".join(parts)
 
 
 def plan_txt(plan) -> str:
-    """The whole plan as text for the rectify/replan prompts: DONE steps with their results,
+    """The whole plan as text for the rectify/replan prompts: DONE steps with their results
+    (capped like the results block — several ~12k clamped observations would otherwise overflow
+    a small model's window and front-truncate the very system prompt the call depends on),
     PENDING steps with their intended tool."""
     lines = []
     for i, s in enumerate(plan or [], 1):
@@ -88,7 +103,10 @@ def plan_txt(plan) -> str:
         if s.get("result") is None:
             lines.append(f"{i}. [PENDING] tool={tool} | {s.get('label')}")
         else:
+            r = str(s.get("result") or "").strip()
+            if len(r) > _RESULT_CAP:
+                r = r[:_RESULT_CAP] + " …(truncated)"
             lines.append(
-                f"{i}. [DONE] tool={tool} | {s.get('label')}\n   result: {s.get('result')}"
+                f"{i}. [DONE] tool={tool} | {s.get('label')}\n   result: {r}"
             )
     return "\n".join(lines)

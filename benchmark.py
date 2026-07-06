@@ -11,6 +11,7 @@ from langchain.messages import HumanMessage
 
 from agent import build_agent, run_turn, _fresh_turn, _initial_state
 from config import get_config
+from textutil import clip
 from tools.registry import risk_of
 
 # The benchmark harness, split by what it proves (June 2026):
@@ -536,7 +537,7 @@ def run_suites(
         suite_results = []
         print(f"[{suite_name}] ({len(queries)} queries)")
         for query in queries:
-            preview = query[:72] + "..." if len(query) > 72 else query
+            preview = clip(query, 72)
             print(f"  Q: {preview}")
             entry = run_query(graph, query)
             suite_results.append(entry)
@@ -555,7 +556,7 @@ def run_suites(
             result = run_conversation(graph, convo)
             conversations.append(result)
             for t in result["turns"]:
-                preview = t["query"][:64] + "..." if len(t["query"]) > 64 else t["query"]
+                preview = clip(t["query"], 64)
                 check = ""
                 if "passed" in t:
                     check = "  ✓" if t["passed"] else "  ✗ EXPECTED " + repr(t["expect"])

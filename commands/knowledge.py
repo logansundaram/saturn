@@ -277,28 +277,8 @@ every turn — keep it short and current.
 - (standing guidance: tone, formats, what to never touch, who this work is for)
 """
 
-_DRAFT_PROMPT = """You are initializing SATURDAY.md — a standing-instructions file that a local
-AI agent loads into context at the start of every turn it works in this workspace.
-
-Below are the workspace's file listing and (when available) one-line summaries of its files.
-Write a concise SATURDAY.md (under 60 lines) in markdown with exactly these sections:
-
-# SATURDAY.md
-## What this workspace is for      (1-3 sentences inferred from the files)
-## Layout                          (the notable files/folders and what each holds — only what you
-                                    can actually infer; skip boilerplate)
-## Conventions                     (any naming/format patterns visible in the files; if none are
-                                    evident, give 1-2 sensible placeholders the user can edit)
-
-Be factual about what you can see and explicit about what you're guessing. Do not invent files.
-Output ONLY the markdown file content, no preamble.
-
-## File listing
-{listing}
-
-## File summaries
-{summaries}
-"""
+# The draft prompt lives in core/messages.py (INIT_DRAFT_PROMPT — the one-prompt-home rule),
+# imported lazily at the call site below.
 
 
 def _workspace_listing(workspace: Path) -> list[str]:
@@ -361,10 +341,11 @@ def _init(ctx, args):
         try:
             from langchain.messages import HumanMessage
             from core.llms import get_model
+            from core.messages import INIT_DRAFT_PROMPT
             from stores.document_registry import read_workspace_manifest
 
             _print("  surveying the workspace and drafting SATURDAY.md…")
-            prompt = _DRAFT_PROMPT.format(
+            prompt = INIT_DRAFT_PROMPT.format(
                 listing="\n".join(listing) or "(empty)",
                 summaries=read_workspace_manifest().strip() or "(none)",
             )

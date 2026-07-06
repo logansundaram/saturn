@@ -28,9 +28,10 @@ def _compact_history(messages: list, keep_recent_turns: int = 1) -> list:
     The original concerns still hold for OLD turns, which is why they're still compacted:
     carrying many turns of scratchpad makes the model treat a long-finished tool call as "already
     done" (reusing stale results instead of re-running a planned gather), bloats context with
-    heavy tool outputs, and desyncs the model's view (`messages`) from the plan machinery's
-    (per-turn `tools_called`, reset each turn — so the nudge still correctly sees this turn's
-    planned tools as un-run regardless of what's in the retained window).
+    heavy tool outputs, and desyncs the model's view (`messages`) from the per-turn trace
+    accumulators (`tools_called`/`tool_results`/`documents_retrieved`, reset each turn — their
+    live consumers are the benchmark's grounding/gate-coverage grading, headless `--json`'s
+    `tools` field, `/trace state`, and synthesize's per-turn source numbering).
 
     A turn starts at a REAL user HumanMessage — not a standalone mid-turn steer note (that
     belongs to the turn it corrected; treating it as a boundary would compact away the very
@@ -132,8 +133,6 @@ def _fresh_turn(state: AgentState, user_input: str) -> AgentState:
     state["rectify"] = False
     state["reasoning"] = ""
     state["replans"] = 0
-    state["pause_requested"] = False
-    state["pause_reason"] = ""
     state["aborted"] = False
     state["tools_called"] = []
     state["tool_results"] = []
@@ -156,8 +155,6 @@ def _initial_state() -> AgentState:
         "rectify": False,
         "reasoning": "",
         "replans": 0,
-        "pause_requested": False,
-        "pause_reason": "",
         "aborted": False,
         "tools_called": [],
         "tool_results": [],

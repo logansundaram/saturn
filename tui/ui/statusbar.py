@@ -24,6 +24,7 @@ from ._base import (
 _METRICS_INTERVAL = 1.5  # seconds between samples
 _metrics = None          # latest system_monitor.SystemMetrics (or None)
 _metrics_thread = None
+_metrics_wanted = None   # threading.Event — set while the bar is live; the loop parks otherwise
 
 
 def _metrics_loop(interval: float) -> None:
@@ -31,6 +32,10 @@ def _metrics_loop(interval: float) -> None:
 
     global _metrics
     while True:
+        # Park while the bar is torn down (idle at the input prompt between turns): each sample
+        # spawns an nvidia-smi subprocess, and an ungated loop would keep paying that ~2,400
+        # times an hour to feed a bar that isn't even displayed.
+        _metrics_wanted.wait()
         try:
             _metrics = get_system_metrics()
         except Exception:
@@ -39,17 +44,26 @@ def _metrics_loop(interval: float) -> None:
 
 
 def _metrics_start() -> None:
-    """Lazily spin up the sampler (once per process). Daemon, so it dies with the interpreter;
-    cheap enough at 1 sample / 1.5s to just run for the session's lifetime."""
-    global _metrics_thread
-    if _metrics_thread is not None:
-        return
+    """Lazily spin up the sampler (once per process) and un-park it. Daemon, so it dies with
+    the interpreter; _metrics_stop() parks it again whenever the bar is torn down."""
+    global _metrics_thread, _metrics_wanted
     import threading
 
+    if _metrics_wanted is None:
+        _metrics_wanted = threading.Event()
+    _metrics_wanted.set()
+    if _metrics_thread is not None:
+        return
     _metrics_thread = threading.Thread(
         target=_metrics_loop, args=(_METRICS_INTERVAL,), daemon=True
     )
     _metrics_thread.start()
+
+
+def _metrics_stop() -> None:
+    """Park the sampler (the bar is gone; nobody reads the snapshot until the next turn)."""
+    if _metrics_wanted is not None:
+        _metrics_wanted.clear()
 
 
 # ── live status bar (bottom-pinned) ───────────────────────────────────────────
@@ -221,6 +235,7 @@ def _live_stop() -> None:
     if _live is not None:
         _live.stop()
         _live = None
+    _metrics_stop()  # no bar -> no reader; stop burning nvidia-smi spawns while idle
 
 
 def _live_refresh() -> None:

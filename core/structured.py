@@ -162,7 +162,10 @@ def norm_tool(raw, valid: "set[str] | None" = None) -> Optional[str]:
     `valid` overrides the registry lookup for tests."""
     if not raw:
         return None
-    token = str(raw).replace("=", " ").split("|")[0].split()[0].strip().lower()
+    tokens = str(raw).replace("=", " ").split("|")[0].split()
+    if not tokens:  # degenerate emissions like "|read_file", "=", or whitespace
+        return None
+    token = tokens[0].strip().lower()
     token = TOOL_SYNONYMS.get(token, token)
     if valid is None:
         valid = registered_tools()
@@ -222,10 +225,21 @@ def _role_is_ollama(role: str) -> bool:
 def _invoke_kwargs(role: str, fmt: "dict | None", temp: float) -> dict:
     """Constrained decoding + per-attempt temperature ride the invoke kwargs for Ollama roles
     (ChatOllama forwards `format`/`options` to the daemon); other providers take neither — they
-    get the shape hint + salvage parsing alone."""
+    get the shape hint + salvage parsing alone.
+
+    The options dict must carry `num_ctx` too: langchain_ollama treats an invoke-time `options`
+    as a FULL REPLACEMENT for the constructor-built options (which is the only place the
+    configured context window lives), so temperature alone would silently revert the daemon to
+    its ~2048 default and front-truncate long prompts."""
     if not _role_is_ollama(role):
         return {}
-    kwargs: dict = {"options": {"temperature": temp}}
+    options: dict = {"temperature": temp}
+    try:
+        cfg = get_config()
+        options["num_ctx"] = cfg.num_ctx_for(cfg.model_for_role(role).model)
+    except Exception:  # a broken binding must not fail the call that would surface it
+        pass
+    kwargs: dict = {"options": options}
     if fmt is not None:
         kwargs["format"] = fmt
     return kwargs
@@ -260,21 +274,7 @@ def structured(role, messages, schema, fmt, shape, default=None, attempts=3):
     raise ValueError(f"{schema.__name__}: no valid JSON after {attempts} attempts")
 
 
-def text(role, messages, attempts=3):
-    """A plain-text call through the role's trust-wrapped model, retried on empty output.
-    Returns "" only when every attempt came back blank/failed (callers treat that honestly)."""
-    from core.llms import get_model
-
-    content = ""
-    for i in range(attempts):
-        temp = 0.0 if i == 0 else 0.4
-        kwargs = {"options": {"temperature": temp}} if _role_is_ollama(role) else {}
-        try:
-            resp = get_model(role).invoke(list(messages), **kwargs)
-        except Exception as exc:
-            diag.log(f"text[{role}] attempt {i + 1} call failed: {exc}")
-            continue
-        content = str(getattr(resp, "content", "") or "").strip()
-        if content:
-            return content
-    return content
+# (A `text(role, messages)` plain-text twin shipped with the transplant but never gained a
+# caller — the engine's one plain-text path is nodes/execute._reasoning_call, which needs the
+# raw response object for its metrics. Deleted 2026-07-04 rather than left as a second,
+# unexercised text-call path someone "fixes" believing it drives the engine.)

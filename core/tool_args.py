@@ -66,6 +66,14 @@ _ARG_ALIASES: dict[str, dict[str, list[str]]] = {
     "recall": {},  # query is optional (empty returns everything)
 }
 
+# Required args for which the EMPTY STRING is a legitimate value — deleting text via
+# edit_file(new_string="") or creating an empty file via write_file(content="") — so "" must
+# count as present for these, not as a missing value to retry.
+_EMPTY_OK: dict[str, set[str]] = {
+    "edit_file": {"new_string"},
+    "write_file": {"content"},
+}
+
 # Optional args passed through when present (correctly named) — never required, never invented.
 _OPTIONAL: dict[str, list[str]] = {
     "list_directory": ["directory"],
@@ -118,9 +126,11 @@ def coerce_args(name: str, args) -> Optional[dict]:
     if aliases is None:
         return args  # unknown/remote tool: its schema is not ours to police
     lower = {k.lower(): v for k, v in args.items() if isinstance(k, str)}
+    empty_ok = _EMPTY_OK.get(name, set())
     out: dict = {}
     for canon, names in aliases.items():
-        val = next((lower[a] for a in names if lower.get(a) not in (None, "")), None)
+        missing = (None,) if canon in empty_ok else (None, "")
+        val = next((lower[a] for a in names if lower.get(a) not in missing), None)
         if val is None:
             return None
         out[canon] = val

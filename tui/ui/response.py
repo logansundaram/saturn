@@ -240,11 +240,20 @@ def response(text: str) -> None:
     through the trust-colored provenance block instead of the markdown body. Falls back to plain
     text if markdown rendering raises (arbitrary model output), and to plain print without rich."""
     _live_stop()  # turn's over: drop the status bar before printing the answer
+    section("response")  # parts the answer from the trace rail above it (rich + plain branches)
+    _console.print() if _RICH else print()  # let the answer breathe beneath its rule
+    _final_render(text, plain_body=text)
+
+
+def _final_render(text: str, *, plain_body: "str | None") -> None:
+    """THE final-answer tail (provenance pop → sources split → markdown body → trust-colored
+    Sources → receipt → first-answer hint), shared by `response()` and ResponseStream.finish()
+    so streamed and non-streamed answers can never drift apart. `plain_body` is what the
+    no-rich path prints as the body — the whole text for `response()`, only the trailer beyond
+    the already-typed stream for `finish()` (None = nothing left to print)."""
     gb = _pop_turn_provenance()
-    prose, src_lines = _split_sources(text)
     if _RICH:
-        section("response")  # parts the answer from the trace rail above it
-        _console.print()  # let the answer breathe beneath its rule
+        prose, src_lines = _split_sources(text)
         _print_markdown_body(prose if src_lines else text)
         if src_lines:
             _print_sources(src_lines, gb)
@@ -253,11 +262,9 @@ def response(text: str) -> None:
         _first_answer_hint()
         _console.print()  # trailing whitespace before the next prompt
     else:
-        print()
-        print("  ── response")
-        print()
-        print(text)
-        print()
+        if plain_body:
+            print(plain_body)
+            print()
         _print_receipt()
         _first_answer_hint()
         print()
@@ -310,8 +317,7 @@ class ResponseStream:
             self._live = Live(console=_console, transient=True, auto_refresh=False)
             self._live.start()
         else:
-            print()
-            print("  ── response")
+            section("response")  # one header vocabulary (listing.section has the plain branch)
             print()
 
     def _tail(self) -> "Text":
@@ -362,27 +368,16 @@ class ResponseStream:
         if self._live is not None:
             self._live.stop()  # transient: erases the streaming tail
             self._live = None
-        gb = _pop_turn_provenance()
-        if _RICH:
-            prose, src_lines = _split_sources(text)
-            _print_markdown_body(prose if src_lines else text)
-            if src_lines:
-                _print_sources(src_lines, gb)
-            _console.print()
-            _print_receipt()
-            _first_answer_hint()
-            _console.print()
-        else:
+        if not _RICH:
             print()  # close the typed-out line
-            # The plain path typed the streamed tokens out already — print only what the recorded
-            # final text appends beyond them (e.g. the Sources footer), never the whole thing twice.
-            streamed = "".join(self._chars).rstrip()
-            if text.rstrip() != streamed and text.startswith(streamed):
-                print(text[len(streamed):].strip("\n"))
-                print()
-            _print_receipt()
-            _first_answer_hint()
-            print()
+        # The plain path typed the streamed tokens out already — its body is only what the
+        # recorded final text appends beyond them (e.g. the Sources footer), never the whole
+        # thing twice. The rich path re-renders the full text (the live tail was transient).
+        streamed = "".join(self._chars).rstrip()
+        trailer = None
+        if text.rstrip() != streamed and text.startswith(streamed):
+            trailer = text[len(streamed):].strip("\n")
+        _final_render(text, plain_body=trailer)
 
     def abort(self) -> None:
         """Tear down the live tail without a final render — a failed/cancelled turn. The transient

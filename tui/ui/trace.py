@@ -7,7 +7,7 @@ so a turn reads the same whether it's happening now or being inspected later.
 
 import time
 
-from textutil import human_bytes
+from textutil import CALL_RESULT_SEP, human_bytes
 
 from . import _base
 from ._base import (
@@ -99,7 +99,9 @@ def show_node(node: str, delta: dict | None = None) -> None:
     _base._status["node"] = node
 
     # synthesize falls through to the normal rail line — its metrics (tok/s, context) are useful
-    # for transparency; the streamed answer prints directly after it so the output is not repeated.
+    # for transparency. Its update fires when the node COMPLETES, i.e. after the answer began
+    # streaming, so this row prints above the already-open response region (rich inserts console
+    # prints above a live display); the streamed text itself is never repeated here.
 
     # Per-node trace row: `│ ✓ node  elapsed  metrics` (metrics dim). The metric annotations are
     # built from the delta by the shared _node_line helper (the live trace + the /trace replay
@@ -377,7 +379,8 @@ def _enrich_results(events: list[dict], results: list, cap: int = 1200) -> list[
     for i, ev in enumerate(events):
         ev = dict(ev)
         if i < len(results):
-            _, _, obs = str(results[i]).partition(" -> ")
+            # CALL_RESULT_SEP — the constant nodes/tools.py builds these entries with.
+            _, _, obs = str(results[i]).partition(CALL_RESULT_SEP)
             obs = " ".join(obs.split())
             if obs:
                 ev["result"] = _truncate(obs, cap)

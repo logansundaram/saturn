@@ -144,12 +144,15 @@ def is_set(name: str) -> bool:
 
 
 def mask(value: Optional[str]) -> str:
-    """A display-safe rendering of a secret: never the full value."""
+    """A display-safe rendering of a secret: never the full value. The masking itself is
+    textutil.mask_secret — THE one rule, shared with trust/redaction's findings — plus the
+    length annotation this key listing shows."""
+    from textutil import mask_secret
+
     if not value:
         return "(unset)"
-    if len(value) <= 8:
-        return "****"
-    return f"{value[:3]}…{value[-4:]}  ({len(value)} chars)"
+    masked = mask_secret(value)
+    return masked if len(value) <= 8 else f"{masked}  ({len(value)} chars)"
 
 
 # --- write -------------------------------------------------------------------

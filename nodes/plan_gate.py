@@ -13,11 +13,11 @@ current step with the corrected plan — or, if the user aborted, routing falls 
 `synthesize`. This is what lets a hallucinated or wrong plan be fixed mid-flight instead of
 running to a bad conclusion.
 
-Two independent trigger seams feed it, by design, so the *source* of a pause is modular:
-  - external / async / between-turns: the shared `plan_ops.PauseController` (the mid-turn Esc key,
-    handled by `typeahead.InputQueue`, and the `/plan pause` + `/plan review` commands), and
-  - in-graph: the `state["pause_requested"]` flag — the seam a future LLM-initiated
-    "request a plan review" node/tool would set. The gate handles both identically.
+One trigger seam feeds it: the shared `plan_ops.PauseController` (the mid-turn Esc key, handled
+by `typeahead.InputQueue`, and the `/plan pause` + `/plan review` commands). (A speculative
+second in-graph seam — a `state["pause_requested"]` flag for a future LLM-initiated pause —
+was deleted 2026-07-04: nothing ever set it, and dead state every writer must keep resetting
+is a standing hazard. A future pause source sets the SAME controller.)
 
 The same controller carries a *third*, non-pausing action: **mid-turn steering** (`source="steer"`,
 the typed correction in `reason`). Under the plan/execute engine (2026-07-03 transplant) a steer
@@ -28,8 +28,8 @@ user's correction, then execution continues. The running turn is adjusted, not i
 
 Determinism across the interrupt: a resumed `interrupt()` re-executes its node from the top, so the
 path to the `interrupt()` call must be the same on the re-run. The controller is read
-non-destructively (`pending()`/`peek()`) and only `clear()`ed *after* the interrupt returns, and
-the state flag doesn't change mid-node — so `should_pause` evaluates the same both times.
+non-destructively (`pending()`/`peek()`) and only `clear()`ed *after* the interrupt returns —
+so the pause decision evaluates the same both times.
 """
 
 from langchain.messages import HumanMessage
@@ -74,17 +74,12 @@ def plan_gate_node(state: AgentState):
             steer_updates["messages"] = [HumanMessage(content=note.lstrip())]
         return steer_updates
 
-    # Decide whether to pause from the two seams. Kept side-effect-free so it's identical on a
-    # post-interrupt re-execution (see module docstring).
-    paused = bool(state.get("pause_requested"))
-    reason = state.get("pause_reason") or ""
-    if not paused and controller.pending():
-        paused = True
-        req = controller.peek()
-        reason = (req.reason if req and req.reason else "pause requested")
-
-    if not paused:
+    # Decide whether to pause. Kept side-effect-free so it's identical on a post-interrupt
+    # re-execution (see module docstring).
+    if not controller.pending():
         return {}
+    req = controller.peek()
+    reason = req.reason if req and req.reason else "pause requested"
 
     plan = state.get("plan", [])
     review = interrupt(
@@ -101,12 +96,6 @@ def plan_gate_node(state: AgentState):
     controller.clear()  # consume the external request now that it's been handled
 
     updates: dict = {}
-    # Reset the in-graph flag only if it was actually set (keep the delta minimal so the trace
-    # doesn't render a no-op gate line; see ui.show_node).
-    if state.get("pause_requested"):
-        updates["pause_requested"] = False
-        updates["pause_reason"] = ""
-
     if isinstance(review, dict):
         edited = review.get("plan")
         if edited is not None and edited != plan:

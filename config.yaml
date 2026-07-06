@@ -226,3 +226,10 @@ capabilities:
     supports_structured_output: true
     context_window: 32768
     supports_vision: false
+  # The workstation tier's model — without this entry capability_of falls back to the
+  # conservative 8192 default and every call silently runs at a quarter of the real window.
+  "qwen3.6:27b":
+    supports_tools: true
+    supports_structured_output: true
+    context_window: 32768
+    supports_vision: false

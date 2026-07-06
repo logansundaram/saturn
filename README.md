@@ -33,15 +33,15 @@ Don't take the claims on faith — run one loop and check each one yourself:
 4. **`/privacy egress`** — the per-event ledger: exactly what left, channel / host / bytes.
 5. **Make it ask.** `» save a two-line summary to notes.md` — the approval gate shows the exact
    file diff and waits; bare Enter rejects (the default is always *no*).
-6. **Hold the record.** `/trace export` writes the run's complete record as JSON with a sha256
-   integrity digest. Then, from your shell:
+6. **Hold the record.** `/trace export` writes the run's complete record as JSON — the plan,
+   every tool call and observation, every human gate decision. Replay it offline any time:
 
    ```bash
-   saturn verify logging/exports/run_1.json    # exit 0 intact · 1 tampered · 2 unreadable
+   saturn --replay logging/exports/run_1.json    # renders the full drill-down, no DB needed
    ```
 
-   The digest proves the record wasn't altered after export — tamper-evidence anyone can
-   re-check, not a screenshot.
+   The record is a shareable, replayable artifact of exactly what the agent did — a real
+   execution log, not a screenshot.
 
 ---
 
@@ -93,11 +93,9 @@ replay. The point isn't how much Saturn can do — it's that you can see and con
   inspectable and editable with `/memory`.
 - **Shell commands** — run arbitrary shell commands (scripts, build tools, git, package managers)
   in the sandboxed workspace. Uses PowerShell on Windows and `/bin/sh` on macOS/Linux — write
-  commands in your platform's native syntax. Long-running processes (a dev server, a watcher)
-  can run **in the background** with their output captured to a log the agent can check and a
-  job it can stop; anything still running when you quit is cleaned up. Background jobs are
-  **opt-in** (`shell.background: true` in `config.yaml`) — a default install exposes no
-  detached-process surface at all.
+  commands in your platform's native syntax. Every run is a bounded **foreground** run: the
+  process lives and dies inside the turn you approved (no detached-process surface), with a
+  timeout so a hung command can't wedge the turn.
 - **Cited answers** — answers that drew on tools or documents cite their sources inline (`[1]`)
   and end with a Sources list mapping each number to the exact tool call or document behind it;
   `/source 3` shows the full material behind any citation.
@@ -121,10 +119,9 @@ replay. The point isn't how much Saturn can do — it's that you can see and con
   attaches to the turn (`git diff | saturn -p "review this change"`). Gated tools are denied by
   default (no human at the gate) unless you pass `--yolo`. Add `--json` for a machine-readable
   result (answer, plan, tools, tokens, timing, plus a `gates` record of which calls were
-  prompted and denied); `--export <file>` writes the run's export record (sha256 integrity
-  digest) after the turn; `saturn verify <file>` re-checks an exported record from the shell
-  (exit 0 intact / 1 tampered / 2 unreadable). The CLI is strict: unknown flags exit 2 instead
-  of silently launching the chat loop.
+  prompted and denied); `--export <file>` writes the run's replayable export record after the
+  turn; `saturn --replay <file>` renders an exported record offline. The CLI is strict:
+  unknown flags exit 2 instead of silently launching the chat loop.
 
 ---
 
@@ -324,7 +321,6 @@ Type `/help` for the full list, or `/<command> --help` for details on any one. H
 | `/memory` | See, add, or delete the facts the agent permanently remembers. |
 | `/policy` | The whole safety posture as one object: bare = status; `risk`/`allow`/`open` are its levers (bare forms report, changing is always explicit). |
 | `/risk` · `/allow` · `/autoapprove` | Kept for muscle memory — thin views of `/policy` (`risk` / `allow` / `open`), same handlers, zero drift. |
-| `/dryrun` | Plan + decide everything, execute nothing — tool calls stubbed (bare = status readout). |
 | `/source` | Show the full material behind a citation `[n]` of the last answer. |
 | `/glass` | **The Glass Box**: answer-level provenance — each cited source's origin + trust, what left the machine, and the human gate decisions (also `/trace answer`; `#id` for past runs). |
 | `/privacy` | The privacy surface: what CAN leave (`/privacy`), what DID (`/privacy egress`), seal the boundary (`/privacy airgap`), and strip secrets from off-machine sends (`/privacy redact`). |
@@ -332,8 +328,7 @@ Type `/help` for the full list, or `/<command> --help` for details on any one. H
 | `/rewind` | Drop the last exchange from the conversation (files untouched — that's `/undo`). |
 | `/retry` | Regenerate the last answer; `/retry full` re-runs the whole turn from scratch. |
 | `/init` | Survey the workspace and draft `SATURDAY.md` standing instructions. |
-| `/trace` | Inspect past runs, tool I/O, LLM calls, cost; `/trace why` explains a run's decisions; `/trace export` writes a tamper-evident run record (sha256 integrity digest); `/trace verify` re-checks an export's digest; `/trace replay` re-renders an exported record anywhere — no database needed. |
-| `saturn verify <file>` | (shell verb, not a slash command) offline integrity check of a `/trace export` — recomputes the digest; exit 0 intact / 1 tampered / 2 unreadable. |
+| `/trace` | Inspect past runs, tool I/O, LLM calls, cost; `/trace why` explains a run's decisions; `/trace export` writes the run's complete record as JSON; `/trace replay` (or `saturn --replay <file>`) re-renders an exported record anywhere — no database needed. |
 | `/resume` | Continue your last session (autosaved); `save`/`list`/`delete`/`rename`/`<name>` for named sessions. |
 | `/update` | Self-update: pull the latest Saturn (your data is never touched). |
 | `/clear` · `/quit` | Start a fresh conversation / exit. |

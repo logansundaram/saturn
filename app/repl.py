@@ -176,7 +176,10 @@ def run_repl() -> None:
                 continue
 
         # `/`-prefixed lines are REPL meta-commands, not agent turns — intercept them here.
-        if commands.is_command(user_input):
+        # `not dropped` keeps the drag-and-drop promise: a POSIX absolute path ("/home/…")
+        # whose owner chose "[Enter] send as-is" must run as a message, not fall through to
+        # dispatch as an unknown slash command.
+        if not dropped and commands.is_command(user_input):
             commands.dispatch(user_input, cmd_ctx)
             if cmd_ctx.should_quit:
                 break

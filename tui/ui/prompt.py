@@ -216,9 +216,13 @@ if _PTK:
     # A multi-line/huge paste would flood the prompt with raw text; instead it's stored here and
     # the buffer gets one compact chip. The chip is ordinary buffer text — deletable like a word —
     # and is swapped back for the full text at submit (`_expand_paste_tags`) or in place via
-    # Ctrl+E (`_ptk_expand_paste`) when something in it needs editing. The store survives the
-    # whole session (ids never reset) so a chip recalled from line HISTORY still expands.
+    # Ctrl+E (`_ptk_expand_paste`) when something in it needs editing. Ids never reset, so a
+    # chip recalled from line HISTORY still expands — but the store is BOUNDED (the last
+    # _PASTE_STORE_MAX pastes): a day-long session of big log pastes must not retain every one
+    # of them forever. An evicted chip degrades to its literal text (_expand_paste_tags keeps
+    # unknown ids), exactly like a hand-typed chip.
     _PASTE_STORE: dict[int, str] = {}
+    _PASTE_STORE_MAX = 30
     _paste_seq = 0  # last id handed out
     _PASTE_TAG_RE = _re.compile(r"\[paste #(\d+)[^\]\n]*\]")
     _PASTE_TAG_LINES = 3    # compact a paste of >= this many lines
@@ -402,6 +406,8 @@ if _PTK:
             return
         _paste_seq += 1
         _PASTE_STORE[_paste_seq] = data
+        while len(_PASTE_STORE) > _PASTE_STORE_MAX:  # evict oldest (dicts keep insertion order)
+            _PASTE_STORE.pop(next(iter(_PASTE_STORE)))
         size = f"+{n_lines} lines" if n_lines > 1 else f"{_human_tokens(len(data))} chars"
         tag = f"[paste #{_paste_seq} {size}]"
         event.current_buffer.insert_text(tag)

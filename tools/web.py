@@ -71,6 +71,14 @@ def _max_results() -> int:
     return int(get_config().get("web.max_results", 5))
 
 
+def search_backend() -> str:
+    """The backend the NEXT web_search will actually use: 'tavily' or 'duckduckgo'. The same
+    `_use_tavily()` decision the tool itself makes — including the session latch that disables
+    a dead/quota'd key — so posture readouts (/privacy) can never name a destination the egress
+    ledger would contradict."""
+    return "tavily" if _use_tavily() else "duckduckgo"
+
+
 def _use_tavily() -> bool:
     """Whether the current call should go through Tavily. False forces the keyless path."""
     if _TAVILY_DISABLED:

@@ -152,8 +152,28 @@ def tool_node(state: AgentState):
                 quarantine.flag(name, findings)
                 clamped = quarantine.wrap_observation(clamped, findings)
                 q_kinds = sorted({f.kind for f in findings})
+        # Per-call boundary record (computed here so the outcome stamp below can see it): what
+        # this call sent over the network, or what air-gap blocked.
+        sent = _egress_slice(egress_mark)
+        # Structural outcome stamp for the recorder (nodes/update_plan reads it off the message):
+        # derived HERE, where the call actually ran, so a step's status never has to be sniffed
+        # back out of observation text — a successful read of a file whose content happens to
+        # start with "ERROR:" or "Blocked …" must not fail its step. "blocked" = every boundary
+        # event this call produced was an air-gap refusal (the observation is the refusal).
+        boundary = [e for e in sent if isinstance(e, dict) and "status" in e]
+        if not ok:
+            call_status = "error"
+        elif boundary and all(e.get("status") == egress.BLOCKED for e in boundary):
+            call_status = "blocked"
+        else:
+            call_status = "done"
         tool_messages.append(
-            ToolMessage(content=clamped, tool_call_id=tool_call["id"], name=name)
+            ToolMessage(
+                content=clamped,
+                tool_call_id=tool_call["id"],
+                name=name,
+                additional_kwargs={"saturn_status": call_status},
+            )
         )
         tools_called.append(name)
         # Retrieval results go to documents_retrieved (synthesize's "Retrieved documents"); every
@@ -176,9 +196,8 @@ def tool_node(state: AgentState):
         }
         if q_kinds:
             event["quarantine"] = q_kinds
-        # Per-call boundary record: what this call sent over the network (or what air-gap blocked),
-        # rendered live as a rail leaf and persisted with the event for /trace replays.
-        sent = _egress_slice(egress_mark)
+        # The per-call egress slice (computed above), rendered live as a rail leaf and persisted
+        # with the event for /trace replays.
         if sent:
             event["egress"] = sent
         tool_events.append(event)

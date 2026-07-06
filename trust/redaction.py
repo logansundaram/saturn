@@ -84,11 +84,11 @@ def active() -> bool:
 
 
 def _mask(match: str) -> str:
-    """A display-safe preview of a matched secret: keep a short prefix, mask the rest."""
-    s = " ".join(str(match).split())
-    if len(s) <= 8:
-        return s[:2] + "…"
-    return s[:6] + "…" + s[-2:]
+    """A display-safe preview of a matched secret — textutil.mask_secret, THE one masking rule
+    (shared with env_keys' key listing, so a tightening decision reaches both surfaces)."""
+    from textutil import mask_secret
+
+    return mask_secret(match)
 
 
 def scan(text: str) -> list[Finding]:

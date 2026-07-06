@@ -348,8 +348,14 @@ def persist(dotted_key: str) -> Path:
     user actually tunes — the runtime knobs, `active_tier`, the web/shell settings, the paths.
     Deeper structural edits (per-tier role bindings) belong in the file or `/models`."""
     value = get_config().get(dotted_key)
-    text = _CONFIG_PATH.read_text(encoding="utf-8")
-    _CONFIG_PATH.write_text(_set_yaml_scalar(text, dotted_key, value), encoding="utf-8")
+    # newline="" both ways: read_text's universal-newline mode would fold CRLF to \n before
+    # _set_yaml_scalar captures each line's ending, and write_text would then re-expand every
+    # \n to os.linesep — rewriting the WHOLE file's line endings on a one-line edit. Disabling
+    # translation keeps the per-line eol capture honest and the diff to the single edited line.
+    with open(_CONFIG_PATH, "r", encoding="utf-8", newline="") as fh:
+        text = fh.read()
+    with open(_CONFIG_PATH, "w", encoding="utf-8", newline="") as fh:
+        fh.write(_set_yaml_scalar(text, dotted_key, value))
     return _CONFIG_PATH
 
 

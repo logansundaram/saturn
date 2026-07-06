@@ -51,15 +51,17 @@ def test_unfinished_and_incident_views():
     assert [s["step_id"] for s in incident_steps(plan)] == [2]
 
 
-# --- the mechanical recorder: observation -> current step's result + derived status ----------
-def _tool_round(plan, observation, name="web_search"):
-    """A state as it looks after tools ran: the call answered by a trailing ToolMessage."""
+# --- the mechanical recorder: observation -> current step's result + stamped status ----------
+def _tool_round(plan, observation, name="web_search", stamp=None):
+    """A state as it looks after tools ran: the call answered by a trailing ToolMessage.
+    `stamp` mirrors the producer's structural outcome (nodes/tools.py `saturn_status`)."""
+    kwargs = {"additional_kwargs": {"saturn_status": stamp}} if stamp else {}
     return {
         "plan": plan,
         "messages": [
             HumanMessage("q"),
             AIMessage("", tool_calls=[{"name": name, "args": {}, "id": "c1"}]),
-            ToolMessage(observation, tool_call_id="c1", name=name),
+            ToolMessage(observation, tool_call_id="c1", name=name, **kwargs),
         ],
     }
 
@@ -72,15 +74,68 @@ def test_update_plan_records_result_on_current_step():
     assert out[1]["result"] is None, "only the current step records"
 
 
-def test_update_plan_derives_incident_statuses():
+def test_update_plan_reads_stamped_incident_statuses():
     plan = [_step(1, "run_shell")]
-    out = update_plan_node(_tool_round(plan, "Error calling run_shell: boom"))["plan"]
+    out = update_plan_node(
+        _tool_round(plan, "Error calling run_shell: boom", stamp="error")
+    )["plan"]
     assert out[0]["status"] == "error"
+    plan = [_step(1, "web_search")]
+    out = update_plan_node(
+        _tool_round(plan, "Air-gap is ON — this operation would send data.", stamp="blocked")
+    )["plan"]
+    assert out[0]["status"] == "blocked"
     plan = [_step(1, "write_file")]
     decline = ("Execution declined by the user. Do not retry this action; tell the user you "
                "did not perform it.")
-    out = update_plan_node(_tool_round(plan, decline, name="write_file"))["plan"]
+    out = update_plan_node(
+        _tool_round(plan, decline, name="write_file", stamp="skipped")
+    )["plan"]
     assert out[0]["status"] == "skipped", "a gate rejection records as a skipped incident"
+
+
+def test_update_plan_never_sniffs_status_from_observation_text():
+    """A successful read of a file whose CONTENT starts with an error/blocked word must stay
+    `done` — the status is the producer's stamp, never the observation text (the old prefix
+    sniffing failed a step over its own data)."""
+    plan = [_step(1, "read_file")]
+    out = update_plan_node(
+        _tool_round(plan, "ERROR: disk full at 03:12\nrest of the log", name="read_file")
+    )["plan"]
+    assert out[0]["status"] == "done"
+    plan = [_step(1, "read_file")]
+    out = update_plan_node(
+        _tool_round(plan, "Blocked IPs: 10.0.0.1, 10.0.0.2", name="read_file")
+    )["plan"]
+    assert out[0]["status"] == "done"
+
+
+def test_update_plan_decline_prefix_fallback_without_stamp():
+    """Belt-and-braces: an UNSTAMPED decline still records as skipped off the DECLINE_TEXT
+    prefix (the one textual fallback kept)."""
+    from nodes.approval import DECLINE_TEXT
+
+    plan = [_step(1, "write_file")]
+    out = update_plan_node(_tool_round(plan, DECLINE_TEXT, name="write_file"))["plan"]
+    assert out[0]["status"] == "skipped"
+
+
+def test_set_status_keeps_the_pointer_pairing():
+    """The plan-review editor's status verb must keep gotcha #6 intact: a TERMINAL status on an
+    un-run step also stamps a result (else execute re-selects it by `result is None` and RUNS
+    the step the user just skipped), and pending clears the result so a step is runnable."""
+    from core import plan_ops
+
+    plan = [_step(1), _step(2)]
+    out = plan_ops.set_status(plan, 1, "skipped")
+    assert out[0]["result"] is not None
+    assert current_step(out)["step_id"] == 2, "the skipped step is no longer the pointer"
+    back = plan_ops.set_status(out, 1, "pending")
+    assert back[0]["result"] is None, "back to pending -> runnable again"
+    # A completed step marked done keeps its recorded result untouched.
+    done = [_step(1, result="real output", status="done")]
+    kept = plan_ops.set_status(done, 1, "done")
+    assert kept[0]["result"] == "real output"
 
 
 def test_update_plan_does_not_mutate_input():

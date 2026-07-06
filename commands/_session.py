@@ -41,6 +41,18 @@ def _session_payload(messages) -> dict:
     }
 
 
+def write_session_file(path: Path, messages) -> None:
+    """Serialize + write a session file ATOMICALLY (tmp + os.replace): the autosave slot is the
+    crash-survival mechanism, so a crash mid-write must never truncate the very file /resume
+    needs afterwards. The .tmp sibling never matches the *.json listing glob."""
+    import json
+    import os
+
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(_session_payload(messages), indent=2), encoding="utf-8")
+    os.replace(tmp, path)
+
+
 def _read_session(path: Path):
     """Read + validate a session file -> (messages, saved_at)."""
     import json
@@ -86,16 +98,13 @@ def write_autosave(state: dict) -> bool:
     An empty message list is a no-op ON PURPOSE: launching the app and quitting before any turn
     must not wipe the previous session's autosave — a caller that has deliberately emptied the
     conversation uses clear_autosave() instead."""
-    import json
     import diag
 
     messages = (state or {}).get("messages", [])
     if not messages:
         return False
     try:
-        _autosave_file().write_text(
-            json.dumps(_session_payload(messages), indent=2), encoding="utf-8"
-        )
+        write_session_file(_autosave_file(), messages)
         return True
     except Exception as exc:
         diag.log(f"autosave failed: {exc}")

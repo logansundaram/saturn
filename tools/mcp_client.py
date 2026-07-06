@@ -234,7 +234,13 @@ def _ensure_loop() -> asyncio.AbstractEventLoop:
     use, so a config with no servers costs nothing)."""
     global _LOOP, _LOOP_THREAD
     with _LOCK:
-        if _LOOP is not None and _LOOP.is_running():
+        # Keyed on the THREAD being alive, not loop.is_running(): the thread is alive the moment
+        # start() returns, while run_forever may not have been entered yet — trusting
+        # is_running() here let a second caller (startup() launching server 2 back-to-back)
+        # mint a SECOND loop and orphan the first server's session on the abandoned one.
+        # Submitting to a loop whose run_forever hasn't started yet is safe: the callback
+        # queues and runs once it does.
+        if _LOOP is not None and _LOOP_THREAD is not None and _LOOP_THREAD.is_alive():
             return _LOOP
         loop = asyncio.new_event_loop()
         thread = threading.Thread(target=loop.run_forever, name="mcp-client", daemon=True)
@@ -245,17 +251,14 @@ def _ensure_loop() -> asyncio.AbstractEventLoop:
 
 def _stderr_log():
     """Shared sink for stdio servers' stderr — a file under logging/ (gitignored), NEVER the
-    console where it would collide with the rich.Live TUI. Mirrors diag.py's dir resolution
-    (clone: logging/ at the repo root; wheel: SATURDAY_HOME/logging). Best-effort: falls back to
-    os.devnull so a log failure can't block a server."""
+    console where it would collide with the rich.Live TUI. Uses diag.log_dir() — THE one dir
+    resolution (a hand-copied version here once tested tools/config.yaml, which never exists,
+    so clone installs silently logged to ~/.saturday instead of the repo's logging/).
+    Best-effort: falls back to os.devnull so a log failure can't block a server."""
     global _STDERR_LOG
     if _STDERR_LOG is None:
         try:
-            root = Path(__file__).parent
-            if (root / "config.yaml").exists():
-                log_dir = root / "logging"
-            else:
-                log_dir = Path(os.environ.get("SATURDAY_HOME") or Path.home() / ".saturday") / "logging"
+            log_dir = diag.log_dir()
             log_dir.mkdir(parents=True, exist_ok=True)
             _STDERR_LOG = open(log_dir / "mcp.log", "a", encoding="utf-8", buffering=1)
         except Exception:
@@ -516,7 +519,10 @@ def call_tool(server: str, tool: str, args: dict) -> str:
         except concurrent.futures.TimeoutError:
             fut.cancel()
             return f"Error: MCP tool '{tool}' on server '{server}' timed out after {timeout:g}s."
-    except Exception as exc:
+    except (Exception, asyncio.CancelledError) as exc:
+        # CancelledError is a BaseException (3.8+): a loop-side teardown cancelling the in-flight
+        # call would otherwise escape this clause AND tool_node's `except Exception`, crashing
+        # the turn instead of becoming an error observation.
         msg = _condense_exc(exc)
         if any(marker in msg for marker in _DEAD_CONNECTION_MARKERS):
             st.state = "error"

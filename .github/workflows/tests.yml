@@ -1,7 +1,8 @@
-# Offline unit suite — the WHOLE tests/ directory under pytest (gate policy, the three multiset
-# plan walkers, observation clamping, config persistence, sessions/rewind, RAG loaders, the
-# calculator evaluator, …), not just tests/test_core.py. No Ollama, no network, no embedder:
-# everything under test is offline by design (see tests/conftest.py), so this runs anywhere.
+# Offline unit suite — the WHOLE tests/ directory under pytest (gate policy, the plan/execute
+# engine's data-bus invariants — test_engine.py — observation clamping, config persistence,
+# sessions/rewind, RAG loaders, the calculator evaluator, …), not just tests/test_core.py.
+# No Ollama, no network, no embedder: everything under test is offline by design (see
+# tests/conftest.py), so this runs anywhere.
 name: tests
 
 on:

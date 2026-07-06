@@ -69,6 +69,20 @@ def test_huge_exponent_bounded():
     assert _calc("2**64") == "18446744073709551616"
 
 
+def test_nested_pow_result_size_bounded():
+    """Bounding the exponent alone was bypassable by NESTING: (9**9999)**9999 passes both
+    per-exponent checks while computing a ~3×10^8-bit integer (minutes of CPU / OOM on an
+    ungated read_only tool). The result-size bound (bit_length(base)×exp) refuses it fast."""
+    assert _calc("(9**9999)**9999").startswith("Error")
+    assert _calc("((9**999)**999)**999").startswith("Error")
+    assert _calc("pow(9**9999, 9999)").startswith("Error")
+    # Big-but-sane powers stay legal (final results are separately capped at str() time by
+    # Python's own 4300-digit int→str limit — a graceful error, not a hang).
+    assert not _calc("9**4000").startswith("Error")
+    # Huge INTERMEDIATES under the bit bound stay legal too — only the final value is str'ed.
+    assert _calc("9**9999 % 97") == str(9**9999 % 97)
+
+
 def test_pow_builtin_exponent_bounded():
     """pow() is the ** operator with a function-call spelling — it must share the _MAX_POW_EXP
     bound (pow(9, 99999999) was a guard bypass: tiny expression, ~95-million-digit result).

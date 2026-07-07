@@ -26,6 +26,10 @@ from .prompt import ask
 # answer body, the rail echo): cyan is the palette's "the human is acting" color.
 _HUMAN_STYLE = "bold cyan underline"
 
+# Low-confidence runs (the model's own logprobs — core/confidence.py) render plain red, same as
+# the live streaming tail: they mark WHERE the model was unsure, i.e. where to aim the edit.
+_LOW_CONF_STYLE = "red"
+
 _TAIL_LINES = 8
 
 
@@ -37,31 +41,50 @@ def _tail_offset(text: str, max_lines: int = _TAIL_LINES) -> int:
     return len("\n".join(lines[:-max_lines])) + 1
 
 
-def _print_frozen(text: str, spans: list) -> None:
-    """The frozen buffer's tail under a dim rail, with human-authored spans styled — the static
-    text the user is about to edit. Plain path prints the tail unstyled."""
+def _low_runs(text: str, confidence) -> list:
+    """The low-confidence character runs to mark red, or [] (absent overlay, any failure —
+    the marking is additive, never the editor's problem)."""
+    if not confidence:
+        return []
+    try:
+        from core import confidence as conf
+
+        return conf.low_runs(confidence, text)
+    except Exception:
+        return []
+
+
+def _print_frozen(text: str, spans: list, confidence=None) -> None:
+    """The frozen buffer's tail under a dim rail, with human-authored spans styled and
+    low-confidence runs red (human cyan layers over red — an already-corrected region never
+    re-alarms). A dim legend names the red when any is visible. Plain path prints the tail
+    unstyled."""
     start = _tail_offset(text)
     n_earlier = text.count("\n", 0, start)
     if _RICH:
         if n_earlier:
             _console.print(Text(f"  │ (… {n_earlier} earlier line{'s' if n_earlier != 1 else ''})",
                                 style=_DIM))
-        human = sorted(
-            (max(int(s.get("start", 0)), start), int(s.get("end", 0)))
-            for s in spans or []
-            if s.get("author") == "human" and int(s.get("end", 0)) > start
-        )
-        pos = start
-        body = Text()
-        for s, e in human:
-            body.append(text[pos:s])
-            body.append(text[s:e], style=_HUMAN_STYLE)
-            pos = max(pos, e)
-        body.append(text[pos:])
+        body = Text(text[start:])
+        red_visible = False
+        for s, e in _low_runs(text, confidence):
+            s, e = max(s, start), min(e, len(text))
+            if e > s:
+                body.stylize(_LOW_CONF_STYLE, s - start, e - start)
+                red_visible = True
+        for sp in spans or []:  # after the red: the later stylize wins, human cyan on top
+            if sp.get("author") != "human":
+                continue
+            s, e = max(int(sp.get("start", 0)), start), int(sp.get("end", 0))
+            if e > s:
+                body.stylize(_HUMAN_STYLE, s - start, e - start)
         for ln in body.split("\n"):
             row = Text("  │ ", style=_DIM)
             row.append_text(ln)
             _console.print(row)
+        if red_visible:
+            _console.print(Text("  │ (red = the model's own low-confidence runs — "
+                                "the likeliest places to check)", style=_DIM))
     else:
         for ln in text[start:].split("\n"):
             print(f"  | {ln}")
@@ -126,7 +149,7 @@ def edit_answer(value: dict) -> dict:
 
     section("answer frozen", "edit the text, then resume — the model continues from exactly "
                              "what you leave")
-    _print_frozen(text, spans)
+    _print_frozen(text, spans, value.get("confidence"))
     if _RICH:
         _console.print()
     else:

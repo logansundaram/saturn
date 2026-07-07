@@ -1,5 +1,12 @@
 from commands._framework import command, _print
-from commands._utils import _resync_rag_after_model_change, is_remove_verb, split_save_flag
+from commands._utils import (
+    _ROLES,
+    _resync_rag_after_model_change,
+    is_remove_verb,
+    split_persist_flags,
+)
+
+_MIN_NUM_CTX = 256  # below this Ollama can't fit the system prompts; reject obvious typos
 
 # Existence sentinel for cfg.get: distinguishes a key that is ABSENT from one present with an
 # explicit null value (cfg.get's None default conflates the two — exactly how a typo'd key used
@@ -169,20 +176,31 @@ def _config_keys(ctx, args):
 
 @command(
     "config",
-    "View or edit runtime config (config.yaml) and API keys (.env); --save persists to disk.",
-    usage="/config | /config <dotted.key> [value] [--save] | /config persist <key> | /config setup | /config key … | /config reload",
+    "View or edit runtime config (config.yaml) and API keys (.env); edits persist by default.",
+    usage="/config | /config <dotted.key> [value] [--session] | /config persist <key> | /config setup | /config key … | /config reload",
     details="""
 With no args, prints the key runtime settings (active_tier, runtime.max_iterations,
 runtime.auto_approve), the resolved paths, and which API keys are set.
 
-With a dotted key, reads that value; with a key and a value, sets it for THIS SESSION. Append
---save (-s, any position — the same flag every command uses) to also write it back to
-config.yaml in place (comments and layout preserved) so it survives a restart:
-  /config runtime.max_iterations 12          set for this session
-  /config runtime.max_iterations 12 --save   set AND persist to config.yaml
-  /config runtime.max_iterations --save      persist the CURRENT value unchanged
-  /config persist runtime.max_iterations     same thing, as a verb
-`/config reload` re-reads config.yaml from disk, discarding any unsaved session edits.
+With a dotted key, reads that value; with a key and a value, sets it AND writes it back to
+config.yaml in place (comments and layout preserved) so it survives a restart — persisting is the
+default, because a setting you change should stick. Append --session (or --session-only) to apply
+an edit for this session only, without touching config.yaml:
+  /config runtime.max_iterations 12            set AND persist to config.yaml (the default)
+  /config runtime.max_iterations 12 --session  set for this session only
+  /config runtime.max_iterations --save        persist the CURRENT value unchanged
+  /config persist runtime.max_iterations       same thing, as a verb
+(--save / -s is still accepted; it's the default now, so it only matters as the bare
+"persist the current value" form above. A key not already in config.yaml can't be persisted, so
+it stays session-only with a note.) `/config reload` re-reads config.yaml from disk, discarding
+any unsaved session-only edits.
+
+/config context — the runtime readout (context window + fill, per-role windows, CPU/RAM/GPU) and
+the live num_ctx setter (folded in from the old /context):
+  /config context                   show the window + current fill + hardware snapshot
+  /config context 16384 [--session] resize every local role's window (persists; --session = live only)
+  /config context auto [--session]  back to per-model capability windows
+To free the window up rather than resize it, /compact runs the LLM summary over older turns.
 
 /config setup (doctor, check) — first-run / health check: is the Ollama daemon up, are the
 active tier's models pulled, and are the keys the tier needs set, with the exact command to fix
@@ -210,7 +228,8 @@ Examples:
   /config                              show the summary
   /config setup                        check the install (Ollama, models, keys)
   /config runtime.max_iterations       read one key
-  /config runtime.max_iterations 12 --save  set it and persist to config.yaml
+  /config runtime.max_iterations 12    set it and persist to config.yaml (the default)
+  /config runtime.max_iterations 12 --session   set it for this session only
   /config key set MY_VAR <value>       store a custom env var (e.g. for an MCP server)
   /config reload                       re-read config.yaml from disk
 """,
@@ -226,6 +245,10 @@ def _config(ctx, args):
 
     if args and args[0].lower() in ("doctor", "setup", "check", "health"):
         _config_doctor(ctx)
+        return
+
+    if args and args[0].lower() in ("context", "ctx", "window"):
+        _config_context(ctx, args[1:])
         return
 
     if args and args[0].lower() == "persist":
@@ -254,7 +277,7 @@ def _config(ctx, args):
             _print(f"    {k.name:<20}: {'set' if env_keys.is_set(k.name) else 'not set'}")
         _print("  (workspace & memory resolve live; documents/db_sqlite apply on re-ingest/restart)")
         _print("  set a value: /config <dotted.key> <value>   (e.g. /config runtime.max_iterations 12)")
-        _print("  manage keys: /config key   (see /config --help)")
+        _print("  manage keys: /config key   ·   window + hardware: /config context   (see /config --help)")
         return
 
     if args[0].lower() == "reload":  # case-insensitive like every sibling subcommand match
@@ -265,19 +288,21 @@ def _config(ctx, args):
         _resync_rag_after_model_change()
         return
 
-    # The shared --save grammar (split_save_flag): --save / -s, case-insensitive, any position,
-    # exact token only — the bare words save/persist are no longer flags, same as every other
-    # command (the convention split_save_flag documents).
-    rest, save = split_save_flag(args)
+    # Settings PERSIST to config.yaml by default now (a changed setting should survive a restart —
+    # what people expect from "change a setting"); --session / --session-only applies an edit for
+    # this session only. --save / -s is still accepted (it's the default) so old habits keep
+    # working. (split_persist_flags: case-insensitive, any position, exact token only — the bare
+    # words save/persist are NOT flags, guarded below.)
+    rest, session, save = split_persist_flags(args)
     if not rest:
-        _print("  usage: /config <dotted.key> [value] [--save]")
+        _print("  usage: /config <dotted.key> [value] [--session]")
         return
     key = rest[0]
     values = rest[1:]
 
     if not values:
-        if save:
-            # `--save` with no value persists the CURRENT value (the shared convention —
+        if save and not session:
+            # A bare `--save` with no value persists the CURRENT value (unchanged convention —
             # identical to /config persist <key>; it mutates nothing live).
             _persist_key(cfg, key)
             return
@@ -323,14 +348,18 @@ def _config(ctx, args):
     suggestion = _did_you_mean(cfg, key) if current is _MISSING else ""
     cfg.set(key, value)
     if current is _MISSING:
+        # A key not already in config.yaml can't be persisted (persist edits existing scalar
+        # leaves), so it is inherently session-only — say so plainly instead of attempting a
+        # persist that would only fail.
         _print(f"  note: {key!r} was not an existing config key{suggestion} "
-               "(set anyway; only keys the code reads have any effect)")
-    if save:
-        _persist_key(cfg, key)
-    elif current is not _MISSING:
+               "(set for this session; only keys the code reads have any effect, and a key that "
+               "is not already in config.yaml cannot be persisted)")
+    elif session:
         _print(
-            f"  {key} = {cfg.get(key)!r}  (session only; add --save or run /config persist {key})"
+            f"  {key} = {cfg.get(key)!r}  (session only — omit --session to save to config.yaml)"
         )
+    else:
+        _persist_key(cfg, key)
     if key.startswith("tiers.") or key == "active_tier":
         from core.llms import reset_models
         reset_models()
@@ -340,6 +369,71 @@ def _config(ctx, args):
         from core.llms import reset_models
         reset_models()
         _print("  (models will rebuild with the new context window on next use)")
+
+
+def _config_context(ctx, args):
+    """`/config context [size|auto [--save]]` — the runtime readout (context window + fill,
+    per-role windows, CPU/RAM/GPU) and the live num_ctx setter. Folded in from the old standalone
+    /context 2026-07-07: the readout and the setter both belong under /config, the one runtime-
+    settings front door."""
+    from config import get_config
+    from core.llms import reset_models, active_context_window, model_id
+    from tui import ui
+
+    cfg = get_config()
+
+    if not args:
+        window = active_context_window()
+        used = int(ctx.state.get("context_tokens", 0) or 0)
+        if cfg.num_ctx_override:
+            source = "override · runtime.num_ctx"
+        else:
+            source = f"auto · {model_id('tool_caller')} capability"
+        per_role = {role: cfg.num_ctx_for(model_id(role)) for role in _ROLES}
+        ui.show_context(window, used, source, per_role)
+        # The hardware half of the runtime readout (absorbed from the old /system).
+        from tui.system_monitor import get_system_metrics
+
+        ui.show_system_metrics(get_system_metrics())
+        return
+
+    args, session, save = split_persist_flags(args)
+    if not args:
+        if save and not session:  # `/config context --save` persists the CURRENT window
+            _persist_key(cfg, "runtime.num_ctx")
+            return
+        _print("  usage: /config context <size>|auto [--session]")
+        return
+
+    arg = args[0].lower()
+    if arg in ("auto", "default", "reset", "off"):
+        cfg.set("runtime.num_ctx", None)
+        reset_models()
+        _print("  context window -> auto (each model uses its capability window).")
+        _print("  models rebuild on next use.")
+        if session:
+            _print("  (session only; omit --session to persist to config.yaml.)")
+        else:
+            _persist_key(cfg, "runtime.num_ctx")
+        return
+
+    try:
+        n = int(arg)
+    except ValueError:
+        _print(f"  not a size: {args[0]!r} — usage: /config context <size>|auto [--session]")
+        return
+    if n < _MIN_NUM_CTX:
+        _print(f"  num_ctx too small: {n} (minimum {_MIN_NUM_CTX}).")
+        return
+
+    cfg.set("runtime.num_ctx", n)
+    reset_models()
+    _print(f"  context window -> {n:,} tokens for all local roles.")
+    _print("  models rebuild on next use.")
+    if session:
+        _print("  (session only; omit --session to persist to config.yaml.)")
+    else:
+        _persist_key(cfg, "runtime.num_ctx")
 
 
 def _persist_key(cfg, key: str) -> None:

@@ -2,12 +2,13 @@
 The shared command grammar (June 2026 audit): every removal verb in commands/_utils.REMOVE_VERBS
 works identically in /docs, /memory, /resume, and /config key (which also keeps unset/clear) —
 muscle memory transfers, so the audit's inversion ('/memory remove 3' failing while '/docs forget
-x' worked) is gone. Plus /models --save: every binding form persists the SAME dotted key(s) the
-session edit sets via config.persist, while no---save stays session-only. The second audit pass
-added LIST_VERBS (`list`/`ls`, the `git stash list`/`docker ls` spelling) accepted identically by
-every enumerating command, /models --provider (the named-flag form of the bare positional), /mcp
-erroring on unknown subcommands, and /config riding the shared split_save_flag grammar (bare
-'save' is data — refused with a pointer, never silently stored). Offline: the RAG drop is
+x' worked) is gone. Plus /models: every binding form PERSISTS the SAME dotted key(s) the session
+edit sets via config.persist BY DEFAULT (settings should survive a restart), while --session opts
+a single edit out. The second audit pass added LIST_VERBS (`list`/`ls`, the `git stash
+list`/`docker ls` spelling) accepted identically by every enumerating command, /models --provider
+(the named-flag form of the bare positional), /mcp erroring on unknown subcommands, and /config
+riding the shared split_persist_flags grammar (bare 'save' is data — refused with a pointer, never
+silently stored). Offline: the RAG drop is
 stubbed, memory/sessions ride isolated_paths, .env is a tmp file, and config.persist is recorded
 instead of writing the real config.yaml.
 """
@@ -122,7 +123,7 @@ def test_config_key_accepts_unset_clear_and_every_removal_verb(ctx, capsys, tmp_
     assert "removed from .env" in _out(capsys)
 
 
-# --- /models --save persists the same dotted keys the session edit sets ----------------------
+# --- /models persists the same dotted keys the session edit sets (by default) ----------------
 
 def test_models_role_save_persists_the_dotted_key(ctx, capsys, monkeypatch, models_env,
                                                   recording_persist):
@@ -141,7 +142,7 @@ def test_models_role_save_persists_the_dotted_key(ctx, capsys, monkeypatch, mode
 
 def test_models_save_flag_case_insensitive_any_position(ctx, capsys, monkeypatch, models_env,
                                                         recording_persist):
-    """The shared split_save_flag grammar: `-S`/`--SAVE` count, anywhere in the args."""
+    """--save / -s is still accepted (persisting is now the default): `-S` counts, anywhere."""
     from config import get_config
 
     cfg = get_config()
@@ -154,19 +155,36 @@ def test_models_save_flag_case_insensitive_any_position(ctx, capsys, monkeypatch
     assert recording_persist == [key]
 
 
-def test_models_role_without_save_stays_session_only(ctx, capsys, monkeypatch, models_env,
+def test_models_role_persists_by_default(ctx, capsys, monkeypatch, models_env,
+                                         recording_persist):
+    """A bare bind now writes config.yaml BY DEFAULT — a model switch should stick."""
+    from config import get_config
+
+    cfg = get_config()
+    roles = cfg._data["tiers"][cfg.active_tier]["roles"]
+    monkeypatch.setitem(roles, "planner", roles["planner"])
+    key = f"tiers.{cfg.active_tier}.roles.planner"
+
+    _models(ctx, ["planner", "test-model"])
+    assert cfg.get(key) == "test-model"
+    assert recording_persist == [key]
+    assert "(session only)" not in _out(capsys)
+
+
+def test_models_role_session_flag_stays_session_only(ctx, capsys, monkeypatch, models_env,
                                                      recording_persist):
+    """--session opts a single bind out of the persist-by-default."""
     from config import get_config
 
     cfg = get_config()
     roles = cfg._data["tiers"][cfg.active_tier]["roles"]
     monkeypatch.setitem(roles, "planner", roles["planner"])
 
-    _models(ctx, ["planner", "test-model"])
+    _models(ctx, ["planner", "test-model", "--session"])
     assert cfg.get(f"tiers.{cfg.active_tier}.roles.planner") == "test-model"
     assert recording_persist == []
     out = _out(capsys)
-    assert "(session only)" in out and "--save" in out  # the note points at the persist flag
+    assert "(session only)" in out and "--session" in out  # the note points at the flag
 
 
 def test_models_all_save_persists_every_role_key(ctx, capsys, monkeypatch, models_env,
@@ -360,7 +378,7 @@ def test_models_scalar_bind_replaces_a_legacy_cloud_mapping(ctx, capsys, monkeyp
     assert cfg.get(f"tiers.{cfg.active_tier}.roles.planner") == "local-x"
 
 
-# --- /config rides the shared --save grammar (split_save_flag) -------------------------------
+# --- /config rides the shared persist grammar (split_persist_flags) ---------------------------
 
 @pytest.fixture
 def runtime_key(monkeypatch):
@@ -400,11 +418,21 @@ def test_config_bare_save_word_is_refused_not_stored(ctx, capsys, runtime_key, r
     assert recording_persist == []
 
 
-def test_config_set_without_save_stays_session_only(ctx, capsys, runtime_key, recording_persist):
+def test_config_set_persists_by_default(ctx, capsys, runtime_key, recording_persist):
+    """A plain set now writes config.yaml BY DEFAULT — a setting should survive a restart."""
     _config(ctx, ["runtime.max_iterations", "12"])
     assert runtime_key.get("runtime.max_iterations") == 12
+    assert recording_persist == ["runtime.max_iterations"]
+    assert "session only" not in _out(capsys)
+
+
+def test_config_set_session_flag_stays_session_only(ctx, capsys, runtime_key, recording_persist):
+    """--session opts a single edit out of the persist-by-default."""
+    _config(ctx, ["runtime.max_iterations", "12", "--session"])
+    assert runtime_key.get("runtime.max_iterations") == 12
     assert recording_persist == []
-    assert "session only" in _out(capsys)
+    out = _out(capsys)
+    assert "session only" in out and "--session" in out
 
 
 # --- /config guards: section keys refuse, typo'd keys warn, missing keys read honestly --------

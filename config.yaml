@@ -37,7 +37,7 @@ runtime:
   auto_approve: read_only
   # Ollama context window (`num_ctx`) for every local model. `null` = auto: each model uses its
   # `capabilities.<model>.context_window` below. An integer overrides all roles at once (the
-  # /context command sets this live). Without it Ollama silently caps the window at 2048.
+  # /config context command sets this live). Without it Ollama silently caps the window at 2048.
   num_ctx: null
   # Read timeout (seconds) for a single local-model call. Guards against a WEDGED Ollama daemon
   # (accepts the connection but never responds) hanging a turn forever — a turn that times out now
@@ -85,6 +85,16 @@ runtime:
   # many calls faced the approval gate. Every answer proves the posture; false restores the plain
   # stats receipt.
   receipt: true
+  # Token-confidence grading (core/confidence.py): while the final answer streams, the daemon's
+  # per-token logprobs are captured and runs of consecutive low-probability tokens render RED —
+  # live in the streaming tail, in the freeze editor (Esc), and on a corrected answer's final
+  # render; the receipt counts the uncertain spans. The model's own uncertainty, made visible
+  # where it lands. false stops requesting logprobs entirely (nothing is captured or marked).
+  confidence: true
+  # A token counts LOW below this sampled probability (0-1). RAISE to mark more aggressively,
+  # LOWER to mark only the model's wildest guesses (the stricter, quieter default). A run needs
+  # 3+ consecutive low tokens — single uncertain tokens (an open word choice) are never marked.
+  confidence_threshold: 0.20
 
 # ---------------------------------------------------------------------------
 # Web tools (tools/web.py). API-less by design (2026-07-06): web_search is keyless DuckDuckGo,
@@ -199,6 +209,18 @@ tiers:
       judge: "qwen3.6:27b"
     embedder: qwen3-embedding:8b
 
+  # Temporary benchmarking tier (added 2026-07-06 for a quick trust-benchmark pass on the
+  # already-loaded coder model; safe to delete).
+  bench-coder:
+    provider: ollama
+    roles:
+      planner: "qwen3-coder:30b"
+      tool_caller: "qwen3-coder:30b"
+      synthesizer: "qwen3-coder:30b"
+      utility: "qwen3-coder:30b"
+      judge: "qwen3-coder:30b"
+    embedder: qwen3-embedding:8b
+
 # ---------------------------------------------------------------------------
 # Capability descriptors, keyed by model id. The engine REQUIRES native tool-calling +
 # structured output; check_models() warns if a model bound to a
@@ -225,6 +247,11 @@ capabilities:
   # The workstation tier's model — without this entry capability_of falls back to the
   # conservative 8192 default and every call silently runs at a quarter of the real window.
   "qwen3.6:27b":
+    supports_tools: true
+    supports_structured_output: true
+    context_window: 32768
+    supports_vision: false
+  "qwen3-coder:30b":
     supports_tools: true
     supports_structured_output: true
     context_window: 32768

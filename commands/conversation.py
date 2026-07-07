@@ -196,7 +196,7 @@ def drop_last_turn(ctx) -> "str | None":
     fresh["documents_retrieved"] = []
     fresh["tool_events"] = []
     # Gate decisions belong to the dropped turn too — a lingering record would violate the
-    # "gate_events empty means the human was never asked" invariant /glass and exports rely on.
+    # "gate_events empty means the human was never asked" invariant /trace answer and exports rely on.
     fresh["gate_events"] = []
 
     # write_autosave skips an empty conversation by design (a fresh launch + quit must not wipe

@@ -8,7 +8,7 @@
                           and /memory
     snapshots.py          per-turn pre-write file snapshots — the /undo layer
     trace.py              the Tracer: runs/events/llm_calls into db.sqlite (what /trace,
-                          /glass #id, and /trace export read)
+                          /trace answer #id, and /trace export read)
 
 Data lives under database/ (paths configurable via config.yaml `paths:`); presentation stays
 in tui/, never here.

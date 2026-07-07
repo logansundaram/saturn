@@ -38,6 +38,9 @@ def answer_gate_node(state: AgentState):
             "type": "answer_edit",
             "text": buf.get("text", ""),
             "spans": buf.get("spans", []),
+            # The token-confidence overlay: the freeze editor marks low-confidence runs red so
+            # the user sees WHERE the model itself was unsure — the natural edit targets.
+            "confidence": buf.get("confidence", []),
             "query": state.get("current_query", ""),
         }
     )

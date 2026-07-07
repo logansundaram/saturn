@@ -34,18 +34,21 @@ _GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("conversation", ("clear", "compact", "resume", "retry", "rewind")),
     ("knowledge & workspace", ("docs", "init", "memory", "undo")),
     ("trust & control", ("plan", "policy", "privacy")),
-    ("observability", ("context", "glass", "mcp", "models", "source", "tools", "trace")),
+    ("observability", ("mcp", "models", "tools", "trace")),
     ("system", ("config", "help", "quit", "update")),
 )
 # (The legacy gate spellings — /risk · /allow · /autoapprove — were CUT 2026-07-06: they were
 # thin delegations to /policy's subcommands and now land on _RENAMED pointers, so the listing
-# carries ONE gate-policy surface instead of four.)
+# carries ONE gate-policy surface instead of four. The 2026-07-07 command fold likewise dropped
+# /glass and /source into /trace subviews and /context into /config — all three are _RENAMED
+# pointers now, so the observability row lists one process surface (/trace) and the runtime
+# inventory, not five.)
 
 # The three-line trust-stack map /help opens with: where the boundary POSTURE is set, where the
 # live ACTIVITY shows, and where the shareable RECORD comes from.
 _TRUST_MAP = (
     ("posture", "/privacy · /policy"),
-    ("activity", "receipt · /glass · /trace"),
+    ("activity", "receipt · /trace answer · /trace"),
     ("record", "/trace export · replay"),
 )
 

@@ -28,8 +28,8 @@ Don't take the claims on faith — run one loop and check each one yourself:
 2. **Read the receipt.** The stats line under the answer carries the trust segment — here it
    shows `⇅ N sends · <bytes> → <host>` in yellow, because something *did* leave your machine,
    and the receipt says so instead of hiding it.
-3. **`/glass`** — answer-level provenance: each cited source's origin (local vs network) and
-   trust, and what left the machine this turn.
+3. **`/trace answer`** — answer-level provenance: each cited source's origin (local vs network)
+   and trust, and what left the machine this turn.
 4. **`/privacy egress`** — the per-event ledger: exactly what left, channel / host / bytes.
 5. **Make it ask.** `» save a two-line summary to notes.md` — the approval gate shows the exact
    file diff and waits; bare Enter rejects (the default is always *no*).
@@ -100,7 +100,7 @@ replay. The point isn't how much Saturn can do — it's that you can see and con
   timeout so a hung command can't wedge the turn.
 - **Cited answers** — answers that drew on tools or documents cite their sources inline (`[1]`)
   and end with a Sources list mapping each number to the exact tool call or document behind it;
-  `/source 3` shows the full material behind any citation.
+  `/trace source 3` shows the full material behind any citation.
 - **MCP servers** — plug in any [Model Context Protocol](https://modelcontextprotocol.io) server
   (stdio or remote HTTP/SSE) by declaring it in `config.yaml`; its tools join the agent behind
   the **same approval gate** as everything else. Remote tools always prompt until *you* lower
@@ -115,7 +115,7 @@ replay. The point isn't how much Saturn can do — it's that you can see and con
 - **Trust receipt when it matters** — the stats line under a response says exactly how many
   bytes went to which host and how many actions faced the approval gate — whenever anything
   actually left your machine or was gated. A fully-local turn stays clean: silence means
-  nothing left. `/privacy` and `/glass` carry the full readout on demand.
+  nothing left. `/privacy` and `/trace answer` carry the full readout on demand.
 - **Per-workspace instructions** — `/init` surveys your workspace and drafts `SATURDAY.md`,
   standing instructions loaded every turn (like a per-project system prompt).
 - **Headless mode** — `saturn -p "query"` runs one query and prints the answer; piped stdin
@@ -306,16 +306,15 @@ Type `/help` for the full list, or `/<command> --help` for details on any one. H
 |---|---|
 | `/help` | The grouped command list, opening with the trust-stack map (posture · activity · proof); `/help <cmd>` details one. |
 | `/models` | List installed Ollama models; switch what drives each role (`--save` persists a binding to `config.yaml`). |
-| `/config` | View/edit settings and **API keys** (`/config key …`); `/config setup` is the health check. |
-| `/context` | Runtime readout (context window + fill, CPU/RAM/GPU); resize the window (`--save` persists). |
+| `/config` | View/edit settings and **API keys** (`/config key …`); `/config setup` is the health check; `/config context` is the runtime readout (context window + fill, CPU/RAM/GPU) + window resize (`--save` persists). |
 | `/plan` | Show the plan; control review mode and the mid-run pause (bare subcommands report status). |
 | `/docs` | The knowledge base: list documents, `add <path>`, `remove <name>`, `sync`. |
 | `/tools` | List the agent's tools and their risk tiers. |
 | `/mcp` | MCP server status + the remote tools they add; `reload` after a config edit. |
 | `/memory` | See, add, or delete the facts the agent permanently remembers. |
 | `/policy` | The whole safety posture as one object: bare = status; `risk`/`allow`/`open` are its levers (bare forms report, changing is always explicit). The old `/risk`/`/allow`/`/autoapprove` spellings print a pointer here. |
-| `/source` | Show the full material behind a citation `[n]` of the last answer. |
-| `/glass` | **The Glass Box**: answer-level provenance — each cited source's origin + trust, what left the machine, and the human gate decisions (also `/trace answer`; `#id` for past runs). |
+| `/trace source` | Show the full material behind a citation `[n]` of the last answer (folded in from `/source`). |
+| `/trace answer` | Answer-level provenance — each cited source's origin + trust, what left the machine, and the human gate decisions (folded in from `/glass`; `#id` for past runs). |
 | `/privacy` | The privacy surface: what CAN leave (`/privacy`), what DID (`/privacy egress`), seal the boundary (`/privacy airgap`), and strip secrets from off-machine sends (`/privacy redact`). |
 | `/undo` | Revert the file changes of the last turn that wrote anything. |
 | `/rewind` | Drop the last exchange from the conversation (files untouched — that's `/undo`). |
@@ -354,7 +353,7 @@ app/                # the application shell: CLI, graph assembly, turn driver, R
 config.yaml         # all settings: models, paths, safety, web knobs
 core/               # the engine room: state, model factory, prompts, structured output
 trust/              # the trust stack: gate policy, egress ledger, quarantine,
-                    #   trust receipt, the Glass Box
+                    #   trust receipt, answer provenance
 tools/              # the agent's tools (web, files, shell, calculator, knowledge)
                     #   + the registry and MCP client
 nodes/              # the graph's nodes (ground, plan, execute, tools, rectify, synthesize, …)

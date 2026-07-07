@@ -54,20 +54,21 @@ def _trust_spans() -> list:
 # yellow (the slice may hide a send, like the Glass Box's truncated-record caveat). No `local`
 # kind anymore: a calm local turn emits no trust spans at all (deviation-only, 2026-07-06).
 _TRUST_STYLE = {"sent": "yellow", "blocked": "bold red",
-                "gated": _DIM, "unknown": "yellow", "human": "cyan"}
+                "gated": _DIM, "unknown": "yellow", "human": "cyan",
+                "uncertain": "red"}
 
 # One-time discovery hints (receipt.take_hint — sentinel-backed, once per install):
 # the post-first-answer line teaching the inspection surfaces, and the receipt tail pointing at
 # the Glass Box the first time a receipt actually shows egress or a gated count.
-_FIRST_ANSWER_HINT = ("see this run: /trace · answer provenance: /glass · "
+_FIRST_ANSWER_HINT = ("see this run: /trace · answer provenance: /trace answer · "
                       "what left your machine: /privacy egress")
-_GLASS_HINT = "/glass: answer provenance"
+_GLASS_HINT = "/trace answer: answer provenance"
 
 
 # ── per-turn answer provenance (the Glass Box, ambient) ───────────────────────────────────────
 # The loop hands the finished turn's state here (set_turn_provenance) just before the final
-# render; finish/response pop it to color the Sources footer by source trust — the Glass Box's
-# headline facts on every answer, no /glass required. Pop-on-read: a stale box can never paint a
+# render; finish/response pop it to color the Sources footer by source trust — the answer-provenance
+# headline facts on every answer, no /trace answer required. Pop-on-read: a stale box can never paint a
 # later answer (error/Ctrl-C turns never set one; a consumer that doesn't render still clears it).
 _turn_glass = None
 
@@ -82,18 +83,28 @@ _turn_buffer = None
 # editor's tail (tui/ui/correction.py) and semantically cyan: the human acted here.
 _HUMAN_STYLE = "bold cyan underline"
 
+# What low-confidence runs render as — plain red foreground (never bold: bold red is the
+# blocked/air-gap vocabulary; this is a caution, not a violation). Shared with the freeze
+# editor's tail (tui/ui/correction.py) and the live streaming tail below.
+_LOW_CONF_STYLE = "red"
+
 
 def set_turn_buffer(state) -> None:
     """Stash the finished turn's answer buffer for the final render (pop-on-read, like
-    set_turn_provenance): only a completed buffer that actually carries human edits is kept —
-    an uncorrected turn renders exactly as before."""
+    set_turn_provenance): kept when the completed buffer carries human edits (the corrected
+    body renders span-marked) or a confidence overlay (the receipt counts the uncertain runs)
+    — a plain turn renders exactly as before."""
     global _turn_buffer
     _turn_buffer = None
     try:
         from core import provenance
 
         buf = (state or {}).get("answer_buffer")
-        if provenance.corrected(buf) and buf.get("state") == "complete":
+        if (
+            isinstance(buf, dict)
+            and buf.get("state") == "complete"
+            and (provenance.corrected(buf) or buf.get("confidence"))
+        ):
             _turn_buffer = buf
     except Exception:
         _turn_buffer = None
@@ -109,8 +120,8 @@ _SOURCE_LINE_RE = re.compile(r"^\s*\[(\d+)\]\s")
 
 
 def set_turn_provenance(state) -> None:
-    """Build the live Glass Box for the turn that just finished (trust.glassbox.build_live — the
-    same mark-guarded egress contract `/glass` applies) so the answer render can color the
+    """Build the live answer-provenance box for the turn that just finished (trust.glassbox.build_live
+    — the same mark-guarded egress contract `/trace answer` applies) so the answer render can color the
     Sources footer by source trust natively. Best-effort and additive: any failure leaves the
     answer rendering exactly as it would without provenance."""
     global _turn_glass
@@ -196,17 +207,21 @@ def _print_sources(entries: list[str], gb) -> None:
                 print(f"  {ln}   {glyph} {note}")
 
 
-def _print_receipt(corrections: int = 0) -> None:
+def _print_receipt(corrections: int = 0, uncertain: int = 0) -> None:
     """The one-line receipt under every answer: the trust segment leads as semantically-colored
     spans WHEN the turn deviated (what was sent / blocked / gated — a calm local turn emits
     none), then the human-control facts (`✎ n corrections` when the user froze and edited this
-    answer mid-stream), then the dim run stats. The plain (no-rich) path prints the identical
-    text, unstyled. The first time the trust segment shows egress or a gated count, a dim
-    `/glass` pointer is appended once per install."""
+    answer mid-stream; `◌ n uncertain` when the model's own logprobs marked low-confidence runs
+    — the red the stream showed live, surviving the markdown re-render as a count), then the dim
+    run stats. The plain (no-rich) path prints the identical text, unstyled. The first time the
+    trust segment shows egress or a gated count, a dim `/glass` pointer is appended once per
+    install."""
     stats = _stats_parts()
     spans = _trust_spans()
     if corrections:
         spans = spans + [(f"✎ {corrections} correction{'s' if corrections != 1 else ''}", "human")]
+    if uncertain:
+        spans = spans + [(f"◌ {uncertain} uncertain span{'s' if uncertain != 1 else ''}", "uncertain")]
     tail = None
     if any(kind in ("sent", "blocked", "gated") for _, kind in spans):
         try:
@@ -283,32 +298,34 @@ def response(text: str) -> None:
     _final_render(text, plain_body=text)
 
 
-def _print_corrected_body(body: str, buf: dict) -> bool:
-    """Render a human-corrected answer body with the corrected characters marked (the
-    provenance spans, styled like the freeze editor showed them). Markdown formatting is traded
-    for span fidelity on corrected answers — the correction must be visible exactly where it
-    landed, and a markdown re-flow would lose the character positions. Returns False (render
-    nothing) when the buffer text doesn't prefix the body — e.g. a /retry replaced the answer —
-    so the caller falls back to markdown; never mark by guesswork."""
+def _print_marked_body(body: str, buf: dict) -> bool:
+    """The offset-faithful marked render for a CORRECTED answer: human-corrected characters cyan
+    and any surviving low-confidence runs red (cyan layered ON TOP — an already-reviewed region
+    never re-alarms). Markdown is traded for exact character-position fidelity, because the
+    human's edit must be visible precisely where it landed and a markdown re-flow would lose
+    those offsets (the deliberate interrupt-and-correct choice — an uncorrected-but-uncertain
+    answer instead keeps its markdown via `_print_markdown_confidence`). Returns False (caller
+    falls back) when the buffer text doesn't prefix the body — e.g. a /retry replaced the
+    answer — or there is nothing to mark."""
     try:
-        from core import provenance
+        from core import confidence, provenance
 
         prose = str(buf.get("text") or "").rstrip()
         if not prose or not body.startswith(prose):
             return False
-        spans = provenance.human_spans(buf)
-        if not spans:
+        human = provenance.human_spans(buf)
+        runs = confidence.buffer_runs(buf)
+        if not human and not runs:
             return False
-        t = Text()
-        pos = 0
-        for s, e in spans:
+        t = Text(body)
+        for s, e in runs:
             s, e = min(s, len(prose)), min(e, len(prose))
-            if e <= s:
-                continue
-            t.append(body[pos:s])
-            t.append(body[s:e], style=_HUMAN_STYLE)
-            pos = e
-        t.append(body[pos:])
+            if e > s:
+                t.stylize(_LOW_CONF_STYLE, s, e)
+        for s, e in human:  # after the red: the later stylize wins, human cyan on top
+            s, e = min(s, len(prose)), min(e, len(prose))
+            if e > s:
+                t.stylize(_HUMAN_STYLE, s, e)
         width = min(_term_width(), _BODY_WIDTH)
         _console.print(Padding(t, (0, 0, 0, 2)), width=width)
         return True
@@ -316,35 +333,159 @@ def _print_corrected_body(body: str, buf: dict) -> bool:
         return False  # marking is additive — never lose the answer over it
 
 
+def _redden_segments(segments, phrases: list, style: str):
+    """Yield a Rich Segment stream with `phrases` reddened WHERE THEY OCCUR, combining the red
+    into each segment's existing style (so a bold low-confidence phrase renders bold-red). This
+    marks by CONTENT, not source offset — which is what lets markdown survive: Rich's markdown
+    reflow destroys source character offsets, but a phrase's text stays intact within a rendered
+    segment. A phrase split across a markdown style boundary or a soft-wrap simply isn't found in
+    any one segment and goes unmarked — an honest additive miss, never a mangled render."""
+    from rich.segment import Segment
+    from rich.style import Style
+
+    red = Style.parse(style)
+    for seg in segments:
+        t = seg.text
+        if seg.control or not t or not phrases:
+            yield seg
+            continue
+        spans: list[list[int]] = []
+        for ph in phrases:
+            if not ph:
+                continue
+            start = 0
+            while (i := t.find(ph, start)) != -1:
+                spans.append([i, i + len(ph)])
+                start = i + len(ph)
+        if not spans:
+            yield seg
+            continue
+        spans.sort()
+        merged: list[list[int]] = []
+        for s, e in spans:
+            if merged and s <= merged[-1][1]:
+                merged[-1][1] = max(merged[-1][1], e)
+            else:
+                merged.append([s, e])
+        base = seg.style or Style()
+        pos = 0
+        for s, e in merged:
+            if s > pos:
+                yield Segment(t[pos:s], base)
+            yield Segment(t[s:e], base + red)
+            pos = e
+        if pos < len(t):
+            yield Segment(t[pos:], base)
+
+
+class _ConfidenceMarkdown:
+    """A Markdown renderable whose low-confidence phrases render red with the markdown formatting
+    (headings, bold, lists, fenced code) fully preserved — because the reddening happens on the
+    rendered SEGMENT stream by content (see _redden_segments), not on the source text by offset.
+    This is what lets an uncertain answer keep its markdown AND show its red, unlike the
+    offset-faithful `_print_marked_body` (which a human correction still needs for exact edit
+    positions)."""
+
+    def __init__(self, markup: str, phrases: list, style: str):
+        self._md = Markdown(markup)
+        self._phrases = list(phrases)
+        self._style = style
+
+    def __rich_console__(self, console, options):
+        yield from _redden_segments(console.render(self._md, options), self._phrases, self._style)
+
+
+def _print_markdown_confidence(body: str, buf: dict) -> bool:
+    """Render `body` as real markdown with its low-confidence runs reddened (markdown preserved —
+    the common uncorrected-but-uncertain case). Returns False (caller falls back to plain
+    markdown) when the buffer doesn't prefix the body or there is nothing to mark."""
+    try:
+        from core import confidence
+
+        prose = str(buf.get("text") or "").rstrip()
+        if not prose or not body.startswith(prose):
+            return False
+        phrases, seen = [], set()
+        for s, e in confidence.buffer_runs(buf):
+            ph = prose[min(s, len(prose)):min(e, len(prose))]
+            if ph and ph not in seen:
+                seen.add(ph)
+                phrases.append(ph)
+        if not phrases:
+            return False
+        width = min(_term_width(), _BODY_WIDTH)
+        _console.print(
+            Padding(_ConfidenceMarkdown(body, phrases, _LOW_CONF_STYLE), (0, 0, 0, 2)),
+            width=width,
+        )
+        return True
+    except Exception:
+        return False  # marking is additive — never lose the answer over it
+
+
+def _render_answer_body(body: str, buf) -> None:
+    """Render the answer body, choosing how to mark it: a CORRECTED answer keeps the
+    offset-faithful plain-text render (markdown traded for exact edit-position fidelity — the
+    deliberate interrupt-and-correct choice); an uncorrected-but-UNCERTAIN answer keeps its
+    markdown and reddens the low-confidence runs by content; a plain confident answer renders as
+    markdown. All marking is additive — any failure falls through to plain markdown."""
+    if buf is not None:
+        try:
+            from core import confidence, provenance
+
+            has_human = bool(provenance.human_spans(buf))
+            has_runs = bool(confidence.buffer_runs(buf))
+        except Exception:
+            has_human = has_runs = False
+        if has_human and _print_marked_body(body, buf):
+            return
+        if has_runs and not has_human and _print_markdown_confidence(body, buf):
+            return
+    _print_markdown_body(body)
+
+
 def _final_render(text: str, *, plain_body: "str | None") -> None:
     """THE final-answer tail (provenance pop → sources split → markdown body → trust-colored
     Sources → receipt → first-answer hint), shared by `response()` and ResponseStream.finish()
     so streamed and non-streamed answers can never drift apart. `plain_body` is what the
     no-rich path prints as the body — the whole text for `response()`, only the trailer beyond
-    the already-typed stream for `finish()` (None = nothing left to print). A turn the user
-    froze and corrected renders its body with the human-authored spans marked (and the receipt
-    counts the corrections) — see set_turn_buffer."""
+    the already-typed stream for `finish()` (None = nothing left to print). Body marking is
+    dispatched by `_render_answer_body`: a corrected answer renders offset-faithfully, an
+    uncertain answer keeps markdown with its low-confidence runs reddened, a plain answer is
+    markdown (the receipt counts corrections + uncertain spans) — see set_turn_buffer."""
     gb = _pop_turn_provenance()
     buf = _pop_turn_buffer()
     corrections = len(buf.get("edits") or []) if buf else 0
+    uncertain = _uncertain_count(buf)
     if _RICH:
         prose, src_lines = _split_sources(text)
         body = prose if src_lines else text
-        if buf is None or not _print_corrected_body(body, buf):
-            _print_markdown_body(body)
+        _render_answer_body(body, buf)
         if src_lines:
             _print_sources(src_lines, gb)
         _console.print()  # let the answer breathe before the receipt
-        _print_receipt(corrections)
+        _print_receipt(corrections, uncertain)
         _first_answer_hint()
         _console.print()  # trailing whitespace before the next prompt
     else:
         if plain_body:
             print(plain_body)
             print()
-        _print_receipt(corrections)
+        _print_receipt(corrections, uncertain)
         _first_answer_hint()
         print()
+
+
+def _uncertain_count(buf) -> int:
+    """How many low-confidence runs the finished buffer carries — the receipt's count (the
+    final body re-renders as markdown, which can't carry the red marks; the count keeps the
+    signal on the record). 0 for no buffer / no overlay / any failure."""
+    try:
+        from core import confidence
+
+        return len(confidence.buffer_runs(buf)) if buf else 0
+    except Exception:
+        return 0
 
 
 # ── streaming the final answer ─────────────────────────────────────────────────────
@@ -363,15 +504,22 @@ class ResponseStream:
         self._live = None
         self._started = False
         self._last = 0.0  # last repaint time (throttle)
+        # The live confidence ledger: character-ranged logprob entries over "".join(_chars),
+        # graded per repaint so low-confidence runs render red AS THE ANSWER STREAMS — the
+        # whole point: the user sees where the model is unsure while Esc can still freeze it.
+        # (The buffer on state carries the canonical copy; this one only paints the live tail.)
+        self._conf: list[dict] = []
+        self._len = 0  # running char count of _chars (the ledger's offset base)
 
     @property
     def started(self) -> bool:
         return self._started
 
-    def feed(self, text: str) -> None:
+    def feed(self, text: str, logprobs=None) -> None:
         """Append a streamed answer token; opens the response section on the first one. After a
         freeze (freeze_display tore the live tail down), the first resumed token quietly reopens
-        a live region — same transient-tail contract, no second section header."""
+        a live region — same transient-tail contract, no second section header. `logprobs`, when
+        the daemon reported them, extend the live confidence ledger (see __init__)."""
         if not text:
             return
         if not self._started:
@@ -380,12 +528,20 @@ class ResponseStream:
             self._live = Live(console=_console, transient=True, auto_refresh=False)
             self._live.start()
         self._chars.append(text)
+        if logprobs:
+            try:
+                from core import confidence
+
+                self._conf.extend(confidence.align_chunk(text, logprobs, offset=self._len))
+            except Exception:
+                pass  # the marking is additive — never let it cost the stream
+        self._len += len(text)
         if self._live is not None:
             now = time.perf_counter()
             if now - self._last >= 0.06:  # throttle (~16/s) so granular tokens don't thrash the live
                 self._live.update(self._tail(), refresh=True)
                 self._last = now
-        else:  # plain (no-rich) path: just type it out
+        else:  # plain (no-rich) path: just type it out (no styling to carry the marks)
             print(text, end="", flush=True)
 
     def _freeze_hint(self) -> None:
@@ -427,18 +583,22 @@ class ResponseStream:
             print()
 
     def _tail(self) -> "Text":
-        """The last screenful of the answer-so-far as plain Text, bounded to at most `rows` VISUAL
+        """The last screenful of the answer-so-far as Text, bounded to at most `rows` VISUAL
         lines so the transient live region always fits on screen — which is what lets `stop()` erase
         it cleanly before the full answer is re-rendered. The bound must count visual rows, which
         means accounting for BOTH hard newlines AND soft wrapping: a raw character budget undercounts
         badly when the answer is many short lines (lists, headings, code, blanks), because each
         newline ends a line early, so the same budget spans far more rows than the screen has. The
         region then scrolls off the top and the transient erase corrupts the final render — eating
-        the first lines of the answer (the data is fine; only the on-screen handoff breaks)."""
+        the first lines of the answer (the data is fine; only the on-screen handoff breaks).
+
+        Low-confidence runs (the live ledger, graded here per repaint) render red inside the
+        tail — best-effort, and only over the visible slice."""
         rows = max(4, (_console.size.height or 24) - 6)
         cols = max(20, _console.size.width or 80)
         avail = max(1, cols - 2)  # room for text after the 2-space indent below
-        lines = "".join(self._chars).split("\n")
+        joined = "".join(self._chars)
+        lines = joined.split("\n")
         # Walk from the bottom up, accumulating physical lines until their WRAPPED height fills the
         # row budget, so the rendered region can't exceed the screen no matter the line lengths.
         chosen: list[str] = []
@@ -454,12 +614,30 @@ class ResponseStream:
             if used >= rows:
                 break
         chosen.reverse()
+        runs: list[tuple[int, int]] = []
+        if self._conf:
+            try:
+                from core import confidence
+
+                runs = confidence.low_runs(self._conf, joined)
+            except Exception:
+                runs = []
+        # The chosen lines are a SUFFIX of the joined text (a truncated lone top line keeps its
+        # tail), so the tail's start offset is just the length difference — which maps each
+        # low-confidence run onto per-line positions.
+        pos = len(joined) - len("\n".join(chosen))
         t = Text()
         for i, ln in enumerate(chosen):
             if i:
                 t.append("\n")
             t.append("  ")
-            t.append(ln)
+            lt = Text(ln)
+            for s, e in runs:
+                s, e = max(s, pos), min(e, pos + len(ln))
+                if e > s:
+                    lt.stylize(_LOW_CONF_STYLE, s - pos, e - pos)
+            t.append_text(lt)
+            pos += len(ln) + 1  # +1: the newline between physical lines
         return t
 
     def finish(self, final_text: "str | None" = None) -> None:
@@ -498,11 +676,15 @@ class ResponseStream:
         if not _RICH and self._started:
             print()  # close the typed-out line before the editor prompts
 
-    def reset_to(self, text: str) -> None:
+    def reset_to(self, text: str, confidence=None) -> None:
         """Replace the streamed record with the (human-edited) buffer text so the resumed live
         tail and finish()'s trailer math continue from what the user actually kept — never from
-        the pre-edit stream."""
+        the pre-edit stream. `confidence` reseeds the live ledger with the edit-shifted overlay
+        (the caller runs the ONE edit-diff implementation, provenance.apply_edit, over the
+        pre-edit entries); absent, the kept text simply streams on unmarked."""
         self._chars = [text] if text else []
+        self._len = len(text) if text else 0
+        self._conf = list(confidence or [])
 
     def abort(self) -> None:
         """Tear down the live tail without a final render — a failed/cancelled turn. The transient

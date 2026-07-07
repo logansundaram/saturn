@@ -13,7 +13,14 @@ Shape (plain dicts, like the plan — gotcha #4: state must round-trip the check
 
     {"text": str,
      "spans": [{"start": int, "end": int, "author": "model"|"human"}, ...],   # cover text exactly
-     "edits": [{"at": int, "cut": str, "typed": str}, ...]}                   # audit previews
+     "edits": [{"at": int, "cut": str, "typed": str}, ...],                   # audit previews
+     "confidence": [{"start": int, "end": int, "logprob": float}, ...]}       # per-token overlay
+
+`confidence` is the token-confidence overlay (core/confidence.py builds + grades it): unlike the
+author spans it does NOT tile the text — it covers exactly the model-generated characters whose
+logprobs the daemon reported, and gaps mean "unmeasured", never "confident". An edit clears the
+overlay inside the changed region (a human-typed character has no model confidence) and shifts
+the suffix like the spans.
 
 plus a `state` key managed by the ENGINE (nodes/synthesize + nodes/answer_gate), which this
 module preserves but never reads — provenance is pure text+span math.
@@ -43,7 +50,7 @@ _EDIT_PREVIEW_CAP = 200
 
 
 def new_buffer() -> dict:
-    return {"text": "", "spans": [], "edits": []}
+    return {"text": "", "spans": [], "edits": [], "confidence": []}
 
 
 def _merged(spans: list[dict]) -> list[dict]:
@@ -60,14 +67,21 @@ def _merged(spans: list[dict]) -> list[dict]:
     return out
 
 
-def append_model(buf: dict, text: str) -> dict:
-    """A new buffer with `text` appended as model-authored (streamed tokens land here)."""
+def append_model(buf: dict, text: str, confidence=None) -> dict:
+    """A new buffer with `text` appended as model-authored (streamed tokens land here).
+    `confidence`, when given, is the chunk's CHUNK-RELATIVE confidence entries
+    (core/confidence.align_chunk) — shifted onto the buffer's offsets here, so callers never
+    track the running length themselves."""
     if not text:
         return dict(buf)
     old = buf.get("text", "")
     spans = list(buf.get("spans") or [])
     spans.append({"start": len(old), "end": len(old) + len(text), "author": MODEL})
-    return {**buf, "text": old + text, "spans": _merged(spans)}
+    conf = list(buf.get("confidence") or [])
+    for c in confidence or []:
+        conf.append({"start": int(c["start"]) + len(old), "end": int(c["end"]) + len(old),
+                     "logprob": float(c["logprob"])})
+    return {**buf, "text": old + text, "spans": _merged(spans), "confidence": conf}
 
 
 def apply_edit(buf: dict, new_text: str) -> dict:
@@ -111,9 +125,22 @@ def apply_edit(buf: dict, new_text: str) -> dict:
                 "author": sp["author"],
             })
 
+    # The confidence overlay follows the same prefix/suffix split: entries wholly in the
+    # untouched prefix survive, entries wholly in the untouched suffix shift, and anything
+    # touching the changed region is DROPPED — the text those tokens measured no longer exists
+    # (and the human's replacement carries no model confidence at all).
+    tail_start = len(old) - s
+    conf: list[dict] = []
+    for c in buf.get("confidence") or []:
+        cs, ce = int(c.get("start", 0)), int(c.get("end", 0))
+        if ce <= p:
+            conf.append(dict(c))
+        elif cs >= tail_start:
+            conf.append({**c, "start": cs + shift, "end": ce + shift})
+
     edits = list(buf.get("edits") or [])
     edits.append({"at": p, "cut": clip(cut, _EDIT_PREVIEW_CAP), "typed": clip(typed, _EDIT_PREVIEW_CAP)})
-    return {**buf, "text": new_text, "spans": _merged(spans), "edits": edits}
+    return {**buf, "text": new_text, "spans": _merged(spans), "edits": edits, "confidence": conf}
 
 
 def human_spans(buf: dict) -> list[tuple[int, int]]:

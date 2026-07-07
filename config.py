@@ -194,7 +194,7 @@ class Config:
     @property
     def num_ctx_override(self) -> "int | None":
         """Session/config override for the Ollama context window (`runtime.num_ctx`), or None to
-        let each model use its capability `context_window`. Set live by the /context command."""
+        let each model use its capability `context_window`. Set live by /config context."""
         v = self.get("runtime.num_ctx")
         try:
             n = int(v)

@@ -36,7 +36,7 @@ from typing import Iterator, Optional
 import httpx
 
 from config import get_config
-from core import chat_template
+from core import chat_template, confidence
 from trust import egress, redaction
 
 
@@ -59,6 +59,12 @@ class ContinuationStream:
     stats (eval_count/eval_duration/prompt_eval_count) and `done_reason` why it stopped —
     the same numbers the chat path reads for the tok/s and context gauges.
 
+    `last_logprobs` carries the CURRENT chunk's logprob entries (plain dicts from the daemon's
+    JSON, or None when the request didn't ask / the daemon didn't answer) — set just before each
+    yield, so the consumer reads it right after receiving the chunk. Iteration is synchronous,
+    so the attribute always belongs to exactly the chunk in hand (the same reasoning as the
+    per-call egress slices in nodes/tools).
+
     The interface deliberately assumes nothing beyond "an iterator of text the owner may stop
     pulling from": a later llama-cpp backend maps onto it without touching any caller."""
 
@@ -70,6 +76,7 @@ class ContinuationStream:
         self._response = None
         self.meta: dict = {}
         self.done_reason: str = ""
+        self.last_logprobs = None
 
     def __iter__(self) -> Iterator[str]:
         self._client = httpx.Client(timeout=self._timeout)
@@ -87,6 +94,7 @@ class ContinuationStream:
                     if data.get("error"):
                         raise RuntimeError(f"Ollama raw generation failed: {data['error']}")
                     chunk = data.get("response") or ""
+                    self.last_logprobs = data.get("logprobs")
                     if data.get("done"):
                         self.meta = data
                         self.done_reason = str(data.get("done_reason") or "")
@@ -155,6 +163,11 @@ def continue_from(model: str, messages: list, edited_prefix: str,
         "options": opts,
         "stop": list(template.stop),
     }
+    if confidence.enabled():
+        # Token-confidence grading: per-token logprobs ride each streamed chunk
+        # (ContinuationStream.last_logprobs). Absent support the daemon just omits the field —
+        # the overlay stays empty, the answer renders unmarked.
+        body["logprobs"] = True
     t = get_config().llm_timeout
     timeout = httpx.Timeout(t, connect=min(10.0, t)) if t else None
     return ContinuationStream(f"{_endpoint()}/api/generate", body, timeout)

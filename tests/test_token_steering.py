@@ -102,7 +102,7 @@ def test_apply_edit_noop_returns_copy_without_edit_record():
 def test_operations_never_mutate_their_input():
     b0 = provenance.append_model(provenance.new_buffer(), "first draft here")
     snapshot = {"text": b0["text"], "spans": [dict(s) for s in b0["spans"]],
-                "edits": list(b0["edits"])}
+                "edits": list(b0["edits"]), "confidence": list(b0["confidence"])}
     provenance.apply_edit(b0, "first CORRECTION here")
     provenance.append_model(b0, " more")
     assert b0 == snapshot  # copy-and-return, never in-place
@@ -283,10 +283,10 @@ def test_corrected_body_marks_human_spans_and_never_guesses(capsys):
         provenance.append_model(provenance.new_buffer(), "it is Sydney today"),
         "it is Canberra today")
     body = buf["text"] + "\n\nNote — trailing mechanical text"
-    assert response._print_corrected_body(body, buf)
+    assert response._print_marked_body(body, buf)
     assert "Canberra" in capsys.readouterr().out
     # A body the buffer doesn't prefix (e.g. /retry replaced the answer) must refuse to mark.
-    assert not response._print_corrected_body("a different answer entirely", buf)
+    assert not response._print_marked_body("a different answer entirely", buf)
 
 
 # --- the freeze editor (tui/ui/correction) ---------------------------------------------------------

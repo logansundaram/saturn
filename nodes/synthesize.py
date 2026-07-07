@@ -1,5 +1,5 @@
 from config import get_config
-from core import continuation, provenance
+from core import confidence, continuation, provenance
 from core.plan_context import WRITE_TOOLS
 from core.state import AgentState, incident_steps, unfinished_steps
 from textutil import clip, parse_doc_sources, split_call_result
@@ -208,8 +208,9 @@ def cancel_orphaned_calls(last) -> list:
 def _token_sink():
     """The custom-stream writer continuation tokens ride to the UI: the raw-mode stream is not a
     LangChain chat call, so LangGraph's messages mode never sees it — run_turn streams the
-    "custom" channel instead and forwards `{"answer_token": …}` payloads to the same on_token.
-    No-op outside a streaming graph context (unit tests, /retry's direct node call)."""
+    "custom" channel instead and forwards `{"answer_token": …}` payloads (plus each chunk's raw
+    `logprobs`, for the live confidence marking) to the same on_token. No-op outside a streaming
+    graph context (unit tests, /retry's direct node call)."""
     try:
         from langgraph.config import get_stream_writer
 
@@ -219,9 +220,12 @@ def _token_sink():
     if writer is None:
         return None
 
-    def sink(text: str) -> None:
+    def sink(text: str, logprobs=None) -> None:
         try:
-            writer({"answer_token": text})
+            payload = {"answer_token": text}
+            if logprobs:
+                payload["logprobs"] = logprobs
+            writer(payload)
         except Exception:
             pass
 
@@ -230,18 +234,26 @@ def _token_sink():
 
 def _stream_first_pass(llm_input, freeze):
     """The chat-path stream (tokens reach the UI via LangGraph messages mode, unchanged),
-    polling the freeze latch per chunk. Returns (buffer, frozen, aggregated_message)."""
+    polling the freeze latch per chunk. Returns (buffer, frozen, aggregated_message).
+
+    Confidence grading (runtime.confidence): `logprobs=True` rides the call as a per-call kwarg
+    (NOT inside `options`, so the constructor's num_ctx is untouched); each intermediate chunk
+    then carries its token logprobs in response_metadata, aligned onto the buffer's confidence
+    overlay as it lands. A daemon that doesn't answer just leaves the overlay empty."""
     model = get_model("synthesizer")
     buf = provenance.new_buffer()
     aggregated = None
     frozen = False
-    gen = model.stream(llm_input)
+    gen = model.stream(llm_input, **({"logprobs": True} if confidence.enabled() else {}))
     try:
         for chunk in gen:
             aggregated = chunk if aggregated is None else aggregated + chunk
             text = chunk.content if isinstance(chunk.content, str) else str(chunk.content)
             if text:
-                buf = provenance.append_model(buf, text)
+                lp = (getattr(chunk, "response_metadata", None) or {}).get("logprobs")
+                buf = provenance.append_model(
+                    buf, text, confidence.align_chunk(text, lp) if lp else None
+                )
             if freeze is not None and freeze.requested():
                 frozen = True  # stop pulling tokens; closing the generator stops the decode
                 break
@@ -267,9 +279,12 @@ def _stream_continuation(model_name: str, llm_input, buf: dict, freeze):
     frozen = False
     try:
         for text in stream:
-            buf = provenance.append_model(buf, text)
+            lp = stream.last_logprobs  # this chunk's logprobs (see ContinuationStream)
+            buf = provenance.append_model(
+                buf, text, confidence.align_chunk(text, lp) if lp else None
+            )
             if sink is not None:
-                sink(text)
+                sink(text, lp)
             if freeze is not None and freeze.requested():
                 frozen = True
                 break
@@ -451,7 +466,15 @@ def synthesize_node(state: AgentState):
             buf, frozen, aggregated = _stream_first_pass(llm_input, freeze)
             tok_per_sec = extract_tok_per_sec(aggregated)
             context_tokens = extract_prompt_tokens(aggregated)
-            response_metadata = getattr(aggregated, "response_metadata", {}) or {}
+            # Chunk aggregation CONCATENATES the per-chunk logprobs lists into the metadata —
+            # a full copy of the answer's token table (possibly client-typed objects) that must
+            # never ride the recorded AIMessage into state/autosave/trace. The buffer's
+            # confidence overlay is the one canonical carrier.
+            response_metadata = {
+                k: v
+                for k, v in (getattr(aggregated, "response_metadata", {}) or {}).items()
+                if k != "logprobs"
+            }
             usage_metadata = getattr(aggregated, "usage_metadata", None)
     finally:
         if freeze is not None:

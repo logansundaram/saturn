@@ -18,9 +18,10 @@ def run_turn(graph, payload, config, approver, on_update=None, pause=None, on_to
     `approver(interrupt_value) -> decision` resolves each interrupt — for the approval gate a bool,
     for the plan-review gate the editor's `{action, plan}` dict — and the result is fed back as the
     `Command(resume=...)` value. `on_update(node, delta)` is called for every node update (the trace
-    + live plan panel). `on_token(text)`, if given, receives the *synthesize* node's answer tokens as
-    they generate (LangGraph `stream_mode="messages"`, filtered to that node), so the UI can render
-    the final answer live. `pause`, if given, is a `typeahead.InputQueue` (any start()/stop() console
+    + live plan panel). `on_token(text, logprobs=None)`, if given, receives the *synthesize* node's
+    answer tokens as they generate (LangGraph `stream_mode="messages"`, filtered to that node) plus
+    each chunk's raw token logprobs when the daemon reported them (the live confidence marking), so
+    the UI can render the final answer live. `pause`, if given, is a `typeahead.InputQueue` (any start()/stop() console
     reader): it's started only while the graph is executing and stopped before any blocking input(),
     so it can capture type-ahead + the Esc pause without ever stealing the prompt's keystrokes (the
     queued lines themselves are drained by the REPL loop, not here). Returns the final state.
@@ -53,7 +54,7 @@ def run_turn(graph, payload, config, approver, on_update=None, pause=None, on_to
                 if mode == "custom":
                     # Continuation-path answer tokens (the raw-mode resume after a freeze-edit).
                     if on_token and isinstance(data, dict) and data.get("answer_token"):
-                        on_token(str(data["answer_token"]))
+                        on_token(str(data["answer_token"]), data.get("logprobs"))
                     continue
                 if mode == "messages":
                     # (message_chunk, metadata) — stream only the synthesize node's answer tokens.
@@ -69,7 +70,10 @@ def run_turn(graph, payload, config, approver, on_update=None, pause=None, on_to
                     ):
                         text = getattr(message_chunk, "content", "")
                         if text:
-                            on_token(text if isinstance(text, str) else str(text))
+                            lp = (getattr(message_chunk, "response_metadata", None) or {}).get(
+                                "logprobs"
+                            )
+                            on_token(text if isinstance(text, str) else str(text), lp)
                     continue
                 # mode == "updates"
                 if "__interrupt__" in data:

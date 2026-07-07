@@ -105,8 +105,8 @@ _RENAMED = {
     # June 2026 focus pass: overlapping readouts + session commands consolidated.
     "workspace": "docs",
     "ws": "docs",
-    "system": "context",
-    "sys": "context",
+    "system": "config context",
+    "sys": "config context",
     "save": "resume save",
     "load": "resume",
     # June 2026 trust-surface consolidation: the boundary commands fold into the /privacy front
@@ -129,6 +129,15 @@ _RENAMED = {
     "allow": "policy allow",
     "autoapprove": "policy open",
     "yolo": "policy open",
+    # 2026-07-07 command fold: three surfaces collapsed into their canonical homes — the Glass Box
+    # and the citation drill-down become /trace subviews (both already read the same trace DB /
+    # accumulators), and the runtime readout joins /config (the one runtime-settings front door).
+    "glass": "trace answer",
+    "glassbox": "trace answer",
+    "source": "trace source",
+    "sources": "trace source",
+    "context": "config context",
+    "ctx": "config context",
 }
 
 # A second, parenthesized line for redirects whose one-line pointer doesn't tell the whole story.

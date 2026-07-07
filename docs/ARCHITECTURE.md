@@ -7,7 +7,7 @@ where, why it's grouped that way, and the order that makes the code easiest to a
 Saturn (Saturday.ai) is a local-first, transparent terminal agent. The product thesis is the
 **trust stack**: every action is visible (trace), every risky action asks a human (gate),
 every byte that leaves the machine is accounted for (egress ledger), and every answer can
-show its provenance (Glass Box). The engine is a **plan/execute loop**: an LLM drafts a step
+show its provenance (/trace answer). The engine is a **plan/execute loop**: an LLM drafts a step
 plan, each step executes one at a time against a curated context, and a judge reflects after
 every step.
 
@@ -25,7 +25,7 @@ app/        the application shell: CLI, graph assembly, turn driver, headless + 
 core/       the engine room: state, model factory, prompts, structured output, plan plumbing
 nodes/      the graph nodes, one per file (ground → plan → … → synthesize)
 tools/      the tool implementations + registry + MCP client (risk tiers declared at definition)
-trust/      the trust stack: gate policy, egress ledger, redaction, quarantine, receipt, Glass Box
+trust/      the trust stack: gate policy, egress ledger, redaction, quarantine, receipt, answer provenance
 commands/   the slash-command layer (/help themes, one module each)
 stores/     data + persistence: RAG corpus, manifests, memory, snapshots, trace DB
 tui/        presentation: the rich-based terminal UI, type-ahead reader, system metrics
@@ -126,17 +126,19 @@ is the *tool-execution node*, not the `tools/` package (see the name-collision t
 | `redaction.py` | Secret stripping/warning at the cloud boundary (key patterns, JWTs, private keys); `scan_args` backs the gate's secret warning. |
 | `quarantine.py` | Prompt-injection quarantine: scan untrusted observations, fence instruction-shaped content as data, escalate the next tool batch to the gate. Also screens corpus/attachment admission. |
 | `receipt.py` | The ambient surfaces: per-answer trust receipt spans, the session posture line, one-time discovery hints. |
-| `glassbox.py` | The Glass Box: answer-level provenance (per cited source: origin, trust, injection flag) — live after each answer and reconstructed from recorded runs. |
+| `glassbox.py` | Answer-level provenance (surfaced as `/trace answer`): per cited source — origin, trust, injection flag — live after each answer and reconstructed from recorded runs. |
 
 ### `commands/` — the slash-command layer
 `_framework.py` (dispatcher + `@command` registry), `_session.py` (autosave/session store),
 `_utils.py` (shared grammar: removal/list verbs, `--save` parsing, toggle status). Themed
 modules: `conversation.py` (/clear /compact /rewind /retry /resume), `knowledge.py` (/docs
-/memory /init /undo), `runtime.py` (/tools /models /context /mcp), `system.py` (/help /quit
-/update), `config.py` (/config), `plan.py` (/plan), `policy.py` (/policy — the legacy
-/risk /allow /autoapprove spellings were cut 2026-07-06 and print pointers), `privacy.py`
-(/privacy), `trace.py` (/trace /glass /source +
-export/replay engine). Convention: one file owns every view of a feature.
+/memory /init /undo), `runtime.py` (/tools /models /mcp), `system.py` (/help /quit
+/update), `config.py` (/config, incl. the `context` subview — the folded-in /context),
+`plan.py` (/plan), `policy.py` (/policy — the legacy /risk /allow /autoapprove spellings were
+cut 2026-07-06 and print pointers), `privacy.py` (/privacy), `trace.py` (/trace — incl. the
+`answer` + `source` provenance subviews, the folded-in /glass and /source — + export/replay
+engine; the three folds landed 2026-07-07 and print _RENAMED pointers). Convention: one file
+owns every view of a feature.
 
 ### `stores/` — data + persistence
 `rag.py` (corpus sync + vector store), `document_registry.py` (workspace/doc manifests),
@@ -149,7 +151,7 @@ export/replay engine). Convention: one file owns every view of a feature.
 re-exported flat (`from tui import ui`): `_base` (console plumbing), `statusbar`, `art`
 (the frozen Saturn splash), `prompt` (prompt_toolkit line editor), `trace` (the live rail),
 `plan` (plan panel + review editor), `approval` (the gate UI), `response` (streamed answer +
-receipt), `glass` (Glass Box renderer), `readouts`, `listing` (the shared table/section
+receipt), `glass` (the /trace answer provenance renderer), `readouts`, `listing` (the shared table/section
 vocabulary every listing command renders through).
 
 ## Same name, different file

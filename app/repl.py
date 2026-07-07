@@ -244,11 +244,22 @@ def run_repl() -> None:
                 # Interrupt-and-correct: the stream is already stopped; hand the screen from
                 # the live answer tail to the freeze editor, then re-point the streamed record
                 # at the edited text so the resumed tail and the final render continue from
-                # what the user actually kept.
+                # what the user actually kept. The confidence overlay is reseeded through THE
+                # one edit-diff implementation (provenance.apply_edit over a throwaway buffer),
+                # so the kept text's red marks survive the edit at their shifted positions.
                 answer.freeze_display()
                 decision = ui.edit_answer(value)
                 if isinstance(decision, dict) and isinstance(decision.get("text"), str):
-                    answer.reset_to(decision["text"])
+                    conf = None
+                    try:
+                        from core import provenance
+
+                        mini = {"text": str(value.get("text") or ""), "spans": [],
+                                "edits": [], "confidence": value.get("confidence") or []}
+                        conf = provenance.apply_edit(mini, decision["text"]).get("confidence")
+                    except Exception:
+                        conf = None  # the marking is additive — never at the editor's cost
+                    answer.reset_to(decision["text"], conf)
                 return decision
             if isinstance(value, dict) and value.get("type") == "ask_user":
                 # The ask_user tool: the agent's question renders at the prompt and the typed

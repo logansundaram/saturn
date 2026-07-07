@@ -1,5 +1,5 @@
 """
-On-demand readouts (`/context`, `/models`) and the one-off log lines (notes, warnings,
+On-demand readouts (`/config context`, `/models`) and the one-off log lines (notes, warnings,
 steering/pause acknowledgements, queued-line echoes). All render in the trace-rail style and reuse the
 shared meter vocabulary (`_mini_bar`/`_meter_color`), so a gauge reads identically here, in the
 status bar, and in the live trace. None of these touch per-turn state.
@@ -16,7 +16,7 @@ from .listing import section
 # ── system metrics display ───────────────────────────────────────────────────────
 def show_system_metrics(metrics) -> None:
     """Display a compact system-resource readout in the trace-rail style. Shares the one meter
-    glyph + threshold vocabulary (`_mini_bar` / `_meter_color`) with the status bar and /context,
+    glyph + threshold vocabulary (`_mini_bar` / `_meter_color`) with the status bar and /config context,
     so a hot gauge reads identically everywhere; percentages are whole numbers (no false precision)."""
 
     def _row(label: str, pct: float, detail: str = "") -> None:
@@ -45,9 +45,9 @@ def show_system_metrics(metrics) -> None:
         _row("vram", vram_pct, f"{metrics.vram_used_gb:.1f} / {metrics.total_vram_gb:.1f} GB")
 
 
-# ── context-window readout (the /context command) ──────────────────────────────────
+# ── context-window readout (the /config context command) ──────────────────────────────────
 def show_context(window: int, used: int, source: str, per_role: dict[str, int]) -> None:
-    """Detailed context-window readout for /context: the active window + where it comes from, a
+    """Detailed context-window readout for /config context: the active window + where it comes from, a
     wide fill bar for the last measured usage, and the per-role windows. Same trace-rail
     vocabulary as show_system_metrics; the compact form of this fill gauge also rides the live
     status bar during a turn."""
@@ -78,7 +78,7 @@ def show_context(window: int, used: int, source: str, per_role: dict[str, int]) 
     if per_role:
         roles_txt = " · ".join(f"{r} {w:,}" for r, w in per_role.items())
         _emit(f"  roles: {roles_txt}")
-    _emit("  set with /context <size> (or /context auto for per-model capability)")
+    _emit("  set with /config context <size> (or /config context auto for per-model capability)")
 
 
 # ── model picker / listing ───────────────────────────────────────────────────────

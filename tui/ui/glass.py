@@ -1,5 +1,5 @@
 """
-The Glass Box renderer — answer-level provenance, drawn in the trace-viewer vocabulary.
+The /trace answer renderer — answer-level provenance, drawn in the trace-viewer vocabulary.
 
 Three stacked blocks: a **trust label** (sources, what left the machine, groundedness, gated
 calls), the **answer** with each inline `[n]` citation colored by the trust of its source
@@ -140,7 +140,7 @@ def _render_answer(gb) -> None:
 def _render_sources(gb) -> None:
     if not gb.sources:
         return
-    section("sources", "/source <n> for the full text behind a citation")
+    section("sources", "/trace source <n> for the full text behind a citation")
     rows = []
     for s in gb.sources:
         if s.origin == "network" or not s.trusted:
@@ -162,7 +162,7 @@ def _render_sources(gb) -> None:
 def show_glassbox(gb) -> None:
     """Render a GlassBox: trust label, the answer with trust-colored citations, the sources table."""
     q = _truncate(gb.query, 60) if gb.query else "(no query)"
-    section("glass box", f"\"{q}\"")
+    section("answer provenance", f"\"{q}\"")
     _render_label(gb)
     _console.print() if _RICH else print()
     _render_answer(gb)

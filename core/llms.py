@@ -168,7 +168,7 @@ def _build(provider: str, model: str):
         raise _cloud_shelved_error("?", provider, model)
     # Bind num_ctx to the effective window (runtime.num_ctx override, else the model's declared
     # window) so it actually runs at the size the UI gauges against — Ollama otherwise silently
-    # caps at 2048, making the context-fill % lie. /context drops the cache to rebind live.
+    # caps at 2048, making the context-fill % lie. /config context drops the cache to rebind live.
     # client_kwargs carries the request timeout (guards a wedged daemon; see _ollama_client_kwargs).
     return _wrap_ollama(
         ChatOllama(
@@ -471,6 +471,6 @@ def extract_prompt_tokens(response) -> int:
 
 def active_context_window(role: str = "tool_caller") -> int:
     """Effective context window (`num_ctx`) of the model serving `role` — the denominator of the
-    UI's fill gauge and the /context readout. Defaults to the agent (tool_caller) role, the one
+    UI's fill gauge and the /config context readout. Defaults to the agent (tool_caller) role, the one
     the status bar's model label tracks."""
     return get_config().num_ctx_for(model_id(role))

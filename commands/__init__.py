@@ -32,9 +32,9 @@ _COMMAND_MODULES = [
     "plan",          # /plan
     "policy",        # /policy — the one gate front door (risk · allow · open)
     "privacy",       # /privacy
-    "runtime",       # /tools, /models, /context, /mcp
+    "runtime",       # /tools, /models, /mcp
     "system",        # /help, /quit, /update
-    "trace",         # /trace; also /glass and /source (the provenance views)
+    "trace",         # /trace (incl. the answer/source provenance subviews)
 ]
 
 for _mod in _COMMAND_MODULES:

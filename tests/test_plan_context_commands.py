@@ -1,16 +1,18 @@
 """
-The /plan and /context command surfaces after the 2026-07-03 clean sweep: removed subcommands
-(recipes, lockstep, `/context compact`) are plain unknown-argument errors — no legacy pointer
-stubs — and nothing they name mutates. Bare `review` reports status (explicit on|off mutates;
-the shared parse_toggle_status grammar), `--save` persists runtime.num_ctx via config.persist
-(the shared split_save_flag grammar: case-insensitive, any position; with no value it persists
-the CURRENT one), and plan_node always drafts (no seed seam).
+The /plan and /config context command surfaces after the 2026-07-03 clean sweep + the 2026-07-07
+command fold. Removed subcommands (recipes, lockstep, `/context compact`) are plain
+unknown-argument errors — no legacy pointer stubs — and nothing they name mutates. The old
+standalone /context folded into /config as `/config context` (dispatched to `_config_context`);
+bare `review` reports status (explicit on|off mutates; the shared parse_toggle_status grammar),
+and a size set PERSISTS runtime.num_ctx via config.persist BY DEFAULT (the shared
+split_persist_flags grammar: settings persist by default, --session opts a single edit out; a bare
+`--save` with no value still persists the CURRENT one), and plan_node always drafts (no seed seam).
 """
 
 import pytest
 
 from commands._framework import CommandContext
-from commands.runtime import _context
+from commands.config import _config_context as _context
 from commands.plan import _plan
 
 
@@ -99,16 +101,30 @@ def test_context_compact_is_just_an_unknown_arg(ctx, capsys, no_model_rebuild):
     assert "not a size" in out and "usage" in out
 
 
-def test_context_set_size_session_only(ctx, capsys, monkeypatch, no_model_rebuild,
-                                       recording_persist):
+def test_context_set_size_persists_by_default(ctx, capsys, monkeypatch, no_model_rebuild,
+                                              recording_persist):
+    """A size set now writes config.yaml BY DEFAULT — settings should survive a restart."""
     from config import get_config
 
     cfg = get_config()
     monkeypatch.setitem(cfg._data["runtime"], "num_ctx", None)
     _context(ctx, ["16384"])
     assert cfg.num_ctx_override == 16384
+    assert recording_persist == ["runtime.num_ctx"]
+
+
+def test_context_set_size_session_flag_stays_session_only(ctx, capsys, monkeypatch,
+                                                          no_model_rebuild, recording_persist):
+    """--session opts a single edit out of the persist-by-default."""
+    from config import get_config
+
+    cfg = get_config()
+    monkeypatch.setitem(cfg._data["runtime"], "num_ctx", None)
+    _context(ctx, ["16384", "--session"])
+    assert cfg.num_ctx_override == 16384
     assert recording_persist == []
-    assert "--save" in _out(capsys)  # the session-only note points at the persist flag
+    out = _out(capsys)
+    assert "session only" in out and "--session" in out
 
 
 def test_context_set_size_save_persists(ctx, capsys, monkeypatch, no_model_rebuild,

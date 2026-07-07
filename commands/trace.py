@@ -670,7 +670,7 @@ def _fmt_call_args(args) -> str:
     return fmt_args(args, 41) if isinstance(args, dict) else ""
 
 
-# --- /trace answer — the Glass Box (answer-level provenance) ------------------------------------
+# --- /trace answer — answer-level provenance ---------------------------------------------------
 # /trace why explains HOW the agent worked; this shows whether you can trust WHAT it told you: each
 # cited source's origin (local vs network) and trust, and what left the machine. Bare reads the
 # live last turn (exact egress); #id reconstructs from the recorded run (egress inferred from
@@ -746,7 +746,7 @@ def _state(ctx, args):
 @command(
     "trace",
     "Observability hub: drill-down of recorded runs + live trace control.",
-    usage="/trace [#id | -l [n] | why | answer | invoke | calls | cost | state"
+    usage="/trace [#id | -l [n] | why | answer | source | invoke | calls | cost | state"
           " | export | replay | on|off|full]",
     details="""
 Expands one recorded run from the trace database (database/db.sqlite) into the full replay the
@@ -771,10 +771,13 @@ Subviews:
                        model's recorded reasoning + tool choice at each step, the evidence the
                        answer was built from, the rectify verdicts (plan revisions and why), and
                        the cited sources. Defaults to the last run.
-  /trace answer [#id]  the Glass Box (also: /glass): answer-level provenance — each cited source's
-                       origin (local vs network) and trust, and what left the machine. Bare = the
-                       live last turn; #id reconstructs a recorded run. (/source <n> prints the
-                       full text behind citation [n].)
+  /trace answer [#id]  answer-level provenance — each cited source's origin (local vs network)
+                       and trust, and what left the machine. Bare = the live last turn; #id
+                       reconstructs a recorded run. (/trace source <n> prints the full text
+                       behind citation [n].)
+  /trace source [n]    the FULL material behind a citation [n] of the last answer — the complete
+                       tool observation or retrieved passage the synthesizer read, under the same
+                       numbering the answer used. Bare lists the numbered sources.
   /trace invoke [#id]  the LLM calls of a run: each model call's INPUT messages + OUTPUT, with
                        timing + token counts. Defaults to the most recent run with LLM calls; add
                        --full to show whole messages, -l to list runs that have them.
@@ -806,6 +809,8 @@ def _trace(ctx, args):
         return _why(ctx, args[1:])
     if args and args[0].lower() in ("answer", "--answer", "glass", "glassbox"):
         return _answer(ctx, args[1:])
+    if args and args[0].lower() in ("source", "sources", "src"):
+        return _source(ctx, args[1:])
     if args and args[0].lower() in ("invoke", "--invoke", "llm", "--llm", "model", "models"):
         return _show_llm_calls(ctx, args[1:])
     if args and args[0].lower() in ("export", "--export"):
@@ -912,38 +917,7 @@ def _show_llm_calls(ctx, args):
     ui.show_llm_calls(run, calls, full=full)
 
 
-# ── /glass — the brandable front door for /trace answer ──────────────────────────────────────
-# A flagship surface (trust the ANSWER, the companion to /trace's trust-the-PROCESS), so it gets
-# its own top-level name; all the logic lives in _answer above.
-
-
-@command(
-    "glass",
-    "The Glass Box: answer-level provenance (origin · trust · what left the machine).",
-    aliases=("glassbox",),
-    usage="/glass [#id]",
-    details="""
-The answer-level companion to /trace. For one answer it shows, per cited source: where it came
-from (local disk vs the network) and whether its origin is trusted. Plus the trust label: how many
-sources, what left the machine this turn, whether rectify revised the plan mid-run, and how many
-calls faced the approval gate.
-
-  /glass         the live last turn (exact egress slice)
-  /glass #7      reconstruct run #7 from the trace record
-
-Identical to `/trace answer`. Scope: bare reads the live last turn (the accumulators reset when a
-new turn starts); #id reconstructs any recorded run (egress is inferred from the source tools, the
-one facet history can't carry exactly).
-
-Companion: /source <n> prints the FULL text behind citation [n] — same numbering as the facets
-here; /glass is whether to trust a source, /source is what it actually said.
-""",
-)
-def _glass(ctx, args):
-    return _answer(ctx, args)
-
-
-# ── /source — the raw material behind a citation, registered with the other provenance views ──
+# ── /trace source — the raw material behind a citation ────────────────────────────────────────
 # The citations footer maps each inline [n] to a one-line label; this shows the FULL tool
 # result / retrieved passage behind that number, rebuilt with the same numbering the synthesizer
 # saw (nodes.synthesize.build_sources over the turn's accumulators), so [3] here is exactly the
@@ -970,28 +944,8 @@ def lookup_source(state: dict, n: int) -> "tuple[str, str] | None":
     return label, text
 
 
-@command(
-    "source",
-    "Show the full material behind a citation [n] of the last answer.",
-    aliases=("sources",),
-    usage="/source [n]",
-    details="""
-Answers cite their evidence inline ([1], [2], …) with a Sources footer mapping each number to the
-tool call or document behind it. This command shows the FULL text behind a number — the complete
-tool observation or retrieved passage the synthesizer actually read — using the same numbering
-the answer used.
-
-  /source        list the last answer's sources (numbered labels)
-  /source 3      print everything behind citation [3]
-
-Scope: the most recent turn (the accumulators reset when a new turn starts; /clear empties them).
-For older runs, /trace #<id> replays the full tool I/O of any recorded run.
-
-Companion: /glass shows the trust/provenance facets of these SAME citations (origin · trust)
-under the same numbering — /source is the raw material, /glass is whether to trust it.
-""",
-)
 def _source(ctx, args):
+    """`/trace source [n]` — the FULL text behind a citation [n] of the last answer."""
     from nodes.synthesize import build_sources
 
     state = ctx.state or {}
@@ -1004,7 +958,7 @@ def _source(ctx, args):
         return
 
     if not args:
-        _print("  sources of the last answer  (/source <n> for the full text):")
+        _print("  sources of the last answer  (/trace source <n> for the full text):")
         for n, label in sources:
             _print(f"    [{n}] {label}")
         return
@@ -1012,12 +966,12 @@ def _source(ctx, args):
     try:
         n = int(args[0].lstrip("[").rstrip("]"))
     except ValueError:
-        _print(f"  usage: /source [n]   (n is a citation number, 1–{len(sources)})")
+        _print(f"  usage: /trace source [n]   (n is a citation number, 1–{len(sources)})")
         return
 
     found = lookup_source(state, n)
     if found is None:
-        _print(f"  no source [{n}] — the last answer has {len(sources)} source(s); /source lists them.")
+        _print(f"  no source [{n}] — the last answer has {len(sources)} source(s); /trace source lists them.")
         return
     label, text = found
     _print(f"  [{n}] {label}")

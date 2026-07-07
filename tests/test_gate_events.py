@@ -2,7 +2,7 @@
 Structured human-gate records (state["gate_events"]) — the chain-of-custody piece this wave
 added: the approval node's per-prompt event shape (approve-all / reject-all / partial), the
 auto-approved-silence rule (no prompt -> no record), the headless --json "gates" derivation,
-and /trace why's always-on verification section (the negative case must print, matching the
+and /trace why's always-on self-correction section (the negative case must print, matching the
 Glass Box). Offline: the LangGraph interrupt is stubbed; no LLM/graph/network runs.
 """
 
@@ -15,7 +15,7 @@ from nodes.approval import approval_node, gate_event
 from core.state import summarize_gates
 
 
-# --- the event builder: ONE shape for --json, the Glass Box, and the signed export -----------
+# --- the event builder: ONE shape for --json, the Glass Box, and the run export --------------
 
 _CALLS = [
     {"id": "c1", "name": "run_shell", "args": {"command": "git status"}},
@@ -188,21 +188,23 @@ def test_summarize_gates_empty_and_garbage_tolerant():
     }
 
 
-# --- /trace why: the verification section always prints --------------------------------------
+# --- /trace why: the self-correction section always prints -----------------------------------
+# (Renamed from "verification" — the state records rectify verdicts, never a verified answer,
+# and the crypto-era word overpromised after the audit-crypto shelve.)
 
 
-def test_why_verification_prints_negative_case(capsys):
+def test_why_self_correction_prints_negative_case(capsys):
     from commands.trace import _render_why
     from tui import ui
 
     run = (3, "what is new?", None, None, "ok", "an answer")
     _render_why(ui, run, [], [])
     out = capsys.readouterr().out
-    assert "verification" in out
+    assert "self-correction" in out
     assert "rectify judge did not run — every step resolved mechanically." in out
 
 
-def test_why_verification_prints_rectify_verdict(capsys):
+def test_why_self_correction_prints_rectify_verdict(capsys):
     from commands.trace import _render_why
     from tui import ui
 

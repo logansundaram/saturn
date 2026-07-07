@@ -30,7 +30,7 @@ _COMMAND_MODULES = [
     "conversation",  # /clear, /compact, /rewind, /retry, /resume
     "knowledge",     # /docs, /memory, /init, /undo
     "plan",          # /plan
-    "policy",        # /policy + its views /risk, /allow, /autoapprove
+    "policy",        # /policy — the one gate front door (risk · allow · open)
     "privacy",       # /privacy
     "runtime",       # /tools, /models, /context, /mcp
     "system",        # /help, /quit, /update

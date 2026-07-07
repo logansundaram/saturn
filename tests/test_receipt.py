@@ -15,14 +15,14 @@ def _ev(host="api.tavily.com", n_bytes=0, status=egress.SENT):
 
 # --- trust_parts -----------------------------------------------------------------------------
 
-def test_local_only_when_nothing_sent():
-    assert receipt.trust_parts([], 0) == ["local-only"]
+def test_silent_when_nothing_sent():
+    # Deviation-only (2026-07-06): a calm local turn emits NO trust spans — the receipt is then
+    # just the dim run stats. The affirmative "local" story lives in /privacy and /glass.
+    assert receipt.trust_parts([], 0) == []
 
 
-def test_blocked_only_still_reads_local():
-    parts = receipt.trust_parts([_ev(status=egress.BLOCKED)], 0)
-    assert parts[0] == "local-only"
-    assert "⛔ 1 blocked" in parts
+def test_blocked_only_shows_just_the_block():
+    assert receipt.trust_parts([_ev(status=egress.BLOCKED)], 0) == ["⛔ 1 blocked"]
 
 
 def test_send_summary_bytes_and_host():
@@ -48,7 +48,7 @@ def test_trust_spans_kinds():
     # identical bare text — the two views must never disagree.
     spans = receipt.trust_spans([_ev(n_bytes=2048), _ev(status=egress.BLOCKED)], 2)
     assert [k for _, k in spans] == ["sent", "blocked", "gated"]
-    assert receipt.trust_spans([], 0) == [("local-only", "local")]
+    assert receipt.trust_spans([], 0) == []  # deviation-only: calm turns say nothing
     assert receipt.trust_parts([], 2) == [t for t, _ in receipt.trust_spans([], 2)]
 
 
@@ -83,20 +83,19 @@ def test_turn_parts_not_fooled_by_ledger_trim(isolated_paths, monkeypatch):
 
 
 def test_turn_parts_unknown_when_no_mark():
-    # Mark 0 = no turn recorded (headless / before the first turn): the slice is UNKNOWN, and the
-    # receipt must say so rather than summarizing the whole ledger as this turn's egress — and it
-    # must never assert 'local-only' over a slice it can't vouch for.
+    # Mark 0 = no turn recorded (headless / before the first turn): the slice is UNKNOWN, and
+    # the receipt must say so rather than summarizing the whole ledger as this turn's egress —
+    # under deviation-only, staying SILENT would blend a maybe-hiding-sends slice into the calm.
     parts = receipt.turn_parts(0, 2)
     assert parts[0] == "egress unknown"
-    assert "local-only" not in parts
     assert parts[-1] == "2 calls gated"
     assert [k for _, k in receipt.turn_spans(0, 0)] == ["unknown"]
 
 
 def test_turn_parts_unknown_after_clear_past_mark(isolated_paths):
     # A `/privacy egress clear` that wiped events recorded AFTER the mark means the slice may be
-    # missing real sends — same unknown presentation, never 'local-only' (the contract /trace
-    # answer applies via egress.cleared_since before trusting the live slice).
+    # missing real sends — the honest unknown, never calm silence (the contract /trace answer
+    # applies via egress.cleared_since before trusting the live slice).
     egress.clear()
     try:
         mark = receipt.mark()
@@ -114,7 +113,7 @@ def test_turn_parts_after_mid_session_clear(isolated_paths):
         egress.record("web_search", "before.example.com")
         mark = receipt.mark()
         egress.clear()
-        assert receipt.turn_parts(mark, 0) == ["local-only"]  # nothing sent since the mark
+        assert receipt.turn_parts(mark, 0) == []  # nothing sent since the mark — calm silence
         egress.record("web_search", "after.example.com", n_bytes=10)
         (label,) = receipt.turn_parts(mark, 0)
         assert "after.example.com" in label

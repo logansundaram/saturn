@@ -51,14 +51,6 @@ def _resolve_env_path() -> Path:
 _ENV_PATH = _resolve_env_path()
 
 
-# --- on_change hooks -------------------------------------------------------
-# Lazy imports so this module stays dependency-free at import time and dodges circular imports.
-def _reset_web_clients() -> None:
-    from tools.web import reset_web_clients
-
-    reset_web_clients()
-
-
 @dataclass(frozen=True)
 class ManagedKey:
     """A known API key the agent uses. `on_change` (optional) drops whatever cached the old value
@@ -76,21 +68,14 @@ class ManagedKey:
 # The registry the /config key command renders and validates against. Add a row to expose a new
 # key. Order matters for detect(): it checks prefixes in registry order, so a more specific
 # prefix must come before a generic one it would also match.
-# (The Anthropic + OpenAI ManagedKeys — prefixes sk-ant- / sk-, on_change=_reset_models — were
-# removed with the cloud-model shelve, 2026-07-03: with no cloud provider to bind, the keys
-# unlocked nothing. Restore those two rows when cloud support returns; a key already sitting in
-# a user's .env is untouched and simply reads as unmanaged until then.)
-KNOWN_KEYS: tuple[ManagedKey, ...] = (
-    ManagedKey(
-        name="TAVILY_API_KEY",
-        label="Tavily",
-        purpose="upgrades the web tools (search/extract/research); optional — they fall back "
-        "to keyless DuckDuckGo + local extraction without it",
-        url="https://app.tavily.com/home",
-        prefix="tvly-",
-        on_change=_reset_web_clients,
-    ),
-)
+# EMPTY today, kept as the seam: no Saturn feature takes an API key anymore — the Anthropic +
+# OpenAI ManagedKeys (prefixes sk-ant- / sk-, on_change=_reset_models) left with the cloud-model
+# shelve (2026-07-03), and the Tavily ManagedKey (prefix tvly-, on_change=_reset_web_clients)
+# left with the API-less web pivot (2026-07-06: web_search is keyless DuckDuckGo, web_extract is
+# local trafilatura — no premium backend to unlock). A key already sitting in a user's .env is
+# untouched, just unmanaged; /config key still stores custom ALL-CAPS env vars for MCP servers
+# (`${VAR}` expansion). Restore rows here when a keyed provider returns.
+KNOWN_KEYS: tuple[ManagedKey, ...] = ()
 
 
 def find(name: str) -> Optional[ManagedKey]:
@@ -104,8 +89,8 @@ def find(name: str) -> Optional[ManagedKey]:
 
 def resolve(token: str) -> Optional[ManagedKey]:
     """Resolve loose user input to a managed key: the env-var name, the provider label, or a
-    unique substring of either, case-insensitively — so `tavily`, `TAVILY_API_KEY`, and `anthro`
-    all work. Returns None on a miss or an ambiguous match."""
+    unique substring of either, case-insensitively — so a label like `anthro` or a full env-var
+    name works. Returns None on a miss or an ambiguous match."""
     t = (token or "").strip().lower()
     if not t:
         return None

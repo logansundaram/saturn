@@ -105,9 +105,81 @@ def test_posture_flags_read_live_config(monkeypatch):
 
 def test_every_receipt_kind_has_a_style():
     # receipt.trust_spans/turn_spans emit exactly these kinds; the styled renderer must know
-    # them all or a trust fact would silently fall back to dim.
+    # them all or a trust fact would silently fall back to dim. (No `local` kind since the
+    # 2026-07-06 deviation-only receipt — a calm local turn emits no trust spans at all.)
     resp = importlib.import_module("tui.ui.response")
-    assert {"local", "sent", "blocked", "gated", "unknown"} <= set(resp._TRUST_STYLE)
+    assert {"sent", "blocked", "gated", "unknown"} <= set(resp._TRUST_STYLE)
+
+
+# --- live plan rendering (the faithful re-render, 2026-07-06) -----------------------------------
+
+def _step(sid, label, status="pending", tool=None, result=None):
+    return {"step_id": sid, "label": label, "status": status,
+            "intended_tool": tool, "result": result, "needs_resolution": False}
+
+
+@pytest.fixture
+def fresh_plan_display():
+    base = importlib.import_module("tui.ui._base")
+    saved = base._plan_seen
+    base._plan_seen = {}
+    yield base
+    base._plan_seen = saved
+
+
+def test_show_plan_rerenders_full_plan_with_tools_on_every_material_change(
+        fresh_plan_display, capsys):
+    from tui import ui
+
+    plan = [_step(1, "read the config", "pending", "read_file"),
+            _step(2, "summarize it", "pending", None)]
+    ui.show_plan(plan)
+    out = capsys.readouterr().out
+    assert "read the config" in out and "::read_file" in out and "summarize it" in out
+
+    # Same plan again: nothing changed, nothing prints.
+    ui.show_plan(plan)
+    assert capsys.readouterr().out == ""
+
+    # A step completing (the execute -> update_plan loop) re-renders the WHOLE plan,
+    # tools included — not a one-line diff.
+    plan2 = [_step(1, "read the config", "done", "read_file", result="ok"),
+             _step(2, "summarize it", "pending", None)]
+    ui.show_plan(plan2)
+    out = capsys.readouterr().out
+    assert "read the config" in out and "::read_file" in out and "summarize it" in out
+
+
+def test_show_plan_folds_the_bare_active_flip(fresh_plan_display, capsys):
+    from tui import ui
+
+    plan = [_step(1, "search the corpus", "pending", "search_knowledge_base")]
+    ui.show_plan(plan)
+    capsys.readouterr()
+
+    # execute stamps the step active in the same delta whose rail line names it — folded.
+    ui.show_plan([_step(1, "search the corpus", "active", "search_knowledge_base")])
+    assert capsys.readouterr().out == ""
+
+    # ...but the terminal status still renders (the flip was recorded, not lost).
+    ui.show_plan([_step(1, "search the corpus", "done", "search_knowledge_base", result="hits")])
+    assert "search the corpus" in capsys.readouterr().out
+
+
+def test_show_plan_renders_a_replan_redraft_even_when_ids_and_statuses_match(
+        fresh_plan_display, capsys):
+    from tui import ui
+
+    ui.show_plan([_step(1, "list the workspace", "done", "list_directory", result="files"),
+                  _step(2, "guess a filename", "pending", "read_file")])
+    capsys.readouterr()
+
+    # replan swaps step 2's label/tool but keeps its id and pending status — the old status-only
+    # diff printed NOTHING here, silently hiding the redraft.
+    ui.show_plan([_step(1, "list the workspace", "done", "list_directory", result="files"),
+                  _step(2, "read notes.md", "pending", "read_file")])
+    out = capsys.readouterr().out
+    assert "read notes.md" in out
 
 
 # --- status-bar key legend ----------------------------------------------------------------------

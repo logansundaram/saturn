@@ -191,6 +191,24 @@ class AgentState(TypedDict):
     # append-reducer; reset per turn.
     gate_events: Annotated[List[dict], operator.add]
 
+    # Plan-review vetoes (2026-07-06): labels of un-run steps the USER removed (drop) or retired
+    # (status skipped/cancelled/blocked) at the plan-review editor this turn. The human's edit
+    # OUTRANKS the engine's self-correction — the same principle as the gate's guarded outcome:
+    # the rectify judge and the replanner receive these as deliberately-out-of-scope
+    # (plan_context.vetoes_block), replan drops exact-label resurrections mechanically, and
+    # synthesize describes them as skipped at the user's request, never as failures. Written
+    # only by plan_gate (review resume, read-merge-write); reset per turn.
+    plan_vetoes: List[str]
+
+    # Interrupt-and-correct: the provenance-tagged answer buffer (core/provenance.py — plain
+    # dicts, gotcha #4: {"text", "spans", "edits", "state", ...}). None until the user freezes
+    # the streaming answer (Esc while it streams); then it carries the frozen/edited text
+    # between `synthesize` and the `answer_gate` edit interrupt, with `state` driving the
+    # routing: "frozen" -> answer_gate, "resume"/"done" -> back into synthesize (continue /
+    # finalize), "complete" on the finished turn (kept so the answer render + trace carry the
+    # human-authored spans). Reset to None per turn.
+    answer_buffer: Optional[dict]
+
     # Tokens/second from the most recent LLM call (execute or synthesizer). Overwritten
     # each LLM step; reset to 0.0 at the start of each turn. Only populated for Ollama
     # models (response_metadata carries eval_count + eval_duration); other providers

@@ -5,9 +5,11 @@ The ambient-trust wave — the trust stack surfacing in the DEFAULT flow, no com
   - per-call egress attribution riding tool_events (nodes/tools._egress_slice + tool_node) and
     its rail leaf (trace._egress_leaf),
   - the gate-decision echo + judge-verdict leaf (trace._render_trust_annotations),
-  - native answer provenance (response._split_sources/_print_sources/_print_taint_warning over
-    a live Glass Box), and the centralized live-slice guard (glassbox.build_live),
-  - the status bar's session token spend.
+  - native answer provenance (response._split_sources/_print_sources over a live Glass Box),
+    and the centralized live-slice guard (glassbox.build_live).
+
+(The taint-warning render and the status bar's session token spend left with the audit-crypto
+shelve / 2026-07-03 runtime trim; their tests went with them.)
 
 All pure/offline; tool "calls" are fakes that record egress without touching the network.
 NOTE: the tui.ui package re-exports flat, so submodules are reached via importlib.
@@ -30,7 +32,10 @@ def _runtime(monkeypatch) -> dict:
     return get_config()._data.setdefault("runtime", {})
 
 
-def test_posture_spans_default_posture_is_calm(monkeypatch):
+def test_posture_spans_default_posture_is_silent(monkeypatch):
+    # Deviation-only (2026-07-06): the safe default posture (gate read_only · local inference ·
+    # quarantine gate · no airgap) renders NO spans — a stock install prints no posture line at
+    # all. Silence means the defaults hold; /privacy carries the affirmative readout.
     rt = _runtime(monkeypatch)
     monkeypatch.setitem(rt, "auto_approve", "read_only")
     monkeypatch.setitem(rt, "airgap", False)
@@ -38,14 +43,7 @@ def test_posture_spans_default_posture_is_calm(monkeypatch):
 
     monkeypatch.setattr(egress, "_inference", lambda: {"all_local": True, "cloud_providers": []})
 
-    spans = receipt.posture_spans()
-    texts = [t for t, _ in spans]
-    kinds = [k for _, k in spans]
-    assert ("gate read_only", "ok") == spans[0]
-    assert ("inference local", "ok") in spans
-    assert ("quarantine gate", "dim") in spans
-    assert "risk" not in kinds  # nothing loud on the safe default posture
-    assert not any(t.startswith("⛓") for t in texts)
+    assert receipt.posture_spans() == []
 
 
 def test_posture_spans_loud_states_lead_and_warn(monkeypatch):
@@ -76,23 +74,33 @@ def test_posture_spans_state_the_effective_quarantine_mode(monkeypatch):
 
     monkeypatch.setattr(egress, "_inference", lambda: {"all_local": True, "cloud_providers": []})
 
-    monkeypatch.setitem(rt, "quarantine", "none")  # invalid → the system runs gated
-    spans = receipt.posture_spans()
-    assert ("quarantine gate", "dim") in spans
-    assert not any(t.startswith("quarantine none") for t, _ in spans)
+    monkeypatch.setitem(rt, "quarantine", "none")  # invalid → the system runs gated (= default,
+    spans = receipt.posture_spans()                # so deviation-only says nothing at all)
+    assert not any(t.startswith("quarantine") for t, _ in spans)
 
     monkeypatch.setitem(rt, "quarantine", "OFF")   # case variant → effective off, styled loud
     spans = receipt.posture_spans()
     assert ("quarantine off", "warn") in spans
 
 
-def test_posture_line_prints_spans_and_pointer(capsys, monkeypatch):
+def test_posture_line_prints_deviations_with_pointer(capsys, monkeypatch):
     mod = importlib.import_module("tui.ui.prompt")
-    out_before = capsys.readouterr()  # drain
+    monkeypatch.setattr(receipt, "posture_spans", lambda: [("⚠ GATE OFF", "risk")])
+    capsys.readouterr()  # drain
     mod.posture_line()
     out = capsys.readouterr().out
-    assert "gate" in out
+    assert "GATE OFF" in out
     assert "/privacy" in out and "/policy" in out
+
+
+def test_posture_line_silent_on_default_posture(capsys, monkeypatch):
+    # Deviation-only: no spans → no line, no pointers — the default install's screen carries no
+    # ambient privacy chrome at all.
+    mod = importlib.import_module("tui.ui.prompt")
+    monkeypatch.setattr(receipt, "posture_spans", lambda: [])
+    capsys.readouterr()  # drain
+    mod.posture_line()
+    assert capsys.readouterr().out == ""
 
 
 def test_posture_line_styles_cover_every_kind():

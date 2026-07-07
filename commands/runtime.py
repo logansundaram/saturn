@@ -1,6 +1,6 @@
 """
 Runtime-inventory commands — what the agent is running on and with, in one module (the /help
-"observability & proof" readouts; consolidated from one-file-per-command 2026-06-11):
+"observability" readouts; consolidated from one-file-per-command 2026-06-11):
 
   /tools    the registered tools + risk tiers
   /models   installed models; bind roles / the embedder / the tier
@@ -24,8 +24,8 @@ Lists every tool the agent can call, each with its approval risk tier
 (read_only, side_effecting, destructive) and a one-line description.
 
 The risk tier drives the approval gate: read_only runs freely, the others prompt (unless
-auto-approve is on). Override a tier for the session with /risk; toggle the gate with
-/autoapprove.
+auto-approve is on). Override a tier for the session with /policy risk; open/close the gate
+with /policy open.
 
 Example:
   /tools
@@ -356,15 +356,15 @@ the local tools (named `mcp_<server>_<tool>`; they show in /tools and the planne
 
 Trust model — a remote tool never picks its own tier. Every MCP tool fails closed to
 `destructive` (always prompts) unless YOU relax it: per server with `risk:` in config.yaml, or
-per tool with /risk <tool> <tier> [--save]. The server's own annotations (read-only etc.) are
-shown here as advisory hints only — they never drive the gate.
+per tool with /policy risk <tool> <tier> [--save]. The server's own annotations (read-only etc.)
+are shown here as advisory hints only — they never drive the gate.
 
   /mcp           server connection status + the remote tools each one added (also: list, ls,
                  status)
   /mcp reload    tear down every connection, re-read `mcp:` from config.yaml, reconnect and
                  re-register the tools (the recovery path after a config edit or a crashed
                  server; session-only /config edits to `mcp.*` apply too). Persisted
-                 /risk --save overrides re-apply; session-only /risk overrides reset to the
+                 /policy risk --save overrides re-apply; session-only overrides reset to the
                  declared tier, like every session-only setting.
 
 Adding a server (config.yaml; secrets via ${VAR} from .env — /config key):

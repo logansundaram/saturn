@@ -1,9 +1,11 @@
 from config import get_config
+from core import continuation, provenance
 from core.plan_context import WRITE_TOOLS
 from core.state import AgentState, incident_steps, unfinished_steps
 from textutil import clip, parse_doc_sources, split_call_result
 from core.llms import (
     get_model,
+    model_id,
     extract_tok_per_sec,
     extract_prompt_tokens,
 )
@@ -192,6 +194,127 @@ def cancel_orphaned_calls(last) -> list:
     ]
 
 
+# ── interrupt-and-correct plumbing (token steering) ───────────────────────────────────────────
+# The answer streams into a provenance-tagged buffer (core/provenance.py). While it streams, the
+# freeze latch (core/continuation.FreezeController — set by Esc via tui/typeahead) is ARMED; a
+# freeze stops the stream cleanly and routes to the answer_gate edit interrupt
+# (route_after_synthesize below). The gate hands back the human-edited buffer and this node runs
+# again: prompt assembly is deterministic, so the re-entry rebuilds the identical history and
+# CONTINUES the edited prefix through the raw-mode continuation primitive
+# (core/continuation.continue_from) — never a fresh answer. The latch arms only for
+# template-supported synthesizer models, so Esc never promises an editor that can't resume.
+
+
+def _token_sink():
+    """The custom-stream writer continuation tokens ride to the UI: the raw-mode stream is not a
+    LangChain chat call, so LangGraph's messages mode never sees it — run_turn streams the
+    "custom" channel instead and forwards `{"answer_token": …}` payloads to the same on_token.
+    No-op outside a streaming graph context (unit tests, /retry's direct node call)."""
+    try:
+        from langgraph.config import get_stream_writer
+
+        writer = get_stream_writer()
+    except Exception:
+        return None
+    if writer is None:
+        return None
+
+    def sink(text: str) -> None:
+        try:
+            writer({"answer_token": text})
+        except Exception:
+            pass
+
+    return sink
+
+
+def _stream_first_pass(llm_input, freeze):
+    """The chat-path stream (tokens reach the UI via LangGraph messages mode, unchanged),
+    polling the freeze latch per chunk. Returns (buffer, frozen, aggregated_message)."""
+    model = get_model("synthesizer")
+    buf = provenance.new_buffer()
+    aggregated = None
+    frozen = False
+    gen = model.stream(llm_input)
+    try:
+        for chunk in gen:
+            aggregated = chunk if aggregated is None else aggregated + chunk
+            text = chunk.content if isinstance(chunk.content, str) else str(chunk.content)
+            if text:
+                buf = provenance.append_model(buf, text)
+            if freeze is not None and freeze.requested():
+                frozen = True  # stop pulling tokens; closing the generator stops the decode
+                break
+    finally:
+        try:
+            gen.close()
+        except Exception:
+            pass
+    if aggregated is None and not frozen:  # a model that streamed nothing — blocking fallback
+        aggregated = model.invoke(llm_input)
+        text = aggregated.content if isinstance(aggregated.content, str) else str(aggregated.content)
+        buf = provenance.append_model(buf, text)
+    return buf, frozen, aggregated
+
+
+def _stream_continuation(model_name: str, llm_input, buf: dict, freeze):
+    """Raw-mode prefix continuation over the SAME assembled history: the model resumes the
+    (human-edited) buffer text as its own in-progress turn. Tokens go out through the custom
+    stream channel; the freeze latch is polled per chunk (the user may freeze again). Returns
+    (buffer, frozen, meta) — meta is the daemon's final stats for the tok/s + context gauges."""
+    sink = _token_sink()
+    stream = continuation.continue_from(model_name, llm_input, buf.get("text", ""))
+    frozen = False
+    try:
+        for text in stream:
+            buf = provenance.append_model(buf, text)
+            if sink is not None:
+                sink(text)
+            if freeze is not None and freeze.requested():
+                frozen = True
+                break
+    finally:
+        stream.close()
+    return buf, frozen, stream.meta
+
+
+def _final_updates(buf: dict, incidents, sources, cancelled, *,
+                   tok_per_sec: float, context_tokens: int,
+                   response_metadata=None, usage_metadata=None) -> dict:
+    """The turn's terminal state delta: the buffer text becomes the recorded AIMessage (with the
+    mechanical incidents note + Sources footer appended — trailers live on the MESSAGE, never in
+    the buffer, so the provenance spans keep indexing the prose exactly), and the buffer itself
+    is kept on state as `complete` so the answer render and the trace carry the human spans."""
+    content = buf.get("text", "")
+
+    # A mechanical incidents note under the answer, mirroring the prompt-level disclosure: the
+    # user sees what could not be completed even when the model soft-pedals it.
+    if incidents and content.strip():
+        content = content.rstrip() + "\n\nNote — the following could not be completed:\n" + "\n".join(
+            f"- {i}" for i in incidents
+        )
+
+    # Append the provenance footer to the RECORDED answer (state/trace/autosave/headless all carry
+    # it). The live token stream has already rendered without it, so the loop re-renders the final
+    # message on finish (ui.ResponseStream.finish(final_text) — see app/repl.py) and the footer
+    # appears there. Skipped when nothing was gathered — a pure-knowledge answer has no sources.
+    footer = sources_footer(sources)
+    if footer and content.strip():
+        content = content.rstrip() + "\n\n" + footer
+
+    msg_kwargs = {"response_metadata": response_metadata or {}}
+    if usage_metadata:
+        msg_kwargs["usage_metadata"] = usage_metadata
+    llm_response = AIMessage(content=content, **msg_kwargs)
+
+    return {
+        "messages": [*cancelled, llm_response],
+        "answer_buffer": {**buf, "state": "complete"},
+        "tok_per_sec": tok_per_sec,
+        "context_tokens": context_tokens,
+    }
+
+
 def synthesize_node(state: AgentState):
     query = state["current_query"]
     context = state["context"]
@@ -244,6 +367,21 @@ def synthesize_node(state: AgentState):
             )
         )
 
+    # Plan-review vetoes: steps the USER removed at the plan-review editor (state["plan_vetoes"],
+    # via plan_gate). The answer must describe that work as skipped at the user's own request —
+    # never as a failure, missing work, or something to apologize for.
+    vetoes = [str(v).strip() for v in state.get("plan_vetoes") or [] if str(v).strip()]
+    if vetoes:
+        llm_input.append(
+            HumanMessage(
+                content="Plan-review note: the user themselves REMOVED these planned steps at "
+                "the plan-review prompt, so they were deliberately not done at the "
+                "user's request. If relevant, describe them as skipped at the user's "
+                "request — never as failures or missing work:\n"
+                + "\n".join(f"- {v}" for v in vetoes)
+            )
+        )
+
     # Incidents: actions that did NOT complete (gate rejections, write-gate skips, errors,
     # cancellations, never-ran steps). The answer must state these plainly — an incident does
     # not cancel the rest of the request, but it must never be presented as done.
@@ -270,45 +408,71 @@ def synthesize_node(state: AgentState):
 
     llm_input.append(HumanMessage(content=f"Current user query:\n{query}"))
 
-    # Stream the answer so the UI can render it token-by-token: LangGraph surfaces these chunks via
-    # stream_mode="messages" (filtered to this node in agent.run_turn -> on_token). We still aggregate
-    # the whole message here and return it, so state["messages"] / the trace / autosave see a complete
-    # AIMessage exactly as the old .invoke() path did — the streaming is purely additive. Ollama
-    # attaches eval/usage metadata to the final aggregated chunk, so the tok/s + context gauges keep
-    # working off it unchanged.
-    model = get_model("synthesizer")
-    aggregated = None
-    for chunk in model.stream(llm_input):
-        aggregated = chunk if aggregated is None else aggregated + chunk
-    if aggregated is None:  # a model that streamed nothing — fall back to a blocking call
-        aggregated = model.invoke(llm_input)
+    # ── interrupt-and-correct: which pass is this? ────────────────────────────────────────────
+    # The prompt assembly above is deterministic, so every re-entry after an answer_gate edit
+    # rebuilds the identical history — only the generation below differs by the buffer's state:
+    #   None / anything else  first pass: chat-path stream into a fresh provenance buffer
+    #   "resume"              continue the (human-edited) buffer text via raw-mode continuation
+    #   "done"                the user accepted the frozen text as the answer — no generation
+    buf = state.get("answer_buffer")
+    buf_state = buf.get("state") if isinstance(buf, dict) else None
+    model_name = model_id("synthesizer")
+    supported = continuation.supports(model_name)
 
-    # Normalize the aggregated chunk to a plain AIMessage so every downstream type matches the old
-    # invoke() path exactly (add_messages, _compact_history's isinstance checks, autosave).
-    content = aggregated.content if isinstance(aggregated.content, str) else str(aggregated.content)
-
-    # A mechanical incidents note under the answer, mirroring the prompt-level disclosure: the
-    # user sees what could not be completed even when the model soft-pedals it.
-    if incidents and content.strip():
-        content = content.rstrip() + "\n\nNote — the following could not be completed:\n" + "\n".join(
-            f"- {i}" for i in incidents
+    if buf_state == "done" or (buf_state == "resume" and not supported):
+        # "resume" without template support only happens if the model was swapped mid-turn —
+        # finalize with the text as it stands rather than fabricate a continuation path.
+        return _final_updates(
+            dict(buf), incidents, sources, cancelled,
+            tok_per_sec=float(state.get("tok_per_sec", 0.0) or 0.0),
+            context_tokens=int(state.get("context_tokens", 0) or 0),
         )
 
-    # Append the provenance footer to the RECORDED answer (state/trace/autosave/headless all carry
-    # it). The live token stream has already rendered without it, so the loop re-renders the final
-    # message on finish (ui.ResponseStream.finish(final_text) — see agent.main) and the footer
-    # appears there. Skipped when nothing was gathered — a pure-knowledge answer has no sources.
-    footer = sources_footer(sources)
-    if footer and content.strip():
-        content = content.rstrip() + "\n\n" + footer
+    # Stream the answer so the UI can render it token-by-token: LangGraph surfaces the chat
+    # path's chunks via stream_mode="messages" (filtered to this node in app/turn.run_turn ->
+    # on_token); the continuation path rides the "custom" channel (_token_sink). We still
+    # aggregate the whole text into the buffer and return a complete AIMessage, so
+    # state["messages"] / the trace / autosave see exactly what the old .invoke() path produced
+    # — the streaming is purely additive. The freeze latch is armed only around the stream
+    # (and only for supported models), so Esc anywhere else keeps its pause/steer meaning.
+    freeze = continuation.get_freeze_controller() if supported else None
+    if freeze is not None:
+        freeze.arm()
+    try:
+        if buf_state == "resume":
+            buf, frozen, meta = _stream_continuation(model_name, llm_input, dict(buf), freeze)
+            tok_per_sec = continuation.extract_tok_per_sec(meta)
+            context_tokens = int(meta.get("prompt_eval_count") or 0)
+            response_metadata = {k: meta[k] for k in
+                                 ("eval_count", "eval_duration", "prompt_eval_count", "done_reason")
+                                 if k in meta}
+            usage_metadata = None
+        else:
+            buf, frozen, aggregated = _stream_first_pass(llm_input, freeze)
+            tok_per_sec = extract_tok_per_sec(aggregated)
+            context_tokens = extract_prompt_tokens(aggregated)
+            response_metadata = getattr(aggregated, "response_metadata", {}) or {}
+            usage_metadata = getattr(aggregated, "usage_metadata", None)
+    finally:
+        if freeze is not None:
+            freeze.disarm()  # also clears a request that landed after the stream ended
 
-    msg_kwargs = {"response_metadata": getattr(aggregated, "response_metadata", {}) or {}}
-    if getattr(aggregated, "usage_metadata", None):
-        msg_kwargs["usage_metadata"] = aggregated.usage_metadata
-    llm_response = AIMessage(content=content, **msg_kwargs)
+    if frozen:
+        # Stop was clean; hand the buffer to the answer_gate edit interrupt
+        # (route_after_synthesize). No message lands yet — the turn is mid-answer.
+        return {"answer_buffer": {**buf, "state": "frozen", "edited": False}}
 
-    return {
-        "messages": [*cancelled, llm_response],
-        "tok_per_sec": extract_tok_per_sec(aggregated),
-        "context_tokens": extract_prompt_tokens(aggregated),
-    }
+    return _final_updates(
+        buf, incidents, sources, cancelled,
+        tok_per_sec=tok_per_sec, context_tokens=context_tokens,
+        response_metadata=response_metadata, usage_metadata=usage_metadata,
+    )
+
+
+def route_after_synthesize(state: AgentState) -> str:
+    """After synthesize: a frozen buffer routes to the answer_gate edit interrupt (the user
+    pressed Esc mid-stream); anything else ends the turn."""
+    buf = state.get("answer_buffer")
+    if isinstance(buf, dict) and buf.get("state") == "frozen":
+        return "answer_gate"
+    return "end"

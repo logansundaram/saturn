@@ -53,7 +53,7 @@ def main():
         sys.exit(0 if render_export(args.replay) else 1)
 
     # --yolo: the CLI view of the gate policy — open the gate up front (threshold ->
-    # destructive) so gated calls never interrupt; same mechanism as /autoapprove. Honored in
+    # destructive) so gated calls never interrupt; same mechanism as /policy open. Honored in
     # BOTH modes: interactively the status bar derives ⚠ GATE OFF straight from the live
     # threshold, so no extra UI wiring is needed.
     if args.yolo:

@@ -2,9 +2,9 @@
 Approval node — the human-in-the-loop safety gate (Phase 2).
 
 Whether a call skips the human is ONE question asked of ONE object: `policy.approves(name,
-risk, args)` (the tier threshold + the /allow shell allowlist — see policy.py). Anything it
+risk, args)` (the tier threshold + the shell allowlist — see policy.py). Anything it
 doesn't approve pauses via a LangGraph `interrupt` so the user can decide per batch or per
-call. The policy is read live each call, so /config, /risk, /allow, /autoapprove and Shift+Tab
+call. The policy is read live each call, so /config, /policy (risk · allow · open) and Shift+Tab
 all apply to the very next gate. Resuming with the user's decision is handled in agent.run_turn.
 
 Under the plan/execute engine (2026-07-03 transplant) the execute node emits exactly ONE call
@@ -70,7 +70,7 @@ def gate_event(
 
 def _apply_always_grants(decision: dict) -> None:
     """Apply the gate's `a(lways)` grants: drop each listed tool to the auto-approved tier for
-    the session (live registry.TOOL_RISK — exactly what /risk <tool> read_only does) and persist
+    the session (live registry.TOOL_RISK — exactly what /policy risk <tool> read_only does) and persist
     any scoped run_shell prefix grants through the one policy store (policy.grant_shell_prefix:
     screen -> coverage check with the one matcher -> add).
 

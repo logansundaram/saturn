@@ -31,19 +31,23 @@ def _did_you_mean(cfg, key: str) -> str:
 
 
 def _list_keys() -> None:
-    """The numbered key listing — also the menu the set-picker selects from."""
+    """The numbered key listing — also the menu the set-picker selects from. The managed
+    registry is EMPTY today (no Saturn feature takes an API key: web search is keyless since
+    2026-07-06, inference is local) — the listing says so and points at the one remaining use,
+    custom env vars (MCP servers' `${VAR}` expansion)."""
     import env_keys
 
     _print("  API keys (stored in .env, applied live, masked here):")
+    if not env_keys.KNOWN_KEYS:
+        _print("    no managed keys — no Saturn feature takes an API key (web search is keyless,")
+        _print("    inference is local). Custom env vars (e.g. for MCP servers' ${VAR}) still work:")
     for i, k in enumerate(env_keys.KNOWN_KEYS, start=1):
         state = env_keys.mask(env_keys.get(k.name)) if env_keys.is_set(k.name) else "not set"
         _print(f"    {i}. {k.name:<20} {state}")
         _print(f"       {k.label} — {k.purpose}")
         if k.url:
             _print(f"       get one: {k.url}")
-    _print("  set:   /config key set            pick from this list, then paste the value")
-    _print("         /config key tavily <value> names are fuzzy; a pasted tvly-/sk-ant- value")
-    _print("                                    even picks its own key")
+    _print("  set:   /config key set MY_VAR <value>   (an ALL-CAPS name is a custom env var)")
     _print("  clear: /config key unset <name>")
 
 
@@ -56,9 +60,9 @@ def _resolve_key_name(token: str) -> str | None:
     key = env_keys.resolve(token)
     if key:
         return key.name
-    if token == token.upper():  # deliberately-typed env-var name (e.g. OPENAI_API_KEY)
+    if token == token.upper():  # deliberately-typed env-var name (e.g. MY_SERVICE_TOKEN)
         return token
-    known = ", ".join(k.label.lower() for k in env_keys.KNOWN_KEYS)
+    known = ", ".join(k.label.lower() for k in env_keys.KNOWN_KEYS) or "none managed"
     _print(f"  no known key matches {token!r} (known: {known}).")
     _print("  to store a custom env var, type its name in ALL CAPS: /config key set MY_VAR <value>")
     return None
@@ -75,6 +79,8 @@ def _set_key(args: list[str]) -> None:
 
     if not args:
         _list_keys()
+        if not env_keys.KNOWN_KEYS:
+            return  # nothing to pick from — the listing already explained what still works
         sel = ui.ask("which key — enter # (or blank to cancel) » ")
         if not sel:
             _print("  (cancelled)")
@@ -146,7 +152,7 @@ def _config_keys(ctx, args):
         return
 
     # Shorthand — `set` is implied: a pasted secret sets its own key; a key name alone shows it,
-    # with a value sets it. `/config key tavily tvly-…` is the whole flow.
+    # with a value sets it. (Inert while KNOWN_KEYS is empty; kept for a managed key's return.)
     if env_keys.detect(args[0]):
         _set_key(args)
         return
@@ -185,18 +191,17 @@ and the daemon is up, it offers — y/N, default no — to run the `ollama pull`
 live progress. Runs automatically on first launch; re-run any time with /config setup.
 
 API keys live in .env, not config.yaml, so they have their own subcommand (already persistent):
-  /config key                       list known keys and whether each is set (masked)
-  /config key set                   pick a key from the list, then paste its value
-  /config key tavily <value>        set by fuzzy name (label, env var, or unique substring)
-  /config key set tvly-abc123       a pasted secret picks its own key by prefix
+  /config key                       list managed keys and whether each is set (masked)
+  /config key set MY_VAR <value>    store a custom env var (ALL-CAPS name), e.g. for an MCP
+                                    server's ${VAR} expansion
   /config key unset <name>          remove a key from .env and the environment (clear, or any
                                     removal verb — remove/rm/delete/del/forget/drop — works)
-  /config key tavily                show one key (masked)
+  /config key get <name>            show one key (masked)
 
-Known keys: TAVILY_API_KEY (web tools; optional — they fall back to keyless search without it).
-Add more by registering a ManagedKey in env_keys.py. A custom (unmanaged) env var can still be
-stored by typing its name in ALL CAPS. (The Anthropic/OpenAI keys left with the cloud-model
-shelve, 2026-07-03 — an already-set key in .env is untouched, just unmanaged.)
+No Saturn feature takes an API key today: web search is keyless (DuckDuckGo) and extraction/
+inference are local — the managed-key registry (env_keys.py) is empty. (The Anthropic/OpenAI
+keys left with the cloud-model shelve, 2026-07-03; the Tavily key left with the API-less web
+pivot, 2026-07-06 — an already-set key in .env is untouched, just unmanaged.)
 
 Model/tier keys rebuild the cached models on next use; an embedder change re-embeds the corpus.
 To change model bindings specifically, /models is the friendlier front end.
@@ -206,7 +211,7 @@ Examples:
   /config setup                        check the install (Ollama, models, keys)
   /config runtime.max_iterations       read one key
   /config runtime.max_iterations 12 --save  set it and persist to config.yaml
-  /config key tavily tvly-...          add an API key (fuzzy name, or just /config key set)
+  /config key set MY_VAR <value>       store a custom env var (e.g. for an MCP server)
   /config reload                       re-read config.yaml from disk
 """,
 )
@@ -242,6 +247,9 @@ def _config(ctx, args):
         for name in ("documents", "workspace", "memory", "db_sqlite"):
             _print(f"    {name:<10}: {cfg.get('paths.' + name)}")
         _print("  api keys (.env):")
+        if not env_keys.KNOWN_KEYS:
+            _print("    none needed — web search is keyless, inference is local (/config key "
+                   "for custom vars)")
         for k in env_keys.KNOWN_KEYS:
             _print(f"    {k.name:<20}: {'set' if env_keys.is_set(k.name) else 'not set'}")
         _print("  (workspace & memory resolve live; documents/db_sqlite apply on re-ingest/restart)")
@@ -349,14 +357,15 @@ def _persist_key(cfg, key: str) -> None:
 
 # Why a missing OPTIONAL key is fine, per key (default: the active tier simply doesn't bind the
 # provider). Display notes only — which keys are REQUIRED is derived live in _required_keys.
-_OPTIONAL_KEY_NOTES = {"TAVILY_API_KEY": "keyless fallback active"}
+# Empty since the API-less web pivot (2026-07-06); repopulate alongside env_keys.KNOWN_KEYS.
+_OPTIONAL_KEY_NOTES: dict[str, str] = {}
 
 
 def _required_keys(cfg) -> set[str]:
     """The env keys the ACTIVE tier genuinely needs. With cloud model support SHELVED
-    (2026-07-03) no binding can require a key — every managed key is optional (Tavily has a
-    keyless fallback). Kept as the seam: when cloud returns, this re-derives one required key
-    per cloud provider bound to a role (via the restored llms provider→key table)."""
+    (2026-07-03) and the web tools API-less (2026-07-06) nothing can require a key. Kept as the
+    seam: when cloud returns, this re-derives one required key per cloud provider bound to a
+    role (via the restored llms provider→key table)."""
     return set()
 
 
@@ -506,8 +515,12 @@ def _config_doctor(ctx) -> None:
             _print(f"        MISSING  {m}   -> run `ollama pull {m}`")
 
     # API keys — the fix arrow only for keys the active tier genuinely needs (see _key_line).
+    # The managed registry is empty today (keyless web, local inference) — one honest line
+    # instead of a bare header, so a fresh install's first screen never hints at keys to go get.
     _print("    api keys (.env)")
     required = _required_keys(cfg)
+    if not env_keys.KNOWN_KEYS:
+        _print("        ok       none needed (web search is keyless; inference is local)")
     for k in env_keys.KNOWN_KEYS:
         _print(f"        {_key_line(k.name, env_keys.is_set(k.name), required)}")
 

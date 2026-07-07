@@ -439,7 +439,7 @@ def _export(ctx, args):
 
 # --- /trace replay · saturn --replay -----------------------------------------------------------
 # Render an exported run record OFFLINE, through the exact same drill-down view /trace uses on the
-# live DB — what makes an export not just verifiable but SHAREABLE: attach a .json to a bug report
+# live DB — what makes an export not just inspectable but SHAREABLE: attach a .json to a bug report
 # and the recipient replays the full rail (plan, reasoning, tool I/O, answer) with no database.
 
 def export_rows(payload: dict):
@@ -641,10 +641,11 @@ def _render_why(ui, run, events, calls):
         _print("    (no tools ran — answered from the model's own knowledge + context)")
         _print("")
 
-    # Verification — ALWAYS printed: the negative case is information too (the Glass Box renders
-    # it, and why must match). Silence here used to read as "maybe checked, maybe not" — a trust
-    # surface can't leave that ambiguous.
-    _print("  verification")
+    # Self-correction — ALWAYS printed: the negative case is information too (the Glass Box's
+    # "rectified" row says the same thing, and the two must agree). Silence here used to read as
+    # "maybe checked, maybe not" — a trust surface can't leave that ambiguous. Named for what the
+    # state records (rectify verdicts); "verification" overpromised — nothing verifies the answer.
+    _print("  self-correction")
     if verdicts:
         for v in verdicts[-3:]:
             _print(f"    {_clip(v, 160)}")

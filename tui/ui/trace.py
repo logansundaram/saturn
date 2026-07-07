@@ -173,7 +173,29 @@ def _render_trust_annotations(node: str, delta: dict) -> None:
       - under `approval`, the echo of each HUMAN gate decision (state["gate_events"]): the
         interactive prompt scrolls away with the turn, so this leaf is the transcript's
         permanent record of who allowed what — green for approved, red for rejected, with the
-        quarantine escalation named when one forced the prompt."""
+        quarantine escalation named when one forced the prompt;
+      - under `synthesize`/`answer_gate`, interrupt-and-correct: the freeze (the user stopped
+        the streaming answer) and the correction they typed (from the buffer's edit records) —
+        a human edit mid-generation is a first-class auditable event, echoed permanently here
+        exactly like a gate decision."""
+    buf = delta.get("answer_buffer")
+    if node == "synthesize" and isinstance(buf, dict) and buf.get("state") == "frozen":
+        _node_leaf("✂ you froze the answer mid-generation — editing", "cyan")
+    if node == "answer_gate" and isinstance(buf, dict):
+        edits = [e for e in buf.get("edits") or [] if isinstance(e, dict)]
+        if buf.get("edited") and edits:
+            e = edits[-1]
+            parts = []
+            if e.get("cut"):
+                parts.append(f'cut "{e["cut"]}"')
+            if e.get("typed"):
+                parts.append(f'typed "{e["typed"]}"')
+            what = " · ".join(parts) or "edited the text"
+            _node_leaf(_truncate(f"✎ you corrected the answer — {what}", _REASONING_CAP), "cyan")
+        else:
+            _node_leaf("↩ answer resumed unchanged", _DIM)
+        if buf.get("state") == "done":
+            _node_leaf("✓ you accepted the text as the final answer", "cyan")
     if node == "rectify":
         reason = " ".join(str(delta.get("reasoning") or "").split())
         if delta.get("rectify"):
@@ -435,11 +457,15 @@ def show_run(run, events) -> None:
     saved_seen = _base._plan_seen
     _base._plan_seen = {}  # let show_plan diff afresh over this run's plan events
     prev = start_dt
+    corrected_buf = None  # the turn's completed answer buffer, when the user froze + edited it
     try:
         for _seq, ts, node, _summary, data in events:
             if node == "plan_gate":
                 continue
             delta = decode_json(data, {})
+            b = delta.get("answer_buffer")
+            if isinstance(b, dict) and b.get("state") == "complete" and b.get("edits"):
+                corrected_buf = b  # replay re-shows the human edits in place (below)
             cur = parse_ts(ts)
             dur = (cur - prev).total_seconds() if (cur and prev) else 0.0
             if cur:
@@ -483,9 +509,24 @@ def show_run(run, events) -> None:
             # column 0. Rich's wrap preserves intra-line leading whitespace (code blocks / nested
             # lists keep their shape), and the measure IS the live answer's _BODY_WIDTH — imported,
             # not copied, so tuning it can never leave the replay wrapping at a stale width.
-            from .response import _BODY_WIDTH
+            from .response import _BODY_WIDTH, _HUMAN_STYLE
 
-            _console.print(Padding(Text(response_text, style=_DIM), (0, 0, 0, 2)),
+            body = Text(response_text, style=_DIM)
+            # Interrupt-and-correct: re-show the human-authored spans in place, exactly as the
+            # live answer marked them (the recorded prose is the buffer text plus mechanical
+            # trailers, so the character offsets still index it; clamp defends the write-time
+            # response cap). Only when the buffer text actually prefixes the record — never
+            # mark by guesswork.
+            if corrected_buf is not None:
+                prose = str(corrected_buf.get("text") or "").rstrip()
+                if prose and response_text.startswith(prose):
+                    for sp in corrected_buf.get("spans") or []:
+                        if sp.get("author") == "human":
+                            s = min(int(sp.get("start", 0)), len(response_text))
+                            e = min(int(sp.get("end", 0)), len(response_text))
+                            if e > s:
+                                body.stylize(_HUMAN_STYLE, s, e)
+            _console.print(Padding(body, (0, 0, 0, 2)),
                            width=min(_term_width(), _BODY_WIDTH))
         else:
             import textwrap

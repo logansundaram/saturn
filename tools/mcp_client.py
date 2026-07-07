@@ -4,7 +4,7 @@ MCP client — remote Model Context Protocol tools inside the trust envelope (ro
 Servers are declared in config.yaml under `mcp.servers:` (stdio command, or a streamable-HTTP/SSE
 url). At startup, registry.py calls `startup()` here: each enabled server is connected, its tools
 listed, and every remote tool registered through `toolspec.register_tool_object` as a LangChain
-StructuredTool — so the planner catalog, the native tool binding, /tools, /risk, the trace, and
+StructuredTool — so the planner catalog, the native tool binding, /tools, /policy risk, the trace, and
 above all the APPROVAL GATE treat a remote tool exactly like a local one. Nothing downstream knows
 or cares that the implementation lives in another process.
 
@@ -14,8 +14,8 @@ Trust model (the same hard line as the deferred /learn design):
     server claiming "read-only" is exactly the attack the gate exists to stop.
   - Every MCP tool therefore fails closed to `destructive` (always prompts). The USER may relax
     that: per server via `risk:` in their own config.yaml, or per tool via the existing
-    `/risk <tool> <tier> [--save]` — both are user decisions, like /allow.
-  - registry.py runs `startup()` BEFORE applying the persisted /risk overrides, so a saved
+    `/policy risk <tool> <tier> [--save]` — both are user decisions, like /policy allow.
+  - registry.py runs `startup()` BEFORE applying the persisted /policy risk overrides, so a saved
     override on an MCP tool name survives restarts like any other.
 
 Sync/async bridge: the whole agent loop is synchronous (tool_node calls `tool.invoke(args)`),
@@ -479,7 +479,7 @@ def call_tool(server: str, tool: str, args: dict) -> str:
         # Redaction parity with the cloud-LLM boundary (llms._CloudBoundaryModel): tool args
         # cross the wire too. `warn` counts secret-like values into the egress event; `redact`
         # replaces them in the args actually sent. The gate may have shown the human the call,
-        # but a tier relaxed via /risk sends without a prompt — the boundary itself can't be blind.
+        # but a tier relaxed via /policy risk sends without a prompt — the boundary itself can't be blind.
         redactions = 0
         if redaction.active():
             if redaction.mode() == "redact":
@@ -576,7 +576,7 @@ def _result_text(result) -> str:
 def startup() -> None:
     """Connect every enabled `mcp.servers` entry (in parallel, bounded by `mcp.connect_timeout`)
     and register each connected server's tools. Called by registry.py at import time, BEFORE the
-    persisted /risk overrides apply — so a saved override on an MCP tool name works like any
+    persisted /policy risk overrides apply — so a saved override on an MCP tool name works like any
     other. No servers configured -> nothing happens (no thread, no cost)."""
     with _LOCK:
         specs = _parse_specs(_PROBLEMS)
@@ -608,7 +608,7 @@ def startup() -> None:
 def reload() -> list[str]:
     """Full refresh for /mcp reload: drop every registered MCP tool from the live registry views,
     tear down all connections, re-read `mcp:` from config, reconnect, re-register, re-apply the
-    persisted /risk overrides, and rebind the tool model. Returns the new problem list.
+    persisted /policy risk overrides, and rebind the tool model. Returns the new problem list.
 
     Imports registry/llms/policy lazily — they are fully initialised by the time a slash
     command can run, and importing them at module level would be circular (registry imports us)."""

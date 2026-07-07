@@ -16,7 +16,8 @@ from core.state import AgentState
 # loop nodes
 from nodes.ground import grounding_node
 from nodes.plan import plan_node
-from nodes.synthesize import synthesize_node
+from nodes.synthesize import synthesize_node, route_after_synthesize
+from nodes.answer_gate import answer_gate_node
 from nodes.update_plan import update_plan_node
 from nodes.execute import execute_node, route_after_execute
 from nodes.rectify import rectify_node, route_after_rectify
@@ -53,6 +54,14 @@ def build_agent():
     which case it `interrupt()`s so the user can inspect/edit the plan and resume (see
     nodes/plan_gate.py). Compiled with a SqliteSaver checkpointer, which both persists
     sessions and is what lets the approval / plan-review `interrupt`s pause and resume.
+
+    Interrupt-and-correct (token steering) adds one loop at the tail: `synthesize` streams the
+    answer into a provenance-tagged buffer; a mid-stream freeze (Esc) routes to `answer_gate`,
+    which `interrupt()`s so the user can edit the frozen text, then hands the corrected buffer
+    back to `synthesize` — which CONTINUES the edited prefix (raw-mode continuation,
+    core/continuation.py) or finalizes it:
+
+        synthesize ── frozen ──> answer_gate ──> synthesize ── … ──> END
     """
     builder = StateGraph(AgentState)
 
@@ -66,6 +75,7 @@ def build_agent():
     builder.add_node("rectify", rectify_node)
     builder.add_node("replan", replan_node)
     builder.add_node("synthesize", synthesize_node)
+    builder.add_node("answer_gate", answer_gate_node)
 
     builder.add_edge(START, "ground")
     builder.add_edge("ground", "plan")
@@ -94,7 +104,15 @@ def build_agent():
         {"replan": "replan", "plan_gate": "plan_gate", "synthesize": "synthesize"},
     )
     builder.add_edge("replan", "plan_gate")
-    builder.add_edge("synthesize", END)
+    # The interrupt-and-correct tail: a frozen answer buffer detours through the answer_gate
+    # edit interrupt and re-enters synthesize (which continues the edited prefix); an
+    # unfrozen pass ends the turn.
+    builder.add_conditional_edges(
+        "synthesize",
+        route_after_synthesize,
+        {"answer_gate": "answer_gate", "end": END},
+    )
+    builder.add_edge("answer_gate", "synthesize")
 
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     checkpointer = SqliteSaver(conn)

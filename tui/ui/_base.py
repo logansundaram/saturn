@@ -100,7 +100,9 @@ def verbosity() -> str:
 # writes wouldn't propagate. reset_turn (statusbar) seeds them; show_node (trace) / show_plan (plan)
 # / the gates (approval) advance them.
 _t_last = None
-_plan_seen: dict = {}
+# The last-rendered plan fingerprint (plan.show_plan's list of (label, status, tool) tuples);
+# reset to {} (the falsy "nothing seen" marker) by reset_turn and show_run's replay bracket.
+_plan_seen: "dict | list" = {}
 _trace_started = False  # False until the turn's first node line prints (gates one lead-in blank)
 
 # ── live status-bar state (shared with response/_StatusBar) ───────────────────

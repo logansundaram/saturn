@@ -51,7 +51,9 @@ from core.plan_context import (
     original_request,
     plan_txt,
     results_block,
+    vetoes_block,
 )
+from core.plan_ops import is_review_retirement
 from core.state import AgentState
 from core.structured import (
     RectifyBool,
@@ -113,7 +115,15 @@ def rectify_node(state: AgentState):
     #    report it, do not retry or substitute. Checked BEFORE the replan budget (branch order
     #    is load-bearing, gotcha #8): a rejection recorded after the budget is spent must still
     #    cancel the remaining steps, not leave them mislabeled "never ran".
-    if last_done is not None and last_done.get("status") in ("skipped", "blocked"):
+    #    EXEMPT: a step the USER retired at the plan-review editor (plan_ops' review stamp,
+    #    2026-07-06) — that is a single-step veto ("don't do this one, continue the rest"),
+    #    not a mid-execution rejection ending the run; the veto itself rides
+    #    state["plan_vetoes"] into the judge/replan prompts so it is never reinstated.
+    if (
+        last_done is not None
+        and last_done.get("status") in ("skipped", "blocked")
+        and not is_review_retirement(last_done)
+    ):
         diag.log(f"rectify_node : {time.perf_counter() - start:.4f}s (guarded -> cancel)")
         return {
             "rectify": False,
@@ -217,14 +227,17 @@ def rectify_node(state: AgentState):
         }
 
     # 5. The leftover ambiguity: the judge decides (incl. the groundedness rule — a
-    #    current/external-facts request that never searched the web gets rectify=true).
+    #    current/external-facts request that never searched the web gets rectify=true). The
+    #    user's plan-review vetoes ride along: work the human removed at review is deliberately
+    #    out of scope, never a gap for the judge to repair.
+    msgs = [RECTIFY_SYS, HumanMessage(content=original_request(state))]
+    veto_note = vetoes_block(state)
+    if veto_note:
+        msgs.append(HumanMessage(content=veto_note))
+    msgs.append(HumanMessage(content=f"Current plan:\n{plan_txt(plan)}"))
     decision = structured(
         "judge",
-        [
-            RECTIFY_SYS,
-            HumanMessage(content=original_request(state)),
-            HumanMessage(content=f"Current plan:\n{plan_txt(plan)}"),
-        ],
+        msgs,
         RectifyBool,
         RECTIFY_FORMAT,
         RECTIFY_SHAPE,

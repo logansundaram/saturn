@@ -82,9 +82,9 @@ def test_clear():
 
 
 def test_summary_carries_cleared_marker():
-    """summary() must say when the counts are since-the-clear: the signed trust report embeds
-    this dict verbatim as egress_session, and without the marker a post-clear report would
-    attest 'sent: 0' over a session that sent (the per-turn cleared_since hazard, ledger-wide)."""
+    """summary() must say when the counts are since-the-clear: /privacy egress renders this
+    dict, and without the marker a post-clear readout would claim 'sent: 0' over a session
+    that sent (the per-turn cleared_since hazard, ledger-wide)."""
     egress.record("web_search", "h", "x")
     assert egress.summary()["cleared"] is False  # fresh session (fixture resets _CLEARED_AT)
     egress.clear()

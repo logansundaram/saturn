@@ -38,14 +38,14 @@ def parse_ts(ts):
 # Write-time truncation marker for the recorded final answer (end_run). The stable PREFIX is the
 # detection key — the cap value is appended after it so the stored row is self-describing even if
 # the cap changes between recording and reading. One constant + one detector, shared by every
-# reader (show_run's label, /glass #id, the export's answer attestation), so they can't drift.
+# reader (show_run's label, the /glass #id reconstruction), so they can't drift.
 _RESPONSE_TRUNCATION_MARKER = "… [recorded answer truncated at "
 
 
 def response_truncated(text) -> bool:
     """True when a recorded `runs.response` carries end_run's write-time truncation marker.
-    Readers treat a marked row as INCOMPLETE (show_run says "truncated", the Glass Box /
-    attestation pass complete=False). Historical rows cut at the old 2000-char cap carry no
+    Readers treat a marked row as INCOMPLETE (show_run says "truncated", the Glass Box
+    reconstruction passes complete=False). Historical rows cut at the old 2000-char cap carry no
     marker and read False here — absent-as-unknown (the gotcha #7 convention): never try to
     infer truncation for legacy rows."""
     return _RESPONSE_TRUNCATION_MARKER in str(text or "")

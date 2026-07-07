@@ -21,7 +21,7 @@ paths:
   db_sqlite: database/db.sqlite        # SqliteSaver checkpoints + trace
   sessions: database/sessions          # saved conversations (/save and /load)
   snapshots: database/snapshots        # per-turn pre-write file snapshots (/undo)
-  permissions: database/permissions.json  # persisted /risk overrides + /allow shell prefixes
+  permissions: database/permissions.json  # persisted /policy risk overrides + allow prefixes
   exports: logging/exports             # /trace export run records (audit artifacts)
 
 # ---------------------------------------------------------------------------
@@ -87,16 +87,12 @@ runtime:
   receipt: true
 
 # ---------------------------------------------------------------------------
-# Web tools (tools/web.py). Key-optional, local-first.
-#   provider: which search backend to use.
-#     auto       -> prefer Tavily when TAVILY_API_KEY is present, else keyless DuckDuckGo;
-#                   also falls back to DuckDuckGo automatically on a Tavily quota/key error.
-#     tavily     -> always use Tavily (search + extract). Requires a key.
-#     duckduckgo -> always keyless: DuckDuckGo search + local trafilatura extract. No key.
-#   web_extract is local (trafilatura) under auto/duckduckgo regardless — no API call.
+# Web tools (tools/web.py). API-less by design (2026-07-06): web_search is keyless DuckDuckGo,
+# web_extract is a local fetch + trafilatura extraction — no provider key, no account, ever.
+# (The old `provider:` knob and the Tavily backend are gone; a config.yaml still carrying
+# `provider:` loads fine — unknown keys are ignored.)
 # ---------------------------------------------------------------------------
 web:
-  provider: auto
   max_results: 5            # results returned per web_search
   request_timeout: 30       # seconds before an http_request call is killed (mirrors shell.timeout)
 
@@ -128,7 +124,7 @@ rag:
 #     url/headers                       (http/sse: the remote endpoint)
 #     risk: read_only|side_effecting|destructive   default tier for the server's tools.
 #           OMITTED or invalid -> destructive (always prompts). This is YOUR trust declaration —
-#           the server's own annotations never drive the gate. Per-tool: /risk <tool> <tier> --save.
+#           the server's own annotations never drive the gate. Per-tool: /policy risk <tool> <tier> --save.
 #     enabled: false                    (keep the entry, skip the connection)
 #   ${VAR} in url/args/env/headers expands from the environment / .env (/config key), so secrets
 #   never sit in this file. Tools register as `mcp_<server>_<tool>`.

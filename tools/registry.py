@@ -18,12 +18,13 @@ import tools.web  # noqa: E402,F401
 import tools.files  # noqa: E402,F401
 import tools.knowledge  # noqa: E402,F401  (search_knowledge_base + remember/recall)
 import tools.shell  # noqa: E402,F401
+import tools.interaction  # noqa: E402,F401  (ask_user — the mid-run question to the human)
 
 # Remote MCP tools (roadmap #12): connect the servers declared under `mcp.servers` in config.yaml
 # and register each remote tool through toolspec.register_tool_object, so they land in the same
 # collections as the local tools above — same gate, same /tools, same planner catalog. Runs HERE,
 # after the local registrations (collisions resolve in the local tools' favour) and BEFORE the
-# persisted /risk overrides below (so a saved override on an MCP tool name applies). Every MCP
+# persisted /policy risk overrides below (so a saved override on an MCP tool name applies). Every MCP
 # tool fails closed to `destructive` unless the user's own config/overrides relax it. No servers
 # configured -> no-op. Failures are recorded (mcp_client.problems(), warned at startup) — never
 # raised, so a bad server entry can't take the app down.
@@ -34,15 +35,15 @@ mcp_client.startup()
 # --- collected views (established public names) ---------------------------------------------
 tool = _TOOLS                      # the active tool list (bound to the agent, listed by the planner)
 tools_by_name = {t.name: t for t in tool}
-TOOL_RISK = _RISK                  # name -> risk tier; mutable — the /risk command edits this live
+TOOL_RISK = _RISK                  # name -> risk tier; mutable — /policy risk edits this live
 RETRIEVAL_TOOLS = _RETRIEVAL       # names whose results are recorded as retrieved documents
 
 # The tiers as declared at definition time, frozen BEFORE the persisted overrides apply — this is
-# what `/risk <tool> reset` restores to.
+# what `/policy risk <tool> reset` restores to.
 DECLARED_RISK = dict(_RISK)
 
-# Apply the user's persisted /risk overrides (policy.py — the gate-policy object) over the
-# declared tiers, so a `/risk … --save` decision survives a restart. Stale names (a removed tool)
+# Apply the user's persisted /policy risk overrides (policy.py — the gate-policy object) over the
+# declared tiers, so a `/policy risk … --save` decision survives a restart. Stale names (a removed tool)
 # and invalid tiers are ignored — the declared tier, which fails closed, stays in effect.
 from tools.toolspec import RISK_TIERS as _RISK_TIERS  # noqa: E402
 from trust import policy as _policy  # noqa: E402

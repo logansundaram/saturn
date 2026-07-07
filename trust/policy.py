@@ -7,11 +7,14 @@ What used to be five separate gate-relaxation mechanisms are now views over this
   runtime.auto_approve   the policy's tier threshold — tools AT OR BELOW it run without
                          prompting. The baseline lives in config.yaml like every other knob;
                          `tier()`/`set_tier()` are the read/write path (Shift+Tab cycles it).
-  /autoapprove (/yolo)   a view that sets the threshold to `destructive` (gate fully open)
+  /policy open           a view that sets the threshold to `destructive` (gate fully open)
                          and restores the previous threshold on `off` — not a separate switch.
   --yolo (headless)      the same view, applied at process start.
-  /risk                  edits a TOOL's tier (live in registry.TOOL_RISK; persisted here).
-  /allow                 edits the run_shell prefix allowlist (persisted here).
+  /policy risk           edits a TOOL's tier (live in registry.TOOL_RISK; persisted here).
+  /policy allow          edits the run_shell prefix allowlist (persisted here).
+
+(The legacy top-level command spellings /risk, /allow, /autoapprove were CUT 2026-07-06 —
+_RENAMED pointers cover the muscle memory; the mechanisms themselves are unchanged.)
 
 Durable state is one small, versionable JSON file at `config.path("permissions")`
 (database/permissions.json): `risk_overrides` ({tool: tier}, applied over declared tiers at
@@ -70,7 +73,7 @@ def auto_approves(risk: str) -> bool:
     return get_config().auto_approves(risk)
 
 
-# /autoapprove is not a sixth mechanism — it's this: threshold = destructive (every tier passes).
+# /policy open is not a sixth mechanism — it's this: threshold = destructive (every tier passes).
 # Remember what the threshold was so `off` restores it instead of guessing.
 _tier_before_gate_off: "str | None" = None
 
@@ -81,7 +84,7 @@ def gate_off() -> bool:
 
 
 def set_gate_off(off: bool) -> None:
-    """The /autoapprove · --yolo view: open the gate by raising the threshold to `destructive`;
+    """The /policy open · --yolo view: open the gate by raising the threshold to `destructive`;
     close it by restoring the prior threshold (read_only if none was recorded — fail closed)."""
     global _tier_before_gate_off
     if off:
@@ -99,7 +102,7 @@ def set_gate_off(off: bool) -> None:
 def approves(name: str, risk: str, args: "dict | None" = None) -> bool:
     """Whether a tool call runs WITHOUT facing the human. The approval node asks this for every
     pending call; the only two ways through are the tier threshold and (for run_shell only) a
-    user-persisted /allow prefix on the exact command."""
+    user-persisted /policy allow prefix on the exact command."""
     if auto_approves(risk):
         return True
     if name == "run_shell":
@@ -117,7 +120,7 @@ def _path():
 
 # Set on the first corrupt-policy-file load this process (None = the file loaded cleanly or
 # simply doesn't exist yet). The gate itself must never raise — it degrades to safe defaults —
-# but a silent reset drops user-RAISED /risk overrides below the posture the operator believes
+# but a silent reset drops user-RAISED /policy risk overrides below the posture the operator believes
 # is in force, so the degradation must be LOUD somewhere: agent.main reads this once at startup
 # and warns (the mcp_client.problems() pattern; trust/ never imports tui, so the user-visible
 # warning lives at the surface, not here).
@@ -152,8 +155,8 @@ def _load() -> dict:
         if _LOAD_PROBLEM is None:
             _LOAD_PROBLEM = (
                 f"gate policy file could not be read ({path}): {exc} — running with defaults; "
-                "persisted /risk overrides and /allow prefixes are NOT in effect (file left "
-                "in place; restart to retry)"
+                "persisted risk overrides and shell-allow prefixes are NOT in effect (file "
+                "left in place; restart to retry)"
             )
             diag.log(f"policy: {_LOAD_PROBLEM}")
     except ValueError as exc:
@@ -167,7 +170,7 @@ def _load() -> dict:
                 diag.log(f"policy: could not preserve corrupt policy file: {move_exc}")
             _LOAD_PROBLEM = (
                 f"gate policy file unreadable ({path}): {exc} — running with defaults; "
-                f"persisted /risk overrides and /allow prefixes are NOT in effect{saved}"
+                f"persisted risk overrides and shell-allow prefixes are NOT in effect{saved}"
             )
             diag.log(f"policy: {_LOAD_PROBLEM}")
     data.setdefault("risk_overrides", {})
@@ -187,7 +190,7 @@ def _save(data: dict) -> None:
     os.replace(tmp, path)
 
 
-# --- risk-tier overrides (/risk … --save) -----------------------------------------------
+# --- risk-tier overrides (/policy risk … --save) ----------------------------------------
 
 
 def risk_overrides() -> dict:
@@ -212,7 +215,7 @@ def clear_risk_override(tool: str) -> bool:
     return True
 
 
-# --- run_shell prefix allowlist (/allow) ------------------------------------------------
+# --- run_shell prefix allowlist (/policy allow) -----------------------------------------
 
 
 def shell_allow() -> list[str]:
@@ -300,7 +303,7 @@ def shell_allowed(command: str) -> "str | None":
 
 def grant_shell_prefix(prefix: str, command: str, *, dry_run: bool = False) -> "tuple[bool, str]":
     """The gate's scoped always-allow grant: validate `prefix` against `command` through the one
-    matcher and (unless `dry_run`) persist it to the /allow store. Returns (command now exempt?,
+    matcher and (unless `dry_run`) persist it to the /policy allow store. Returns (command now exempt?,
     disclosure message — the gate UI prints it verbatim).
 
     The UI calls this with dry_run=True at decision time, while the approval interrupt is still

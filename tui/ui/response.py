@@ -33,10 +33,11 @@ def _stats_parts() -> list[str]:
 
 
 def _trust_spans() -> list:
-    """The trust half of the receipt (`runtime.receipt`, default on): `local-only` or the turn's
-    egress summary, blocked attempts, and how many calls faced the approval gate, as tagged
-    `(text, kind)` spans (receipt.turn_spans — which also guards an unusable turn mark by
-    rendering the honest unknown, never 'local-only' over a slice that may be missing sends)."""
+    """The trust half of the receipt (`runtime.receipt`, default on), deviation-only: the turn's
+    egress summary, blocked attempts, and how many calls faced the approval gate — EMPTY for a
+    calm local turn, so the receipt is then just the dim run stats (receipt.turn_spans — which
+    also guards an unusable turn mark by rendering the honest `egress unknown`, never silence
+    over a slice that may be hiding sends)."""
     try:
         from trust import receipt
 
@@ -47,12 +48,13 @@ def _trust_spans() -> list:
     return []
 
 
-# Trust-span kind -> semantic style: the same green/yellow/red vocabulary the Glass Box colors
-# the identical facts with — the flagship per-answer claim must not render with the weight of a
-# tok/s gauge. `gated` stays dim (a count, not a signal — the human already approved those);
-# `unknown` is yellow (the slice may hide a send, like the Glass Box's truncated-record caveat).
-_TRUST_STYLE = {"local": "green", "sent": "yellow", "blocked": "bold red",
-                "gated": _DIM, "unknown": "yellow"}
+# Trust-span kind -> semantic style: the same yellow/red vocabulary the Glass Box colors the
+# identical facts with — a boundary crossing must not render with the weight of a tok/s gauge.
+# `gated` stays dim (a count, not a signal — the human already approved those); `unknown` is
+# yellow (the slice may hide a send, like the Glass Box's truncated-record caveat). No `local`
+# kind anymore: a calm local turn emits no trust spans at all (deviation-only, 2026-07-06).
+_TRUST_STYLE = {"sent": "yellow", "blocked": "bold red",
+                "gated": _DIM, "unknown": "yellow", "human": "cyan"}
 
 # One-time discovery hints (receipt.take_hint — sentinel-backed, once per install):
 # the post-first-answer line teaching the inspection surfaces, and the receipt tail pointing at
@@ -68,6 +70,39 @@ _GLASS_HINT = "/glass: answer provenance"
 # headline facts on every answer, no /glass required. Pop-on-read: a stale box can never paint a
 # later answer (error/Ctrl-C turns never set one; a consumer that doesn't render still clears it).
 _turn_glass = None
+
+# ── per-turn correction provenance (interrupt-and-correct) ─────────────────────────────────────
+# The same pop-on-read pattern for the answer buffer (core/provenance.py): when the finished turn
+# carries human-authored spans (the user froze the stream and corrected it), the final render
+# marks those characters distinctly and the receipt counts the corrections. The marking is for
+# the HUMAN and the audit trail only — the model saw clean text.
+_turn_buffer = None
+
+# What human-authored characters render as — the one correction style, shared with the freeze
+# editor's tail (tui/ui/correction.py) and semantically cyan: the human acted here.
+_HUMAN_STYLE = "bold cyan underline"
+
+
+def set_turn_buffer(state) -> None:
+    """Stash the finished turn's answer buffer for the final render (pop-on-read, like
+    set_turn_provenance): only a completed buffer that actually carries human edits is kept —
+    an uncorrected turn renders exactly as before."""
+    global _turn_buffer
+    _turn_buffer = None
+    try:
+        from core import provenance
+
+        buf = (state or {}).get("answer_buffer")
+        if provenance.corrected(buf) and buf.get("state") == "complete":
+            _turn_buffer = buf
+    except Exception:
+        _turn_buffer = None
+
+
+def _pop_turn_buffer():
+    global _turn_buffer
+    buf, _turn_buffer = _turn_buffer, None
+    return buf
 
 # A footer entry line as synthesize writes it: `  [n] label`.
 _SOURCE_LINE_RE = re.compile(r"^\s*\[(\d+)\]\s")
@@ -161,14 +196,17 @@ def _print_sources(entries: list[str], gb) -> None:
                 print(f"  {ln}   {glyph} {note}")
 
 
-def _print_receipt() -> None:
+def _print_receipt(corrections: int = 0) -> None:
     """The one-line receipt under every answer: the trust segment leads as semantically-colored
-    spans (the headline — `local-only` / what was sent / what was gated), the dim run stats
-    follow. The plain (no-rich) path prints the identical text, unstyled. The first time the
-    trust segment shows egress or a gated count, a dim `/glass` pointer is appended once per
-    install."""
+    spans WHEN the turn deviated (what was sent / blocked / gated — a calm local turn emits
+    none), then the human-control facts (`✎ n corrections` when the user froze and edited this
+    answer mid-stream), then the dim run stats. The plain (no-rich) path prints the identical
+    text, unstyled. The first time the trust segment shows egress or a gated count, a dim
+    `/glass` pointer is appended once per install."""
     stats = _stats_parts()
     spans = _trust_spans()
+    if corrections:
+        spans = spans + [(f"✎ {corrections} correction{'s' if corrections != 1 else ''}", "human")]
     tail = None
     if any(kind in ("sent", "blocked", "gated") for _, kind in spans):
         try:
@@ -245,27 +283,66 @@ def response(text: str) -> None:
     _final_render(text, plain_body=text)
 
 
+def _print_corrected_body(body: str, buf: dict) -> bool:
+    """Render a human-corrected answer body with the corrected characters marked (the
+    provenance spans, styled like the freeze editor showed them). Markdown formatting is traded
+    for span fidelity on corrected answers — the correction must be visible exactly where it
+    landed, and a markdown re-flow would lose the character positions. Returns False (render
+    nothing) when the buffer text doesn't prefix the body — e.g. a /retry replaced the answer —
+    so the caller falls back to markdown; never mark by guesswork."""
+    try:
+        from core import provenance
+
+        prose = str(buf.get("text") or "").rstrip()
+        if not prose or not body.startswith(prose):
+            return False
+        spans = provenance.human_spans(buf)
+        if not spans:
+            return False
+        t = Text()
+        pos = 0
+        for s, e in spans:
+            s, e = min(s, len(prose)), min(e, len(prose))
+            if e <= s:
+                continue
+            t.append(body[pos:s])
+            t.append(body[s:e], style=_HUMAN_STYLE)
+            pos = e
+        t.append(body[pos:])
+        width = min(_term_width(), _BODY_WIDTH)
+        _console.print(Padding(t, (0, 0, 0, 2)), width=width)
+        return True
+    except Exception:
+        return False  # marking is additive — never lose the answer over it
+
+
 def _final_render(text: str, *, plain_body: "str | None") -> None:
     """THE final-answer tail (provenance pop → sources split → markdown body → trust-colored
     Sources → receipt → first-answer hint), shared by `response()` and ResponseStream.finish()
     so streamed and non-streamed answers can never drift apart. `plain_body` is what the
     no-rich path prints as the body — the whole text for `response()`, only the trailer beyond
-    the already-typed stream for `finish()` (None = nothing left to print)."""
+    the already-typed stream for `finish()` (None = nothing left to print). A turn the user
+    froze and corrected renders its body with the human-authored spans marked (and the receipt
+    counts the corrections) — see set_turn_buffer."""
     gb = _pop_turn_provenance()
+    buf = _pop_turn_buffer()
+    corrections = len(buf.get("edits") or []) if buf else 0
     if _RICH:
         prose, src_lines = _split_sources(text)
-        _print_markdown_body(prose if src_lines else text)
+        body = prose if src_lines else text
+        if buf is None or not _print_corrected_body(body, buf):
+            _print_markdown_body(body)
         if src_lines:
             _print_sources(src_lines, gb)
         _console.print()  # let the answer breathe before the receipt
-        _print_receipt()
+        _print_receipt(corrections)
         _first_answer_hint()
         _console.print()  # trailing whitespace before the next prompt
     else:
         if plain_body:
             print(plain_body)
             print()
-        _print_receipt()
+        _print_receipt(corrections)
         _first_answer_hint()
         print()
 
@@ -292,11 +369,16 @@ class ResponseStream:
         return self._started
 
     def feed(self, text: str) -> None:
-        """Append a streamed answer token; opens the response section on the first one."""
+        """Append a streamed answer token; opens the response section on the first one. After a
+        freeze (freeze_display tore the live tail down), the first resumed token quietly reopens
+        a live region — same transient-tail contract, no second section header."""
         if not text:
             return
         if not self._started:
             self._begin()
+        elif self._live is None and _RICH:
+            self._live = Live(console=_console, transient=True, auto_refresh=False)
+            self._live.start()
         self._chars.append(text)
         if self._live is not None:
             now = time.perf_counter()
@@ -306,11 +388,34 @@ class ResponseStream:
         else:  # plain (no-rich) path: just type it out
             print(text, end="", flush=True)
 
+    def _freeze_hint(self) -> None:
+        """One-time discovery hint for the freeze key (receipt.take_hint — sentinel-backed),
+        printed at the exact moment it's actionable: the answer just started streaming and the
+        status bar (whose legend would teach it) has left the screen. Only when the latch is
+        actually armed — never advertise a hotkey the model can't honor."""
+        try:
+            from core.continuation import get_freeze_controller
+            from trust import receipt
+
+            if not (get_freeze_controller().armed and receipt.take_hint("freeze")):
+                return
+        except Exception:
+            return
+        msg = "esc freezes this answer mid-stream — edit it, and the model continues from your text"
+        if _RICH:
+            t = Text()
+            t.append("  · ", style=_DIM)
+            t.append(msg, style=_DIM)
+            _console.print(t)
+        else:
+            print(f"  . {msg}")
+
     def _begin(self) -> None:
         self._started = True
         _live_stop()  # drop the turn's status bar — the answer takes over the bottom of the screen
         if _RICH:
             section("response")  # parts the answer from the trace rail above it
+            self._freeze_hint()
             _console.print()
             # transient + a screen-bounded tail => the live region always fits, so stop() erases it
             # cleanly no matter how long the answer runs. Manual refresh (throttled in feed).
@@ -318,6 +423,7 @@ class ResponseStream:
             self._live.start()
         else:
             section("response")  # one header vocabulary (listing.section has the plain branch)
+            self._freeze_hint()
             print()
 
     def _tail(self) -> "Text":
@@ -378,6 +484,25 @@ class ResponseStream:
         if text.rstrip() != streamed and text.startswith(streamed):
             trailer = text[len(streamed):].strip("\n")
         _final_render(text, plain_body=trailer)
+
+    def freeze_display(self) -> None:
+        """A freeze (interrupt-and-correct): tear down the live tail so the freeze editor owns
+        the screen, KEEPING the streamed chars — feed() reopens a live region on the first
+        resumed token. The transient Live erases cleanly; the editor shows the frozen text."""
+        if self._live is not None:
+            try:
+                self._live.stop()
+            except Exception:
+                pass
+            self._live = None
+        if not _RICH and self._started:
+            print()  # close the typed-out line before the editor prompts
+
+    def reset_to(self, text: str) -> None:
+        """Replace the streamed record with the (human-edited) buffer text so the resumed live
+        tail and finish()'s trailer math continue from what the user actually kept — never from
+        the pre-edit stream."""
+        self._chars = [text] if text else []
 
     def abort(self) -> None:
         """Tear down the live tail without a final render — a failed/cancelled turn. The transient

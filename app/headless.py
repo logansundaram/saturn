@@ -27,8 +27,8 @@ def run_headless(args) -> None:
     if ingest_warning:
         print(ingest_warning, file=sys.stderr)
     # The gate posture warning the interactive startup block prints — same fact, stderr:
-    # a permissions.json that failed to load means persisted /risk overrides and /allow
-    # prefixes are NOT in force for this run.
+    # a permissions.json that failed to load means persisted /policy risk overrides and
+    # /policy allow prefixes are NOT in force for this run.
     from trust import policy as _policy
 
     if _policy.load_problem():
@@ -67,7 +67,7 @@ def run_headless(args) -> None:
         approval gate (the user seeing and approving the exact action) is the product's
         safety boundary, and headless mode silently approving a run_shell or write_file
         would delete it. --yolo opens the gate policy itself above, so under it the only
-        interrupts that still fire are the quarantine/taint ESCALATIONS (they gate
+        interrupts that still fire are the quarantine ESCALATIONS (they gate
         independently of the policy threshold) — and those are approved here, because
         --yolo is exactly the user pre-approving everything; denying them would make
         '--yolo to allow them' a lie. The decline path is already honest — the agent tells
@@ -94,6 +94,14 @@ def run_headless(args) -> None:
                 file=sys.stderr,
             )
             return False
+        if isinstance(value, dict) and value.get("type") == "ask_user":
+            # No human to ask headless: note the unanswered question on stderr; the bare True
+            # resume makes the tool report "no answer" honestly (never a fabricated one).
+            print(
+                f"ask_user went unanswered (headless mode): {value.get('question')}",
+                file=sys.stderr,
+            )
+            return True
         return True
 
     # --json: one machine-readable result object on stdout (the scripting/pipe contract).

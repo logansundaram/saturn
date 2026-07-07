@@ -33,15 +33,13 @@ from commands._session import write_autosave
 _GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("conversation", ("clear", "compact", "resume", "retry", "rewind")),
     ("knowledge & workspace", ("docs", "init", "memory", "undo")),
-    ("trust & control", ("allow", "autoapprove", "plan", "policy", "privacy", "risk")),
-    ("observability & proof", ("context", "glass", "mcp", "models", "source", "tools", "trace")),
+    ("trust & control", ("plan", "policy", "privacy")),
+    ("observability", ("context", "glass", "mcp", "models", "source", "tools", "trace")),
     ("system", ("config", "help", "quit", "update")),
 )
-
-# The legacy gate spellings stay dispatchable, but render as ONE compact line under
-# trust & control — they are views of the one policy object (policy.py), not three more
-# surfaces to learn.
-_GATE_VIEWS = ("risk", "allow", "autoapprove")
+# (The legacy gate spellings — /risk · /allow · /autoapprove — were CUT 2026-07-06: they were
+# thin delegations to /policy's subcommands and now land on _RENAMED pointers, so the listing
+# carries ONE gate-policy surface instead of four.)
 
 # The three-line trust-stack map /help opens with: where the boundary POSTURE is set, where the
 # live ACTIVITY shows, and where the shareable RECORD comes from.
@@ -65,9 +63,8 @@ def _names(cmd) -> str:
     aliases=("?", "h"),
     usage="/help [command]",
     details="""
-With no argument, opens with the trust-stack map (posture · activity · proof) then lists every
-command grouped by theme. The legacy gate spellings (/risk · /allow · /autoapprove) fold into one
-line — they are views of /policy.
+With no argument, opens with the trust-stack map (posture · activity · record) then lists every
+command grouped by theme.
 
 With a command name, prints its detailed help — identical to `/<command> --help`. Renamed
 commands answer here too: `/help why` prints the same pointer as typing /why.
@@ -79,8 +76,8 @@ the fact.
 
 Examples:
   /help              the grouped command list
-  /help risk         detail one command
-  /risk --help       same thing, the git-style way
+  /help policy       detail one command
+  /policy --help     same thing, the git-style way
 """,
 )
 def _help(ctx, args):
@@ -106,16 +103,13 @@ def _help(ctx, args):
         rows = [
             (_names(COMMANDS[n]), (COMMANDS[n].summary, "dim"))
             for n in names
-            if n in COMMANDS and n not in _GATE_VIEWS
+            if n in COMMANDS
         ]
-        views = [v for v in _GATE_VIEWS if v in names and v in COMMANDS]
-        if not rows and not views:
+        if not rows:
             continue
         _print("")
         _print(f"  {group}")
         ui.table(rows)
-        if views:
-            ui.table([[("views of /policy: " + " · ".join("/" + v for v in views), "dim")]])
 
     _print("")
 

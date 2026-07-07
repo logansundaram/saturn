@@ -98,8 +98,8 @@ def _render_label(gb) -> None:
     # structured gate events); None = unknown stays silent.
     if gb.gated is not None:
         _kv("gated calls", str(gb.gated), _DIM if gb.gated == 0 else _YELLOW)
-    # The human decisions themselves — the chain-of-custody line: a signed export carrying this
-    # block can show an auditor that a PERSON approved the run_shell it contains. Renders in both
+    # The human decisions themselves — the one fact that can't be recomputed from the run
+    # (gotcha #7: a human's yes/no exists only in the gate_events record). Renders in both
     # live and reconstructed views; nothing prints when no gate prompted (or none was recorded).
     gs = getattr(gb, "gate_summary", None) or []
     approved = [str(c.get("name") or "?") for c in gs if isinstance(c, dict) and c.get("approved")]

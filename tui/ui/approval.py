@@ -487,11 +487,11 @@ def _grant_note(msg: str) -> None:
 
 
 def _propose_shell_prefix(command: str) -> "str | None":
-    """The /allow-style prefix to offer when `a(lways)` covers a run_shell call: the FULL command
-    (whitespace-normalized) — the narrowest grant that covers exactly what the human just
+    """The /policy allow-style prefix to offer when `a(lways)` covers a run_shell call: the FULL
+    command (whitespace-normalized) — the narrowest grant that covers exactly what the human just
     reviewed. Proposing the bare leading token would let one confirmation un-gate every future
-    `git …` (including `git push --force`) — exactly the broad grant /allow's own help warns
-    against; a shorter prefix stays available, but only by the user TYPING it deliberately. None
+    `git …` (including `git push --force`) — exactly the broad grant /policy allow's own help
+    warns against; a shorter prefix stays available, but only by the user TYPING it deliberately. None
     when no prefix could ever exempt this command — empty, or carrying shell metacharacters
     (policy.shell_allowed refuses those wholesale, so offering a prefix would teach a false
     rule). Asks policy's own public screen (shell_prefix_rejects), never a second copy of its
@@ -510,9 +510,9 @@ def _always_allow(tool_calls: list, ask) -> dict:
     as ungated and return at the fast path before the gate_event recording site, so the human's
     decision vanished from the record (gotcha #7: empty must always mean "never asked").
 
-    Non-shell tools collect a session tier drop to read_only (what /risk <tool> read_only does).
-    run_shell is the exception: read_only would un-gate EVERY future shell command from one
-    keypress, so it gets a SCOPED grant instead — the FULL command offered as an /allow-style
+    Non-shell tools collect a session tier drop to read_only (what /policy risk <tool> read_only
+    does). run_shell is the exception: read_only would un-gate EVERY future shell command from one
+    keypress, so it gets a SCOPED grant instead — the FULL command offered as a /policy allow-style
     prefix (the narrowest grant covering exactly what was reviewed; a shorter/broader prefix only
     by the user typing it), validated through the one policy matcher (grant_shell_prefix
     dry_run=True — the node persists). Declining or failing validation leaves run_shell gated;
@@ -631,7 +631,7 @@ def ask_approval(value: dict) -> "bool | dict":
     destructive call renders its arguments full-width (`_render_full_args`). Answers: `y`
     approves the batch, `N` (the default — bare Enter or anything unrecognized) rejects it, `s`
     decides per call, `a` approves AND auto-approves these tools for the rest of the session
-    (run_shell instead gets a scoped /allow-style prefix grant), `e` explains WHY the agent wants
+    (run_shell instead gets a scoped /policy allow-style prefix grant), `e` explains WHY the agent wants
     the batch (plan step + recorded reasoning) and re-prompts. Arguments carrying secret-like
     values warn inline (redaction scanner); a batch following quarantine-flagged tool output
     opens with a banner saying so. Returns True/False or {"approved_ids": [...]} for a partial

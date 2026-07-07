@@ -1,7 +1,7 @@
 """
 Ollama-locality boundary — a remote OLLAMA_HOST is network egress, never "local".
 
-The local-inference story (posture line, Glass Box attestation, /privacy) keys on
+The local-inference story (posture line, the Glass Box's composed-by row, /privacy) keys on
 egress.ollama_is_local(): when the Ollama endpoint is off-machine, chat models are wrapped in
 the cloud boundary proxy (redacted + ledger-recorded), embeddings go through the embeddings
 boundary, the air-gap refuses both, and egress._inference classifies the bindings

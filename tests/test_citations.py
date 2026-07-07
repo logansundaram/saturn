@@ -75,7 +75,7 @@ def test_gathered_section_headers_pinned():
 
 def test_split_call_result_is_the_one_parser():
     # THE parser of nodes/tools.py's `name(args) -> observation` serialization — synthesize's
-    # Sources labels take [0], the Glass Box's taint corpus takes [1]; one function, no drift.
+    # Sources labels take [0], an observation-content reader takes [1]; one function, no drift.
     from textutil import CALL_RESULT_SEP, split_call_result
 
     call, obs = "web_search(query='x')", "result text -> with an arrow inside"

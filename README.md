@@ -76,9 +76,8 @@ replay. The point isn't how much Saturn can do — it's that you can see and con
   time, sees each tool result, and decides the next action. Multi-source research works this
   way too: search + read steps composed in a plan you can watch and edit, not an opaque
   "research" call.
-- **Web search** — works **with or without an API key**. With a [Tavily](https://tavily.com)
-  key you get premium search; without one it falls back automatically to keyless DuckDuckGo
-  search + local page extraction.
+- **Web search** — **no API key, no account, ever**: keyless DuckDuckGo search + local page
+  extraction (`trafilatura`). Your queries never route through a keyed SaaS backend.
 - **Your APIs** — `http_request` talks to any REST endpoint or self-hosted service (Home
   Assistant, Gitea, Jellyfin, …), and shows you the exact request — method, URL, headers,
   body — for approval before anything is sent. One auditable tool instead of fifty opaque integrations.
@@ -91,6 +90,9 @@ replay. The point isn't how much Saturn can do — it's that you can see and con
   "today" are computed, never guessed from memory.
 - **Memory** — durable facts that persist across sessions (`remember` / `recall`), fully
   inspectable and editable with `/memory`.
+- **It asks instead of guessing** — when a needed value, choice, or confirmation is missing,
+  the agent pauses mid-run with one question (`ask_user`), and your typed answer resumes the
+  turn. The alternative to asking is fabrication; Saturn asks.
 - **Shell commands** — run arbitrary shell commands (scripts, build tools, git, package managers)
   in the sandboxed workspace. Uses PowerShell on Windows and `/bin/sh` on macOS/Linux — write
   commands in your platform's native syntax. Every run is a bounded **foreground** run: the
@@ -110,9 +112,10 @@ replay. The point isn't how much Saturn can do — it's that you can see and con
   "run this command") is detected, visibly flagged in the trace, fenced off as data the model
   must not obey — and the next tool action faces your approval gate regardless of risk tier, so
   a malicious page can't quietly redirect the agent.
-- **Trust receipt on every answer** — the stats line under each response also says what left
-  your machine that turn: `local-only`, or exactly how many bytes went to which host, plus how
-  many actions faced the approval gate. The privacy claim, proven per answer.
+- **Trust receipt when it matters** — the stats line under a response says exactly how many
+  bytes went to which host and how many actions faced the approval gate — whenever anything
+  actually left your machine or was gated. A fully-local turn stays clean: silence means
+  nothing left. `/privacy` and `/glass` carry the full readout on demand.
 - **Per-workspace instructions** — `/init` surveys your workspace and drafts `SATURDAY.md`,
   standing instructions loaded every turn (like a per-project system prompt).
 - **Headless mode** — `saturn -p "query"` runs one query and prints the answer; piped stdin
@@ -224,22 +227,13 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-> `prompt_toolkit` (live command highlighting) and `tavily-python` (premium web search) are
-> optional — Saturn runs fine without either.
+> `prompt_toolkit` (live command highlighting) is optional — Saturn runs fine without it.
 
-### 3. (Optional) Add an API key
+There is **no API key step**: web search is keyless and inference is local. (Custom env vars —
+e.g. for an MCP server's `${VAR}` expansion — can still be stored with `/config key set MY_VAR
+<value>`; they live in a `.env` file and apply immediately.)
 
-Web search works out of the box with **no key** (keyless DuckDuckGo). To upgrade to Tavily,
-add its key — easiest via the built-in command once you're running:
-
-```
-/config key set TAVILY_API_KEY    tvly-...        # premium web search/extract
-/config key                                       # list keys and whether each is set
-```
-
-Keys are saved to a `.env` file in the repo root and applied immediately.
-
-### 4. Run it
+### 3. Run it
 
 ```bash
 python agent.py        # Windows / venv-activated
@@ -282,8 +276,8 @@ Everything lives in **`config.yaml`**:
   swapping hardware is a one-line change.
 - **`runtime`** — loop and safety knobs: `max_iterations`, `auto_approve` (the approval policy),
   `num_ctx` (context window), `citations` (inline source citations in answers).
-- **`web`** — search backend: `auto` (prefer Tavily if a key exists, else DuckDuckGo), `tavily`,
-  or `duckduckgo`.
+- **`web`** — web-tool knobs (`max_results`, `request_timeout`). The backend is fixed and
+  keyless: DuckDuckGo search + local extraction.
 
 Most of it is also adjustable **live** (session-only) with slash commands — handy for
 experimenting without restarting.
@@ -319,8 +313,7 @@ Type `/help` for the full list, or `/<command> --help` for details on any one. H
 | `/tools` | List the agent's tools and their risk tiers. |
 | `/mcp` | MCP server status + the remote tools they add; `reload` after a config edit. |
 | `/memory` | See, add, or delete the facts the agent permanently remembers. |
-| `/policy` | The whole safety posture as one object: bare = status; `risk`/`allow`/`open` are its levers (bare forms report, changing is always explicit). |
-| `/risk` · `/allow` · `/autoapprove` | Kept for muscle memory — thin views of `/policy` (`risk` / `allow` / `open`), same handlers, zero drift. |
+| `/policy` | The whole safety posture as one object: bare = status; `risk`/`allow`/`open` are its levers (bare forms report, changing is always explicit). The old `/risk`/`/allow`/`/autoapprove` spellings print a pointer here. |
 | `/source` | Show the full material behind a citation `[n]` of the last answer. |
 | `/glass` | **The Glass Box**: answer-level provenance — each cited source's origin + trust, what left the machine, and the human gate decisions (also `/trace answer`; `#id` for past runs). |
 | `/privacy` | The privacy surface: what CAN leave (`/privacy`), what DID (`/privacy egress`), seal the boundary (`/privacy airgap`), and strip secrets from off-machine sends (`/privacy redact`). |
@@ -341,15 +334,15 @@ everywhere (`remove`/`rm`/`delete`/`del`/`forget`/`drop`).
 
 ## Web search without an API key
 
-Saturn treats Tavily as an **upgrade, not a requirement**:
+Saturn's web tools are **API-less by design** — a product whose pitch is "your data stays
+yours" shouldn't steer your search queries through a keyed SaaS backend:
 
-- **`web_search`** prefers Tavily when a healthy key exists and **automatically falls back to
-  keyless DuckDuckGo** on a missing key or quota error.
-- **`web_extract`** reads pages **locally** (via `trafilatura`) — no key, no API call.
+- **`web_search`** is keyless DuckDuckGo — no key, no account, nothing to sign up for.
+- **`web_extract`** reads pages **locally** (via `trafilatura`) — only the page's own host is
+  contacted.
 
-So you can use every web feature with zero keys. Control the backend with `web.provider` in
-`config.yaml`. For deeper research, the agent plans multiple search + read steps — visible in
-the plan rail, every call traced — rather than hiding them inside a monolithic research tool.
+For deeper research, the agent plans multiple search + read steps — visible in the plan rail,
+every call traced — rather than hiding them inside a monolithic research tool.
 
 ---
 
@@ -358,7 +351,7 @@ the plan rail, every call traced — rather than hiding them inside a monolithic
 ```
 agent.py            # entry point: routes the command line into app/
 app/                # the application shell: CLI, graph assembly, turn driver, REPL
-config.yaml         # all settings: models, paths, safety, web provider
+config.yaml         # all settings: models, paths, safety, web knobs
 core/               # the engine room: state, model factory, prompts, structured output
 trust/              # the trust stack: gate policy, egress ledger, quarantine,
                     #   trust receipt, the Glass Box

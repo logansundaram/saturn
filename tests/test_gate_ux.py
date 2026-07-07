@@ -66,7 +66,7 @@ def test_full_width_args_branch():
     # The four bespoke-rendered tools keep their dedicated views.
     for name in ("write_file", "edit_file", "run_shell", "http_request"):
         assert not approval._full_width_args(name, "destructive")
-    # read_only calls (gated only via a quarantine/taint escalation) keep the compact repr.
+    # read_only calls (gated only via a quarantine escalation) keep the compact repr.
     assert not approval._full_width_args("web_search", "read_only")
     assert not approval._full_width_args("mcp_x_read", "read_only")
 
@@ -518,3 +518,30 @@ def test_review_plan_enter_continues(monkeypatch):
     monkeypatch.setattr(plan_ui, "_review_input", lambda: "")
     out = plan_ui.review_plan({"plan": [], "reason": "", "active_step": None})
     assert out["action"] == "continue"
+
+
+def test_review_frame_names_statuses_and_tracks_the_pointer_through_edits(monkeypatch, capsys):
+    """The review listing must NAME each non-pending status (the glyph alone doesn't say what to
+    type at `status <id> <…>`) and recompute the next-to-run pointer from the plan being rendered
+    — the id captured at pause time goes stale the moment a step is dropped/moved."""
+    _quiet_review(monkeypatch)
+    plan = [
+        {"step_id": 1, "label": "Read the file", "status": "done",
+         "intended_tool": "read_file", "result": "contents", "needs_resolution": False},
+        {"step_id": 2, "label": "Guess a path", "status": "pending",
+         "intended_tool": "read_file", "result": None, "needs_resolution": False},
+        {"step_id": 3, "label": "Sum the numbers", "status": "pending",
+         "intended_tool": "calculate", "result": None, "needs_resolution": False},
+    ]
+    lines = iter(["drop 2", ""])
+    monkeypatch.setattr(plan_ui, "_review_input", lambda: next(lines))
+    out = plan_ui.review_plan({"plan": plan, "reason": "test"})
+    printed = capsys.readouterr().out
+    assert "[done]" in printed  # the completed step's status is named, not just glyphed
+    assert "← next to run" in printed
+    # after `drop 2` the re-render must point at the renumbered "Sum the numbers" step
+    tail = printed[printed.rindex("dropped step"):]
+    pointer_line = next(ln for ln in tail.splitlines() if "← next to run" in ln)
+    assert "Sum the numbers" in pointer_line
+    assert out["action"] == "continue"
+    assert [s["label"] for s in out["plan"]] == ["Read the file", "Sum the numbers"]

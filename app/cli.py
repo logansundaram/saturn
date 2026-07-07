@@ -40,7 +40,7 @@ def _build_parser():
                                help="Open the approval gate for the whole run — auto-approve "
                                     "side-effecting/destructive tool calls, headless or "
                                     "interactive. The same view of the gate policy as "
-                                    "/autoapprove (policy.set_gate_off — threshold: destructive).")
+                                    "/policy open (policy.set_gate_off — threshold: destructive).")
     parser.add_argument("--json", action="store_true",
                                help="With -p: print a structured JSON result (answer, plan, "
                                     "tools, tokens, timing) instead of the bare answer. Errors "

@@ -1,11 +1,11 @@
 """
-The /policy command namespace (commands/policy.py) — the levers (`risk`, `allow`, `open`) share
-ONE handler with their legacy top-level spellings (/risk, /allow, /autoapprove — zero drift),
-bare /autoapprove and bare /policy open are pure readouts (the gate-flip footgun is gone),
-`/policy allow add` is the unambiguous add verb (removal verbs route to removal only when the
-target resolves), the shared --save grammar is case-insensitive any-position, and `--save` with
-no value persists the CURRENT value (mutating nothing live). Offline: no LLM, no network —
-registry imports with mcp.servers empty.
+The /policy command namespace (commands/policy.py) — the levers (`risk`, `allow`, `open`) in one
+front door: the legacy top-level spellings (/risk, /allow, /autoapprove, /yolo) were CUT in the
+2026-07-06 surface trim and land on _RENAMED pointers that mutate NOTHING, bare /policy open is
+a pure readout (the gate-flip footgun is gone), `/policy allow add` is the unambiguous add verb
+(removal verbs route to removal only when the target resolves), the shared --save grammar is
+case-insensitive any-position, and `--save` with no value persists the CURRENT value (mutating
+nothing live). Offline: no LLM, no network — registry imports with mcp.servers empty.
 """
 
 import pytest
@@ -14,8 +14,6 @@ from trust import policy
 
 # Importing each module registers its command; the full `commands` package (every module) is
 # deliberately NOT imported — these tests need only the policy-family commands.
-# commands.policy registers the whole family, including the top-level /risk, /allow,
-# /autoapprove spellings (one file owns every view of the gate policy).
 import commands.policy  # noqa: F401
 import commands.privacy  # noqa: F401
 from commands._framework import CommandContext, dispatch
@@ -39,40 +37,61 @@ def gate(isolated_paths, monkeypatch):
     return cfg
 
 
-# ── parity: the legacy spelling and the /policy subcommand are the same handler ──────────────
+# ── the cut legacy spellings: pointers that mutate NOTHING ───────────────────────────────────
 
 
-def test_risk_parity_between_spellings(gate, ctx, capsys):
+def test_legacy_gate_spellings_are_renamed_pointers(gate, ctx, capsys):
+    """/risk, /allow, /autoapprove, /yolo were CUT 2026-07-06 — each lands on a moved-pointer to
+    its /policy lever, and the policy object is untouched: a habit-typed `/yolo on` can no longer
+    open the gate, and `/allow <prefix>` can no longer create a gate exemption."""
+    from tools import registry
+
+    declared = registry.risk_of("web_search")
+    for line, target in (
+        ("/risk web_search destructive", "/policy risk"),
+        ("/allow git status", "/policy allow"),
+        ("/autoapprove on", "/policy open"),
+        ("/yolo on", "/policy open"),
+    ):
+        dispatch(line, ctx)
+        out = capsys.readouterr().out
+        assert "moved" in out and target in out, line
+    assert registry.risk_of("web_search") == declared  # no tier changed
+    assert policy.risk_overrides() == {}               # nothing persisted
+    assert policy.shell_allow() == []                  # no exemption created
+    assert policy.tier() == "read_only"                # the gate did not open
+    assert not policy.gate_off()
+
+
+# ── /policy risk ──────────────────────────────────────────────────────────────────────────────
+
+
+def test_risk_set_and_reset(gate, ctx, capsys):
     from tools import registry
 
     declared = registry.risk_of("web_search")
     try:
-        dispatch("/risk web_search destructive", ctx)
-        legacy = capsys.readouterr().out
+        dispatch("/policy risk web_search destructive", ctx)
+        out = capsys.readouterr().out
         assert registry.risk_of("web_search") == "destructive"
+        assert "failed:" not in out
 
         dispatch("/policy risk web_search reset", ctx)
         capsys.readouterr()
         assert registry.risk_of("web_search") == declared
-
-        dispatch("/policy risk web_search destructive", ctx)
-        canonical = capsys.readouterr().out
-        assert registry.risk_of("web_search") == "destructive"
-        assert legacy == canonical  # one handler — identical observable effect AND text
-        assert "failed:" not in legacy
     finally:
         registry.TOOL_RISK["web_search"] = declared
         policy.clear_risk_override("web_search")
 
 
-def test_risk_save_persists_through_either_spelling(gate, ctx, capsys):
+def test_risk_save_persists_and_reset_forgets(gate, ctx, capsys):
     from tools import registry
 
     declared = registry.risk_of("web_search")
     try:
         dispatch("/policy risk web_search side --save", ctx)
         assert policy.risk_overrides() == {"web_search": "side_effecting"}
-        dispatch("/risk web_search reset", ctx)
+        dispatch("/policy risk web_search reset", ctx)
         assert policy.risk_overrides() == {}
     finally:
         registry.TOOL_RISK["web_search"] = declared
@@ -103,35 +122,31 @@ def test_allow_metacharacter_prefix_gets_designed_refusal(gate, ctx, capsys):
     assert "cannot allowlist" in out
     assert "metacharacter" in out
     assert policy.shell_allow() == []
-    # Same refusal through the explicit add verb and the legacy spelling.
+    # Same refusal through the explicit add verb and the pipe metacharacter.
     dispatch("/policy allow add git status; rm -rf ~", ctx)
     assert "cannot allowlist" in capsys.readouterr().out
-    dispatch("/allow git log | head", ctx)
+    dispatch("/policy allow git log | head", ctx)
     assert "cannot allowlist" in capsys.readouterr().out
     assert policy.shell_allow() == []
 
 
-def test_allow_parity_between_spellings(gate, ctx, capsys):
-    dispatch("/allow git status", ctx)
-    legacy = capsys.readouterr().out
+def test_allow_add_and_remove_round_trip(gate, ctx, capsys):
+    dispatch("/policy allow git status", ctx)
+    out = capsys.readouterr().out
     assert policy.shell_allow() == ["git status"]
+    assert "allowed" in out
 
     dispatch("/policy allow remove git status", ctx)
     capsys.readouterr()
     assert policy.shell_allow() == []
-
-    dispatch("/policy allow git status", ctx)
-    canonical = capsys.readouterr().out
-    assert policy.shell_allow() == ["git status"]
-    assert legacy == canonical
 
 
 def test_allow_remove_accepts_shared_verbs(gate, ctx, capsys):
     dispatch("/policy allow git status", ctx)
     dispatch("/policy allow rm 1", ctx)  # shared REMOVE_VERBS vocabulary, by index
     assert policy.shell_allow() == []
-    dispatch("/allow ls -la", ctx)
-    dispatch("/allow del ls -la", ctx)  # …and by exact text, through the legacy spelling
+    dispatch("/policy allow ls -la", ctx)
+    dispatch("/policy allow del ls -la", ctx)  # …and by exact text
     assert policy.shell_allow() == []
 
 
@@ -141,7 +156,7 @@ def test_allow_add_verb_always_adds(gate, ctx, capsys):
     dispatch("/policy allow add del *.tmp", ctx)
     assert policy.shell_allow() == ["del *.tmp"]
     assert "allowed" in capsys.readouterr().out
-    dispatch("/allow add git status", ctx)  # legacy spelling, ordinary prefix — same handler
+    dispatch("/policy allow add git status", ctx)  # ordinary prefix through the same verb
     assert policy.shell_allow() == ["del *.tmp", "git status"]
 
 
@@ -176,9 +191,6 @@ def test_allow_lone_list_verb_lists_never_grants(gate, ctx, capsys, verb):
     assert "git status" in out  # the listing rendered
     assert policy.shell_allow() == ["git status"]  # nothing silently added
 
-    dispatch(f"/allow {verb}", ctx)  # the legacy spelling, same handler
-    assert policy.shell_allow() == ["git status"]
-
 
 def test_allow_add_escape_hatch_for_lone_reserved_word(gate, ctx, capsys):
     """`add` allowlists a lone reserved word itself (`ls` is a real shell command)."""
@@ -193,19 +205,14 @@ def test_allow_list_verb_with_words_still_adds(gate, ctx, capsys):
     assert policy.shell_allow() == ["ls -la"]
 
 
-# ── /policy open · /autoapprove: bare = readout, mutation explicit ───────────────────────────
+# ── /policy open: bare = readout, mutation explicit ──────────────────────────────────────────
 
 
-def test_bare_autoapprove_and_open_are_pure_readouts(gate, ctx, capsys):
-    dispatch("/autoapprove", ctx)
-    legacy = capsys.readouterr().out
-    assert policy.tier() == "read_only"  # untouched — never a flip
-    assert "prompting above" in legacy
-
+def test_bare_open_is_a_pure_readout(gate, ctx, capsys):
     dispatch("/policy open", ctx)
-    canonical = capsys.readouterr().out
-    assert policy.tier() == "read_only"
-    assert legacy == canonical
+    out = capsys.readouterr().out
+    assert policy.tier() == "read_only"  # untouched — never a flip
+    assert "prompting above" in out
 
 
 def test_open_explicit_round_trip(gate, ctx, capsys):
@@ -214,12 +221,6 @@ def test_open_explicit_round_trip(gate, ctx, capsys):
     assert policy.gate_off()
     assert "AUTO-APPROVE ON" in capsys.readouterr().out
     dispatch("/policy open off", ctx)
-    assert policy.tier() == "side_effecting"
-
-    # The legacy spellings drive the exact same lever.
-    dispatch("/yolo on", ctx)
-    assert policy.gate_off()
-    dispatch("/autoapprove off", ctx)
     assert policy.tier() == "side_effecting"
 
 

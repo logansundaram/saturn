@@ -10,6 +10,7 @@ from the call that produced it.
 import time
 
 from langchain.messages import ToolMessage
+from langgraph.errors import GraphInterrupt
 
 from trust import egress
 from trust import quarantine
@@ -128,6 +129,12 @@ def tool_node(state: AgentState):
         else:
             try:
                 observation = selected.invoke(args)
+            except GraphInterrupt:
+                # An interrupting tool (ask_user) pausing the graph is CONTROL FLOW, not a tool
+                # error — swallowing it here would answer the question with the exception's repr
+                # and never reach the human. LangGraph re-runs this node from the top on resume;
+                # batches are singletons (execute emits one call per step), so nothing re-executes.
+                raise
             except Exception as exc:  # surface tool errors to the model instead of crashing
                 observation = f"Error calling {name}: {exc}"
                 ok = False

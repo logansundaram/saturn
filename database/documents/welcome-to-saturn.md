@@ -49,7 +49,7 @@ Saturn has a built-in toolbox. It decides which to use; you approve anything ris
 | Tool | What it does |
 |---|---|
 | `calculate` | Precise arithmetic and math. |
-| `web_search` | Search the web (Tavily if you set `TAVILY_API_KEY`, otherwise keyless DuckDuckGo). |
+| `web_search` | Search the web (keyless DuckDuckGo — no API key, no account). |
 | `web_extract` | Pull the readable text out of a web page (local, no key). |
 | `http_request` | Send one HTTP request to any URL/API (self-hosted services especially). **Always** asks for approval first, showing the exact request. |
 | `current_time` | The machine's current date/time — so "today" is never guessed. |
@@ -58,6 +58,7 @@ Saturn has a built-in toolbox. It decides which to use; you approve anything ris
 | `search_knowledge_base` | Semantic search over your ingested **documents** (this is RAG). |
 | `remember` / `recall` | Save and look up durable facts across conversations. |
 | `run_shell` | Run a shell command in the workspace. **Always** asks for approval first. |
+| `ask_user` | Ask *you* one question mid-run when something only you can answer is missing — your typed reply resumes the turn. |
 
 ## The two folders you work with
 
@@ -100,7 +101,8 @@ Anything you type starting with `/` is a command, not a message to the agent.
 - `/init` — survey your workspace and draft `SATURDAY.md`, standing instructions Saturn loads
   every turn.
 - `/resume` — continue your last conversation (autosaved), or `save`/`list`/restore named ones.
-- `/risk`, `/allow`, `/autoapprove` — tune the approval gate (use the last with care).
+- `/policy` — the whole approval-gate posture in one place: `risk` (a tool's tier), `allow`
+  (trusted shell prefixes), `open` (gate off — use with care).
 - `/update` — pull the latest Saturn (your data is never touched).
 - `/clear` — start a fresh conversation; `/quit` — exit.
 

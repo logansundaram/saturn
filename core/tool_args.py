@@ -64,6 +64,9 @@ _ARG_ALIASES: dict[str, dict[str, list[str]]] = {
         "fact": ["fact", "text", "note", "content", "memory"],
     },
     "recall": {},  # query is optional (empty returns everything)
+    "ask_user": {
+        "question": ["question", "prompt", "query", "q", "text", "message", "ask"],
+    },
 }
 
 # Required args for which the EMPTY STRING is a legitimate value — deleting text via
@@ -104,6 +107,7 @@ _SCHEMA_SHAPES: dict[str, str] = {
     "run_shell": "run_shell(command=<shell command line>)",
     "remember": "remember(fact=<one concise statement>)",
     "recall": "recall(query=<filter text, or empty for everything>)",
+    "ask_user": "ask_user(question=<the ONE question to ask the user>)",
 }
 
 

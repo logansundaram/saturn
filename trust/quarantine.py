@@ -17,7 +17,7 @@ This module is the boundary:
                         on, not instructions to follow (spotlighting).
   flag()/turn_flags()   the per-turn record: tool_node flags each hit; the rail renders a warning
                         leaf; the approval gate shows the flags so the human knows the batch they
-                        are approving follows tainted content.
+                        are approving follows injection-flagged content.
   gate_pending() /      the control escalation (mode `gate`): after a flagged observation, the
   consume_gate()        NEXT tool batch faces the approval gate regardless of risk tier — a tool
                         call whose arguments may derive from injected text gets one fresh human

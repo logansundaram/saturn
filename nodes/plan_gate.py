@@ -36,7 +36,40 @@ from langchain.messages import HumanMessage
 from langgraph.types import interrupt
 
 from core.state import AgentState, current_step, STEER_PREFIX
-from core.plan_ops import get_pause_controller
+from core.plan_ops import get_pause_controller, is_review_retirement
+
+
+def _review_vetoes(before: list, after: list) -> list:
+    """Labels of un-run steps the user's review edit removed (`drop`) or retired (the editor's
+    `status` verb → skipped/cancelled/blocked, carrying plan_ops' review stamp). These are the
+    human's explicit "do not do this" — recorded onto state["plan_vetoes"] so the engine's
+    self-correction (rectify's judge, replan) can never reinstate the work; the human's edit
+    outranks the judge, the same principle as the gate's guarded outcome.
+
+    Matching is by label: a step the user merely RELABELED reads as a veto of the old wording,
+    which is benign — the reworded step is still in the plan and runs; the note only tells the
+    engine not to resurrect the wording the user rewrote."""
+    after_labels = {str(s.get("label") or "").strip().lower() for s in after or []}
+    before_retired = {
+        str(s.get("label") or "").strip().lower()
+        for s in before or []
+        if is_review_retirement(s)
+    }
+    out: list = []
+    for s in before or []:
+        label = str(s.get("label") or "").strip()
+        if s.get("result") is None and label and label.lower() not in after_labels:
+            out.append(label)  # dropped while still un-run (a dropped DONE step is bookkeeping)
+    for s in after or []:
+        label = str(s.get("label") or "").strip()
+        if (
+            is_review_retirement(s)
+            and label
+            and label.lower() not in before_retired  # only NEWLY retired (re-reviews don't dup)
+            and label not in out
+        ):
+            out.append(label)
+    return out
 
 
 def plan_gate_node(state: AgentState):
@@ -100,6 +133,12 @@ def plan_gate_node(state: AgentState):
         edited = review.get("plan")
         if edited is not None and edited != plan:
             updates["plan"] = edited
+            # Record what the user REMOVED as vetoes (read-merge-write; only this node writes
+            # the field) so rectify/replan/synthesize treat it as deliberately out of scope.
+            vetoes = _review_vetoes(plan, edited)
+            if vetoes:
+                existing = list(state.get("plan_vetoes") or [])
+                updates["plan_vetoes"] = existing + [v for v in vetoes if v not in existing]
         if review.get("action") == "abort":
             updates["aborted"] = True
     # A non-dict resume value (e.g. a bare True from an auto-approver that never expected this

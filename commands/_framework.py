@@ -122,6 +122,13 @@ _RENAMED = {
     # intent-before-execution surfaces.
     "dryrun": "plan review",
     "dry": "plan review",
+    # 2026-07-06 surface trim: the legacy top-level gate spellings fold into /policy for good.
+    # They were already thin delegations to the /policy handlers; now the pointer is the only
+    # stub — one spelling to learn, zero parallel registrations to audit.
+    "risk": "policy risk",
+    "allow": "policy allow",
+    "autoapprove": "policy open",
+    "yolo": "policy open",
 }
 
 # A second, parenthesized line for redirects whose one-line pointer doesn't tell the whole story.

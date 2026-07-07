@@ -43,11 +43,10 @@ dependencies = [
     "python-docx>=1.1.0",
     # --- MCP client (remote tools behind the approval gate — mcp_client.py) ---
     "mcp>=1.27.2",
-    # --- web tools (keyless by default) ---
+    # --- web tools (API-less: no key, no account — 2026-07-06) ---
     "ddgs>=9.14.4",
     "trafilatura>=2.0.0",
     "httpx>=0.28.1",
-    "tavily-python>=0.7.24",
     # --- config / utilities ---
     "pyyaml>=6.0.3",
     "python-dotenv>=1.2.2",

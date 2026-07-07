@@ -58,7 +58,7 @@ The whole product is one loop. Reading it end to end explains 80% of the repo:
      semantic write gate; a tool step generates a call bound to exactly the planned tool
      (argument recovery in `core/tool_args.py`).
    - `nodes/approval.py` is the human gate: `trust/policy.py` decides whether the call is
-     auto-approved (risk tier, /allow prefixes) or must interrupt and ask you.
+     auto-approved (risk tier, /policy allow prefixes) or must interrupt and ask you.
    - `nodes/tools.py` executes the call, clamps the observation, attributes egress
      (`trust/egress.py`), and fences injection-suspicious content (`trust/quarantine.py`).
    - `nodes/update_plan.py` mechanically records the observation onto the current step and
@@ -109,18 +109,19 @@ is the *tool-execution node*, not the `tools/` package (see the name-collision t
 | File | What it does |
 |---|---|
 | `toolspec.py` | `@register_tool(risk[, retrieval])` — risk tier declared at definition, timing wrapper. Unknown risk fails closed to `destructive`. |
-| `registry.py` | Imports the tool modules (which registers them), exposes the live registry + risk views, connects MCP, applies persisted `/risk` overrides. |
+| `registry.py` | Imports the tool modules (which registers them), exposes the live registry + risk views, connects MCP, applies persisted `/policy risk` overrides. |
 | `mcp_client.py` | MCP client: stdio/HTTP/SSE servers from config.yaml, remote tools registered as `mcp_<server>_<tool>` (never trusting self-declared tiers), redaction parity, one background asyncio bridge. |
 | `calculator.py` | `calculate` (whitelisted AST evaluator — never `eval`) + `current_time` (clock grounding). |
-| `web.py` | `web_search` (Tavily → keyless DuckDuckGo fallback), `web_extract` (local trafilatura), `http_request` (the universal REST integration — always gated, request shown in full). |
+| `web.py` | `web_search` (keyless DuckDuckGo — API-less by design since 2026-07-06), `web_extract` (local trafilatura), `http_request` (the universal REST integration — always gated, request shown in full). |
 | `files.py` | Workspace-sandboxed file tools: read/write/edit/list/search/find. Mutating tools snapshot first for `/undo`. |
 | `knowledge.py` | `search_knowledge_base` (RAG) + `remember`/`recall` (durable memory). |
 | `shell.py` | `run_shell` — always `destructive` (the human approving the exact command is the boundary), bounded foreground runs only. |
+| `interaction.py` | `ask_user` — pauses the running graph via `interrupt()` to ask the human ONE question; the typed answer resumes as the observation. `read_only` (asking never gates); degrades honestly headless. |
 
 ### `trust/` — the product's namesake
 | File | What it does |
 |---|---|
-| `policy.py` | THE gate policy object. `approves(name, risk, args)` is the single question the approval node asks; `/risk`, `/allow`, `/autoapprove`, `--yolo` are all views of it. Durable state in `database/permissions.json`. |
+| `policy.py` | THE gate policy object. `approves(name, risk, args)` is the single question the approval node asks; `/policy risk`·`allow`·`open` and `--yolo` are all views of it. Durable state in `database/permissions.json`. |
 | `egress.py` | The network chokepoint: in-memory egress ledger (every exit calls `check` then `record`), the air-gap gate, and the inference-locality classifier (`ollama_is_local`). |
 | `redaction.py` | Secret stripping/warning at the cloud boundary (key patterns, JWTs, private keys); `scan_args` backs the gate's secret warning. |
 | `quarantine.py` | Prompt-injection quarantine: scan untrusted observations, fence instruction-shaped content as data, escalate the next tool batch to the gate. Also screens corpus/attachment admission. |
@@ -132,8 +133,9 @@ is the *tool-execution node*, not the `tools/` package (see the name-collision t
 `_utils.py` (shared grammar: removal/list verbs, `--save` parsing, toggle status). Themed
 modules: `conversation.py` (/clear /compact /rewind /retry /resume), `knowledge.py` (/docs
 /memory /init /undo), `runtime.py` (/tools /models /context /mcp), `system.py` (/help /quit
-/update), `config.py` (/config), `plan.py` (/plan), `policy.py` (/policy + the /risk /allow
-/autoapprove delegations), `privacy.py` (/privacy), `trace.py` (/trace /glass /source +
+/update), `config.py` (/config), `plan.py` (/plan), `policy.py` (/policy — the legacy
+/risk /allow /autoapprove spellings were cut 2026-07-06 and print pointers), `privacy.py`
+(/privacy), `trace.py` (/trace /glass /source +
 export/replay engine). Convention: one file owns every view of a feature.
 
 ### `stores/` — data + persistence

@@ -99,19 +99,25 @@ class _StatusBar:
         n = status["tools"]
         tps = status["tok_per_sec"]
         bar = Text(no_wrap=True, overflow="ellipsis")
+        started = False  # whether any zone has rendered yet (separators sit between zones only)
 
         def dot():   # within-zone separator (tight)
             bar.append(" · ", style=_DIM)
 
         def zone():  # between-zone separator: a quiet rule so the groups read as groups
-            bar.append("  │  ", style=_RAIL)
+            nonlocal started
+            if started:
+                bar.append("  │  ", style=_RAIL)
+            started = True
 
-        # ── posture ── the gate policy leads the bar, read live (policy.py — /autoapprove,
-        # Shift+Tab and /config are all views of the same threshold). At `destructive` the gate
-        # is not "at a tier", it's OPEN, and the bar must say so loudly for as long as that is
-        # true — the /autoapprove banner scrolls away; this indicator doesn't. Leftmost on
-        # purpose: the bar trims from the right edge, and "the gate is open" (with the air-gap
-        # flag beside it) must be the last thing a narrow terminal sacrifices.
+        # ── posture ── deviation-only (2026-07-06 declutter, like receipt.posture_spans): the
+        # calm read_only/no-airgap default renders NOTHING — the zone speaks when the gate is
+        # loosened or OPEN (`destructive` isn't "a tier", and the /policy open banner scrolls
+        # away; this indicator doesn't) or the air-gap seal holds. Leftmost on purpose: the bar
+        # trims from the right edge, and "the gate is open" must be the last thing a narrow
+        # terminal sacrifices. An UNREADABLE posture still marks itself: under
+        # silence-means-default, omitting it would show a SAFER posture than reality on exactly
+        # the surface that exists to shout ⚠ GATE OFF.
         bar.append("  ", style=_DIM)
         try:
             from config import get_config
@@ -119,19 +125,22 @@ class _StatusBar:
             _perm = _cfg.auto_approve
             _airgap = bool(_cfg.get("runtime.airgap", False))
         except Exception:
-            # A facet that can't be read is OMITTED, never guessed (the posture-line rule,
-            # receipt.posture_spans): substituting the calm "read_only" here would show a SAFER
-            # posture than reality on exactly the surface that exists to shout ⚠ GATE OFF.
             _perm, _airgap = None, False
+        posture = []
         if _perm == "destructive":
-            bar.append("⚠ GATE OFF", style=f"bold {_RISK.get('destructive', 'red')}")
+            posture.append(("⚠ GATE OFF", f"bold {_RISK.get('destructive', 'red')}"))
         elif _perm is None:
-            bar.append("posture ?", style=_DIM)
-        else:
-            bar.append(_perm, style=_RISK.get(_perm, _DIM))
+            posture.append(("posture ?", _DIM))
+        elif _perm != "read_only":
+            posture.append((_perm, _RISK.get(_perm, _DIM)))
         if _airgap:
-            dot()
-            bar.append("⛓ AIRGAP", style=f"bold {_ACCENT}")
+            posture.append(("⛓ AIRGAP", f"bold {_ACCENT}"))
+        if posture:
+            zone()
+            for i, (label, style) in enumerate(posture):
+                if i:
+                    dot()
+                bar.append(label, style=style)
 
         # ── type-ahead ── only present while the user is queuing input mid-turn. Ahead of
         # progress so the line being typed is never the part trimmed by the bar's ellipsis
@@ -199,8 +208,16 @@ class _StatusBar:
         # ── key legend ── the turn-time keys, taught ambiently while they're usable. Trails the
         # whole line ON PURPOSE: the bar trims from the right edge on a narrow terminal (no-wrap
         # + ellipsis), so the hint is the first thing sacrificed — never the posture or progress.
+        # While the answer is streaming, Esc means freeze (interrupt-and-correct) — the legend
+        # reads the live latch so it teaches the key's CURRENT meaning.
         zone()
-        bar.append("esc pause · ctrl-c cancel", style=_DIM)
+        try:
+            from core.continuation import get_freeze_controller
+
+            esc = "esc freeze+edit" if get_freeze_controller().armed else "esc pause"
+        except Exception:
+            esc = "esc pause"
+        bar.append(f"{esc} · ctrl-c cancel", style=_DIM)
         return bar
 
 

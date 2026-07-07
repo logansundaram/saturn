@@ -197,6 +197,20 @@ def pause_note() -> None:
         print("  ⏸ pausing for plan review at the next step…")
 
 
+def freeze_note() -> None:
+    """Acknowledge an Esc that froze the streaming answer (interrupt-and-correct) the moment
+    it's captured — the stream stops at the next token and the freeze editor opens, but on a
+    slow local model that beat can lag the keypress; this is the immediate feedback, printed
+    above the live answer region exactly like steer_note/pause_note."""
+    if _RICH:
+        t = Text()
+        t.append("  ✂ ", style=f"bold {_ACCENT}")
+        t.append("freezing the answer — the editor opens when the stream stops…", style=_ACCENT)
+        _console.print(t)
+    else:
+        print("  ✂ freezing the answer — the editor opens when the stream stops…")
+
+
 def echo_queued(line: str) -> None:
     """Echo a type-ahead line as the REPL pulls it off the queue to run, so a query/command the
     user typed while a previous turn was working shows up in the transcript just like a line typed

@@ -13,6 +13,11 @@ It subsumes the pause trigger, too: a single console can't be read by two thread
 is the *one* reader live during a turn. The keys, by what they do to the line you're typing:
 
   - **Enter** — commit the line to the queue (runs after the current turn).
+  - **Esc while the final answer is streaming** — FREEZE it (interrupt-and-correct): the stream
+    stops cleanly and the freeze editor opens so a hallucination can be cut and corrected before
+    generation resumes from the edited text. Routed through the `continuation.FreezeController`
+    latch, which the synthesize node arms only while an answer is actually streaming from a
+    template-supported model — anywhere else, Esc keeps its meanings below.
   - **Esc with text typed** — submit that text as a *mid-turn steering correction*: it's injected
     into the running turn at the next step boundary (see `nodes/plan_gate.py`) so the agent
     adjusts course WITHOUT losing the turn. The line is consumed (cleared), not queued.
@@ -35,6 +40,7 @@ import threading
 from collections import deque
 from typing import Callable, Optional
 
+from core.continuation import get_freeze_controller
 from core.plan_ops import PauseController, get_pause_controller
 
 # Windows console key polling (msvcrt). On macOS/Linux this import fails and we fall back to
@@ -74,11 +80,13 @@ class InputQueue:
         on_change: Optional[Callable[[str, int], None]] = None,
         on_steer: Optional[Callable[[str], None]] = None,
         on_pause: Optional[Callable[[], None]] = None,
+        on_freeze: Optional[Callable[[], None]] = None,
         controller: Optional[PauseController] = None,
     ) -> None:
         self._on_change = on_change
         self._on_steer = on_steer  # called(text) when a mid-turn steer is captured (Esc + text)
         self._on_pause = on_pause  # called() when an empty-line Esc requests a plan-review pause
+        self._on_freeze = on_freeze  # called() when Esc froze the streaming answer
         self._controller = controller or get_pause_controller()
         self._queue: deque[str] = deque()
         self._buffer = ""
@@ -158,10 +166,22 @@ class InputQueue:
             pass  # a display hiccup must never kill the reader thread
 
     def _on_escape(self) -> None:
-        """Esc handling. With text already typed, consume it as a mid-turn steering correction
-        (injected into the running turn at the next step boundary — see plan_gate); with an empty
-        line, request a plan-review pause instead. Either way it routes through the shared
-        PauseController, distinguished by source ('steer' vs 'user')."""
+        """Esc handling. While the final answer is streaming (the freeze latch is armed), Esc
+        FREEZES it — the interrupt-and-correct hotkey; `freeze()` returning False means "not
+        streaming right now" and the key falls through to its usual meanings: with text already
+        typed, a mid-turn steering correction (injected into the running turn at the next step
+        boundary — see plan_gate); with an empty line, a plan-review pause request. The
+        steer/pause paths route through the shared PauseController, distinguished by source."""
+        try:
+            if get_freeze_controller().freeze():
+                if self._on_freeze is not None:
+                    try:
+                        self._on_freeze()
+                    except Exception:
+                        pass  # a display hiccup must never kill the reader thread
+                return
+        except Exception:
+            pass  # freezing is additive — a latch failure must never break Esc's other roles
         with self._lock:
             text = self._buffer.strip()
             self._buffer = ""

@@ -154,6 +154,11 @@ TOOL_SYNONYMS = {
     "bash": "run_shell",
     "fetch": "web_extract",
     "web_fetch": "web_extract",
+    "ask": "ask_user",
+    "ask_human": "ask_user",
+    "ask_the_user": "ask_user",
+    "user_input": "ask_user",
+    "question": "ask_user",
 }
 
 

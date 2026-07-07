@@ -25,9 +25,12 @@ def run_turn(graph, payload, config, approver, on_update=None, pause=None, on_to
     so it can capture type-ahead + the Esc pause without ever stealing the prompt's keystrokes (the
     queued lines themselves are drained by the REPL loop, not here). Returns the final state.
 
-    Streams two modes at once: "updates" drives the trace/plan and carries the interrupt marker
+    Streams three modes at once: "updates" drives the trace/plan and carries the interrupt marker
     (unchanged routing — pause/resume is still decided by get_state below); "messages" carries the
-    per-token answer stream. Each streamed item is a `(mode, data)` pair."""
+    per-token answer stream of the CHAT path; "custom" carries the continuation path's answer
+    tokens (`{"answer_token": …}` — raw-mode resumes after a freeze-edit are not LangChain chat
+    calls, so messages mode never sees them; see nodes/synthesize._token_sink). Each streamed
+    item is a `(mode, data)` pair."""
     # The plan/execute engine visits ~5 nodes per step; LangGraph's default recursion_limit (25)
     # would kill a healthy multi-step plan mid-flight. Generous but finite — the REAL bounds are
     # runtime.max_iterations (execute passes) and MAX_REPLANS, which land at an honest synthesize
@@ -44,7 +47,14 @@ def run_turn(graph, payload, config, approver, on_update=None, pause=None, on_to
         # (metrics from the update) consequently prints after the stream opens; rich inserts
         # it above the live tail, and the final render follows it.
         try:
-            for mode, data in graph.stream(pending, config, stream_mode=["updates", "messages"]):
+            for mode, data in graph.stream(
+                pending, config, stream_mode=["updates", "messages", "custom"]
+            ):
+                if mode == "custom":
+                    # Continuation-path answer tokens (the raw-mode resume after a freeze-edit).
+                    if on_token and isinstance(data, dict) and data.get("answer_token"):
+                        on_token(str(data["answer_token"]))
+                    continue
                 if mode == "messages":
                     # (message_chunk, metadata) — stream only the synthesize node's answer tokens.
                     # Filters: skip other LLM nodes (agent draft, planner/judge structured output);
@@ -99,8 +109,8 @@ def _make_on_update(tracer, run_id, show_ui=True):
 def _trace_warning(tracer) -> "str | None":
     """The user-facing notice when this turn's trace circuit breaker tripped (stores/trace._trip),
     or None. The tracer degrades to silence by design (the watcher must never stall the watched),
-    but the DEGRADATION itself must be loud — the user believes /trace, /glass #id, and signed
-    exports are accumulating a record, and this turn's may be partial or missing entirely. The
+    but the DEGRADATION itself must be loud — the user believes /trace, /glass #id, and /trace
+    export are accumulating a record, and this turn's may be partial or missing entirely. The
     breaker re-arms on the next start_run, so the warning is per-affected-turn, not permanent."""
     if not getattr(tracer, "broken", False):
         return None

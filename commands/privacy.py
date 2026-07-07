@@ -89,16 +89,13 @@ def _overview(ctx):
     ui.table([(b["role"], b["model"], _locality_cell(b, inf, ui)) for b in inf["bindings"]])
 
     # --- web egress ---------------------------------------------------------
-    # The backend web_search would use RIGHT NOW (tools/web.search_backend — the tool's own
-    # decision, including the session latch a dead/quota'd Tavily key trips), never re-derived
-    # from config+key alone: this readout must not contradict the egress ledger.
-    from tools.web import search_backend
-
-    backend = "Tavily" if search_backend() == "tavily" else "DuckDuckGo (keyless)"
+    # API-less by design (2026-07-06): web_search is keyless DuckDuckGo and web_extract is local
+    # trafilatura — there is no provider decision left to read, so this readout can't contradict
+    # the egress ledger.
     _print("  web egress (only when the agent uses a web tool — every call shows in /trace)")
     ui.table(
         [
-            ("web_search", f"the search query goes to {backend}"),
+            ("web_search", "the search query goes to DuckDuckGo (keyless — no API key, no account)"),
             ("web_extract", "fetches the page directly from this machine; extraction is local"),
             ("http_request", "sends exactly the request you approve at the gate — any URL"),
         ]
@@ -127,21 +124,26 @@ def _overview(ctx):
             )
         else:
             _print("    configured in config.yaml but not loaded — run /mcp reload")
-        _print("    every MCP tool faces the approval gate unless you lowered its tier (/mcp, /risk).")
+        _print("    every MCP tool faces the approval gate unless you lowered its tier "
+               "(/mcp, /policy risk).")
 
     # --- api keys ------------------------------------------------------------
-    _print("  api keys (set keys enable the egress above — /config key to manage)")
-    ui.table(
-        [
-            (
-                k.label,
-                k.name,
-                ("set", ui.risk_style("side_effecting")) if env_keys.is_set(k.name)
-                else ("not set", "dim"),
-            )
-            for k in env_keys.KNOWN_KEYS
-        ]
-    )
+    # KNOWN_KEYS is empty today (no Saturn feature takes an API key — web is keyless since
+    # 2026-07-06); the section renders only if a managed key ever returns, so the privacy
+    # readout never shows an empty table.
+    if env_keys.KNOWN_KEYS:
+        _print("  api keys (set keys enable the egress above — /config key to manage)")
+        ui.table(
+            [
+                (
+                    k.label,
+                    k.name,
+                    ("set", ui.risk_style("side_effecting")) if env_keys.is_set(k.name)
+                    else ("not set", "dim"),
+                )
+                for k in env_keys.KNOWN_KEYS
+            ]
+        )
 
     # --- data locations -------------------------------------------------------
     _print("  your data (all local)")
@@ -165,17 +167,15 @@ def _overview(ctx):
     # value) — the posture readout must state the mode in force, not echo a raw config string.
     from trust import quarantine
 
-    qmode = quarantine.mode()
-    _print(f"  injection quarantine: {qmode} — untrusted tool output (web/http/MCP/corpus) is")
-    _print("  screened for instruction-shaped content before the model sees it.")
-    _print("  telemetry: none — no analytics, no crash reporting, no phone-home.")
-    _print("  verify it: the source is MIT-licensed, and a network monitor will show only the")
-    _print("  calls listed above.")
+    _print(f"  injection quarantine: {quarantine.mode()} — untrusted tool output is screened "
+           "before the model sees it.")
+    _print("  telemetry: none — nothing phones home; a network monitor will show only the "
+           "calls above.")
 
-    # This view is what CAN leave. The verifiable companions live behind the same front door.
+    # This view is what CAN leave. The runtime companions live behind the same front door.
     _print("")
-    _print("  prove it:  /privacy egress (what actually left this session) · /privacy airgap")
-    _print("  (seal + verify the boundary) · /privacy redact (strip secrets before cloud sends)")
+    _print("  check it:  /privacy egress (what actually left) · airgap (seal the boundary) · "
+           "redact (strip secrets)")
 
 
 # ── /privacy egress — the session ledger ─────────────────────────────────────────────────────
@@ -302,12 +302,12 @@ def _airgap(ctx, args):
 
     if new:
         offmachine = _offmachine_roles(cfg)
-        _print("  ┏━ ⛓  AIR-GAP ON")
-        _print("  ┃  the network boundary is SEALED. web tools, remote")
-        _print("  ┃  MCP calls, and off-machine roles are blocked and")
-        _print("  ┃  logged. /privacy airgap off to re-open ·")
-        _print("  ┃  /privacy egress to inspect.")
-        _print("  ┗━")
+        # Loud but compact (2026-07-06 declutter): one ⛓ line + one pointer — the heavy frame
+        # is reserved for the approval gate and plan review; the status bar carries ⛓ AIRGAP
+        # for as long as the seal holds.
+        _print("  ⛓ AIR-GAP ON — web tools, remote MCP calls, and off-machine roles are "
+               "blocked + logged.")
+        _print("  (/privacy airgap off re-opens · /privacy egress lists any blocked attempts)")
         if offmachine:
             roles = ", ".join(f"{r} ({p}:{m})" for r, p, m in offmachine)
             _print(f"  ⚠  off-machine role(s) will now FAIL: {roles}")

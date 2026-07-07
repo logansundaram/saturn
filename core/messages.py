@@ -26,7 +26,7 @@ from langchain.messages import SystemMessage
 _CORE_TOOLS = {
     "read_file", "list_directory", "find_files", "search_files", "write_file", "edit_file",
     "search_knowledge_base", "calculate", "current_time", "web_search", "web_extract",
-    "http_request", "run_shell", "remember", "recall",
+    "http_request", "run_shell", "remember", "recall", "ask_user",
 }
 
 
@@ -85,6 +85,9 @@ Tools (choose exactly one per step, or "none"):
 - remember        — save a lasting fact/preference the user shared to persistent memory.
 - recall          — search facts previously remembered (they are also already shown in the
                     grounding context).
+- ask_user        — ask the human ONE question and pause until they type an answer. Use only
+                    when a needed value, choice, or confirmation is missing and no file, note,
+                    or search can supply it — never to present results or report progress.
 """
 
 _PLAN_SYS_RULES = """\
@@ -112,6 +115,9 @@ Choosing a tool:
 - The user shares a lasting preference or fact about themselves, or asks you to remember
   something → remember (facts already in the grounding context's "Persistent memory" section
   are already saved — do not re-remember them).
+- A missing value, choice, or confirmation ONLY the user can supply → ask_user. Ask exactly
+  one question; steps after it that depend on the answer are written by reference
+  (needs_resolution true). Never use ask_user for something a read/search could answer.
 - If the user names a tool, use that tool.
 
 Rules:
@@ -149,8 +155,10 @@ Rules:
 - Use the fewest steps that solve the request.
 - If the request is genuinely ambiguous (no file named, no change specified, or a
   vague action that names no concrete change) OR asks for a destructive bulk action
-  (e.g. delete files), do NOT guess and do NOT perform it: emit a single "none" step
-  that asks the user to clarify or confirm.
+  (e.g. delete files), do NOT guess and do NOT perform it: make the FIRST step an
+  ask_user step carrying the one clarifying/confirmation question, with the dependent
+  work as by-reference steps after it (needs_resolution true) — the revision stage
+  makes them concrete once the user answers.
 - If the request needs an action you have NO tool for — send an email/text, make a
   call, set a reminder, post online — do NOT pretend to do it. Emit a single "none" step
   that says you can't do that with the available tools and offer the closest thing you
@@ -210,10 +218,10 @@ QUERY: Which of my files talk about the solar eclipse?
 {"plan":[{"description":"Search all workspace files for the text 'eclipse'","tool":"search_files","needs_resolution":false},{"description":"List the distinct files that appear in the matches","tool":"none","needs_resolution":false}]}
 
 QUERY: Erase all the files in cache.
-{"plan":[{"description":"Erasing files is irreversible; ask the user to confirm before doing this.","tool":"none","needs_resolution":false}]}
+{"plan":[{"description":"Ask the user to confirm erasing every file in cache — it is irreversible","tool":"ask_user","needs_resolution":false},{"description":"If the user confirmed, delete the files in cache; otherwise do nothing and report it","tool":"run_shell","needs_resolution":true}]}
 
 QUERY: Make the report better.
-{"plan":[{"description":"The request is ambiguous: it names no specific file and no concrete change. Ask the user which file to improve and what change to make.","tool":"none","needs_resolution":false}]}
+{"plan":[{"description":"Ask the user which file to improve and what concrete change to make","tool":"ask_user","needs_resolution":false},{"description":"Apply the change the user describes to the file they name","tool":"none","needs_resolution":true}]}
 
 QUERY: Set a reminder to renew my passport next week.
 {"plan":[{"description":"I have no tool that can set reminders — only read/write/edit files, search notes/files/web, calculate, and shell. Tell the user I can't set a reminder, and offer to save a note to a file instead.","tool":"none","needs_resolution":false}]}
@@ -245,7 +253,10 @@ are given to you; use them when this step refers to earlier work.
 - Argument shapes: read_file{file_path}; list_directory{directory}; find_files{pattern};
   search_files{pattern}; write_file{file_path,content}; edit_file{file_path,old_string,
   new_string}; search_knowledge_base{query}; calculate{expression}; current_time{};
-  web_search{query}; web_extract{url}; run_shell{command}; remember{fact}; recall{query}.
+  web_search{query}; web_extract{url}; run_shell{command}; remember{fact}; recall{query};
+  ask_user{question}.
+- ask_user: ask exactly the ONE question the step describes, addressed to the user.
+  Never answer it yourself and never turn it into a statement.
 - When a step refers to "the last/first/named file" from an earlier result, use the
   EXACT name that appears in that result. Never extrapolate a name that is not there
   (e.g. do not assume a "part4" file exists just because part1-part3 do).

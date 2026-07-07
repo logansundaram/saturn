@@ -125,10 +125,12 @@ _POSTURE_LINE_STYLE = {
 
 
 def posture_line() -> None:
-    """One line under the banner stating the live trust posture (trust.receipt.posture_spans):
-    gate tier, inference locality, quarantine/redaction modes — the ambient, no-command twin of
-    `/privacy` + `/policy`, visible before the first query. Prints nothing if the posture can't be
-    read: a guessed posture is worse than none."""
+    """One line under the banner stating the live trust posture (trust.receipt.posture_spans) —
+    deviation-only (2026-07-06 declutter): a default-safe posture (gate read_only · local
+    inference · quarantine gate) prints NOTHING; the line appears only when something is
+    loosened or leaves the machine, with the `/privacy · /policy` pointers riding along so the
+    drill-downs are named exactly when there is something to drill into. Also prints nothing if
+    the posture can't be read: a guessed posture is worse than none."""
     try:
         from trust import receipt
 
@@ -550,6 +552,23 @@ def prompt(command_meta=None) -> str:
     if _RICH:
         return _console.input(f"[bold {_ACCENT}]»[/] ")
     return input("» ")
+
+
+def answer_question(value: dict) -> str:
+    """The ask_user tool's prompt: render the agent's question and read the user's one-line
+    answer (the interrupt's resume value). An empty reply / Ctrl-C / EOF returns "" — the tool
+    reports "no answer" honestly rather than blocking. Renders through the one block-header
+    vocabulary (listing.section); the live bar is already down (run_turn stops the type-ahead
+    reader before any interrupt is resolved, and ask() tears down any Live regardless)."""
+    from .listing import section
+
+    question = str((value or {}).get("question") or "").strip() or "(no question given)"
+    section("the agent asks")
+    if _RICH:
+        _console.print(f"  {question}", markup=False)
+    else:
+        print(f"  {question}")
+    return ask("your answer (Enter = no answer) » ")
 
 
 def ask(prompt_text: str) -> str:

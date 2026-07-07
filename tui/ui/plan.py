@@ -1,8 +1,9 @@
 """
 Plan rendering + the plan-review editor (the human-in-the-loop pause). `render_plan` prints a plan
-on demand (`/plan`); `show_plan` prints it once as the intended route then one line per status
-change (the live trace's transparency surface); `review_plan` runs the interactive edit loop reached
-when a turn pauses at the plan_gate. All three share the `_plan_line` row format.
+on demand (`/plan`); `show_plan` re-renders the full plan — status glyph + intended tool on every
+row — each time it materially changes (the live trace's transparency surface); `review_plan` runs
+the interactive edit loop reached when a turn pauses at the plan_gate. All three share the
+`_plan_line` row format.
 """
 
 import time
@@ -62,23 +63,45 @@ def render_plan(plan) -> None:
         _emit(_plan_line(step, show_tool=True))
 
 
+def _fingerprint(plan) -> list[tuple]:
+    """What the display keys on, positionally: (label, status, intended_tool) per step. Any
+    change to any of the three — or to the step set itself — is a material plan change."""
+    return [
+        (str(step.get("label", "")), step.get("status", "pending"),
+         step.get("intended_tool") or None)
+        for step in plan
+    ]
+
+
 def show_plan(plan) -> None:
-    """First call this turn: print the whole plan as the intended route (with tools).
-    Later calls: print only the steps whose status changed — one line each, like a trace.
-    This keeps the plan transparent without re-rendering a panel on every node update."""
+    """Render the live plan — the FULL step list, every row carrying its status glyph and
+    intended tool — each time it materially changes (2026-07-06 faithful-rendering rework):
+    the first draft, each completed step (the execute → update_plan loop), a replan's redraft,
+    a rectify cancellation, a review edit. Re-rendering the whole block (instead of the old
+    one-line status diff, which hid tools after the first print and missed a redraft that kept
+    ids/statuses) keeps the transparency surface showing the plan AS IT CURRENTLY STANDS.
+
+    The one fold: a step flipping to `active` with nothing else changed — the execute rail line
+    + reasoning leaf in the same delta already name the step being worked, so that flip rides
+    silently into the next material render (where it lands as its terminal status)."""
     if not plan:
         return
 
-    first_render = not _base._plan_seen
+    fp = _fingerprint(plan)
+    seen = _base._plan_seen or None  # {} = the reset marker (reset_turn / show_run) — first render
+    if seen == fp:
+        return
+    if isinstance(seen, list) and len(seen) == len(fp):
+        active_only = all(
+            (old[0], old[2]) == (new[0], new[2]) and (old[1] == new[1] or new[1] == "active")
+            for old, new in zip(seen, fp)
+        )
+        if active_only:
+            _base._plan_seen = fp  # record it so the terminal render still diffs as a change
+            return
+    _base._plan_seen = fp
     for step in plan:
-        sid = step.get("step_id")
-        status = step.get("status", "pending")
-        if first_render:
-            _emit(_plan_line(step, show_tool=True))
-            _base._plan_seen[sid] = status
-        elif _base._plan_seen.get(sid) != status:
-            _emit(_plan_line(step, show_tool=False))
-            _base._plan_seen[sid] = status
+        _emit(_plan_line(step, show_tool=True))
 
 
 # ── plan-review editor (the human-in-the-loop pause) ─────────────────────────────
@@ -110,25 +133,33 @@ def _review_header(reason: str) -> None:
             print(f"  ┃ {reason}")
 
 
-def _render_review_plan(plan: list[dict], active_id) -> None:
-    """List the plan inside the review block: every step with status + intended tool, the current
-    step flagged so the user sees where execution will resume."""
+def _render_review_plan(plan: list[dict]) -> None:
+    """List the plan inside the review block: every step with its status NAMED (the glyph alone
+    doesn't tell the user what word to type at `status <id> <…>`) + intended tool, and the step
+    execution will resume at flagged. The resume pointer is recomputed from the plan being
+    rendered (first step with no recorded result — the engine's own execution pointer), so it
+    tracks the user's edits instead of going stale the moment a step is added/dropped/moved."""
     if not plan:
         _review_emit("  ┃   (empty plan — add steps with `add <label>`)")
         return
+    current = next((s.get("step_id") for s in plan if s.get("result") is None), None)
     for step in plan:
         # Bare rows: the review frame's `┃` IS the gutter — the railed variant would double it.
         line = _plan_line_bare(step, show_tool=True)
-        marker = "  ← current" if step.get("step_id") == active_id else ""
+        status = step.get("status", "pending")
+        tag = f"  [{status}]" if status != "pending" else ""
+        marker = "  ← next to run" if step.get("step_id") == current else ""
         if _RICH:
             row = Text()
             row.append("  ┃ ", style="bold")
             row.append_text(line if isinstance(line, Text) else Text(str(line)))
+            if tag:
+                row.append(tag, style=_DIM)
             if marker:
                 row.append(marker, style=f"bold {_ACCENT}")
             _console.print(row)
         else:
-            print(f"  ┃ {line}{marker}")
+            print(f"  ┃ {line}{tag}{marker}")
 
 
 def _review_hint() -> None:
@@ -187,13 +218,11 @@ def review_plan(value: dict) -> dict:
 
     plan = plan_ops.normalize(value.get("plan") or [])
     reason = value.get("reason", "")
-    active = value.get("active_step") or {}
-    active_id = active.get("step_id")
 
     _live_stop()  # the editor blocks on input(); the bar can't be live while it does
 
     _review_header(reason)
-    _render_review_plan(plan, active_id)
+    _render_review_plan(plan)
     _review_hint()
 
     action = "continue"
@@ -217,12 +246,12 @@ def review_plan(value: dict) -> dict:
             _review_help()
             continue
         if low in ("show", "ls", "plan"):
-            _render_review_plan(plan, active_id)
+            _render_review_plan(plan)
             continue
         try:
             plan, note = plan_ops.apply_command(plan, cmd)
             _review_note(note)
-            _render_review_plan(plan, active_id)
+            _render_review_plan(plan)
         except ValueError as exc:
             _review_note(f"! {exc}")
 

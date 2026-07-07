@@ -19,9 +19,13 @@ frame. Specifics:
     `set_verbosity("verbose")` (via `/trace full`) restores every node line and full timings.
   - Color is **semantic only**: green = done, cyan = active, yellow/red = risk tier. Structure
     is dim. Nothing is colored just to look nice — if it has color, it means something.
-  - The plan prints **once** as the intended route, then emits a single line per status change
-    as steps advance — a log/trace, not a re-rendered panel. This is the transparency surface
-    and the main noise source, so it's diffed.
+  - The plan re-renders **in full** — every row carrying its status glyph AND intended tool —
+    each time it materially changes (2026-07-06 faithful-rendering rework): the first draft,
+    each completed step of the execute → update_plan loop, a replan's redraft, a rectify
+    cancellation, a review edit. (The old one-line status diff hid tools after the first print
+    and missed a redraft that kept ids/statuses.) The one fold: a step flipping to bare
+    `active` — the execute rail line + reasoning leaf in the same delta already name the step
+    being worked, so that flip rides silently into the next material render.
   - The `tools` node renders a **tool-I/O sub-tree** under its header: one `├─ name(args)  dur`
     branch per call, the call repr sized to the terminal width and durations column-aligned. Raw
     result previews are **hidden** by default (noisy JSON) — a failed call still shows its error
@@ -39,10 +43,12 @@ frame. Specifics:
   - The final **response** renders under a `── response` rule as real markdown (headings, bold,
     lists, fenced code) at the app's 2-space indent, its measure capped (~100 cols) so prose
     stays readable on a wide terminal. The trust-colored Sources block and the receipt — trust
-    facts first (`local-only` / sends / gated), dim run stats after — close every answer.
+    facts first WHEN the turn deviated (sends / blocked / gated; a calm local turn shows just
+    the dim run stats), corrections, then the stats — close every answer.
   - A single-line **status bar** is pinned at the bottom of the screen for the duration of a turn
-    (`rich.live.Live`): **posture** (the gate tier — `⚠ GATE OFF` when open — plus ⛓ AIRGAP
-    while it holds; leftmost so right-edge trimming sacrifices it last) │ **type-ahead**
+    (`rich.live.Live`): **posture** (deviation-only: `⚠ GATE OFF` / a loosened tier / ⛓ AIRGAP;
+    the calm read_only default renders nothing; leftmost so right-edge trimming sacrifices it
+    last) │ **type-ahead**
     (only while queuing input) │ **progress** (`▸node · iter · tools · elapsed · tok/s`) │
     **session** (`ctx NN% ▰▱` meter · `⇅` egress count, each only once it has
     something to say) │ **hardware** (bare load-colored `cpu/ram/gpu/vram NN%`, sampled
@@ -74,8 +80,8 @@ from .statusbar import set_input_preview, reset_turn
 # Startup splash.
 from .art import splash
 
-# Input prompt + banner (+ the session-start trust posture line).
-from .prompt import prompt, banner, ask, posture_line
+# Input prompt + banner (+ the session-start trust posture line + the ask_user answer prompt).
+from .prompt import prompt, banner, ask, answer_question, posture_line
 
 # Execution trace + recorded replays.
 from .trace import show_node, show_run, show_llm_calls
@@ -89,13 +95,17 @@ from .plan import render_plan, show_plan, review_plan
 # Approval gate (+ the diff helper the tests reach for).
 from .approval import ask_approval, _diff_lines
 
-# Final answer (streamed + non-streamed) + the per-turn provenance handoff.
-from .response import response, ResponseStream, set_turn_provenance
+# Final answer (streamed + non-streamed) + the per-turn provenance handoffs (Glass Box sources
+# + the interrupt-and-correct answer buffer).
+from .response import response, ResponseStream, set_turn_provenance, set_turn_buffer
+
+# The freeze editor (interrupt-and-correct's freeze-then-edit interaction).
+from .correction import edit_answer
 
 # On-demand readouts + log lines.
 from .readouts import (
     show_system_metrics, show_context, show_models,
-    note, warn, steer_note, pause_note, echo_queued,
+    note, warn, steer_note, pause_note, freeze_note, echo_queued,
 )
 
 # Shared listing vocabulary (the section rule + aligned table every readout command uses).
@@ -105,13 +115,14 @@ __all__ = [
     "set_verbosity", "verbosity",
     "set_input_preview", "reset_turn",
     "splash",
-    "prompt", "banner", "ask", "posture_line",
+    "prompt", "banner", "ask", "answer_question", "posture_line",
     "show_node", "show_run", "show_llm_calls",
     "show_glassbox",
     "render_plan", "show_plan", "review_plan",
     "ask_approval",
-    "response", "ResponseStream", "set_turn_provenance",
+    "response", "ResponseStream", "set_turn_provenance", "set_turn_buffer",
+    "edit_answer",
     "show_system_metrics", "show_context", "show_models",
-    "note", "warn", "steer_note", "pause_note", "echo_queued",
+    "note", "warn", "steer_note", "pause_note", "freeze_note", "echo_queued",
     "section", "table", "risk_style",
 ]

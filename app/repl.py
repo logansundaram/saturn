@@ -47,8 +47,9 @@ def run_repl() -> None:
     ui.banner(
         f"{cfg.active_tier}:{model_id('tool_caller')}", len(_tools), n_docs, DB_PATH
     )
-    # The session's trust posture, ambient from the first prompt: gate tier, inference locality,
-    # boundary modes — the no-command twin of /privacy + /policy (receipt.posture_spans).
+    # The session's trust posture, deviation-only (receipt.posture_spans): silent on a
+    # default-safe install; speaks (with the /privacy · /policy pointers) when the gate is
+    # loosened, the air-gap holds, inference leaves the machine, or a guard is weakened.
     ui.posture_line()
 
     # First-run sentinel, checked early: when it is absent, /config setup auto-runs just below
@@ -116,7 +117,8 @@ def run_repl() -> None:
     # line + queue depth render live in the status bar (on_change -> ui). No-ops cleanly off-TTY
     # (see typeahead.InputQueue).
     input_queue = InputQueue(
-        on_change=ui.set_input_preview, on_steer=ui.steer_note, on_pause=ui.pause_note
+        on_change=ui.set_input_preview, on_steer=ui.steer_note, on_pause=ui.pause_note,
+        on_freeze=ui.freeze_note,  # Esc while the answer streams = interrupt-and-correct
     )
     pause_controller = get_pause_controller()
 
@@ -231,13 +233,28 @@ def run_repl() -> None:
         answer = ui.ResponseStream()
 
         # Resolve each interrupt by type: the plan-review gate -> the plan editor; the approval
-        # gate -> the approval prompt. (/autoapprove no longer needs a branch here: it opens the
+        # gate -> the approval prompt. (/policy open no longer needs a branch here: it opens the
         # gate policy itself, so the approval node stops interrupting at all.) Keeping this
         # dispatch here lets run_turn stay interrupt-type-agnostic (it just feeds the result back
         # as the resume value).
         def on_interrupt(value):
             if isinstance(value, dict) and value.get("type") == "plan_review":
                 return ui.review_plan(value)
+            if isinstance(value, dict) and value.get("type") == "answer_edit":
+                # Interrupt-and-correct: the stream is already stopped; hand the screen from
+                # the live answer tail to the freeze editor, then re-point the streamed record
+                # at the edited text so the resumed tail and the final render continue from
+                # what the user actually kept.
+                answer.freeze_display()
+                decision = ui.edit_answer(value)
+                if isinstance(decision, dict) and isinstance(decision.get("text"), str):
+                    answer.reset_to(decision["text"])
+                return decision
+            if isinstance(value, dict) and value.get("type") == "ask_user":
+                # The ask_user tool: the agent's question renders at the prompt and the typed
+                # line resumes the turn as the tool's observation ("" = no answer, reported
+                # honestly by the tool).
+                return ui.answer_question(value)
             return ui.ask_approval(value)
 
         try:
@@ -290,6 +307,10 @@ def run_repl() -> None:
                 if late_req is not None and late_req.source == "steer" and late_req.reason
                 else None
             )
+            # A late PAUSE can't be salvaged (there is no plan left to review), but the user saw
+            # the ⏸ acknowledgement — dropping it silently reads as "pause is broken". Noted
+            # after the answer renders, like the late-steer note below.
+            late_pause = late_req is not None and late_req.source != "steer"
             if late_steer:
                 input_queue.push(late_steer)
             pause_controller.clear()
@@ -311,9 +332,12 @@ def run_repl() -> None:
 
         cmd_ctx.state = state  # keep the command context pointed at the latest state
         # Hand the finished turn to the answer renderer as provenance (the live Glass Box slice):
-        # the Sources footer renders trust-colored and a tainted answer is called out in red under
-        # the receipt — the /glass headline facts, native on every answer. Best-effort inside ui.
+        # the Sources footer renders trust-colored (local green / network yellow, injection flags
+        # named) — the /glass headline facts, native on every answer. Best-effort inside ui.
         ui.set_turn_provenance(state)
+        # And the interrupt-and-correct buffer: a turn the user froze + corrected renders its
+        # human-authored spans marked, with the correction count on the receipt.
+        ui.set_turn_buffer(state)
         # The answer streamed live during synthesize — close it out (final markdown render + receipt).
         # If nothing streamed (e.g. the model yielded no content, or the turn aborted at the plan
         # gate before synthesize produced text), fall back to rendering the recorded final message.
@@ -333,6 +357,11 @@ def run_repl() -> None:
             ui.note(
                 "your steering correction arrived after the turn had finished — it could not be "
                 "applied mid-turn, so it will run as your next message instead."
+            )
+        elif late_pause:
+            ui.note(
+                "your pause request arrived after the plan had finished executing — there was "
+                "nothing left to review this turn."
             )
 
         # A tripped trace breaker (stores/trace._trip) degrades recording silently by design —

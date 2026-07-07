@@ -15,7 +15,7 @@ from commands._framework import (
     SlashCommand,
     dispatch,
 )
-from commands.system import _GATE_VIEWS, _GROUPS
+from commands.system import _GROUPS
 
 
 def _ctx():
@@ -40,12 +40,6 @@ def test_groups_are_alphabetical_and_bounded():
         assert list(names) == sorted(names)
 
 
-def test_gate_views_live_in_a_group():
-    grouped = {n for _group, names in _GROUPS for n in names}
-    for v in _GATE_VIEWS:
-        assert v in grouped  # coverage counts them even though they render as one compact line
-
-
 # --- the rendered listing ----------------------------------------------------------------------
 
 def test_help_renders_groups_map_and_no_dead_legend(capsys):
@@ -54,13 +48,14 @@ def test_help_renders_groups_map_and_no_dead_legend(capsys):
     assert "* = scaffolded" not in out  # the dead legend is gone
     for group, _names in _GROUPS:
         assert group in out
-    # the three-line trust-stack map
-    assert "posture" in out and "activity" in out and "proof" in out
-    # the legacy gate spellings render as one compact line, not three full rows (a full row
-    # leads with the rail glyph + name; the compact line carries them mid-line after the label)
-    assert "views of /policy" in out
-    for view in _GATE_VIEWS:
-        assert f"│ /{view}" not in out
+    # the three-line trust-stack map (the "proof" wording left with the audit-crypto shelve —
+    # an unsigned record is a record, not proof)
+    assert "posture" in out and "activity" in out and "record" in out
+    # the legacy gate spellings were CUT (2026-07-06 surface trim): /policy is the ONE
+    # gate-policy row, and no row (or compact views line) resurrects the old names
+    assert "views of /policy" not in out
+    for cut in ("risk", "allow", "autoapprove"):
+        assert f"/{cut}" not in out
 
 
 # --- /help <name> fallbacks ----------------------------------------------------------------------
@@ -84,6 +79,18 @@ def test_cut_commands_command_gets_pointer(capsys):
         dispatch(spelling, _ctx())
         out = capsys.readouterr().out
         assert "moved" in out and "/help" in out
+
+
+def test_cut_gate_spellings_get_policy_pointer(capsys):
+    """The 2026-07-06 surface trim: the legacy gate spellings answer with a pointer to their
+    /policy lever — via /help <name> AND direct dispatch (the same _print_renamed line)."""
+    for spelling, target in (("risk", "/policy risk"), ("allow", "/policy allow"),
+                             ("autoapprove", "/policy open"), ("yolo", "/policy open")):
+        dispatch(f"/help {spelling}", _ctx())
+        via_help = capsys.readouterr().out
+        assert "moved" in via_help and target in via_help, spelling
+        dispatch(f"/{spelling}", _ctx())
+        assert capsys.readouterr().out == via_help
 
 
 def test_help_details_state_the_real_flag_grammar(capsys):

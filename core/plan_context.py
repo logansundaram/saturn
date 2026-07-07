@@ -37,6 +37,24 @@ def original_request(state) -> str:
     return str(state.get("current_query") or "")
 
 
+def vetoes_block(state) -> str:
+    """The user's plan-review vetoes (state["plan_vetoes"], written by plan_gate) as a prompt
+    block — '' when there are none. THE one framing both the rectify judge and the replanner
+    receive: work the human explicitly removed at the plan-review editor is deliberately out of
+    scope, and the plan must never be changed or extended to reinstate it — the human's edit
+    outranks the engine's self-correction (the gate's guarded-outcome principle, applied to
+    review edits)."""
+    vetoes = [str(v).strip() for v in (state.get("plan_vetoes") or []) if str(v).strip()]
+    if not vetoes:
+        return ""
+    return (
+        "The user EDITED the plan at the plan-review prompt and REMOVED these steps — they are "
+        "deliberately out of scope for this turn at the user's own request. Do NOT change or "
+        "extend the plan to reinstate them (or equivalent work), and do not treat their absence "
+        "as a gap in the plan:\n" + "\n".join(f"- {v}" for v in vetoes)
+    )
+
+
 def clean(text) -> str:
     """Normalize an observation before it lands on a step: absolute workspace paths (run_shell
     output routinely embeds them) collapse to workspace-relative so prompts and the rendered

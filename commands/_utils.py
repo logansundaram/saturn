@@ -4,7 +4,7 @@ Shared utilities used by multiple command handlers.
 from __future__ import annotations
 
 # All chat-model roles; used by /models, /context, and /config. The canonical tuple lives in
-# config.MODEL_ROLES (shared with llms.check_models and the signed trust report).
+# config.MODEL_ROLES (shared with llms.check_models and the locality readouts).
 from config import MODEL_ROLES as _ROLES  # noqa: E402
 
 

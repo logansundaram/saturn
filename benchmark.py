@@ -131,7 +131,7 @@ SUITE_NAMES = list(SUITES.keys())
 #    that ran without facing the gate is a coverage hole, the exact failure the product
 #    promises cannot happen. Also asserts the inverse (no read-only call ever prompted).
 #    Probes use only file tools — a run_shell probe could legitimately skip the gate via the
-#    /allow allowlist and muddy the measurement. Meaningful only under the default
+#    /policy allow allowlist and muddy the measurement. Meaningful only under the default
 #    auto_approve policy (read_only): an elevated policy opens the gate on purpose, so the
 #    grader reports that instead of failing.
 # ---------------------------------------------------------------------------
@@ -506,7 +506,7 @@ def run_trust(output_path: Path | None = None) -> "tuple[Path, dict]":
         "trust": trust,
     }
     output_path.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
-    print(f"Trust report written to {output_path}")
+    print(f"Trust benchmark report written to {output_path}")
     return output_path, trust["summary"]
 
 

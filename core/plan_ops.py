@@ -111,6 +111,25 @@ def set_tool(plan: list[dict], step_id: int, tool: Optional[str]) -> list[dict]:
     return plan
 
 
+# The review-retirement stamp: `set_status` writes it when the USER retires an un-run step at
+# plan review, and `is_review_retirement` reads it back — one producer + one parser (the
+# DECLINE_TEXT pattern), so `rectify` can tell a user's single-step veto apart from a gate /
+# write-gate rejection: the former continues past the step, the latter cancels the run.
+_REVIEW_STAMP_SUFFIX = "at plan review — the step did not run"
+
+
+def review_stamp(status: str) -> str:
+    """The result text stamped onto a step the user retired at the plan-review editor."""
+    return f"marked {status} {_REVIEW_STAMP_SUFFIX}"
+
+
+def is_review_retirement(step) -> bool:
+    """True when this step was retired BY THE USER at plan review (set_status's stamp) rather
+    than by an executed guard. Consumed by rectify's guarded branch and plan_gate's veto
+    detection; tolerates garbage (absent-as-no)."""
+    return isinstance(step, dict) and str(step.get("result") or "").endswith(_REVIEW_STAMP_SUFFIX)
+
+
 def set_status(plan: list[dict], step_id: int, status: str) -> list[dict]:
     """Set a step's status, keeping the status/result pairing intact (gotcha #6): the execution
     pointer is `result is None`, so a TERMINAL status on an un-run step must also stamp a result
@@ -124,7 +143,7 @@ def set_status(plan: list[dict], step_id: int, status: str) -> list[dict]:
     step["status"] = status
     if status in TERMINAL_STATUSES:
         if step.get("result") is None:
-            step["result"] = f"marked {status} at plan review — the step did not run"
+            step["result"] = review_stamp(status)
     else:
         step["result"] = None
     return plan

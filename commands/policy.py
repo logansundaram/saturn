@@ -4,8 +4,9 @@
 policy.py consolidated the five gate-relaxation mechanisms into one object; this command is that
 object's front door. The levers live here as subcommands (`risk` moves a tool's tier, `allow`
 edits the run_shell prefix allowlist, `open` is the gate-off view). The historical top-level
-spellings (/risk, /allow, /autoapprove) stay registered and delegate to the exact same handler
-functions, so the two spellings can never drift.
+spellings (/risk, /allow, /autoapprove, /yolo) were CUT in the 2026-07-06 surface trim — they
+land on _RENAMED pointers to the /policy subcommands, so muscle memory still lands softly and
+there is exactly ONE spelling to learn (and zero parallel registrations to audit).
 """
 
 from __future__ import annotations
@@ -14,12 +15,12 @@ from commands._framework import command, _print
 from commands._utils import is_list_verb, is_remove_verb, parse_toggle_status, split_save_flag
 
 
-# ── /policy risk — one tool's tier (also the legacy /risk) ───────────────────────────────────
+# ── /policy risk — one tool's tier ───────────────────────────────────────────────────────────
 
 
 def risk_handler(ctx, args):
-    """`/policy risk` · `/risk` — override one tool's approval tier live; --save persists it to
-    the policy file; `reset` restores the declared tier. One handler behind both spellings."""
+    """`/policy risk` — override one tool's approval tier live; --save persists it to
+    the policy file; `reset` restores the declared tier."""
     from trust import policy
     from tools import registry
     from tools.registry import tool as TOOLS, risk_of
@@ -79,11 +80,11 @@ def risk_handler(ctx, args):
         _print(f"  {name}: {old} -> {tier} (session only; add --save to persist).")
 
 
-# ── /policy allow — the run_shell prefix allowlist (also the legacy /allow) ──────────────────
+# ── /policy allow — the run_shell prefix allowlist ───────────────────────────────────────────
 
 
 def allow_handler(ctx, args):
-    """`/policy allow` · `/allow` — the persisted run_shell prefix allowlist. `add <prefix>` is
+    """`/policy allow` — the persisted run_shell prefix allowlist. `add <prefix>` is
     the unambiguous escape hatch (mirrors /docs add) because the shared REMOVE_VERBS vocabulary
     (remove/rm/delete/del/forget/drop) is also a set of common SHELL words: a removal verb routes
     to removal ONLY when the target resolves to a stored entry — never a silent guess. The shared
@@ -161,12 +162,11 @@ def _allow_add(policy, prefix: str) -> None:
         _print(f"  `{prefix}` is already allowlisted.")
 
 
-# ── /policy open — the gate-off view (also the legacy /autoapprove · /yolo) ──────────────────
+# ── /policy open — the gate-off view ─────────────────────────────────────────────────────────
 
 
 def _gate_status() -> str:
-    """The one gate status line, shared by bare `/policy open` and bare `/autoapprove` — a pure
-    readout, never a flip."""
+    """The one gate status line for bare `/policy open` — a pure readout, never a flip."""
     from trust import policy
 
     if policy.gate_off():
@@ -175,7 +175,7 @@ def _gate_status() -> str:
 
 
 def open_handler(ctx, args):
-    """`/policy open` · `/autoapprove` · `/yolo` — the gate-off view of the threshold. Bare is a
+    """`/policy open` — the gate-off view of the threshold. Bare is a
     STATUS readout; opening the gate is ALWAYS an explicit verb (a habit-typed bare command must
     never silently drop the main safety check)."""
     from trust import policy
@@ -189,12 +189,13 @@ def open_handler(ctx, args):
         return
     policy.set_gate_off(new)
     if new:
-        _print("  ┏━ ⚠  AUTO-APPROVE ON")
-        _print("  ┃  the approval gate is OPEN: auto-approve threshold =")
-        _print("  ┃  destructive, so every tool call — including side-")
-        _print("  ┃  effecting and destructive ones — runs WITHOUT asking.")
-        _print("  ┃  /policy open off to restore the previous threshold.")
-        _print("  ┗━")
+        # Loud but compact (2026-07-06 declutter): one ⚠ line + one pointer — the heavy frame
+        # is reserved for the approval gate and plan review (the ui design vocabulary), and the
+        # status bar carries ⚠ GATE OFF for as long as the threshold sits open.
+        _print("  ⚠ AUTO-APPROVE ON — every tool call, including destructive ones, runs "
+               "WITHOUT asking.")
+        _print("  (/policy open off restores the previous threshold; the status bar shows "
+               "⚠ GATE OFF until then)")
     else:
         _print(f"  auto-approve off — gate threshold restored to `{policy.tier()}`.")
 
@@ -209,28 +210,33 @@ def open_handler(ctx, args):
           "allow [list | <prefix> | add <prefix> | remove <n|prefix>] | "
           "open [on|off]]",
     details="""
-Every gate-relaxation mechanism (/risk, /allow, /autoapprove, runtime.auto_approve, --yolo) is a
-view of one policy object. This command IS that object's front door — its levers:
+Every gate-relaxation mechanism (this command's levers, runtime.auto_approve, Shift+Tab cycling,
+the headless --yolo flag) is a view of one policy object. This command IS that object's front
+door — its levers:
 
   /policy                     the live posture: auto-approve threshold, persisted risk overrides,
                               the shell allowlist (with count), airgap + redaction + quarantine.
   /policy risk <tool> <tier> [--save]
                               override one tool's tier live (tiers prefix-match: read/side/dest);
                               --save persists to permissions.json; `<tool> reset` restores the
-                              declared tier. (/risk is the same handler.)
+                              declared tier.
   /policy allow [<prefix>]    allowlist a run_shell prefix that skips the gate (persisted;
-                              token-boundary, case-insensitive, never with shell metacharacters);
-                              bare (or `allow list` / `ls`) shows the stored prefixes;
+                              token-boundary, case-insensitive, never with shell metacharacters —
+                              chained/redirected commands always face the human); bare (or
+                              `allow list` / `ls`) shows the stored prefixes;
                               `allow add <prefix>` always ADDS — the escape hatch when the prefix
                               itself starts with a removal word (`/policy allow add del *.tmp`)
                               or IS a lone reserved word (`/policy allow add ls`);
                               `allow remove <n|prefix>` revokes (rm/delete/del/forget/drop work
                               too, but only when the target is a stored number/prefix — anything
-                              else is reported, never guessed). (/allow is the same handler.)
+                              else is reported, never guessed). Allow narrow, read-only prefixes
+                              (`git status`, `ls`) — not broad ones (`git`, `python`).
   /policy open [on|off]       the gate-off view: bare = STATUS only; `on` raises the threshold to
                               `destructive` (nothing prompts — the loud banner), `off` restores
                               the prior threshold. Opening is always an explicit verb.
-                              (/autoapprove · /yolo are the same handler.)
+
+(The old top-level spellings /risk, /allow, /autoapprove, /yolo were folded in here 2026-07-06 —
+typing one prints a pointer to its subcommand.)
 """,
 )
 def _policy_cmd(ctx, args):
@@ -276,121 +282,9 @@ def _policy_cmd(ctx, args):
            "(or /policy --help)")
 
 
-# ── top-level muscle-memory spellings ─────────────────────────────────────────────────────────
-# /risk, /allow and /autoapprove stay first-class commands but are registered HERE, next to the
-# handlers they delegate to: one file owns every view of the gate policy, so there is no parallel
-# logic to audit and nothing to drift.
-
-
-@command(
-    "risk",
-    "Override a tool's approval risk tier (live; --save persists it).",
-    usage="/risk <tool> read_only|side_effecting|destructive [--save]  ·  /risk <tool> reset",
-    details="""
-Changes the approval risk tier of a single tool. The approval gate reads the tier live, so the
-change takes effect on the next turn. With no args, lists every tool's current tier (a * marks a
-persisted override).
-
-Tiers:
-  read_only       no side effects; runs freely, never prompts
-  side_effecting  writes / external actions; prompts for approval
-  destructive     irreversible / dangerous; prompts for approval
-
-Persistence: by default a change lasts only this session. Add --save to write it to the policy
-file (database/permissions.json) so it survives a restart. `/risk <tool> reset` restores the
-tool's declared tier and removes any persisted override.
-
-Canonical home: /policy risk — this top-level spelling is kept for muscle memory and delegates
-to the exact same handler (zero drift between the two). /policy is the one gate-policy object;
-its other levers are /policy allow (shell prefixes) and /policy open (the threshold itself —
-the same `runtime.auto_approve` knob Shift+Tab cycles).
-
-Tier names prefix-match: read / side / dest (or just r / s / d) all work.
-
-Examples:
-  /risk                                  list current tiers
-  /risk write_file destructive           tighten one tool for this session
-  /risk web_search side --save           require approval for web_search, permanently
-  /risk web_search reset                 back to its declared tier (and forget the override)
-""",
-)
-def _risk(ctx, args):
-    risk_handler(ctx, args)
-
-
-@command(
-    "allow",
-    "Allowlist shell command prefixes that skip the approval gate (persisted).",
-    usage="/allow [list | <prefix words…> | add <prefix words…> | remove <n|prefix>]",
-    details="""
-run_shell is `destructive`, so every command normally faces the approval gate. /allow stores
-command PREFIXES that you trust — a run_shell call whose command starts with one runs without
-prompting, so the gate stops training you to mash `y` on `git status` while still guarding
-everything else.
-
-  /allow                       list the stored prefixes (also: list, ls)
-  /allow git status            allow `git status`, `git status --short`, …
-  /allow add del *.tmp         explicit add — the spelling for a prefix whose FIRST word is
-                               itself a removal verb (rm/del/delete/drop/forget) or a lone
-                               reserved word (`/allow add ls` allowlists `ls` itself; a lone
-                               `list`/`ls` shows the list instead of granting it)
-  /allow remove 2              remove a prefix by its list number
-  /allow remove git status     …or by its exact text
-                               (rm / delete / del / forget / drop work too — the shared
-                               removal vocabulary; a removal verb only removes when the
-                               target resolves, otherwise it points you at `add`)
-
-Matching is strict on purpose:
-  - token-boundary: `git status` does NOT match `git statusx`
-  - case-insensitive
-  - a command containing ; | & < > ` $ or a newline is NEVER exempt, even if its start
-    matches — chaining/redirection can smuggle anything behind a trusted prefix, so those
-    always face the human.
-
-Persisted to the policy file database/permissions.json (alongside /policy risk --save
-overrides), so it survives restarts.
-
-Canonical home: /policy allow — this top-level spelling is kept for muscle memory and delegates
-to the exact same handler (zero drift between the two). Allow narrow, read-only prefixes
-(`git status`, `git log`, `ls`) — not broad ones (`git`, `python`).
-""",
-)
-def _allow(ctx, args):
-    allow_handler(ctx, args)
-
-
-@command(
-    "autoapprove",
-    "The gate-off view: show the gate status, or open/close it explicitly.",
-    aliases=("yolo",),
-    usage="/autoapprove [on|off]   (bare = status readout, never a flip)",
-    details="""
-Shows or moves the gate-off view of the ONE gate policy (policy.py): `on` raises the
-`runtime.auto_approve` threshold to `destructive` so every tier auto-approves; `off` restores
-the threshold that was in effect before. Bare /autoapprove is a STATUS readout — opening the
-gate is ALWAYS an explicit verb, so a habit-typed bare command can never silently drop the main
-safety check. The status bar shows ⚠ GATE OFF for as long as the threshold sits there, however
-it got there (this command, Shift+Tab cycling, or config.yaml).
-
-⚠  `on` removes the main safety check. Use it only when you trust the task and the tools.
-Prefer /policy risk to relax a single tool, or /policy allow to exempt specific shell commands,
-while keeping the gate on. Session-only — it never persists.
-
-Canonical home: /policy open — this top-level spelling is kept for muscle memory and delegates
-to the exact same handler (zero drift between the two).
-
-Examples:
-  /autoapprove      status: the prompting threshold, or ⚠ gate OFF
-  /autoapprove on
-  /autoapprove off
-  /yolo on          alias — same thing (mirrors the headless --yolo flag)
-""",
-)
-def _autoapprove(ctx, args):
-    open_handler(ctx, args)
-
-
-# (The /dryrun command — counterfactual "plan + decide everything, execute nothing" mode — was
-# CUT 2026-07-03: redundant twice over (/plan review shows intent before execution, the gate
-# shows every call before it runs) and misleading on multi-step turns, where every decision past
-# the first stubbed observation is fiction. _RENAMED points the old spelling at /plan.)
+# (The top-level muscle-memory spellings — /risk, /allow, /autoapprove(/yolo) — were CUT in the
+# 2026-07-06 surface trim: three registered commands whose only job was to delegate to the
+# subcommands above. _RENAMED points each at its /policy lever, same soft landing as /dryrun —
+# which was CUT 2026-07-03: redundant twice over (/plan review shows intent before execution,
+# the gate shows every call before it runs) and misleading on multi-step turns, where every
+# decision past the first stubbed observation is fiction.)

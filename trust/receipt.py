@@ -2,14 +2,14 @@
 Trust receipt — the ambient trust surfaces: the per-answer receipt segment, the session-start
 posture line, and the one-time discovery hints.
 
-`/privacy egress` proves what left the machine on demand; the trust receipt proves it on EVERY
-answer: the one-line stats receipt under each response gains a trust segment — `local-only` when
-nothing left the machine this turn, or the bytes/host summary when something did, plus how many
-calls faced the approval gate. The privacy claim stops being something the user has to go check
-and becomes something every single answer carries. `posture_spans` is the session-level twin:
-the trust posture (gate tier, inference locality, boundary modes) as one line of spans rendered
-under the banner, so the posture is ambient from the first prompt instead of parked behind
-`/privacy` and `/policy`.
+**Calm by default, loud on deviation (2026-07-06 declutter — owner call):** the ambient
+surfaces speak only when something actually crossed the boundary or was loosened. The receipt's
+trust segment appears when the turn SENT something, was BLOCKED by air-gap, or faced the gate —
+a fully-local turn adds nothing to the stats line. `posture_spans` is the session-level twin: a
+facet at its safe default (gate read_only, local inference, quarantine gate) says nothing, so a
+stock local install renders no posture line at all. The affirmative reassurance ("everything is
+local, here's proof") lives on demand behind `/privacy` and `/glass` — silence in the ambient
+flow means the defaults hold.
 
 Data sources: the egress ledger (`egress.py` — the turn's slice of it, marked at turn start) and
 the gated-call counter the approval UI increments. `trust_spans` is the pure builder (testable
@@ -17,8 +17,9 @@ with synthetic events) — it returns `(text, kind)` spans so the renderer can c
 semantically (the same green/yellow/red vocabulary the Glass Box uses for the identical facts);
 `trust_parts` is its plain-text view, `turn_spans`/`turn_parts` the live wrappers the response
 renderer calls. The live wrappers treat an unusable mark (0, or one a `/privacy egress clear`
-wiped events past) as UNKNOWN — the receipt must never assert 'local-only' over a slice that may
-be missing real sends (the same contract `/trace answer` applies before trusting the slice).
+wiped events past) as UNKNOWN — silence never makes a claim, but a slice that may be HIDING
+sends still says `egress unknown` rather than blending into the calm (the same contract
+`/trace answer` applies before trusting the slice).
 
 `runtime.receipt` (read live, default on) switches the segment off for users who want the plain
 stats receipt back. Imports only config + egress + textutil (leaves), so the TUI can import it
@@ -40,7 +41,7 @@ def enabled() -> bool:
 def mark() -> int:
     """The turn-start egress mark — the seq the next event will carry, NOT a ledger index (the
     cap-trim and `/privacy egress clear` shift indexes, and a stale index would make the receipt
-    read 'local-only' over a turn that sent). Hand back to `turn_parts`."""
+    stay silent over a turn that sent). Hand back to `turn_parts`."""
     return egress.next_seq()
 
 
@@ -68,19 +69,18 @@ def _gated_span(gated_calls: int) -> "tuple[str, str]":
 
 def trust_spans(events: list, gated_calls: int = 0) -> list[tuple[str, str]]:
     """The receipt's trust segment from one turn's egress events + gated-call count, as
-    `(text, kind)` spans — kind ∈ `local`|`sent`|`blocked`|`gated` — so the styled renderer can
+    `(text, kind)` spans — kind ∈ `sent`|`blocked`|`gated` — so the styled renderer can
     color each fact semantically while the plain path prints the identical bare text.
 
-    `local-only` when nothing was sent; otherwise a compact send summary (count · bytes · first
-    host, `+n` for more). Blocked attempts (air-gap) and gated calls append when present.
-    Accounting comes from egress.summarize_events — the same aggregation the Glass Box and
-    /privacy egress use, so the receipt can never disagree with them."""
+    Deviation-only: EMPTY when nothing was sent, blocked, or gated (the calm local turn — the
+    receipt is then just the dim run stats); otherwise a compact send summary (count · bytes ·
+    first host, `+n` for more), blocked attempts (air-gap), and the gated count. Accounting
+    comes from egress.summarize_events — the same aggregation the Glass Box and /privacy egress
+    use, so the receipt can never disagree with them."""
     agg = egress.summarize_events(events)
 
     spans: list[tuple[str, str]] = []
-    if not agg["sent"]:
-        spans.append(("local-only", "local"))
-    else:
+    if agg["sent"]:
         hosts = agg["hosts"]
         label = f"⇅ {agg['sent']} send{'' if agg['sent'] == 1 else 's'}"
         if agg["bytes"]:
@@ -107,8 +107,9 @@ def turn_spans(since_mark: int, gated_calls: int = 0) -> list[tuple[str, str]]:
     """The live trust spans for the turn whose first event would carry seq `since_mark` (from
     `mark()` at turn start). A mark of 0 (no turn recorded — headless, or before the first turn)
     or one that `/privacy egress clear` wiped events past means the slice may be MISSING real
-    sends — render the honest unknown (kind `unknown`) instead of asserting 'local-only', the
-    same guard `/trace answer` applies before trusting the live slice."""
+    sends — render the honest unknown (kind `unknown`) instead of blending into the calm
+    no-deviation silence, the same guard `/trace answer` applies before trusting the live
+    slice."""
     if since_mark <= 0 or egress.cleared_since(since_mark):
         spans: list[tuple[str, str]] = [("egress unknown", "unknown")]
         if gated_calls:
@@ -124,33 +125,37 @@ def turn_parts(since_mark: int, gated_calls: int = 0) -> list[str]:
 
 # ── session posture line ───────────────────────────────────────────────────────────────────────
 # The startup twin of the per-answer receipt: one line under the banner stating the live trust
-# posture, so "what can this session do / where does inference run" is visible before the first
-# query rather than a /privacy invocation away. Same (text, kind) span shape as trust_spans so the
-# renderer colors semantically and the plain path prints identical words.
+# posture — but DEVIATION-ONLY (2026-07-06 declutter): a stock local install prints nothing at
+# all, and the line speaks only when something is loosened or leaves the machine. Same
+# (text, kind) span shape as trust_spans so the renderer colors semantically and the plain path
+# prints identical words.
 
 
 def posture_spans() -> list[tuple[str, str]]:
-    """The session's live trust posture as (text, kind) spans — kind ∈ ok|warn|risk|accent|dim.
-    Loud states lead (gate open, air-gap — the same flags the status bar and rprompt
-    carry); the calm facts follow (gate tier, inference locality, quarantine, redaction).
-    Every read is live and best-effort: a facet that can't be derived is OMITTED rather
-    than guessed — this line must never claim a posture it didn't read."""
+    """The session's live trust posture as (text, kind) spans — kind ∈ ok|warn|risk|accent|dim —
+    deviation-only: a facet at its safe default (gate read_only · local inference · quarantine
+    gate) says NOTHING, so the default posture renders no line at all; silence means the
+    defaults hold. What speaks: a loosened/open gate, the air-gap seal, off-machine inference,
+    a weakened quarantine, and the redaction mode once an off-machine boundary exists. The
+    affirmative readout lives behind /privacy. Every read is live and best-effort: a facet that
+    can't be derived is OMITTED rather than guessed — this line must never claim a posture it
+    didn't read."""
     spans: list[tuple[str, str]] = []
     try:
         cfg = get_config()
     except Exception:
         return spans
 
-    # Gate tier. At `destructive` the gate is not "at a tier", it's OPEN — same loud label the
-    # status bar uses for as long as that holds.
+    # Gate tier — only above the read_only default. At `destructive` the gate is not "at a
+    # tier", it's OPEN — same loud label the status bar uses for as long as that holds.
     try:
         from trust import policy
 
         tier = policy.tier()
         if tier == "destructive":
             spans.append(("⚠ GATE OFF", "risk"))
-        else:
-            spans.append((f"gate {tier}", "ok" if tier == "read_only" else "warn"))
+        elif tier != "read_only":
+            spans.append((f"gate {tier}", "warn"))
     except Exception:
         pass
 
@@ -161,7 +166,8 @@ def posture_spans() -> list[tuple[str, str]]:
     except Exception:
         pass
 
-    # Inference locality — the headline privacy fact: where the words come from.
+    # Inference locality — the headline privacy fact, but only when the words LEAVE the
+    # machine; all-local is the expected default and stays silent.
     all_local = None
     try:
         # The one locality classifier + the one where-list assembly — never re-rolled.
@@ -169,39 +175,40 @@ def posture_spans() -> list[tuple[str, str]]:
 
         inf = _inference()
         all_local = bool(inf.get("all_local"))
-        if all_local:
-            spans.append(("inference local", "ok"))
-        elif inf.get("remote_ollama"):
-            # A remote OLLAMA_HOST: the words come from another machine even though the
-            # provider says "ollama" — name the endpoint, never let it read as local.
-            spans.append(
-                (f"inference off-machine: {', '.join(offmachine_destinations(inf))}", "warn")
-            )
-        else:
-            cloud = ", ".join(offmachine_destinations(inf)) or "cloud"
-            spans.append((f"inference cloud: {cloud}", "warn"))
+        if not all_local:
+            if inf.get("remote_ollama"):
+                # A remote OLLAMA_HOST: the words come from another machine even though the
+                # provider says "ollama" — name the endpoint, never let it read as local.
+                spans.append(
+                    (f"inference off-machine: {', '.join(offmachine_destinations(inf))}", "warn")
+                )
+            else:
+                cloud = ", ".join(offmachine_destinations(inf)) or "cloud"
+                spans.append((f"inference cloud: {cloud}", "warn"))
     except Exception:
         pass
 
-    # Quarantine / redaction — calm one-worders; a disabled guard warms up.
+    # Quarantine — only when weakened below the `gate` default. The EFFECTIVE mode, not the raw
+    # config string: quarantine.mode() lowercases and falls back to "gate" on an invalid value,
+    # so `runtime.quarantine: none` runs gated and renders as the silent default it actually is
+    # — never an echoed string the system ignored. (Lazy import of a leaf — no cycle.)
     try:
-        # The EFFECTIVE mode, not the raw config string: quarantine.mode() lowercases and falls
-        # back to "gate" on an invalid value, so `runtime.quarantine: none` runs gated — this
-        # line must state the mode in force, never echo a string the system ignored. (Lazy
-        # import of a leaf — quarantine pulls only config+textutil, no cycle.)
         from trust import quarantine
 
         q = quarantine.mode()
-        spans.append((f"quarantine {q}", "warn" if q == "off" else "dim"))
+        if q != "gate":
+            spans.append((f"quarantine {q}", "warn" if q == "off" else "dim"))
     except Exception:
         pass
+
+    # Redaction — only meaningful once an off-machine boundary exists to redact for: `off` on a
+    # live boundary is the warning; an active mode is the calm qualifier of the inference span.
     try:
         from trust import redaction
 
-        mode = redaction.mode()
-        # Redaction only matters when something cloud-bound exists to redact for.
-        spans.append((f"redaction {mode}",
-                      "warn" if (mode == "off" and all_local is False) else "dim"))
+        if all_local is False:
+            mode = redaction.mode()
+            spans.append((f"redaction {mode}", "warn" if mode == "off" else "dim"))
     except Exception:
         pass
     return spans

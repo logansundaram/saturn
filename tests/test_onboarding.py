@@ -14,7 +14,7 @@ from config import Config
 # --- doctor: optional-key rendering --------------------------------------------------------
 
 def test_key_line_set_is_ok_with_no_fix_arrow():
-    line = config_cmd._key_line("TAVILY_API_KEY", True, frozenset())
+    line = config_cmd._key_line("SOME_API_KEY", True, frozenset())
     assert line.startswith("ok")
     assert "->" not in line
 
@@ -29,8 +29,12 @@ def test_key_line_missing_required_gets_the_fix_arrow():
     assert "-> /config key set SOME_REQUIRED_KEY" in line
 
 
-def test_key_line_optional_tavily_names_the_keyless_fallback():
-    line = config_cmd._key_line("TAVILY_API_KEY", False, frozenset())
+def test_key_line_optional_note_renders_when_registered(monkeypatch):
+    # _OPTIONAL_KEY_NOTES is empty today (no managed keys since the API-less web pivot,
+    # 2026-07-06) — the per-key "why missing is fine" seam itself must keep working for when
+    # a managed key returns.
+    monkeypatch.setitem(config_cmd._OPTIONAL_KEY_NOTES, "SOME_API_KEY", "keyless fallback active")
+    line = config_cmd._key_line("SOME_API_KEY", False, frozenset())
     assert line.startswith("optional")
     assert "keyless fallback active" in line
     assert "->" not in line  # fix-arrow vocabulary reserved for genuinely broken items

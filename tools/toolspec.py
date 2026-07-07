@@ -29,7 +29,7 @@ import diag
 
 # Risk tiers, low -> high. Mirrors config.RISK_ORDER; duplicated here only because BOTH modules
 # are project-import-free leaves (neither may import the other) — everything else imports the
-# tiers from one of the two (e.g. /risk reads this one). A tool runs without prompting iff its
+# tiers from one of the two (e.g. /policy risk reads this one). A tool runs without prompting iff its
 # tier is at or below the configured `runtime.auto_approve` tier (see nodes/approval.py).
 RISK_TIERS = ("read_only", "side_effecting", "destructive")
 
@@ -80,7 +80,7 @@ def register_tool_object(t, risk: str = "destructive", *, retrieval: bool = Fals
     The dynamic-source counterpart of @register_tool: a tool that can't be written as a decorated
     local function — e.g. a remote MCP tool built at runtime from a server's listing
     (mcp_client.py) — registers through here and flows into the exact same collections, so the
-    approval gate, /tools, /risk, and the planner catalog treat it like any local tool.
+    approval gate, /tools, /policy risk, and the planner catalog treat it like any local tool.
 
     Unlike @register_tool (a developer-facing decorator, where an unknown tier is a programming
     error worth crashing on), `risk` here may originate from user config or a remote source, so an

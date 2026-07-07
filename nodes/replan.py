@@ -19,7 +19,7 @@ import diag
 from langchain.messages import HumanMessage
 
 from core.messages import planner_sys_msg
-from core.plan_context import original_request, plan_txt
+from core.plan_context import original_request, plan_txt, vetoes_block
 from core.state import AgentState
 from core.structured import (
     _PlanOut,
@@ -35,7 +35,11 @@ _MAX_NEW_STEPS = 10
 
 
 def _revision_instruction(state: AgentState) -> str:
-    return (
+    # The user's plan-review vetoes lead the instruction when present: the redraft must never
+    # reinstate work the human explicitly removed (plan_context.vetoes_block — the same block
+    # rectify's judge sees, so the two ends of the replan seam can't disagree about scope).
+    veto = vetoes_block(state)
+    return ((veto + "\n\n") if veto else "") + (
         f"The plan so far:\n{plan_txt(state.get('plan') or [])}\n\n"
         f"It needs fixing: {state.get('reasoning') or '(no reason recorded)'}\n\n"
         "Produce ALL the remaining steps needed to FULLY complete the request, "
@@ -89,9 +93,14 @@ def replan_node(state: AgentState):
     )
 
     done_descs = {str(s.get("label") or "").strip().lower() for s in done}
+    # Mechanical backstop for the veto instruction above: a redraft that resurrects a
+    # user-removed step VERBATIM drops here (exact label match, case-insensitive); a reworded
+    # resurrection is the prompt's job to prevent.
+    vetoed = {str(v).strip().lower() for v in state.get("plan_vetoes") or []}
     new_steps = [
         s for s in to_steps(draft)
         if str(s.get("label") or "").strip().lower() not in done_descs
+        and str(s.get("label") or "").strip().lower() not in vetoed
     ]
     if not new_steps:
         # A failed/empty redraft keeps the pending steps as they were — degrading to the old

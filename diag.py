@@ -1,8 +1,8 @@
 """
 Lightweight diagnostic log.
 
-Node/tool timing lines and soft, non-fatal warnings (a planner structured-output miss, the Tavily
-fallback notice, judge failures) are diagnostics — useful when debugging, noise during normal use.
+Node/tool timing lines and soft, non-fatal warnings (a planner structured-output miss, judge
+failures) are diagnostics — useful when debugging, noise during normal use.
 They used to `print()` straight to stdout, where they collided with the rich.Live status bar and
 the styled trace rail in the TUI. They now go here instead: appended to a file under `logging/`
 (gitignored) and silent on the console by default. Set the env var `SATURDAY_DEBUG=1` to also echo

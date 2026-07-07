@@ -427,9 +427,9 @@ def test_config_refuses_to_set_a_section(ctx, capsys, sandboxed_config, recordin
     YAML — refused at the door, with the child keys listed."""
     cfg = sandboxed_config
     before = dict(cfg.get("web"))
-    _config(ctx, ["web", "tavily"])
+    _config(ctx, ["web", "foo"])
     out = _out(capsys)
-    assert "is a section" in out and "web.provider" in out
+    assert "is a section" in out and "web.max_results" in out
     assert cfg.get("web") == before  # nothing replaced
     assert recording_persist == []
 

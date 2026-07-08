@@ -62,6 +62,11 @@ _ATTEMPT_TEMPS = (0.0, 0.5, 0.7)
 # missing one (write "the count" when the count is 0 is a legitimate write, not a fabrication).
 _EMPTY_MARKERS = {"", "[]", "()", "{}", "none"}
 
+# The evidence sentinel the write gate's fail-closed default carries, so the skip message can
+# distinguish "the judge examined the results and the value is absent" from "the judge was
+# unavailable so we fail closed" — both block the write, but the disclosure should be honest.
+_GATE_UNAVAILABLE = "gate-unavailable (fail-closed)"
+
 
 def _is_empty_result(res) -> bool:
     if res is None:
@@ -108,9 +113,19 @@ def _write_gate(state: AgentState, step: dict) -> "str | None":
         WriteGate,
         WRITE_GATE_FORMAT,
         WRITE_GATE_SHAPE,
-        default=WriteGate(present=True, evidence="gate empty; allow"),
+        # Fail-CLOSED: when the judge is unavailable (every attempt errored, or nothing parsed)
+        # structured() returns this default. The gate is armed precisely because a value could be
+        # bridging in unverified, so an unverifiable verdict must BLOCK the write — not wave it
+        # through. The human approval gate still fronts the filesystem action, but a value the
+        # gate could not vouch for should never reach it.
+        default=WriteGate(present=False, evidence=_GATE_UNAVAILABLE),
     )
     if not gate.present:
+        if gate.evidence == _GATE_UNAVAILABLE:
+            return (
+                "skipped write: the write gate could not verify the value to write "
+                "(the judge was unavailable), so nothing was written — fail-closed."
+            )
         return (
             "skipped write: the value to write is not present in the gathered "
             "results, so nothing was written (a file must not be created with a "

@@ -66,7 +66,13 @@ class WriteGate(BaseModel):
     (the request itself, or the gathered results). Same evidence-first design as above."""
 
     evidence: str = ""
-    present: bool = True  # fail-open: over-blocking legitimate writes is the worse failure
+    # fail-CLOSED: the gate is only ARMED when a search ran or a step failed, i.e. exactly when a
+    # value could be getting bridged in from somewhere it wasn't verified — so an unparseable /
+    # missing verdict must BLOCK the write, never wave it through. (ResolutionCheck above stays
+    # fail-open on purpose: over-cancelling a legitimate plan is its worse failure; here the
+    # worse failure is persisting a possibly-fabricated value.) execute.py's call-site `default`
+    # matches this.
+    present: bool = False
 
 
 # ── flat schemas + shape hints ────────────────────────────────────────────────────────────────

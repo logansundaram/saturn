@@ -15,16 +15,36 @@ from core.structured import (
 )
 
 
+# The result recorded when the planner produces nothing parseable. The "error:" prefix makes
+# rectify see a failed step (and update_plan/synthesize treat it as an incident to disclose).
+PLAN_PARSE_ERROR = (
+    "error: could not form a plan for this request — the planner returned no valid steps. "
+    "Any answer must be grounded in information actually gathered and must not invent files, "
+    "data, or facts."
+)
+
+
 def _fallback_plan() -> list[dict]:
-    """One generic step so the engine can still resolve the request when the planner emits
-    nothing parseable — the execute node treats a tool-less step as pure reasoning."""
+    """The planner emitted nothing parseable after the hardened layer's temp-escalating retries.
+
+    The OLD fallback was a single tool-less "reasoning" step — but the execute node runs that by
+    asking the model to answer from its own priors with NO grounding, so a planner failure
+    silently became a confident, potentially fabricated answer with no signal that anything went
+    wrong (a legitimate no-tool request already parses to its OWN `tool:"none"` step, so reaching
+    this path always means the planner FAILED, never "no tool was needed").
+
+    Instead, record an explicit PARSE_ERROR incident: rectify attempts a bounded replan (a
+    transient parse failure often succeeds on a fresh draft), and if planning keeps failing the
+    turn lands at an honest synthesize that DISCLOSES it could not form a plan — rather than
+    presenting an ungrounded answer as authoritative. `result` is set (status `error`) so the
+    step is a recorded incident, not the execution pointer."""
     return [
         {
             "step_id": 1,
-            "label": "Resolve the user's request",
-            "status": "pending",
+            "label": "Plan the request",
+            "status": "error",
             "intended_tool": None,
-            "result": None,
+            "result": PLAN_PARSE_ERROR,
             "needs_resolution": False,
         }
     ]
@@ -36,8 +56,9 @@ def plan_node(state: AgentState):
     recorded on it as it executes — so plan quality directly drives execution.
 
     Structured output goes through the hardened path (core/structured.py: flat schema, shape
-    hint, JSON salvage, temp-escalating retries); a total parse failure degrades to a single
-    generic step rather than aborting the turn."""
+    hint, JSON salvage, temp-escalating retries); a total parse failure records an explicit
+    parse-error incident (see _fallback_plan) rather than aborting the turn OR silently answering
+    from the model's priors."""
     start = time.perf_counter()
 
     prompt = [
@@ -61,7 +82,7 @@ def plan_node(state: AgentState):
     plan = to_steps(draft)
 
     if not plan:
-        diag.log("plan_node : falling back to a single generic step")
+        diag.log("plan_node : planner returned nothing parseable — recording a parse-error incident")
         plan = _fallback_plan()
 
     diag.log(f"plan_node : {time.perf_counter() - start:.4f}s ({len(plan)} steps)")

@@ -320,6 +320,23 @@ def test_write_gate_armed_zero_goes_to_the_judge_not_the_skip(monkeypatch):
     assert ex._write_gate(_state(plan), plan[2]) is None
 
 
+def test_write_gate_fails_closed_when_judge_unavailable(monkeypatch):
+    # When the judge can't produce a verdict, structured() returns the caller's `default`. That
+    # default must be fail-CLOSED (present=False) so an unverifiable write is skipped, not waved
+    # through — and the skip must disclose it was the gate, not a confirmed absence.
+    monkeypatch.setattr(ex, "structured", lambda *a, default=None, **k: default)
+    plan = [_step(1, "search_files", result="unrelated hit", status="done"),
+            _step(2, "write_file")]
+    blocked = ex._write_gate(_state(plan), plan[1])
+    assert blocked and "fail-closed" in blocked and "could not verify" in blocked
+
+
+def test_write_gate_default_is_fail_closed():
+    # The WriteGate parse model itself defaults present=False (a partial parse missing the field
+    # blocks, not allows) — belt-and-suspenders with the constrained decoder's required fields.
+    assert st.WriteGate().present is False
+
+
 # ── nodes/rectify: the deterministic short-circuits, in priority order ────────────────────────
 
 

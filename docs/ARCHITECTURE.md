@@ -95,7 +95,7 @@ The whole product is one loop. Reading it end to end explains 80% of the repo:
 | `plan_context.py` | Curated context builders — the engine's LLM calls see request + grounding + earlier step results, never raw message history. |
 | `tool_args.py` | Tool-argument recovery: alias coercion onto real schemas, text-format call parsing (small-model tolerance). |
 | `plan_ops.py` | The plan-review seam: pure plan-editor functions + the `PauseController` that `plan_gate` consults at each boundary. |
-| `compaction.py` | The heavier LLM compaction (`/compact`, auto past threshold) folding old turns into a summary message. |
+| `compaction.py` | The heavier LLM compaction (automatic past threshold) folding old turns into a summary message. |
 | `mentions.py` | `@file` expansion into clamped attachment blocks; drag-and-drop path detection. |
 
 ### `nodes/` — the graph, one file per node
@@ -131,7 +131,7 @@ is the *tool-execution node*, not the `tools/` package (see the name-collision t
 ### `commands/` — the slash-command layer
 `_framework.py` (dispatcher + `@command` registry), `_session.py` (autosave/session store),
 `_utils.py` (shared grammar: removal/list verbs, `--save` parsing, toggle status). Themed
-modules: `conversation.py` (/clear /compact /rewind /retry /resume), `knowledge.py` (/docs
+modules: `conversation.py` (/clear /resume), `knowledge.py` (/docs
 /memory /init /undo), `runtime.py` (/tools /models /mcp), `system.py` (/help /quit
 /update), `config.py` (/config, incl. the `context` subview — the folded-in /context),
 `plan.py` (/plan), `policy.py` (/policy — the legacy /risk /allow /autoapprove spellings were

@@ -200,7 +200,8 @@ the live num_ctx setter (folded in from the old /context):
   /config context                   show the window + current fill + hardware snapshot
   /config context 16384 [--session] resize every local role's window (persists; --session = live only)
   /config context auto [--session]  back to per-model capability windows
-To free the window up rather than resize it, /compact runs the LLM summary over older turns.
+The window also frees itself automatically: older turns are compacted as the context fills
+(runtime.auto_compact past runtime.compact_threshold) — no manual step needed.
 
 /config setup (doctor, check) — first-run / health check: is the Ollama daemon up, are the
 active tier's models pulled, and are the keys the tier needs set, with the exact command to fix

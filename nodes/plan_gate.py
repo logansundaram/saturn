@@ -84,7 +84,7 @@ def plan_gate_node(state: AgentState):
         controller.clear()
         # Built from state.STEER_PREFIX so the standalone form below is recognizable by
         # state.is_steer_message — the consumers that slice the conversation at HumanMessage
-        # boundaries (/rewind, /retry full, _compact_history, the grounding recap) skip it.
+        # boundaries (_compact_history, the grounding recap) skip it.
         note = f"\n{STEER_PREFIX} {req.reason}"
         steer_updates = {
             "rectify": True,

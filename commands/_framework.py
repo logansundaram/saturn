@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import cache
-from typing import Callable, Optional
+from typing import Callable
 
 
 @dataclass
@@ -25,10 +25,6 @@ class CommandContext:
     session_started_at: str = ""
     # Persistent plan-review mode: when on, every turn pauses at the first plan_gate.
     review_plan: bool = False
-    # A query a command wants run as an agent turn IMMEDIATELY after it returns (today only
-    # /retry full, which rewinds the last turn and re-runs its question). The REPL loop consumes
-    # and clears it instead of returning to the prompt.
-    requeue: Optional[str] = None
 
 
 Handler = Callable[["CommandContext", list[str]], None]

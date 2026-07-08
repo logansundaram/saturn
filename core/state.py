@@ -9,8 +9,8 @@ from typing_extensions import TypedDict, Annotated
 # plan_gate injects a mid-turn steering correction as a HumanMessage. When it can't merge the
 # note into the trailing message it appends a STANDALONE HumanMessage carrying this prefix —
 # which is NOT a turn boundary. Everything that slices the conversation by "last HumanMessage"
-# (/rewind's drop_last_turn, /retry full's query lookup, agent._compact_history,
-# compaction.summarize_messages, the grounding recap) must test boundaries via is_turn_start
+# (agent._compact_history, compaction.summarize_messages, the grounding recap) must test
+# boundaries via is_turn_start
 # below — never a hand-rolled isinstance check — or a steered turn gets mis-sliced: the steer
 # note mistaken for the question, the real question compacted away.
 STEER_PREFIX = "[Steering correction from the user, mid-task — adjust your approach accordingly]:"
@@ -28,9 +28,9 @@ def is_turn_start(m) -> bool:
     steer note (that belongs to the turn it corrected) and not a compaction summary (carried
     history, not a question).
 
-    THE turn-boundary predicate. Every conversation slicer (agent._compact_history, /rewind's
-    drop_last_turn, /retry full's _last_query, compaction.summarize_messages, the grounding
-    recap) keys off this one function — the three-clause filter used to be re-spelled at each
+    THE turn-boundary predicate. Every conversation slicer (agent._compact_history,
+    compaction.summarize_messages, the grounding recap) keys off this one function — the
+    three-clause filter used to be re-spelled at each
     site, and the fifth copy drifted (summarize_messages missed the steer check, compacting a
     steered turn's real question away)."""
     # Lazy: keeps core.state import-light. No cycle — compaction imports this module at top,

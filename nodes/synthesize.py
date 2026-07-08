@@ -210,7 +210,7 @@ def _token_sink():
     LangChain chat call, so LangGraph's messages mode never sees it — run_turn streams the
     "custom" channel instead and forwards `{"answer_token": …}` payloads (plus each chunk's raw
     `logprobs`, for the live confidence marking) to the same on_token. No-op outside a streaming
-    graph context (unit tests, /retry's direct node call)."""
+    graph context (e.g. unit tests)."""
     try:
         from langgraph.config import get_stream_writer
 

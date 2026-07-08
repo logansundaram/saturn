@@ -1,14 +1,13 @@
 """
-Conversation-lifecycle commands — every verb that edits what the model carries forward, in one
-module (the /help "conversation" theme; consolidated from one-file-per-command 2026-06-11):
+Conversation-lifecycle commands — the verbs that manage what the model carries forward, in one
+module (the /help "conversation" theme):
 
   /clear    start over (fresh state + clean screen)
-  /compact  fold older turns into one LLM-written summary
-  /rewind   drop the last exchange (files untouched — /undo owns those)
-  /retry    regenerate the last answer, or re-run the whole last turn
   /resume   session persistence (autosave + named sessions)
 
-`drop_last_turn` is the shared engine of /rewind and /retry full.
+(/compact, /rewind, and /retry were CUT 2026-07-07 to trim the "go back / redo" pile-up down to
+/clear + /resume here and /undo for files. Auto-compaction still runs on its own — the engine
+lives in core/compaction.py + app/session._maybe_autocompact, never needing a manual trigger.)
 """
 
 from commands._framework import command, _print
@@ -19,11 +18,9 @@ from commands._session import (
     _sessions_dir,
     _swap_to_messages,
     clear_autosave,
-    write_autosave,
     write_session_file,
 )
 from commands._utils import LIST_VERBS, REMOVE_VERBS
-from textutil import clip
 
 
 # ── /clear ───────────────────────────────────────────────────────────────────────────────────
@@ -104,258 +101,6 @@ def _reprint_banner(ctx) -> None:
         ui.banner(f"{cfg.active_tier}:{model_id('tool_caller')}", len(_tools), n_docs, ctx.db_path)
     except Exception:
         pass
-
-
-# ── /compact ─────────────────────────────────────────────────────────────────────────────────
-@command(
-    "compact",
-    "Summarize older turns into one brief to free up the context window.",
-    aliases=("summarize",),
-    usage="/compact",
-    details="""
-Folds the older turns of this conversation into a single dense, LLM-written summary (via the
-`utility` model), keeping the most recent turn verbatim so follow-ups still resolve. Use it when a
-long session is filling the context window and you'd rather keep going than /reset.
-
-This is the heavier sibling of the automatic per-turn compaction: every turn already collapses old
-turns to their Q&A mechanically (no LLM), and the agent ALSO auto-compacts on its own when the
-context fills past runtime.compact_threshold (default 85%). /compact triggers the LLM summary on
-demand, now.
-
-Lossy by nature — it trades transcript detail for space. Facts, decisions, your stated
-preferences, and open threads are preserved; verbatim phrasing and tool-output detail are not. The
-durable trace (/trace, /trace calls) is untouched. To clear the conversation entirely instead,
-use /reset.
-
-Example:
-  /compact
-""",
-)
-def _compact(ctx, args):
-    from core.compaction import summarize_messages
-
-    msgs = ctx.state.get("messages", [])
-    if len(msgs) < 2:
-        _print("  nothing to compact yet — have a few turns first.")
-        return
-    _print("  compacting older turns (one LLM summary call)…")
-    new_msgs, stats = summarize_messages(msgs)
-    if stats["summarized_turns"] <= 0:
-        _print("  only the most recent turn is present — nothing older to summarize.")
-        return
-    if stats["after"] >= stats["before"]:
-        _print("  summary did not shrink the history — left it unchanged (see logging/diag.log).")
-        return
-    ctx.state["messages"] = new_msgs
-    _print(
-        f"  compacted {stats['summarized_turns']} earlier turn(s): "
-        f"{stats['before']} → {stats['after']} messages. Most recent turn kept verbatim."
-    )
-
-
-# ── /rewind ──────────────────────────────────────────────────────────────────────────────────
-# The conversational complement of /undo: /undo reverts what the last turn did to FILES, /rewind
-# reverts what it did to the CONVERSATION (a derailed answer polluting context, a question you
-# wish you hadn't asked). Repeatable — each /rewind walks one more turn back. Files are
-# deliberately NOT touched (point /undo at those), and the trace keeps its record: rewinding
-# edits what the model sees next turn, never the audit trail.
-
-# What one user message gets echoed back as in the confirmation line.
-_PREVIEW_CHARS = 70
-
-
-def drop_last_turn(ctx) -> "str | None":
-    """Remove the most recent turn (the last HumanMessage and everything after it) from the
-    carried messages, clear the per-turn scratch that referred to it, and re-autosave so a crash
-    can't resurrect what was just rewound. Returns the dropped user query, or None when there was
-    no turn to drop. Shared with /retry full (rewind + re-run)."""
-    from core.state import is_turn_start
-
-    msgs = ctx.state.get("messages", [])
-    # A turn starts at a REAL user message (is_turn_start — THE shared boundary predicate): a
-    # standalone mid-turn steer note belongs to the turn it corrected (slicing there would leave
-    # the question + half a scratchpad behind), and a compaction summary is carried history.
-    human_idxs = [i for i, m in enumerate(msgs) if is_turn_start(m)]
-    if not human_idxs:
-        return None
-    boundary = human_idxs[-1]
-    dropped_query = str(msgs[boundary].content)
-    ctx.state["messages"] = msgs[:boundary]
-
-    # The per-turn scratch (plan, accumulators, current_query) described the turn that just got
-    # dropped — clear it so nothing (notably /retry's re-synthesize) can act on a rewound turn.
-    fresh = ctx.state
-    fresh["current_query"] = ""
-    fresh["plan"] = []
-    fresh["iteration"] = 0
-    fresh["rectify"] = False
-    fresh["reasoning"] = ""
-    fresh["replans"] = 0
-    fresh["tools_called"] = []
-    fresh["tool_results"] = []
-    fresh["documents_retrieved"] = []
-    fresh["tool_events"] = []
-    # Gate decisions belong to the dropped turn too — a lingering record would violate the
-    # "gate_events empty means the human was never asked" invariant /trace answer and exports rely on.
-    fresh["gate_events"] = []
-
-    # write_autosave skips an empty conversation by design (a fresh launch + quit must not wipe
-    # the previous session) — but rewinding the ONLY turn empties it deliberately, so clear the
-    # slot explicitly or a crash/quit + /resume would resurrect the turn that was just rewound.
-    if ctx.state["messages"]:
-        write_autosave(ctx.state)
-    else:
-        clear_autosave()
-    return dropped_query
-
-
-@command(
-    "rewind",
-    "Drop the last exchange from the conversation (files untouched).",
-    usage="/rewind",
-    details="""
-Removes the most recent turn — your last message and everything the agent said and gathered in
-response — from the conversation the model carries forward, so a derailed or unwanted exchange
-stops polluting the context. Repeat to walk further back, one turn per /rewind.
-
-Scope (deliberate):
-  - conversation only — file changes are NOT reverted; /undo does that (the two compose:
-    /rewind + /undo fully unwinds a bad turn).
-  - the trace is NOT rewritten — /trace still shows the full record of what actually ran.
-    Rewinding changes what the model sees next turn, never the audit trail.
-  - the autosave slot is updated immediately, so quitting after a /rewind stays rewound.
-
-See also: /retry (regenerate the last answer), /clear (drop the whole conversation).
-""",
-)
-def _rewind(ctx, args):
-    n_before = len(ctx.state.get("messages", []))
-    dropped = drop_last_turn(ctx)
-    if dropped is None:
-        _print("  nothing to rewind — the conversation is empty.")
-        return
-    n_dropped = n_before - len(ctx.state.get("messages", []))
-    _print(f'  rewound the last turn — dropped {n_dropped} message(s) ("{clip(dropped, _PREVIEW_CHARS)}").')
-    # Count with the SAME boundary predicate drop_last_turn slices by — a compaction summary or
-    # steer note is a HumanMessage but not a turn, so a raw isinstance count here would promise
-    # "1 earlier turn(s) remain" right before the next /rewind says "nothing to rewind".
-    from core.state import is_turn_start
-
-    remaining = sum(1 for m in ctx.state.get("messages", []) if is_turn_start(m))
-    if remaining:
-        _print(f"  {remaining} earlier turn(s) remain; /rewind again to keep walking back.")
-    else:
-        _print("  the conversation is now empty.")
-    _print("  (files were not touched — /undo reverts those.)")
-
-
-# ── /retry ───────────────────────────────────────────────────────────────────────────────────
-# Two depths, matching the two ways a turn disappoints:
-#
-#   bare /retry    the gathering was fine but the ANSWER was weak — re-run only the synthesize
-#                  step over the same gathered results (tool results, retrieved documents,
-#                  draft), replacing the last answer. No tools re-run, no gate, one LLM call.
-#   /retry full    the whole TURN went wrong — rewind it (drop_last_turn above) and re-run the
-#                  same question as a fresh agent turn, plan and tools and all.
-#
-# The bare form leans on the fact that the loop's per-turn scratch (tool_results,
-# documents_retrieved, current_query, plan) persists on state until the NEXT turn starts —
-# exactly the inputs synthesize_node needs. A /clear, /rewind, or /resume in between clears that
-# scratch, so /retry then points the user at /retry full.
-
-
-@command(
-    "retry",
-    "Regenerate the last answer (or re-run the whole last turn).",
-    aliases=("regenerate",),
-    usage="/retry [full]",
-    details="""
-  /retry        regenerate just the final answer from what the last turn already gathered —
-                the same tool results, retrieved documents, and draft are synthesized again
-                (one LLM call, no tools re-run, nothing re-gated) and the new answer replaces
-                the old one in the conversation. Use when the research was right but the
-                write-up wasn't.
-  /retry full   rewind the last turn (like /rewind) and re-run its question from scratch as a
-                fresh agent turn — new plan, new tool calls, the usual gates. Use when the turn
-                itself went sideways.
-
-Notes:
-  - the bare form needs the last turn's working state, which survives until the next query;
-    after /clear, /rewind, or /resume only /retry full is available.
-  - the regenerated answer replaces the previous one in the conversation and the autosave; the
-    trace keeps the original turn's record (the regeneration is not a traced run).
-  - file changes are never re-run or reverted by either form (/undo owns files).
-""",
-)
-def _retry(ctx, args):
-    if args and args[0].lower() in ("full", "--full", "-f"):
-        return _retry_full(ctx)
-    if args:
-        _print(f"  unknown argument {args[0]!r} — usage: /retry [full]")
-        return
-    return _retry_synthesize(ctx)
-
-
-def _last_query(ctx) -> "str | None":
-    from core.state import is_turn_start
-
-    # Last REAL question (is_turn_start): a standalone mid-turn steer note is a correction to a
-    # turn, not the turn's query (requeueing it would re-run the correction without the
-    # question), and a compaction summary is carried history.
-    for m in reversed(ctx.state.get("messages", [])):
-        if is_turn_start(m):
-            return str(m.content)
-    return None
-
-
-def _retry_full(ctx):
-    query = _last_query(ctx)
-    if not query:
-        _print("  nothing to retry — the conversation is empty.")
-        return
-    drop_last_turn(ctx)
-    # The REPL loop consumes `requeue` right after this handler returns and runs it as an
-    # ordinary agent turn (agent.main) — fresh plan, fresh gates, fresh trace run.
-    ctx.requeue = query
-    _print("  re-running the last turn from scratch…")
-
-
-def _retry_synthesize(ctx):
-    from langchain.messages import AIMessage
-
-    state = ctx.state
-    if not state.get("current_query"):
-        _print("  no working state from a previous turn to regenerate from "
-               "(it clears on /clear, /rewind, and /resume) — try /retry full.")
-        return
-    msgs = state.get("messages", [])
-    last = msgs[-1] if msgs else None
-    if not isinstance(last, AIMessage) or getattr(last, "tool_calls", None):
-        _print("  the last turn left no final answer to regenerate — try /retry full.")
-        return
-
-    # Pop the old answer so synthesize sees the conversation exactly as it did the first time
-    # (its draft-answer input is whatever now trails the messages); restore it on any failure so
-    # a model hiccup can't eat the only answer the user has.
-    popped = msgs.pop()
-    _print("  regenerating the answer from the last turn's gathered results…")
-    try:
-        from nodes.synthesize import synthesize_node
-
-        out = synthesize_node(state)
-    except Exception:
-        msgs.append(popped)
-        raise
-
-    new_msg = out["messages"][0]
-    msgs.append(new_msg)
-    state["tok_per_sec"] = out.get("tok_per_sec", 0.0)
-    state["context_tokens"] = out.get("context_tokens", state.get("context_tokens", 0))
-    write_autosave(state)
-
-    from tui import ui
-
-    ui.response(str(new_msg.content))
 
 
 # ── /resume ──────────────────────────────────────────────────────────────────────────────────

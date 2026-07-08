@@ -55,24 +55,28 @@ def test_removed_plan_subcommands_error_as_unknown(ctx, capsys, recording_persis
         out = _out(capsys)
         assert "unknown /plan subcommand" in out
         assert "review, pause" in out  # the live verbs are named
-    assert ctx.requeue is None  # nothing is queued to run
     assert recording_persist == []  # nothing persists
     assert "lockstep" not in get_config()._data.get("runtime", {})  # never (re)creates the key
     assert not hasattr(get_config(), "lockstep")  # the property is gone with the feature
 
 
-def test_plan_node_always_drafts(monkeypatch):
+def test_plan_parse_failure_records_incident_not_ungrounded_reasoning(monkeypatch):
     from core.structured import _PlanOut
     from nodes import plan as plan_mod
 
     assert not hasattr(plan_mod, "seed_next_plan")  # the recipe seam is gone
 
-    # The hardened structured call degrading to its empty default (no model reachable) must
-    # still yield a plan — the generic fallback step.
+    # The hardened structured call degrading to its empty default (planner unreachable / no valid
+    # steps) must NOT become a silent tool-less "reasoning" step the synthesizer answers from its
+    # own priors — that is the fabrication path. It records an explicit parse-error INCIDENT
+    # (result set, status "error") so rectify bounded-retries the plan and, failing that,
+    # synthesize discloses it could not plan instead of presenting an ungrounded answer.
     monkeypatch.setattr(plan_mod, "structured", lambda *a, **k: _PlanOut())
-    delta = plan_mod.plan_node({"context": "", "current_query": "q"})
-    assert delta["plan"][0]["label"] == "Resolve the user's request"
-    assert delta["plan"][0]["result"] is None  # the data-bus pointer marks it un-run
+    step = plan_mod.plan_node({"context": "", "current_query": "q"})["plan"][0]
+    assert step["intended_tool"] is None
+    assert step["status"] == "error"                      # a recorded incident, not the pointer
+    assert str(step["result"]).startswith("error:")       # disclosed, not a silent answer
+    assert step["result"] == plan_mod.PLAN_PARSE_ERROR
 
 
 # --- /plan review: bare = status, explicit on|off mutates ---------------------------------------

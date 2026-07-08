@@ -50,8 +50,8 @@ def test_autosave_skips_empty_and_writes_nonempty(isolated_paths):
 
 
 def test_clear_autosave_drops_the_slot(isolated_paths):
-    """For callers that deliberately emptied the conversation (/rewind walking back the only
-    turn) — write_autosave's empty guard would otherwise leave the rewound turn restorable."""
+    """For callers that deliberately emptied the conversation — write_autosave's empty guard
+    would otherwise leave the just-cleared turn restorable."""
     write_autosave({"messages": [HumanMessage(content="q")]})
     assert _autosave_file().exists()
     assert clear_autosave()

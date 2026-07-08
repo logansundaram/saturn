@@ -175,8 +175,8 @@ def _print_sources(entries: list[str], gb) -> None:
     """The Sources footer, rendered natively with per-source trust coloring: green = local +
     trusted, yellow = network / untrusted origin, red = a span of that source reached the answer
     verbatim. The line text is identical to the recorded footer; only an annotation is appended
-    (and the block sits at the answer's 2-space indent). Without provenance (e.g. a /retry
-    re-render) the block prints dim — never colored by guesswork."""
+    (and the block sits at the answer's 2-space indent). Without provenance the block prints
+    dim — never colored by guesswork."""
     by_n = {s.n: s for s in (gb.sources if gb is not None else [])}
     if _RICH:
         _console.print()
@@ -305,8 +305,7 @@ def _print_marked_body(body: str, buf: dict) -> bool:
     human's edit must be visible precisely where it landed and a markdown re-flow would lose
     those offsets (the deliberate interrupt-and-correct choice — an uncorrected-but-uncertain
     answer instead keeps its markdown via `_print_markdown_confidence`). Returns False (caller
-    falls back) when the buffer text doesn't prefix the body — e.g. a /retry replaced the
-    answer — or there is nothing to mark."""
+    falls back) when the buffer text doesn't prefix the body, or there is nothing to mark."""
     try:
         from core import confidence, provenance
 

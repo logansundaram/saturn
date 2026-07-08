@@ -186,14 +186,7 @@ def run_repl() -> None:
             if cmd_ctx.should_quit:
                 break
             state = cmd_ctx.state  # a command (e.g. /reset) may have swapped state out
-            if cmd_ctx.requeue:
-                # The command queued a query to run NOW (today only /retry full, which rewinds
-                # the last turn and re-runs its question) — fall through and run it as an
-                # ordinary agent turn instead of returning to the prompt.
-                user_input = cmd_ctx.requeue
-                cmd_ctx.requeue = None
-            else:
-                continue
+            continue
 
         if not user_input.strip():
             continue

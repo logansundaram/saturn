@@ -27,7 +27,7 @@ import importlib as _importlib
 
 _COMMAND_MODULES = [
     "config",        # /config (+ key, setup) — owns the persist seam others import
-    "conversation",  # /clear, /compact, /rewind, /retry, /resume
+    "conversation",  # /clear, /resume
     "knowledge",     # /docs, /memory, /init, /undo
     "plan",          # /plan
     "policy",        # /policy — the one gate front door (risk · allow · open)

@@ -95,7 +95,7 @@ Anything you type starting with `/` is a command, not a message to the agent.
 - `/tools` — list available tools and their risk level.
 - `/models`, `/config` — see and tune which models run, and (via `/config context`) the
   context window and the hardware load.
-- `/config context`, `/compact` — manage the conversation's context window.
+- `/config context` — inspect the conversation's context window (it compacts itself automatically as it fills).
 - `/memory` — see, add, or delete the facts Saturn permanently remembers.
 - `/undo` — revert the file changes of the last turn that wrote anything.
 - `/init` — survey your workspace and draft `SATURDAY.md`, standing instructions Saturn loads

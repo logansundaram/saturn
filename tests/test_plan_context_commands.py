@@ -55,7 +55,6 @@ def test_removed_plan_subcommands_error_as_unknown(ctx, capsys, recording_persis
         out = _out(capsys)
         assert "unknown /plan subcommand" in out
         assert "review, pause" in out  # the live verbs are named
-    assert ctx.requeue is None  # nothing is queued to run
     assert recording_persist == []  # nothing persists
     assert "lockstep" not in get_config()._data.get("runtime", {})  # never (re)creates the key
     assert not hasattr(get_config(), "lockstep")  # the property is gone with the feature

@@ -285,7 +285,7 @@ def test_corrected_body_marks_human_spans_and_never_guesses(capsys):
     body = buf["text"] + "\n\nNote — trailing mechanical text"
     assert response._print_marked_body(body, buf)
     assert "Canberra" in capsys.readouterr().out
-    # A body the buffer doesn't prefix (e.g. /retry replaced the answer) must refuse to mark.
+    # A body the buffer doesn't prefix (a different answer replaced it) must refuse to mark.
     assert not response._print_marked_body("a different answer entirely", buf)
 
 

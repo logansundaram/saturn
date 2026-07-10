@@ -1,0 +1,151 @@
+# Release pipeline — fires on a version tag push (v*), e.g. `git push origin v0.1.0`.
+#
+#   check   → the tag, pyproject.toml `version`, app.__version__, and CHANGELOG.md must all
+#             agree before anything builds (tests/test_version.py pins the version pair on
+#             every push; this adds the tag + changelog legs at release time).
+#   test    → the offline unit suite on both OSes at the supported-Python boundaries
+#             (the full 2×3 matrix already ran on every push via tests.yml).
+#   build   → sdist + wheel via `python -m build` (the wheel is built FROM the sdist, so a
+#             file missing from the sdist fails here), twine metadata check, and a clean-venv
+#             smoke test of the wheel — mirrors tests.yml's package job, plus a version probe.
+#   publish-pypi     → PyPI via trusted publishing (OIDC — no token secret). One-time setup on
+#                      pypi.org: Publishing → add publisher for project `saturn-agent`, owner
+#                      `logansundaram`, repo `saturn`, workflow `release.yml`, environment
+#                      `pypi`. Until that exists this job fails alone — configure and re-run it.
+#   github-release   → GitHub Release named after the tag; notes are that version's
+#                      CHANGELOG.md section, with the dist files attached.
+# The two publish jobs are deliberately independent: a missing PyPI publisher config must not
+# block the GitHub Release (or vice versa).
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Tag, versions, and changelog agree
+        run: |
+          python - <<'EOF'
+          import os, pathlib, sys, tomllib
+
+          tag = os.environ["GITHUB_REF_NAME"]
+          version = tag.removeprefix("v")
+          pyproject = tomllib.loads(pathlib.Path("pyproject.toml").read_text(encoding="utf-8"))
+          declared = pyproject["project"]["version"]
+          sys.path.insert(0, ".")
+          from app import __version__  # docstring + __version__ only; safe without deps
+
+          problems = []
+          if declared != version:
+              problems.append(f"pyproject.toml version {declared!r} != tag {tag!r}")
+          if __version__ != version:
+              problems.append(f"app.__version__ {__version__!r} != tag {tag!r}")
+          changelog = pathlib.Path("CHANGELOG.md").read_text(encoding="utf-8")
+          if f"## [{version}]" not in changelog:
+              problems.append(f"CHANGELOG.md has no '## [{version}]' section")
+          for p in problems:
+              print(f"::error::{p}")
+          sys.exit(1 if problems else 0)
+          EOF
+
+  test:
+    needs: check
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python-version: ["3.11", "3.13"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install dependencies
+        run: pip install -e .[dev]
+      - name: Run unit suite
+        run: python -m pytest tests/ -q
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build sdist and wheel
+        run: pipx run build
+      - name: Check metadata
+        run: pipx run twine check dist/*
+      - name: Smoke-test the wheel in a clean venv
+        env:
+          SATURDAY_HOME: ${{ runner.temp }}/saturday-home
+        run: |
+          python -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install dist/*.whl
+          cd "$RUNNER_TEMP"
+          test "$(./venv/bin/saturn --version)" = "saturn ${GITHUB_REF_NAME#v}"
+          ./venv/bin/saturn --help > /dev/null
+          ./venv/bin/python -c "from trust import policy; assert callable(policy.approves)"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish-pypi:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/saturn-agent/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+
+  github-release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - name: Extract this version's CHANGELOG section
+        run: |
+          python - <<'EOF'
+          import os, pathlib, re
+
+          version = os.environ["GITHUB_REF_NAME"].removeprefix("v")
+          text = pathlib.Path("CHANGELOG.md").read_text(encoding="utf-8")
+          m = re.search(rf"^## \[{re.escape(version)}\][^\n]*\n(.*?)(?=^## \[|^\[|\Z)", text, re.M | re.S)
+          notes = m.group(1).strip() + "\n"  # the check job guaranteed the section exists
+          pathlib.Path(os.environ["RUNNER_TEMP"], "notes.md").write_text(notes, encoding="utf-8")
+          EOF
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --title "Saturn $GITHUB_REF_NAME" \
+            --notes-file "$RUNNER_TEMP/notes.md" \
+            --verify-tag

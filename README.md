@@ -178,13 +178,15 @@ tier anytime with `/models`, or set `SATURDAY_TIER=workstation` before installin
 ### Install with pipx / uv
 
 Already manage Python tools with [pipx](https://pipx.pypa.io) or [uv](https://docs.astral.sh/uv/)?
-Saturn is pip-installable:
+Saturn ships on PyPI as [`saturn-agent`](https://pypi.org/project/saturn-agent/):
 
 ```bash
-pipx install git+https://github.com/logansundaram/saturn
+pipx install saturn-agent
 # or
-uv tool install git+https://github.com/logansundaram/saturn
+uv tool install saturn-agent
 ```
+
+(Want the unreleased tip of `main` instead? `pipx install git+https://github.com/logansundaram/saturn`.)
 
 Then run `saturn`. You still need [Ollama](https://ollama.com/download) running and the tier
 models pulled — for the `laptop` tier that's `ollama pull gemma4:e4b` and

@@ -1,0 +1,3 @@
+# sdist extras beyond setuptools' defaults (py files, data-files, README/LICENSE/pyproject):
+# ship the public changelog with the source distribution.
+include CHANGELOG.md

@@ -47,6 +47,7 @@ ollama/
 # Build
 dist/
 build/
+*.egg-info/
 
 # Python bytecode cache (never track — caused binary merge conflicts pre-consolidation)
 __pycache__/

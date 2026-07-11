@@ -108,6 +108,11 @@ def _human_int(n: int) -> str:
     return f"{n / 1_000_000:.2f}M"
 
 
+# The only fields that survive a turn boundary: the conversation itself (compacted, appended
+# to below) and the context-fill gauge (the window only grows; the next LLM call overwrites it).
+_CARRY_ACROSS_TURNS = ("messages", "context_tokens")
+
+
 def _fresh_turn(state: AgentState, user_input: str) -> AgentState:
     """Append the new query and reset per-turn fields (accumulators + loop counter).
     `messages` persists across turns to keep in-process conversation memory, but is first
@@ -125,24 +130,15 @@ def _fresh_turn(state: AgentState, user_input: str) -> AgentState:
     from trust import quarantine
 
     quarantine.reset_turn()
+    # The reset is DERIVED from _initial_state — one canonical field list, so a new AgentState
+    # field resets across turns automatically instead of silently leaking until someone
+    # remembers to extend a second hand-maintained list (attachments is set by the loop after
+    # mentions.expand; current_query is set to the new input below).
+    fresh = _initial_state()
+    for key in _CARRY_ACROSS_TURNS:
+        fresh.pop(key, None)
+    state.update(fresh)
     state["current_query"] = user_input
-    state["context"] = ""
-    state["attachments"] = ""  # set by the loop after expanding @file mentions (mentions.expand)
-    state["plan"] = []
-    state["iteration"] = 0
-    state["rectify"] = False
-    state["reasoning"] = ""
-    state["replans"] = 0
-    state["aborted"] = False
-    state["tools_called"] = []
-    state["tool_results"] = []
-    state["documents_retrieved"] = []
-    state["tool_events"] = []
-    state["gate_events"] = []
-    state["plan_vetoes"] = []
-    state["answer_buffer"] = None
-    state["tok_per_sec"] = 0.0
-    # context_tokens persists across turns (the context only grows; overwritten on next LLM call).
     return state
 
 

@@ -16,7 +16,9 @@ from tools.toolspec import register_tool
 from stores.memory_registry import add_memory, search_memory
 
 
-@register_tool("read_only", retrieval=True)
+# untrusted=True: the corpus may hold DOWNLOADED documents — retrieved chunks are external
+# content the quarantine scans (admission screening reduces, but does not remove, the risk).
+@register_tool("read_only", retrieval=True, untrusted=True)
 def search_knowledge_base(query: str):
     """Search the local document knowledge base for passages relevant to the query. Use this to answer questions about ingested documents, handbooks, notes, or reference material. Returns the most relevant chunks with their source. Does not search the live web."""
     # Lazy import so merely importing the registry doesn't load the embedding model.

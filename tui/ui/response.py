@@ -660,6 +660,12 @@ class ResponseStream:
         trailer = None
         if text.rstrip() != streamed and text.startswith(streamed):
             trailer = text[len(streamed):].strip("\n")
+        if not _RICH and getattr(self, "_plain_stale", False):
+            # A freeze-edit happened on the plain path: the terminal shows the PRE-edit tokens
+            # (typed as they streamed; nothing transient to erase) while the record was
+            # reset_to() the edited text — re-render the corrected answer in full like the rich
+            # path does, or the user's correction never appears on screen.
+            trailer = text
         _final_render(text, plain_body=trailer)
 
     def freeze_display(self) -> None:
@@ -684,6 +690,11 @@ class ResponseStream:
         self._chars = [text] if text else []
         self._len = len(text) if text else 0
         self._conf = list(confidence or [])
+        if not _RICH:
+            # The plain path already typed the pre-edit tokens to the terminal and can't erase
+            # them — mark the transcript stale so finish() re-renders the corrected answer in
+            # full instead of printing only the trailer beyond the (now edited) record.
+            self._plain_stale = True
 
     def abort(self) -> None:
         """Tear down the live tail without a final render — a failed/cancelled turn. The transient

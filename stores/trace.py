@@ -384,10 +384,18 @@ class LLMTraceHandler(BaseCallbackHandler):
         if rec is None:
             return
         try:
+            # A GeneratorExit is not a model failure: the CONSUMER closed the stream on purpose
+            # (the freeze latch breaking out of synthesize's loop, a cancelled turn) — langchain's
+            # stream wrapper routes it here before re-raising. Record it as `cancelled`, not
+            # `error` (whose message would be the blank str(GeneratorExit())), or /trace invoke
+            # misreports every frozen interrupt-and-correct turn as a failed synthesize call.
+            cancelled = isinstance(error, GeneratorExit)
+            note = "stream closed before completion (freeze/cancel)" if cancelled else str(error)
             self._tracer.log_llm_call(
                 self._run_id, rec["node"], rec["model"], perf_counter() - rec["start"],
                 0, 0, json.dumps(rec["input"], default=str),
-                json.dumps({"content": "", "tool_calls": [], "error": str(error)}), "error",
+                json.dumps({"content": "", "tool_calls": [], "error": note}),
+                "cancelled" if cancelled else "error",
             )
         except Exception as exc:
             import diag

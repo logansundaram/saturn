@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 from config import get_config
 from core import confidence, continuation, provenance
 from core.plan_context import WRITE_TOOLS
@@ -139,6 +141,12 @@ def verify_writes(state: AgentState) -> str:
     (successful write_file/edit_file calls, from tool_events) and quote what it NOW contains —
     so the answer describes real file contents, not the step log's intentions. Best-effort:
     an unreadable file just drops out of the block."""
+    # Lazy imports (the execute-node pattern): the markers are the PRODUCER's own constants
+    # (tools/files.WRITE_SUCCESS_MARKERS — one producer, one parser, like DECLINE_TEXT), so a
+    # rewording of a files.py return string can never silently empty this block again.
+    from tools.files import WRITE_SUCCESS_MARKERS
+    from tools.registry import tools_by_name
+
     lines: list[str] = []
     seen: set = set()
     for ev in state.get("tool_events") or []:
@@ -151,23 +159,13 @@ def verify_writes(state: AgentState) -> str:
         if not path or path in seen:
             continue
         # The tools report refusals as ordinary strings (ok=True), so check the result text for
-        # the EXACT success markers (tools/files.py return strings). A loose "File " prefix
-        # would also match edit_file's "File not found: …" failure and quote a file the failed
-        # edit never touched.
+        # the EXACT success markers. A loose "File " prefix would also match edit_file's
+        # "File not found: …" failure and quote a file the failed edit never touched.
         preview = str(ev.get("result") or "")
-        if not preview.startswith(
-            (
-                "File overwritten successfully",
-                "File created successfully",
-                "Content appended",
-                "Edited ",
-            )
-        ):
+        if not preview.startswith(WRITE_SUCCESS_MARKERS):
             continue
         seen.add(path)
         try:
-            from tools.registry import tools_by_name
-
             content = str(tools_by_name["read_file"].invoke({"file_path": path})).strip()
         except Exception:
             continue
@@ -234,7 +232,16 @@ def _token_sink():
 
 def _stream_first_pass(llm_input, freeze):
     """The chat-path stream (tokens reach the UI via LangGraph messages mode, unchanged),
-    polling the freeze latch per chunk. Returns (buffer, frozen, aggregated_message).
+    polling the freeze latch per chunk. Returns (buffer, frozen, response_metadata,
+    usage_metadata) — the metadata folded per chunk with a plain dict update.
+
+    Deliberately NO AIMessageChunk aggregation: `aggregated + chunk` re-merges the whole
+    accumulated message per token — and with logprobs on, merge_dicts re-copies the entire
+    accumulated token table per token (quadratic in answer length), only for the merged
+    logprobs to be stripped at the end. Ollama's stats ride the final chunk, so last-wins
+    dict folding (logprobs excluded at the source) keeps everything the callers read.
+    The buffer likewise grows IN PLACE (provenance.extend_model) — it stays private to this
+    loop, so the copy-and-return contract isn't needed until it lands on state.
 
     Confidence grading (runtime.confidence): `logprobs=True` rides the call as a per-call kwarg
     (NOT inside `options`, so the constructor's num_ctx is untouched); each intermediate chunk
@@ -242,16 +249,25 @@ def _stream_first_pass(llm_input, freeze):
     overlay as it lands. A daemon that doesn't answer just leaves the overlay empty."""
     model = get_model("synthesizer")
     buf = provenance.new_buffer()
-    aggregated = None
+    resp_meta: dict = {}
+    usage = None
+    got_chunk = False
     frozen = False
     gen = model.stream(llm_input, **({"logprobs": True} if confidence.enabled() else {}))
     try:
         for chunk in gen:
-            aggregated = chunk if aggregated is None else aggregated + chunk
+            got_chunk = True
+            md = getattr(chunk, "response_metadata", None) or {}
+            lp = md.get("logprobs")
+            for k, v in md.items():
+                if k != "logprobs":
+                    resp_meta[k] = v
+            um = getattr(chunk, "usage_metadata", None)
+            if um:
+                usage = um
             text = chunk.content if isinstance(chunk.content, str) else str(chunk.content)
             if text:
-                lp = (getattr(chunk, "response_metadata", None) or {}).get("logprobs")
-                buf = provenance.append_model(
+                provenance.extend_model(
                     buf, text, confidence.align_chunk(text, lp) if lp else None
                 )
             if freeze is not None and freeze.requested():
@@ -262,11 +278,17 @@ def _stream_first_pass(llm_input, freeze):
             gen.close()
         except Exception:
             pass
-    if aggregated is None and not frozen:  # a model that streamed nothing — blocking fallback
-        aggregated = model.invoke(llm_input)
-        text = aggregated.content if isinstance(aggregated.content, str) else str(aggregated.content)
-        buf = provenance.append_model(buf, text)
-    return buf, frozen, aggregated
+    if not got_chunk and not frozen:  # a model that streamed nothing — blocking fallback
+        resp = model.invoke(llm_input)
+        text = resp.content if isinstance(resp.content, str) else str(resp.content)
+        provenance.extend_model(buf, text)
+        resp_meta = {
+            k: v
+            for k, v in (getattr(resp, "response_metadata", {}) or {}).items()
+            if k != "logprobs"
+        }
+        usage = getattr(resp, "usage_metadata", None)
+    return buf, frozen, resp_meta, usage
 
 
 def _stream_continuation(model_name: str, llm_input, buf: dict, freeze):
@@ -275,12 +297,15 @@ def _stream_continuation(model_name: str, llm_input, buf: dict, freeze):
     stream channel; the freeze latch is polled per chunk (the user may freeze again). Returns
     (buffer, frozen, meta) — meta is the daemon's final stats for the tok/s + context gauges."""
     sink = _token_sink()
+    # Clone once, extend in place per chunk (the caller's frozen buffer stays intact) — the
+    # per-chunk copy-and-return append_model made a long resume quadratic in answer length.
+    buf = provenance.clone(buf)
     stream = continuation.continue_from(model_name, llm_input, buf.get("text", ""))
     frozen = False
     try:
         for text in stream:
             lp = stream.last_logprobs  # this chunk's logprobs (see ContinuationStream)
-            buf = provenance.append_model(
+            provenance.extend_model(
                 buf, text, confidence.align_chunk(text, lp) if lp else None
             )
             if sink is not None:
@@ -455,7 +480,7 @@ def synthesize_node(state: AgentState):
         freeze.arm()
     try:
         if buf_state == "resume":
-            buf, frozen, meta = _stream_continuation(model_name, llm_input, dict(buf), freeze)
+            buf, frozen, meta = _stream_continuation(model_name, llm_input, buf, freeze)
             tok_per_sec = continuation.extract_tok_per_sec(meta)
             context_tokens = int(meta.get("prompt_eval_count") or 0)
             response_metadata = {k: meta[k] for k in
@@ -463,19 +488,16 @@ def synthesize_node(state: AgentState):
                                  if k in meta}
             usage_metadata = None
         else:
-            buf, frozen, aggregated = _stream_first_pass(llm_input, freeze)
-            tok_per_sec = extract_tok_per_sec(aggregated)
-            context_tokens = extract_prompt_tokens(aggregated)
-            # Chunk aggregation CONCATENATES the per-chunk logprobs lists into the metadata —
-            # a full copy of the answer's token table (possibly client-typed objects) that must
-            # never ride the recorded AIMessage into state/autosave/trace. The buffer's
-            # confidence overlay is the one canonical carrier.
-            response_metadata = {
-                k: v
-                for k, v in (getattr(aggregated, "response_metadata", {}) or {}).items()
-                if k != "logprobs"
-            }
-            usage_metadata = getattr(aggregated, "usage_metadata", None)
+            # response_metadata comes back logprobs-free at the source (the buffer's confidence
+            # overlay is the one canonical carrier of the token table — it must never ride the
+            # recorded AIMessage into state/autosave/trace).
+            buf, frozen, response_metadata, usage_metadata = _stream_first_pass(llm_input, freeze)
+            # A tiny attribute shim keeps core/llms' extractors as THE one stats parser.
+            stats = SimpleNamespace(
+                response_metadata=response_metadata, usage_metadata=usage_metadata
+            )
+            tok_per_sec = extract_tok_per_sec(stats)
+            context_tokens = extract_prompt_tokens(stats)
     finally:
         if freeze is not None:
             freeze.disarm()  # also clears a request that landed after the stream ended

@@ -29,6 +29,7 @@ gate's approve-this-command model covers worst; preserved on `shelf/2026-07-03-r
 """
 
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -72,6 +73,15 @@ def _kill_tree(proc: "subprocess.Popen") -> None:
             proc.kill()
         except Exception:
             pass
+
+
+# The observation header _format writes and nodes/rectify's dead-end classifier parses — ONE
+# producer/parser pair (import this regex; never re-type the bracket format). Anchored at the
+# start so a transcript that merely MENTIONS "exit code 128" mid-output never reads as a failed
+# run; lowercase-safe (rectify matches on a lowercased observation); `-?` because a POSIX
+# command killed by a signal reports a NEGATIVE returncode (-11 for SIGSEGV) — a crashed run
+# must still classify as failed.
+EXIT_CODE_RE = re.compile(r"^\[exit code (-?\d+)\]")
 
 
 def _format(returncode: int, stdout: str, stderr: str) -> str:

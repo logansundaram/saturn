@@ -81,4 +81,5 @@ namespaces = true
 
 [tool.setuptools.data-files]
 # Lands at <venv>/share/saturn/ — config.py seeds SATURDAY_HOME/config.yaml from it on first run.
-"share/saturn" = ["config.yaml"]
+# The template (not the live config.yaml, which is untracked user data since 2026-07-10).
+"share/saturn" = ["config.default.yaml"]

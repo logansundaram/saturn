@@ -37,19 +37,25 @@ RISK_TIERS = ("read_only", "side_effecting", "destructive")
 _TOOLS: list = []          # the active tool objects, in registration order
 _RISK: dict = {}           # tool name -> risk tier
 _RETRIEVAL: set = set()    # tool names whose results are recorded as retrieved documents
+_UNTRUSTED: set = set()    # tool names whose OUTPUT crosses the trust boundary (quarantine scans)
 
 
-def register_tool(risk: str = "destructive", *, retrieval: bool = False):
+def register_tool(risk: str = "destructive", *, retrieval: bool = False, untrusted: bool = False):
     """Decorator: wrap a function as a LangChain tool AND register it (list + risk tier + retrieval
-    flag) in one place.
+    flag + trust classification) in one place.
 
       @register_tool("read_only")                      # runs without prompting
       @register_tool("side_effecting")                 # hits the approval gate
       @register_tool("read_only", retrieval=True)      # output recorded as a retrieved document
+      @register_tool("read_only", untrusted=True)      # output is EXTERNAL content — quarantine scans it
 
     `risk` must be one of RISK_TIERS; it defaults to the safe 'destructive' tier (always prompts)
     so a tool that forgets to declare one fails closed. `retrieval=True` marks tools whose output
-    is a document worth recording for citations/trace (e.g. search_knowledge_base)."""
+    is a document worth recording for citations/trace (e.g. search_knowledge_base).
+    `untrusted=True` marks tools whose output arrives from OUTSIDE the trust boundary (the web, a
+    remote server, an ingested corpus) — the prompt-injection quarantine scans and fences those
+    observations (registry.py pushes this set into trust/quarantine at startup). Declare it here,
+    next to the risk tier, so a new external-fetch tool can't silently land inside the boundary."""
     if risk not in RISK_TIERS:
         raise ValueError(f"unknown risk tier {risk!r}; expected one of {RISK_TIERS}")
 
@@ -69,12 +75,15 @@ def register_tool(risk: str = "destructive", *, retrieval: bool = False):
         _RISK[t.name] = risk
         if retrieval:
             _RETRIEVAL.add(t.name)
+        if untrusted:
+            _UNTRUSTED.add(t.name)
         return t
 
     return decorate
 
 
-def register_tool_object(t, risk: str = "destructive", *, retrieval: bool = False):
+def register_tool_object(t, risk: str = "destructive", *, retrieval: bool = False,
+                         untrusted: bool = False):
     """Register an ALREADY-CONSTRUCTED LangChain tool object (list + risk tier + retrieval flag).
 
     The dynamic-source counterpart of @register_tool: a tool that can't be written as a decorated
@@ -87,11 +96,15 @@ def register_tool_object(t, risk: str = "destructive", *, retrieval: bool = Fals
     invalid value FAILS CLOSED to 'destructive' instead of raising — a dynamically-sourced tool
     must never end up ungated by a typo. Callers wanting to surface the downgrade should validate
     before calling. A tool must NEVER self-declare its tier (a remote server claiming read_only is
-    exactly the attack the gate exists for); only the user's own config/overrides may relax it."""
+    exactly the attack the gate exists for); only the user's own config/overrides may relax it.
+    `untrusted=True` marks the tool's output as external content for the quarantine scanner —
+    mcp_client passes it for every remote tool."""
     if risk not in RISK_TIERS:
         risk = "destructive"
     _TOOLS.append(t)
     _RISK[t.name] = risk
     if retrieval:
         _RETRIEVAL.add(t.name)
+    if untrusted:
+        _UNTRUSTED.add(t.name)
     return t

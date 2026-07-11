@@ -37,21 +37,41 @@ RISK_ORDER = ["read_only", "side_effecting", "destructive"]
 def _resolve_config_path() -> Path:
     """Locate the live config.yaml.
 
-    Clone mode (the curl installers and manual installs): config.yaml sits next to this file
-    at the repo root — the historical behavior, unchanged.
+    Clone mode (the curl installers and manual installs): config.yaml sits next to this file at
+    the repo root. Since 2026-07-10 the live file is UNTRACKED user data (persisted /config
+    edits land in it; a tracked live config dirtied the tree on every saved setting and broke
+    /update's ff-only pull) — it is seeded on first run from the tracked template
+    config.default.yaml.
 
     Installed mode (pipx/uv/pip wheel): the user's editable copy lives under SATURDAY_HOME
     (default ~/.saturday), seeded on first run from the packaged default that the wheel ships
     to <venv>/share/saturn/ (see pyproject.toml). Keeping the live copy out of site-packages
-    means `/config … --save` edits survive a `pipx upgrade`.
+    means a persisted /config edit survives a `pipx upgrade`.
     """
-    local = Path(__file__).parent / "config.yaml"
+    root = Path(__file__).parent
+    local = root / "config.yaml"
     if local.exists():
+        return local
+    local_default = root / "config.default.yaml"
+    if local_default.exists():
+        # Clone mode, first run (or a pull that removed the old tracked config.yaml): seed the
+        # live copy from the template. Upstream default changes land in the template; the
+        # user's live file is never touched by git again.
+        try:
+            shutil.copy(local_default, local)
+        except OSError:
+            # A read-only checkout (shared /opt install, Program Files): run off the template
+            # directly instead of dying at import (`saturn --version` must not crash). A later
+            # persist() reports "not persisted" cleanly; the next writable launch seeds.
+            return local_default
         return local
     home = Path(os.environ.get("SATURDAY_HOME") or Path.home() / ".saturday")
     user_cfg = home / "config.yaml"
     if not user_cfg.exists():
-        default = Path(sys.prefix) / "share" / "saturn" / "config.yaml"
+        share = Path(sys.prefix) / "share" / "saturn"
+        default = share / "config.default.yaml"
+        if not default.exists():
+            default = share / "config.yaml"  # wheels built before the template rename
         if not default.exists():
             raise FileNotFoundError(
                 "config.yaml not found: not running from a Saturn clone, and the packaged "
@@ -159,7 +179,17 @@ class Config:
 
     @property
     def embedder_model(self) -> str:
-        return self._tier().get("embedder", "qwen3-embedding:8b")
+        """The active tier's embedding model id. No hard-coded fallback id (model ids live in
+        config.yaml — the CLAUDE.md rule): a tier without an `embedder:` raises actionably
+        instead of silently binding a literal that drifts from the shipped presets (and forces
+        a wrong-model re-embed of the whole corpus when it does)."""
+        model = self._tier().get("embedder")
+        if not model:
+            raise KeyError(
+                f"tier '{self.active_tier}' defines no 'embedder' in config.yaml — add one "
+                "(e.g. embedder: qwen3-embedding:8b) or switch tiers (/models tier)."
+            )
+        return str(model)
 
     def capability_of(self, model: str) -> Capability:
         caps = self._data.get("capabilities", {})

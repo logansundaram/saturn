@@ -243,11 +243,21 @@ def test_execute_arg_failure_lands_as_error(monkeypatch):
     assert out["plan"][0]["result"].startswith("error:")
 
 
-def test_execute_unknown_tool_degrades_to_reasoning(monkeypatch):
-    monkeypatch.setattr(ex, "_reasoning_call", lambda ctx: ("reasoned through it", None))
+def test_execute_unknown_tool_fails_closed(monkeypatch):
+    """A step naming a tool that doesn't exist records an error incident (2026-07-10) — it must
+    NOT silently degrade to a reasoning step, which would answer a tool step from the model's
+    own priors and record fabricated output as a done result."""
+    def boom(ctx):
+        raise AssertionError("an unknown-tool step must never reach the reasoning call")
+
+    monkeypatch.setattr(ex, "_reasoning_call", boom)
     plan = [_step(1, "not_a_registered_tool")]
     out = ex.execute_node(_state(plan))
-    assert out["plan"][0]["result"] == "reasoned through it"
+    step = out["plan"][0]
+    assert step["status"] == "error"
+    assert "not_a_registered_tool" in step["result"] and step["result"].startswith("error:")
+    # No tool call emitted -> rectify (whose judge/replan can redraft with a real tool).
+    assert ex.route_after_execute({"messages": out.get("messages") or []}) == "rectify"
 
 
 def test_execute_no_step_left_is_a_noop():
@@ -497,3 +507,181 @@ def test_replan_empty_redraft_keeps_plan(monkeypatch):
     out = rp.replan_node(_state(plan, reasoning="fix it"))
     assert "plan" not in out, "an empty redraft leaves the plan untouched"
     assert out["replans"] == 1 and out["rectify"] is False
+
+
+# ── the 2026-07-10 review fixes: structural stamps, positional priors, fail-closed tools ──────
+
+
+def test_write_gate_error_looking_text_does_not_arm(monkeypatch):
+    """Failure is the STRUCTURAL status stamp only: a successful read of a log that begins
+    'ERROR:' is a done step, and text-sniffing it armed the gate on purely mechanical plans
+    (the same false positive the saturn_status contract removed from update_plan)."""
+    def boom(*a, **k):
+        raise AssertionError("a mechanical plan must not consult the judge")
+
+    monkeypatch.setattr(ex, "structured", boom)
+    plan = [_step(1, "read_file", result="ERROR: disk full (first line of err.log)", status="done"),
+            _step(2, "write_file")]
+    assert ex._write_gate(_state(plan), plan[1]) is None
+
+
+def test_write_gate_error_status_still_arms(monkeypatch):
+    monkeypatch.setattr(
+        ex, "structured", lambda *a, **k: st.WriteGate(present=False, evidence="not there")
+    )
+    plan = [_step(1, "read_file", result="error: read failed", status="error"),
+            _step(2, "write_file")]
+    blocked = ex._write_gate(_state(plan), plan[1])
+    assert blocked and "not present" in blocked
+
+
+def test_write_gate_ignores_later_retired_steps(monkeypatch):
+    """A LATER step the user retired at plan review carries a stamped result too — positional
+    priors only (plan_context.steps_before): a retired later SEARCH step must not arm the gate
+    on an otherwise mechanical plan."""
+    def boom(*a, **k):
+        raise AssertionError("a mechanical plan must not consult the judge")
+
+    monkeypatch.setattr(ex, "structured", boom)
+    plan = [_step(1, "read_file", result="rows: 1,2,3", status="done"),
+            _step(2, "write_file"),
+            _step(3, "search_files", status="skipped",
+                  result="marked skipped at plan review — the step did not run")]
+    assert ex._write_gate(_state(plan), plan[1]) is None
+
+
+def test_exec_context_previous_step_is_positional():
+    """The 'previous step' callout is the nearest PRIOR completed step — a later review-retired
+    step (result stamped) must not masquerade as it, or the model computes from the stamp."""
+    plan = [_step(1, "search_files", result="found: total 42", status="done",
+                  label="find the total"),
+            _step(2, None, label="double the previous step's result"),
+            _step(3, None, status="skipped", label="report it",
+                  result="marked skipped at plan review — the step did not run")]
+    ctx = plan_context.exec_context(_state(plan), plan[1])
+    callout = ctx.split("The immediately preceding step")[1]
+    assert "find the total" in callout and "found: total 42" in callout
+    assert "marked skipped" not in ctx, "a later retired step is not prior work"
+
+
+def test_dead_end_classifier_is_producer_anchored():
+    assert rc.dead_end_result("No matches for /revenu/ in '.' (files matching '*').")
+    assert rc.dead_end_result("No files matching 'x*.csv' under '.'.")
+    assert rc.dead_end_result("File not found: a.txt. Use write_file to create a new file.")
+    assert rc.dead_end_result("[exit code 2] (no output)")
+    assert not rc.dead_end_result("[exit code 0]\nall good")
+    # POSIX signal deaths report NEGATIVE returncodes — a crashed run is a failed run.
+    assert rc.dead_end_result("[exit code -11] (no output)")
+    # CONTENT mentioning a not-found phrase is data, not a dead end — the old anywhere-substring
+    # match spuriously replanned a healthy plan over a matched line like this one.
+    assert not rc.dead_end_result("app.log:3: GET /health -> 404 not found")
+
+
+def test_retryable_dead_end_is_tool_gated():
+    """A computed '0' from calculate (or '[]' from a non-search tool) is a VALUE, not a dead
+    end — only the _RETRYABLE tools' empty results qualify (the _EMPTY_MARKERS rule)."""
+    assert rc.retryable_dead_end(_step(1, "search_files", result="No matches for /x/ in '.'"))
+    assert not rc.retryable_dead_end(_step(1, "calculate", result="0"))
+    assert not rc.retryable_dead_end(_step(1, "read_file", result=""))
+
+
+def test_rectify_content_mentioning_not_found_is_not_a_dead_end(monkeypatch):
+    monkeypatch.setattr(rc, "structured",
+                        lambda *a, **k: st.RectifyBool(rectify=False, reasoning="fine"))
+    plan = [_step(1, "search_files", result="app.log:3: GET /health -> 404 not found",
+                  status="done")]
+    assert rc.rectify_node(_state(plan))["rectify"] is False
+
+
+def test_rectify_error_looking_text_is_not_a_failure(monkeypatch):
+    """Branch 3 (concrete pending, no LLM) must fire for a done step whose result text merely
+    begins 'ERROR:' — failure is the structural stamp, never sniffed from the observation."""
+    _no_llm(monkeypatch)
+    plan = [_step(1, "read_file", result="ERROR: compilation failed at step 3", status="done"),
+            _step(2, "calculate")]
+    out = rc.rectify_node(_state(plan))
+    assert out["rectify"] is False and "pending" in out["reasoning"]
+
+
+def test_replan_dead_end_step_may_be_retried_under_the_same_label(monkeypatch):
+    """The planner routinely echoes the label it was shown; a completed step whose result was a
+    dead end must not block the redraft as a 'duplicate' — the done-label filter silently
+    defeated rectify's bounded dead-end retry (empty redraft → plan kept → 'not found' answered
+    without ever re-searching)."""
+    draft = st._PlanOut(plan=[
+        st._PlanItem(description="Search files for revenu", tool="search_files"),
+    ])
+    monkeypatch.setattr(rp, "structured", lambda *a, **k: draft)
+    plan = [_step(1, "search_files", result="No matches for /revenu/ in '.'", status="done",
+                  label="Search files for revenu")]
+    out = rp.replan_node(_state(plan, reasoning="retry with a corrected pattern"))
+    labels = [s["label"] for s in out["plan"]]
+    assert labels == ["Search files for revenu", "Search files for revenu"]
+    assert out["plan"][1]["result"] is None, "the retry is pending, ready to execute"
+
+
+def test_replan_computed_zero_still_blocks_its_duplicate(monkeypatch):
+    """The retry exemption is TOOL-gated: a calculate step whose honest result is '0' produced
+    a value (the _EMPTY_MARKERS rule) — a redraft echoing its label is still a duplicate."""
+    draft = st._PlanOut(plan=[
+        st._PlanItem(description="Sum the refunds column", tool="calc"),
+    ])
+    monkeypatch.setattr(rp, "structured", lambda *a, **k: draft)
+    plan = [_step(1, "calculate", result="0", status="done", label="Sum the refunds column")]
+    out = rp.replan_node(_state(plan, reasoning="unrelated gap"))
+    assert "plan" not in out, "the echoed completed calculation must drop as a duplicate"
+
+
+def test_exec_context_callout_skips_incident_steps_positioned_before():
+    """replan's done-first merge can land a review-retired step directly before the redrafted
+    ones — the callout referent is the nearest prior step that PRODUCED a result (status done),
+    never an incident stamp, regardless of position."""
+    plan = [_step(1, "read_file", result="rows: 1,2,3", status="done", label="read a.csv"),
+            _step(2, "write_file", status="skipped", label="write the report",
+                  result="marked skipped at plan review — the step did not run"),
+            _step(3, None, label="summarize the rows")]
+    ctx = plan_context.exec_context(_state(plan), plan[2])
+    callout = ctx.split("The immediately preceding step")[1]
+    assert "read a.csv" in callout and "rows: 1,2,3" in callout
+    assert "marked skipped" not in callout
+
+
+def test_to_steps_preserves_unresolvable_tool_spellings():
+    """A broken tool spelling must not collapse into a reasoning step (the model would answer a
+    tool step from its own priors) — the raw name rides the step so execute fails closed on it;
+    genuine no-tool spellings still normalize to a reasoning step."""
+    draft = st._PlanOut(plan=[
+        st._PlanItem(description="Read notes", tool="use read_file"),
+        st._PlanItem(description="Summarize the findings", tool="none"),
+        st._PlanItem(description="Conclude", tool="reasoning"),
+    ])
+    steps = st.to_steps(draft)
+    assert steps[0]["intended_tool"] == "use read_file"
+    assert steps[1]["intended_tool"] is None
+    assert steps[2]["intended_tool"] is None
+
+
+def test_verify_writes_markers_match_the_producer(isolated_paths):
+    """The verified-writes block keys on tools/files' OWN success markers (one producer, one
+    parser): pin the live return strings to WRITE_SUCCESS_MARKERS so a rewording can never
+    silently empty the anti-fabrication block again."""
+    from nodes.synthesize import verify_writes
+    from tools.files import WRITE_SUCCESS_MARKERS, edit_file, write_file
+
+    created = write_file.invoke({"file_path": "pin.txt", "content": "hello"})
+    overwrote = write_file.invoke({"file_path": "pin.txt", "content": "hello world"})
+    appended = write_file.invoke({"file_path": "pin.txt", "content": "!", "overwrite": False})
+    edited = edit_file.invoke({"file_path": "pin.txt", "old_string": "hello",
+                               "new_string": "HELLO"})
+    for obs in (created, overwrote, appended, edited):
+        assert str(obs).startswith(WRITE_SUCCESS_MARKERS), obs
+
+    state = {"tool_events": [
+        {"name": "write_file", "ok": True, "args": {"file_path": "pin.txt"},
+         "result": str(created)},
+        {"name": "edit_file", "ok": True, "args": {"file_path": "missing.txt"},
+         "result": "File not found: missing.txt. Use write_file to create a new file."},
+    ]}
+    block = verify_writes(state)
+    assert "pin.txt now contains" in block
+    assert "missing.txt" not in block, "a refusal observation must not be quoted as a write"

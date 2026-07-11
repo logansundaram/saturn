@@ -58,6 +58,7 @@ def risk_handler(ctx, args):
         declared = registry.DECLARED_RISK.get(name, "destructive")
         old = risk_of(name)
         registry.TOOL_RISK[name] = declared
+        registry.refresh_trust_classifications()  # the coercion pattern tracks live tiers
         had_override = policy.clear_risk_override(name)
         forgot = " (persisted override removed)" if had_override else ""
         _print(f"  {name}: {old} -> {declared} (declared tier){forgot}.")
@@ -72,6 +73,7 @@ def risk_handler(ctx, args):
 
     old = risk_of(name)
     registry.TOOL_RISK[name] = tier
+    registry.refresh_trust_classifications()  # the coercion pattern tracks live tiers
     if save:
         policy.set_risk_override(name, tier)
         _print(f"  {name}: {old} -> {tier} (saved — survives restarts; undo with "

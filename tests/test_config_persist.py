@@ -3,7 +3,16 @@ in place without shredding the heavily-commented config.yaml) and the scalar coe
 
 import pytest
 
-from config import _set_yaml_scalar, _dump_scalar, _coerce
+from config import Config, _set_yaml_scalar, _dump_scalar, _coerce
+
+
+def test_embedder_without_binding_raises_actionably():
+    """No hard-coded model-id fallback (ids live in config.yaml): a tier missing `embedder:`
+    raises with the fix in the message instead of silently binding a literal that drifts from
+    the shipped presets."""
+    cfg = Config({"active_tier": "t", "tiers": {"t": {"roles": {"utility": "m"}}}})
+    with pytest.raises(KeyError, match="embedder"):
+        _ = cfg.embedder_model
 
 SAMPLE = """\
 # top-of-file comment

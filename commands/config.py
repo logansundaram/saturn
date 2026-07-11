@@ -8,6 +8,18 @@ from commands._utils import (
 
 _MIN_NUM_CTX = 256  # below this Ollama can't fit the system prompts; reject obvious typos
 
+# Trust-posture keys are EXEMPT from the persist-by-default inversion (2026-07-07): a loosened
+# security posture must never persist silently — the same fail-closed convention that keeps the
+# canonical toggles (/policy open, /privacy airgap/redact) on the opt-IN --save parser. Setting
+# one through the generic /config spelling applies for the session; persisting takes an explicit
+# --save (or /config persist <key>).
+_TRUST_KEYS = frozenset({
+    "runtime.auto_approve",
+    "runtime.airgap",
+    "runtime.quarantine",
+    "runtime.redaction",
+})
+
 # Existence sentinel for cfg.get: distinguishes a key that is ABSENT from one present with an
 # explicit null value (cfg.get's None default conflates the two — exactly how a typo'd key used
 # to read back as a success-shaped `= None`).
@@ -358,6 +370,13 @@ def _config(ctx, args):
     elif session:
         _print(
             f"  {key} = {cfg.get(key)!r}  (session only — omit --session to save to config.yaml)"
+        )
+    elif key in _TRUST_KEYS and not save:
+        # Never persist a security-posture change silently (the trust toggles' fail-closed
+        # convention, kept even through the generic setter).
+        _print(
+            f"  {key} = {cfg.get(key)!r}  (session only — a trust setting never persists "
+            "silently; add --save to write config.yaml)"
         )
     else:
         _persist_key(cfg, key)

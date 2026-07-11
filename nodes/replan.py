@@ -21,6 +21,7 @@ from langchain.messages import HumanMessage
 from core.messages import planner_sys_msg
 from core.plan_context import original_request, plan_txt, vetoes_block
 from core.state import AgentState
+from nodes.rectify import retryable_dead_end
 from core.structured import (
     _PlanOut,
     PLAN_SHAPE,
@@ -92,7 +93,20 @@ def replan_node(state: AgentState):
         default=_PlanOut(),
     )
 
-    done_descs = {str(s.get("label") or "").strip().lower() for s in done}
+    # A completed step blocks a same-label redraft ONLY when it actually produced something:
+    # a RETRYABLE step whose result was a dead end (empty search, not-found, nonzero exit) or an
+    # incident (status != done) may legitimately be RETRIED under the same wording — rectify's
+    # dead-end branch asks for exactly that, and the planner routinely echoes the label it was
+    # shown. Filtering those as "duplicates" emptied the redraft and silently defeated the
+    # bounded retry (the turn concluded "not found" without ever re-searching). The guard is
+    # rectify's retryable_dead_end — tool-gated, so a calculate step whose honest result is "0"
+    # (a computed VALUE, the _EMPTY_MARKERS rule) still blocks its duplicate. Still bounded:
+    # the retry budget and MAX_REPLANS cap the loop either way.
+    done_descs = {
+        str(s.get("label") or "").strip().lower()
+        for s in done
+        if s.get("status") == "done" and not retryable_dead_end(s)
+    }
     # Mechanical backstop for the veto instruction above: a redraft that resurrects a
     # user-removed step VERBATIM drops here (exact label match, case-insensitive); a reworded
     # resurrection is the prompt's job to prevent.

@@ -50,10 +50,25 @@ from textutil import clip
 _MODES = ("off", "warn", "gate")
 
 # Tools whose observations cross the trust boundary. Workspace file tools are deliberately NOT
-# here — the workspace is the user's own data; the boundary is content that arrived from outside
-# (the web, remote servers, the ingested corpus which may hold downloaded documents).
+# untrusted — the workspace is the user's own data; the boundary is content that arrived from
+# outside (the web, remote servers, the ingested corpus which may hold downloaded documents).
+#
+# The classification is DECLARED AT REGISTRATION (@register_tool(untrusted=True) /
+# register_tool_object(untrusted=True)) and PUSHED here by tools/registry at startup and by
+# /mcp reload — quarantine stays a leaf (imports config + textutil only), so the registry pushes
+# instead of being imported. The hard-coded set below is only the fallback for code paths that
+# never load the registry (unit tests, partial imports); with a push in effect it is unused.
 UNTRUSTED_TOOLS = {"web_search", "web_extract", "http_request", "search_knowledge_base"}
-_UNTRUSTED_PREFIX = "mcp_"  # every remote MCP tool
+_UNTRUSTED_PREFIX = "mcp_"  # every remote MCP tool (fallback-mode heuristic)
+_UNTRUSTED_OVERRIDE: "set[str] | None" = None  # the registry-pushed set; None = fallback mode
+
+
+def set_untrusted_tools(names) -> None:
+    """Adopt the registry-declared untrusted set (tools/registry pushes it at startup and after
+    /mcp reload). From then on `is_untrusted` answers from declarations, not name heuristics —
+    a new external-fetch tool is untrusted because its own registration says so."""
+    global _UNTRUSTED_OVERRIDE
+    _UNTRUSTED_OVERRIDE = set(names)
 
 
 @dataclass(frozen=True)
@@ -81,9 +96,6 @@ _PATTERNS: list[tuple[str, "re.Pattern[str]"]] = [
     ("prompt-exfil", re.compile(
         r"\b(?:reveal|print|repeat|output|show)\s+(?:your\s+)?"
         r"(?:system\s+prompt|initial\s+instructions)\b", re.IGNORECASE)),
-    # Fetched content naming Saturn's own mutating tools as calls is a coercion attempt, not data.
-    ("tool-coercion", re.compile(
-        r"\b(?:run_shell|write_file|edit_file|http_request)\s*\(", re.IGNORECASE)),
     ("urgent-imperative", re.compile(
         r"\byou\s+must\s+(?:now\s+)?(?:run|execute|call|invoke|use)\b", re.IGNORECASE)),
     # The heading form matches only a role-word heading standing ALONE on its line (chat-template
@@ -92,6 +104,32 @@ _PATTERNS: list[tuple[str, "re.Pattern[str]"]] = [
         r"<\|im_start\|>|\[/?INST\]|</?system>|^#{1,6}\s*system\s*:?\s*$",
         re.IGNORECASE | re.MULTILINE)),
 ]
+
+# Fetched content naming Saturn's own GATED tools as calls is a coercion attempt, not data.
+# The alternation is rebuilt from the live registry (every non-read_only tool, MCP included)
+# via set_gated_tools — pushed by tools/registry at startup and /mcp reload, so the pattern
+# tracks the actual gated surface instead of a frozen snapshot of four built-in names. The
+# default below is only the no-registry fallback (unit tests, partial imports).
+_GATED_DEFAULT = ("run_shell", "write_file", "edit_file", "http_request")
+
+
+def _tool_coercion_pattern(names) -> "re.Pattern[str]":
+    alt = "|".join(re.escape(n) for n in sorted(set(names)))
+    return re.compile(rf"\b(?:{alt})\s*\(", re.IGNORECASE)
+
+
+_TOOL_COERCION = _tool_coercion_pattern(_GATED_DEFAULT)
+
+
+def set_gated_tools(names) -> None:
+    """Rebuild the tool-coercion pattern from the live gated (non-read_only) tool set. Pushed by
+    tools/registry; an empty push keeps the previous pattern (never scan with a match-nothing
+    regex — fail toward the conservative default)."""
+    global _TOOL_COERCION
+    names = [str(n) for n in names if str(n)]
+    if names:
+        _TOOL_COERCION = _tool_coercion_pattern(names)
+
 
 _PREVIEW_CAP = 60
 
@@ -107,8 +145,15 @@ def active() -> bool:
 
 
 def is_untrusted(tool_name: str) -> bool:
-    """Whether a tool's output comes from outside the trust boundary."""
-    return tool_name in UNTRUSTED_TOOLS or tool_name.startswith(_UNTRUSTED_PREFIX)
+    """Whether a tool's output comes from outside the trust boundary — answered from the
+    registry-pushed declarations when available (set_untrusted_tools), else the fallback set.
+    The mcp_ prefix stays authoritative in BOTH modes (belt and braces: the prefix is reserved
+    for MCP registrations, and an mcp_ name must never scan as trusted — fail toward scanning)."""
+    if tool_name.startswith(_UNTRUSTED_PREFIX):
+        return True
+    if _UNTRUSTED_OVERRIDE is not None:
+        return tool_name in _UNTRUSTED_OVERRIDE
+    return tool_name in UNTRUSTED_TOOLS
 
 
 def scan(text: str) -> list[Finding]:
@@ -116,7 +161,7 @@ def scan(text: str) -> list[Finding]:
     if not text:
         return []
     out: list[Finding] = []
-    for kind, pattern in _PATTERNS:
+    for kind, pattern in [*_PATTERNS, ("tool-coercion", _TOOL_COERCION)]:
         for m in pattern.finditer(text):
             out.append(Finding(kind=kind, preview=clip(m.group(0), _PREVIEW_CAP)))
     return out

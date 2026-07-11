@@ -39,11 +39,12 @@ from typing import Callable, Optional
 from dotenv import dotenv_values, set_key, unset_key
 
 def _resolve_env_path() -> Path:
-    # Clone mode: .env at the repo root (config.yaml sits next to this file). Wheel installs
+    # Clone mode: .env at the repo root (config.yaml — or, on a first run that hasn't seeded it
+    # yet, the tracked template config.default.yaml — sits next to this file). Wheel installs
     # (pipx/uv) keep secrets in SATURDAY_HOME (~/.saturday) with the rest of the user's data,
     # mirroring config.py's lookup (kept in step by hand: no project imports here).
     root = Path(__file__).parent
-    if (root / "config.yaml").exists():
+    if (root / "config.yaml").exists() or (root / "config.default.yaml").exists():
         return root / ".env"
     return Path(os.environ.get("SATURDAY_HOME") or Path.home() / ".saturday") / ".env"
 

@@ -7,8 +7,11 @@ exactly it, with a CURATED context (plan_context.exec_context — request + earl
 "the previous step" callout) instead of the raw message history.
 
 Three step shapes:
-  - a pure reasoning step (`intended_tool` None/"none"): one text call; the result lands on the
-    step directly (and rides `messages` as a plain AIMessage for the trace/history).
+  - a pure reasoning step (`intended_tool` None — the planner said no tool is needed): one text
+    call; the result lands on the step directly (and rides `messages` as a plain AIMessage for
+    the trace/history). A step naming an UNKNOWN tool is NOT a reasoning step — it records an
+    error incident (fail-closed, 2026-07-10) so rectify can redraft it instead of the model
+    answering it from its own priors.
   - a write/edit step: the SEMANTIC write gate runs first (`_write_gate`, the fabricated-value
     guard — an LLM check that the value being persisted actually exists in the request or the
     gathered results). A blocked write marks the step `skipped` without generating a call. The
@@ -39,6 +42,7 @@ from core.plan_context import (
     exec_context,
     original_request,
     results_block,
+    steps_before,
 )
 from core.state import AgentState
 from core.structured import (
@@ -84,20 +88,30 @@ def _write_gate(state: AgentState, step: dict) -> "str | None":
     The gate judges the RAW gathered results; a value appearing only in a step description is
     not evidence (steps are drafted by a planner and can carry a substituted value)."""
     plan = state.get("plan") or []
-    done = [s for s in plan if s is not step and s.get("result") is not None]
+    # Positional prior-work only (steps_before): a LATER step the user retired at plan review
+    # carries a result too, and must neither arm the gate nor pose as the "latest" upstream.
+    done = [s for s in steps_before(plan, step) if s.get("result") is not None]
     if not done:
         return None
-    searched = any(s.get("intended_tool") in SEARCH_TOOLS for s in done)
-    failed = any(
-        s.get("status") == "error" or str(s.get("result") or "").lower().startswith("error")
-        for s in done
+    # A search ARMS the gate only if it actually ran (status done): a retired/declined search
+    # step gathered nothing, so there is no search evidence for a value to be bridging from.
+    searched = any(
+        s.get("intended_tool") in SEARCH_TOOLS and s.get("status") == "done" for s in done
     )
+    # Failure is the STRUCTURAL stamp only (status == "error", gotcha #6) — never sniffed from
+    # observation text: a successful read of a log that begins "ERROR:" is a done step with an
+    # error-looking result, and text-sniffing it armed the gate on purely mechanical plans (the
+    # exact false positive the saturn_status contract removed from update_plan, 2026-07-04).
+    failed = any(s.get("status") == "error" for s in done)
     if not (searched or failed):
         # A purely mechanical plan (read files the user named, compute from them) never pays
         # for the gate — including its empty-looking results: a computed 0 or an empty diff is
         # a real value, not a missing one. Arming requires a search or a failure upstream.
         return None
-    if _is_empty_result(done[-1].get("result")):
+    # The mechanical empty-check keys on the last step that PRODUCED a result (status done) —
+    # an incident step's stamp text (a decline, a review retirement) is not the upstream value.
+    producers = [s for s in done if s.get("status") == "done"]
+    if producers and _is_empty_result(producers[-1].get("result")):
         return (
             "skipped write: the upstream result was empty, so nothing was written "
             "(a file must not be created from a missing value)."
@@ -242,11 +256,24 @@ def execute_node(state: AgentState):
     tool_name = step.get("intended_tool")
     tool = tools_by_name.get(tool_name) if tool_name else None
 
-    # Pure reasoning step (or a planned tool that doesn't exist — reason it through honestly).
+    # A planned tool that doesn't exist fails CLOSED (2026-07-10 — the third fabrication path):
+    # silently degrading to a reasoning step would answer the step from the model's own priors
+    # and record the invented output as a done result. An error incident routes to rectify,
+    # whose judge/replan can redraft the step with a real tool — or the answer discloses it.
+    # (Planner output normally can't reach here — structured.to_steps preserves an unresolvable
+    # tool spelling precisely so this guard sees it.)
+    if tool is None and tool_name:
+        step["result"] = (
+            f"error: the plan named a tool that is not available: {tool_name!r} — "
+            "the step was not executed"
+        )
+        step["status"] = "error"
+        diag.log(f"execute_node : {time.perf_counter() - start:.4f}s "
+                 f"(unknown tool {tool_name!r} — fail-closed error incident)")
+        return updates
+
+    # Pure reasoning step (the planner said no tool is needed).
     if tool is None:
-        if tool_name:
-            diag.log(f"execute_node : step {step.get('step_id')} names unknown tool "
-                     f"{tool_name!r}; treating as a reasoning step")
         content, resp = _reasoning_call(context)
         step["result"] = content or "(no result produced)"
         step["status"] = "done" if content else "error"
@@ -269,7 +296,11 @@ def execute_node(state: AgentState):
     args, failure, resp = _generate_tool_call(tool, context)
     if args is None:
         step["result"] = clean(failure or "error: no tool call emitted")
-        step["status"] = "error" if str(failure or "").startswith("error:") else "done"
+        # Structural stamp, unconditional: the step's tool was never called, so this is an
+        # error incident by definition. (The old `startswith("error:")` sniff had a dead
+        # else-"done" arm that would have presented a future non-prefixed failure as a
+        # completed step — status is the producer's stamp, never derived from result text.)
+        step["status"] = "error"
         updates.update(_metrics(resp))
         diag.log(f"execute_node : {time.perf_counter() - start:.4f}s (no call: {failure!r:.80})")
         return updates

@@ -193,21 +193,42 @@ def registered_tools() -> set[str]:
         return set()
 
 
+# Planner spellings that MEAN "no tool" — these normalize to a genuine reasoning step. Anything
+# else norm_tool can't resolve is a REAL tool intent with a broken spelling, and must not
+# silently degrade into a reasoning step (see to_steps below).
+_NO_TOOL_MARKERS = {
+    "", "none", "null", "no", "n/a", "na", "no_tool", "no-tool", "no tool", "-",
+    "reason", "reasoning", "think", "thinking", "answer", "respond", "response",
+    "summarize", "summary", "analyze", "analysis", "llm", "text",
+}
+
+
 def to_steps(draft: _PlanOut) -> list[dict]:
     """Planner structured output → the plain step dicts stored in state (the checkpointer
     serializer never sees a custom type). `result=None` marks a step not yet executed — the
-    engine's execution pointer. Blank descriptions are dropped; step_ids renumber 1..N."""
+    engine's execution pointer. Blank descriptions are dropped; step_ids renumber 1..N.
+
+    Tool names normalize onto the registry (norm_tool). An unresolvable spelling that is NOT a
+    no-tool marker ("use read_file", "read_file: notes.txt") keeps its RAW text instead of
+    collapsing to None: a None here would execute as a reasoning step — the model answering a
+    tool step from its own priors, fabricated output recorded as a done result — whereas the
+    preserved unknown name makes execute_node fail closed (an error incident rectify can
+    redraft). The constrained decoder's tool enum makes this the salvage-path guard only."""
     steps: list[dict] = []
     for s in draft.plan:
         desc = (s.description or "").strip()
         if not desc:
             continue
+        raw = str(s.tool or "").strip()
+        tool = norm_tool(raw)
+        if tool is None and raw.lower() not in _NO_TOOL_MARKERS:
+            tool = raw  # fail-closed passthrough — execute_node records the incident
         steps.append(
             {
                 "step_id": len(steps) + 1,
                 "label": desc,
                 "status": "pending",
-                "intended_tool": norm_tool(s.tool),
+                "intended_tool": tool,
                 "result": None,
                 "needs_resolution": bool(s.needs_resolution),
             }

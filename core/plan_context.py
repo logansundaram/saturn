@@ -70,6 +70,17 @@ def clean(text) -> str:
     return s
 
 
+def steps_before(plan, step) -> list:
+    """Steps strictly BEFORE `step` in plan order (identity match). A LATER step can carry a
+    result too — plan-review retirement stamps one onto a step the user skipped — so "has a
+    result" does NOT mean "ran earlier": positional slicing is the correct prior-work filter.
+    A step not found in the plan (defensive) yields the whole plan, the pre-fix behavior."""
+    for i, s in enumerate(plan or []):
+        if s is step:
+            return list(plan[:i])
+    return list(plan or [])
+
+
 def results_block(plan) -> str:
     """The 'Results from earlier steps' block: every completed step's label -> result (capped),
     numbered in plan order. Empty string when nothing has run."""
@@ -95,12 +106,22 @@ def exec_context(state, step) -> str:
     if grounding:
         parts.append(grounding)
     plan = state.get("plan") or []
-    prior = [s for s in plan if s is not step and s.get("result") is not None]
-    block = results_block([s for s in plan if s is not step])
+    # Only steps BEFORE the current one, in plan order: a LATER step can already carry a result
+    # (the user retired it at plan review), and prior[-1] over the whole plan would present its
+    # retirement stamp as "the previous step's result" — the model would compute from the stamp
+    # text instead of the real preceding step's output.
+    before = steps_before(plan, step)
+    prior = [s for s in before if s.get("result") is not None]
+    block = results_block(before)
     if block:
         parts.append(block)
-    if prior:
-        last = prior[-1]
+    # The callout referent is the nearest prior step that PRODUCED a result (status done): an
+    # incident/review-retired step's stamp is not "the previous step's result" — and replan's
+    # done-first merge can reposition a retired step directly before the redrafted ones, so
+    # position alone isn't enough.
+    producers = [s for s in prior if s.get("status") == "done"]
+    if producers:
+        last = producers[-1]
         parts.append(
             f'The immediately preceding step ("the previous step") was: '
             f"{last.get('label')}\n  its result: "

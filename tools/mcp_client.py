@@ -424,7 +424,10 @@ def _register_server_tools(st: _ServerState) -> list[str]:
         )
         # Tier = the user's server-level declaration (validated in _parse_specs; defaults to
         # destructive). register_tool_object itself fails closed again — belt and braces.
-        register_tool_object(lc_tool, st.spec.risk)
+        # untrusted=True for EVERY transport: even a stdio server is another process whose
+        # output Saturn didn't produce (and it may itself fetch remote content) — conservative
+        # on purpose; the quarantine scan costs a regex pass, not a prompt.
+        register_tool_object(lc_tool, st.spec.risk, untrusted=True)
         registered.append(lc_name)
     return registered
 
@@ -643,6 +646,10 @@ def reload() -> list[str]:
         for name, tier in policy.risk_overrides().items():
             if name in new and tier in RISK_TIERS:
                 registry.TOOL_RISK[name] = tier
+
+        # The tool set and tiers just changed — re-push the quarantine's trust classifications
+        # (untrusted set + the tool-coercion pattern's gated-name alternation).
+        registry.refresh_trust_classifications()
 
         reset_models()  # rebind the tool model so the agent sees the new tool set
         return list(_PROBLEMS)

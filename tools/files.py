@@ -27,6 +27,26 @@ from stores.document_registry import register_workspace_file
 from stores.snapshots import snapshot_file
 
 
+# ── cross-module observation contracts (one producer, one parser — the DECLINE_TEXT rule) ────
+# The write tools report refusals as ordinary strings, so their SUCCESS wording is a contract:
+# nodes/synthesize.verify_writes re-reads only files whose observation starts with one of these
+# markers. Change a constant and its return statement together; never re-type the strings there.
+MSG_OVERWROTE = "File overwritten successfully"
+MSG_CREATED = "File created successfully"
+MSG_APPENDED = "Content appended to file successfully"
+EDIT_PREFIX = "Edited "  # edit_file's success line: f"{EDIT_PREFIX}{path}: replaced …"
+WRITE_SUCCESS_MARKERS = (MSG_OVERWROTE, MSG_CREATED, MSG_APPENDED, EDIT_PREFIX)
+
+# The not-found refusals nodes/rectify's dead-end classifier keys on (lowercase startswith —
+# rectify lowercases observations before matching). Same producer/parser contract as above.
+NOT_FOUND_PREFIXES = (
+    "file not found:",           # edit_file: missing target
+    "no matches for",            # search_files: empty content search
+    "no files matching",         # find_files: empty name glob
+    "path is not a directory",   # _resolve_dir refusal (a guessed directory that isn't one)
+)
+
+
 def _resolve(rel_path: str, kind: str = "file"):
     """Resolve a workspace-relative path inside the sandbox.
 
@@ -85,7 +105,7 @@ def write_file(file_path: str, content: str, overwrite: bool = True):
         with open(target_path, "w", encoding="utf-8") as file:
             file.write(content)
         register_workspace_file(manifest_key, content)
-        return "File overwritten successfully" if existed else "File created successfully"
+        return MSG_OVERWROTE if existed else MSG_CREATED
     with open(target_path, "a", encoding="utf-8") as file:
         file.write(content)
     # Read back the full file content so the manifest reflects the complete document.
@@ -93,7 +113,7 @@ def write_file(file_path: str, content: str, overwrite: bool = True):
     # on a pre-existing non-UTF-8 byte must not fail the call and strand the manifest.
     full_content = target_path.read_text(encoding="utf-8", errors="replace")
     register_workspace_file(manifest_key, full_content)
-    return "Content appended to file successfully"
+    return MSG_APPENDED
 
 
 @register_tool("read_only")
@@ -144,7 +164,7 @@ def edit_file(file_path: str, old_string: str, new_string: str, replace_all: boo
     # (matching write_file and /undo's manifest sync) keeps one entry per file.
     register_workspace_file(target_path.relative_to(workspace).as_posix(), new_content)
     n = count if replace_all else 1
-    return f"Edited {file_path}: replaced {n} occurrence(s)."
+    return f"{EDIT_PREFIX}{file_path}: replaced {n} occurrence(s)."
 
 
 # search_files caps — small at the source so a huge workspace can't flood one observation.

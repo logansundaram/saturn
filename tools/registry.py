@@ -54,6 +54,27 @@ for _name, _tier in _policy.risk_overrides().items():
 del _policy, _RISK_TIERS
 
 
+def refresh_trust_classifications() -> None:
+    """Push the tool trust classifications into the quarantine scanner (a leaf that must not
+    import this registry): which tools' output crosses the trust boundary (declared at
+    registration via `untrusted=True`), and which gated tool names the tool-coercion injection
+    pattern should recognize. The coercion set is the UNION of declared and live non-read_only
+    tiers — monotone toward scanning: a user relaxing a tool's gate (/policy risk read_only, an
+    always-allow grant) must never shrink the injection scan, while raising a tier still adds
+    the name. Runs at import below and again after anything that changes the tool set or the
+    live tiers (/mcp reload, /policy risk)."""
+    from tools.toolspec import _UNTRUSTED
+    from trust import quarantine
+
+    quarantine.set_untrusted_tools(_UNTRUSTED)
+    gated = {n for n, t in DECLARED_RISK.items() if t != "read_only"}
+    gated |= {n for n, t in TOOL_RISK.items() if t != "read_only"}
+    quarantine.set_gated_tools(gated)
+
+
+refresh_trust_classifications()
+
+
 # Risk tiers drive the approval gate (see nodes/approval.py):
 #   read_only      — no side effects; runs freely, never prompts
 #   side_effecting — writes/external actions; prompts for approval

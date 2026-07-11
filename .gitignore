@@ -2,6 +2,11 @@
 .env
 *.env
 
+# The LIVE config is user data (persisted /config edits land in it — 2026-07-10): tracking it
+# broke /update's ff-only pull for anyone who ever changed a setting. Seeded on first run from
+# the tracked template config.default.yaml (config.py._resolve_config_path).
+config.yaml
+
 # Logs
 logs/
 *.log

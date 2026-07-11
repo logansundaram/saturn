@@ -37,7 +37,6 @@ pauses + steering keep their seam) -> execute; else synthesize. The iteration ca
 (config runtime.max_iterations, counted in execute passes) and MAX_REPLANS bound every loop edge.
 """
 
-import re
 import time
 
 import diag
@@ -76,9 +75,39 @@ MAX_REPLANS = 5
 # Dead ends from these tools are retryable ONCE — a wrong pattern/scope may hide real data.
 _RETRYABLE = ("run_shell", "search_files", "find_files", "list_directory")
 
-# run_shell's observation header (tools/shell.py _format). Anchored at the start so a transcript
-# that merely MENTIONS "exit code 128" mid-output never reads as a failed run.
-_EXIT_CODE_RE = re.compile(r"\[exit code (\d+)\]")
+# First-line shapes that read as "the step produced nothing" regardless of which tool ran.
+_EMPTY_FIRST_LINES = ("", "0", "0.0", "[]", "none", "no results", "no matches")
+
+
+def dead_end_result(res) -> bool:
+    """Whether an observation reads as a dead end — empty/zero output, a producer-declared
+    not-found refusal, or a nonzero shell exit. The pure classifier behind branch 4, also used
+    by replan's resurrection filter (a came-up-empty step may be retried under the same label).
+
+    Anchored to the PRODUCERS' own contracts (tools/files.NOT_FOUND_PREFIXES,
+    tools/shell.EXIT_CODE_RE — one producer, one parser), never to substrings anywhere in the
+    text: the old `"not found" in observation` matched a successful search whose CONTENT
+    contained '404 not found' and spuriously replanned a healthy plan. Lazy imports keep this
+    module free of import-time tool registration (the execute-node pattern)."""
+    from tools.files import NOT_FOUND_PREFIXES
+    from tools.shell import EXIT_CODE_RE
+
+    rl = str(res or "").strip().lower()
+    first = rl.splitlines()[0] if rl else ""
+    exit_m = EXIT_CODE_RE.match(rl)  # anchored: a mid-output mention of an exit code never counts
+    return (
+        first in _EMPTY_FIRST_LINES
+        or rl.startswith(NOT_FOUND_PREFIXES)
+        or bool(exit_m and int(exit_m.group(1)) != 0)
+    )
+
+
+def retryable_dead_end(step) -> bool:
+    """`dead_end_result` gated on the step's TOOL being retryable (_RETRYABLE): a computed "0"
+    from calculate or an empty "[]" from a non-search tool is a VALUE (the _EMPTY_MARKERS rule),
+    never a dead end. Branch 4 below and replan's resurrection filter share this one guard, so
+    the two ends of the retry seam can't disagree about what counts as retryable."""
+    return step.get("intended_tool") in _RETRYABLE and dead_end_result(step.get("result"))
 
 
 def _cancel_remaining(plan: list[dict], text: str) -> list[dict]:
@@ -105,10 +134,12 @@ def rectify_node(state: AgentState):
             break
         last_done = s
     res = str(last_done.get("result") or "") if last_done else ""
+    # Failure is the STRUCTURAL stamp (status == "error") or a truly empty observation — never
+    # sniffed from result text: a successful read of a log that begins "ERROR:" is a done step
+    # (the exact false positive the saturn_status contract removed from update_plan, 2026-07-04),
+    # and sniffing it here skipped the free concrete-pending pass and invited spurious replans.
     failed = bool(last_done) and (
-        not res.strip()
-        or last_done.get("status") == "error"
-        or res.lower().startswith("error")
+        not res.strip() or last_done.get("status") == "error"
     )
 
     # 1. A guarded action (gate rejection, write-gate skip, BLOCKED refusal) ends the run:
@@ -195,23 +226,10 @@ def rectify_node(state: AgentState):
 
     # 4. Search/list/count dead ends are retryable once (a wrong pattern or scope may be hiding
     #    real data); a read_file miss or an empty knowledge-base search is a genuine absence.
-    rl = res.strip().lower()
-    first = rl.splitlines()[0] if rl else ""
-    exit_m = _EXIT_CODE_RE.match(rl)  # the run_shell header, anchored at the observation start
-    dead_end = (
-        first in ("", "0", "0.0", "[]", "none", "no results", "no matches")
-        or "not found" in rl
-        or "no such file" in rl
-        or "not a directory" in rl
-        or rl.startswith("no matches for")
-        or rl.startswith("no files matching")
-        or bool(exit_m and int(exit_m.group(1)) != 0)
-    )
     if (
         not pending
-        and dead_end
         and last_done is not None
-        and last_done.get("intended_tool") in _RETRYABLE
+        and retryable_dead_end(last_done)
         and state.get("replans", 0) < 2
     ):
         diag.log(f"rectify_node : {time.perf_counter() - start:.4f}s (dead end -> retry)")

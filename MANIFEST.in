@@ -1,3 +1,5 @@
 # sdist extras beyond setuptools' defaults (py files, data-files, README/LICENSE/pyproject):
-# ship the public changelog with the source distribution.
+# ship the public changelog with the source distribution, and the config template the wheel's
+# data-files entry packages (the live config.yaml is untracked user data — 2026-07-10).
 include CHANGELOG.md
+include config.default.yaml

@@ -79,7 +79,7 @@ def _local_extract(url: str) -> str:
 
 
 # --- tools -----------------------------------------------------------------
-@register_tool("read_only")
+@register_tool("read_only", untrusted=True)
 def web_search(query: str):
     """Execute a web search query. Keyless DuckDuckGo — no API key, no account, ever."""
     blocked = egress.check("web_search", "duckduckgo.com", query)
@@ -93,7 +93,7 @@ def web_search(query: str):
     return _ddg_search(query, _max_results())
 
 
-@register_tool("read_only")
+@register_tool("read_only", untrusted=True)
 def web_extract(url: str):
     """Extract the readable page content behind a URL. Use this to read a specific page that
     web_search surfaced. Runs locally (trafilatura) — no API key; only the page's host is
@@ -125,7 +125,7 @@ def web_extract(url: str):
 _TEXTUAL_TYPES = ("text", "json", "xml", "html", "javascript", "urlencoded")
 
 
-@register_tool("destructive")
+@register_tool("destructive", untrusted=True)
 def http_request(url: str, method: str = "GET", headers: dict | None = None,
                  body: str | None = None):
     """Send one HTTP request to a URL or API endpoint and return the response (status code,

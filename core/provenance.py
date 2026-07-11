@@ -53,6 +53,41 @@ def new_buffer() -> dict:
     return {"text": "", "spans": [], "edits": [], "confidence": []}
 
 
+def clone(buf: dict) -> dict:
+    """A structurally independent copy (fresh span/edit/confidence dicts): the entry point for a
+    consumer that will `extend_model` a buffer someone else still holds (nodes/synthesize's
+    continuation loop clones the frozen buffer once, then extends the clone in place)."""
+    return {
+        **buf,
+        "spans": [dict(s) for s in buf.get("spans") or []],
+        "edits": [dict(e) for e in buf.get("edits") or []],
+        "confidence": [dict(c) for c in buf.get("confidence") or []],
+    }
+
+
+def extend_model(buf: dict, text: str, confidence=None) -> None:
+    """`append_model`, IN PLACE — the streaming hot path (one call per streamed chunk). The
+    copy-and-return contract exists for buffers other code can see (checkpoint/replay); the
+    per-chunk copies it forced inside the stream loops re-copied the whole text, span list, and
+    confidence overlay on every token — quadratic in answer length. Use this ONLY on a buffer
+    still private to its producer (fresh from new_buffer(), or clone()d first); everything that
+    leaves a node keeps the immutable contract via append_model."""
+    if not text:
+        return
+    old_len = len(buf.get("text", ""))
+    spans = buf.setdefault("spans", [])
+    last = spans[-1] if spans else None
+    if last and last.get("author") == MODEL and last.get("end") == old_len:
+        last["end"] = old_len + len(text)  # merge into the trailing model span (what _merged does)
+    else:
+        spans.append({"start": old_len, "end": old_len + len(text), "author": MODEL})
+    conf = buf.setdefault("confidence", [])
+    for c in confidence or []:
+        conf.append({"start": int(c["start"]) + old_len, "end": int(c["end"]) + old_len,
+                     "logprob": float(c["logprob"])})
+    buf["text"] = buf.get("text", "") + text
+
+
 def _merged(spans: list[dict]) -> list[dict]:
     """Normalize a span list: drop empties, merge adjacent same-author runs. Spans arrive
     in text order (every producer appends/rebuilds in order), so one linear pass suffices."""
@@ -71,17 +106,14 @@ def append_model(buf: dict, text: str, confidence=None) -> dict:
     """A new buffer with `text` appended as model-authored (streamed tokens land here).
     `confidence`, when given, is the chunk's CHUNK-RELATIVE confidence entries
     (core/confidence.align_chunk) — shifted onto the buffer's offsets here, so callers never
-    track the running length themselves."""
+    track the running length themselves. Copy-and-return (clone + extend_model), so an earlier
+    buffer stays exactly what it was."""
     if not text:
         return dict(buf)
-    old = buf.get("text", "")
-    spans = list(buf.get("spans") or [])
-    spans.append({"start": len(old), "end": len(old) + len(text), "author": MODEL})
-    conf = list(buf.get("confidence") or [])
-    for c in confidence or []:
-        conf.append({"start": int(c["start"]) + len(old), "end": int(c["end"]) + len(old),
-                     "logprob": float(c["logprob"])})
-    return {**buf, "text": old + text, "spans": _merged(spans), "confidence": conf}
+    new = clone(buf)
+    new["spans"] = _merged(new.get("spans") or [])  # normalize inherited spans exactly as before
+    extend_model(new, text, confidence)
+    return new
 
 
 def apply_edit(buf: dict, new_text: str) -> dict:

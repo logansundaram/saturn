@@ -7,6 +7,50 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
 
 ## [Unreleased]
 
+### Changed
+
+- The live `config.yaml` is no longer tracked by git — it is user data (persisted settings
+  land in it), and tracking it could make `/update` fail once you had ever saved a setting.
+  It is now seeded on first run from the tracked template `config.default.yaml`.
+  **Migration for clone installs:** pulling this change removes an unmodified `config.yaml`
+  (it is recreated from the template on the next launch); if you had edited it, git refuses
+  the pull once — back the file up, `git checkout -- config.yaml`, pull again, and re-apply
+  your settings (they now persist without dirtying the repo).
+- Trust-posture settings (`runtime.auto_approve`, `runtime.airgap`, `runtime.quarantine`,
+  `runtime.redaction`) set through `/config` now apply for the session only unless you pass
+  an explicit `--save` — a loosened security posture is never written to disk silently,
+  matching the `/policy` and `/privacy` toggles.
+- A plan step naming a tool that doesn't exist now fails closed as a disclosed error the
+  engine can replan around, instead of silently degrading into the model answering the step
+  from its own knowledge.
+
+### Fixed
+
+- The semantic write gate and the self-correction judge no longer misread a successful step
+  whose output merely *begins* with "ERROR" (e.g. reading an error log) as a failed step —
+  failure now keys exclusively on the step's recorded status. Previously this could skip a
+  legitimate write (and cancel the rest of the run) or trigger a spurious replan.
+- The bounded "search came up empty — retry once" self-correction actually retries now: a
+  redrafted step reusing the original wording was silently dropped as a duplicate, so the
+  turn could answer "not found" without ever re-searching.
+- The plan executor's "previous step" context and the write gate no longer mistake a later
+  step you removed at plan review for the most recent completed work.
+- The prompt-injection quarantine now derives its tool classifications from the live tool
+  registry: tools declare `untrusted=True` at registration, and the tool-coercion pattern
+  covers every gated tool (including MCP tools) instead of a frozen list of four built-ins.
+- Answer streaming no longer does quadratic per-token work (noticeable as growing latency on
+  long answers, especially with confidence grading on).
+- A hardware tier without an `embedder:` entry now reports an actionable config problem
+  instead of silently using a hard-coded model id.
+- Relaxing a tool's approval tier (`/policy risk … read_only`, an always-allow grant) no
+  longer removes that tool from the injection quarantine's coercion scan.
+- Shell commands killed by a signal (negative exit codes on Linux/macOS) now classify as
+  failed runs for the engine's retry logic.
+- `/trace invoke` no longer records a deliberately frozen (Esc) answer stream as a failed
+  model call — it is recorded as cancelled.
+- On terminals without `rich`, a freeze-edited answer now re-renders in full after the turn,
+  so the correction actually appears in the transcript.
+
 ## [0.1.0] — 2026-07-10
 
 First public release.

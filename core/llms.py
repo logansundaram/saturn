@@ -410,7 +410,13 @@ def check_models() -> list[str]:
                 f"role '{role}' is bound to {spec.provider}:{spec.model} — cloud model support "
                 f"is shelved; rebind it to a local Ollama model (`/models {role} <id>`)"
             )
-    need_ollama.append(cfg.embedder_model)  # embeddings always run through Ollama
+    try:
+        need_ollama.append(cfg.embedder_model)  # embeddings always run through Ollama
+    except KeyError as exc:
+        # A tier without an `embedder:` (no hard-coded fallback id — config.yaml is the one
+        # home for model ids) is a health-report problem, not a startup crash. args[0], not
+        # str(exc): str() of a KeyError is the repr of its message (spurious quotes).
+        problems.append(exc.args[0] if exc.args else str(exc))
     need_ollama = sorted(set(need_ollama))
 
     if need_ollama:

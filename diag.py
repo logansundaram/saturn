@@ -20,11 +20,12 @@ import os
 from pathlib import Path
 
 def _resolve_log_dir() -> Path:
-    # Clone mode: logging/ at the repo root (config.yaml sits next to this file). Wheel installs
-    # (pipx/uv) must not write into site-packages — use SATURDAY_HOME (~/.saturday), mirroring
-    # config.py's lookup (kept in step by hand: this module imports nothing project-side).
+    # Clone mode: logging/ at the repo root (config.yaml — or, before the first-run seed, the
+    # tracked template config.default.yaml — sits next to this file). Wheel installs (pipx/uv)
+    # must not write into site-packages — use SATURDAY_HOME (~/.saturday), mirroring config.py's
+    # lookup (kept in step by hand: this module imports nothing project-side).
     root = Path(__file__).parent
-    if (root / "config.yaml").exists():
+    if (root / "config.yaml").exists() or (root / "config.default.yaml").exists():
         return root / "logging"
     return Path(os.environ.get("SATURDAY_HOME") or Path.home() / ".saturday") / "logging"
 

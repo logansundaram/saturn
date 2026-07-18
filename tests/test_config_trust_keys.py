@@ -2,8 +2,9 @@
 /config persist-by-default (2026-07-07) with the trust-key exemption (2026-07-10): a security
 posture set through the generic setter applies for the SESSION and never writes config.yaml
 without an explicit --save — the same fail-closed convention the canonical toggles
-(/policy open, /privacy airgap/redact) keep via the opt-IN save parser. Ordinary settings keep
-the persist-by-default inversion.
+(/policy open, /privacy airgap) keep via the opt-IN save parser — runtime.redaction stays a
+trust key even though its command front end was cut 2026-07-16 (/config is its only door now).
+Ordinary settings keep the persist-by-default inversion.
 """
 
 import pytest

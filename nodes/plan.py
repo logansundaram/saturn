@@ -58,8 +58,22 @@ def plan_node(state: AgentState):
     Structured output goes through the hardened path (core/structured.py: flat schema, shape
     hint, JSON salvage, temp-escalating retries); a total parse failure records an explicit
     parse-error incident (see _fallback_plan) rather than aborting the turn OR silently answering
-    from the model's priors."""
+    from the model's priors.
+
+    A PRE-SEEDED plan (user-drafted via /draft, injected by the REPL at turn start) is
+    honored verbatim — the human's plan outranks the engine's drafting, the same authority rule
+    plan review's vetoes encode. `_fresh_turn` resets `plan` to [] on every turn boundary, so a
+    non-empty plan here always means "deliberately seeded this turn", never a stale leftover.
+    Returned as a delta (not silently passed through) so the rail renders the drafted plan
+    exactly like an engine draft. Tool spellings were already normalized at draft time
+    (commands/plan._normalize_draft, the same norm_tool rules as to_steps), so an unknown tool
+    still fails closed at execute."""
     start = time.perf_counter()
+
+    seeded = state.get("plan") or []
+    if seeded:
+        diag.log(f"plan_node : user-drafted plan honored ({len(seeded)} step(s)) — drafting skipped")
+        return {"plan": seeded}
 
     prompt = [
         planner_sys_msg(),  # built per call — the tool catalog tracks /mcp reload

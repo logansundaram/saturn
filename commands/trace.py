@@ -9,8 +9,8 @@ from pathlib import Path
 from typing import Optional
 
 from commands._framework import command, _print
-from stores.trace import decode_json, parse_ts
-from textutil import CALL_RESULT_SEP, clip as _clip, fmt_args
+from stores.trace import decode_json
+from textutil import clip as _clip, fmt_args
 
 
 @contextmanager
@@ -23,143 +23,11 @@ def _connect(db_path):
         conn.close()
 
 
-def _fmt_secs(s: float) -> str:
-    if s < 60:
-        return f"{s:.1f}s"
-    m, sec = divmod(int(round(s)), 60)
-    if m < 60:
-        return f"{m}m{sec:02d}s"
-    h, m = divmod(m, 60)
-    return f"{h}h{m:02d}m"
-
-
-def _fmt_count(n: int) -> str:
-    if n < 1000:
-        return str(int(n))
-    if n < 1_000_000:
-        return f"{n / 1000:.1f}k"
-    return f"{n / 1_000_000:.2f}M"
-
-
-def _calls(ctx, args):
-    _MAX_CALL_OUTPUT = 600
-    n = 10
-    if args:
-        try:
-            n = max(1, int(args[0]))
-        except ValueError:
-            _print(f"  ignoring non-numeric count: {args[0]!r}")
-
-    with _connect(ctx.db_path) as conn:
-        rows = conn.execute(
-            "SELECT run_id, data FROM events WHERE node = 'tools' ORDER BY id DESC LIMIT ?",
-            (n * 5,),
-        ).fetchall()
-
-    calls: list[tuple[int, dict, str]] = []
-    for run_id, data in rows:
-        delta = decode_json(data, {})
-        events = delta.get("tool_events") or []
-        results = delta.get("tool_results") or []
-        for i, ev in enumerate(events):
-            full = results[i] if i < len(results) else ""
-            calls.append((run_id, ev, full))
-        if len(calls) >= n:
-            break
-
-    if not calls:
-        _print("  (no tool calls recorded yet)")
-        return
-
-    calls = calls[:n]
-    _print(f"  last {len(calls)} tool call(s) — newest first:")
-    for run_id, ev, full in calls:
-        glyph = "✓" if ev.get("ok", True) else "⨯"
-        dur = ev.get("dur")
-        dur_s = f"{dur:.2f}s" if isinstance(dur, (int, float)) else "  -  "
-        # CALL_RESULT_SEP — the one constant nodes/tools.py builds these entries with; a
-        # hand-typed " -> " literal here silently stops splitting if the separator ever changes.
-        call_repr, _, observation = (full or "").partition(CALL_RESULT_SEP)
-        if not call_repr:
-            call_repr = ev.get("name", "?")
-            observation = ev.get("result", "")
-        _print(f"    #{run_id:<4} {glyph} {dur_s:>6}  {call_repr}")
-        out = _clip(observation, _MAX_CALL_OUTPUT)
-        _print(f"             -> {out}" if out else "             -> (no output)")
-
-
-def _cost(ctx, args):
-    all_time = any(a.lower() in ("--all", "-a", "all") for a in args)
-    scope = "" if all_time else (ctx.session_started_at or "")
-
-    with _connect(ctx.db_path) as conn:
-        if scope:
-            runs = conn.execute(
-                "SELECT run_id, query, started_at, ended_at, status FROM runs "
-                "WHERE started_at >= ? ORDER BY run_id",
-                (scope,),
-            ).fetchall()
-        else:
-            runs = conn.execute(
-                "SELECT run_id, query, started_at, ended_at, status FROM runs ORDER BY run_id"
-            ).fetchall()
-        if not runs:
-            _print("  (no runs recorded yet this session)" if scope else "  (no runs recorded yet)")
-            return
-        ev_rows = conn.execute(
-            "SELECT run_id, data FROM events WHERE run_id >= ?", (runs[0][0],)
-        ).fetchall()
-
-    total_wall = 0.0
-    timed = 0
-    slowest = (0.0, "")
-    status_mix = {"ok": 0, "error": 0, "interrupted": 0, "other": 0}
-    for _rid, query, started_at, ended_at, status in runs:
-        s, e = parse_ts(started_at), parse_ts(ended_at)
-        if s and e:
-            secs = (e - s).total_seconds()
-            total_wall += secs
-            timed += 1
-            if secs > slowest[0]:
-                slowest = (secs, query or "")
-        status_mix[status if status in status_mix else "other"] += 1
-
-    total_tools = 0
-    total_prompt_tokens = 0
-    peak_ctx = 0
-    max_iter = {}
-    for run_id, data in ev_rows:
-        delta = decode_json(data, {})
-        total_tools += len(delta.get("tools_called") or [])
-        ct = delta.get("context_tokens") or 0
-        if ct:
-            total_prompt_tokens += ct
-            peak_ctx = max(peak_ctx, ct)
-        if "iteration" in delta:
-            max_iter[run_id] = max(max_iter.get(run_id, 0), delta["iteration"] or 0)
-    total_iters = sum(max_iter.values())
-
-    turns = len(runs)
-    avg = total_wall / timed if timed else 0.0
-    mix = " · ".join(f"{v} {k}" for k, v in status_mix.items() if v)
-
-    _print("")
-    _print(
-        f"  session totals — {turns} turn{'' if turns == 1 else 's'}"
-        + ("" if scope else "  (all recorded runs)")
-    )
-    _print(f"    turns        {turns}" + (f"   ({mix})" if mix else ""))
-    if timed:
-        _print(f"    wall time    {_fmt_secs(total_wall)}   (avg {_fmt_secs(avg)}/turn)")
-    _print(f"    iterations   {total_iters}")
-    _print(f"    tool calls   {total_tools}")
-    _print(
-        f"    prompt tok   {_fmt_count(total_prompt_tokens)} processed"
-        + (f"   (peak ctx {_fmt_count(peak_ctx)})" if peak_ctx else "")
-    )
-    if slowest[0]:
-        _print(f"    slowest      {_fmt_secs(slowest[0])}  \"{_clip(slowest[1], 48)}\"")
-    _print("")
+# (The `calls`, `cost`, and `state` subviews were CUT 2026-07-16 — `calls` duplicated the
+# per-run drill-down's tool I/O, `cost` was the readout half of the already-cut cloud-era token
+# budget (local users read tok/s + context fill live in the status bar and /config context),
+# and `state` was a developer debugging dump wearing a user command. /trace is why · answer ·
+# source · invoke · export · replay now.)
 
 
 def _to_int(s) -> Optional[int]:
@@ -236,9 +104,9 @@ def _load_run(conn, run_id, *,
 
 
 # --- /trace export ------------------------------------------------------------------------------
-# One run's complete record (run + events + LLM calls) written to a self-contained file. JSON is
-# the record format /trace replay renders offline; --md renders a human-readable report instead.
-# (The sha256 integrity digest + the verify flows — /trace verify, saturn verify — were CUT
+# One run's complete record (run + events + LLM calls) written to a self-contained JSON file —
+# the record format /trace replay renders offline. (The --md report format was CUT 2026-07-16.
+# The sha256 integrity digest + the verify flows — /trace verify, saturn verify — were CUT
 # 2026-07-03: a digest stored inside the file it protects verifies after any edit that recomputes
 # it, so it only ever caught accidental corruption; real verification returns in Phase 3 with
 # signing. Legacy exports still carry `integrity`/`signature` blocks — replay ignores them.)
@@ -302,52 +170,18 @@ def _export_payload(run, events, calls) -> dict:
     return payload
 
 
-def _export_markdown(payload: dict) -> str:
-    """The human-readable rendering of an export payload — a report, not the audit format."""
-    run = payload["run"]
-    lines = [
-        f"# Saturn run record — run #{run['run_id']}",
-        "",
-        f"- **query:** {run['query'] or '(none)'}",
-        f"- **started:** {run['started_at'] or '?'}   **ended:** {run['ended_at'] or '?'}",
-        f"- **status:** {run['status'] or '?'}",
-        f"- **exported:** {payload['exported_at']}  (saturn {payload['saturn_version']})",
-        "",
-        "## Timeline",
-        "",
-    ]
-    for ev in payload["events"]:
-        ts = (ev["ts"] or "")[11:19]
-        lines.append(f"- `{ts}` **{ev['node']}** — {ev['summary'] or ''}")
-        delta = ev["data"] if isinstance(ev["data"], dict) else {}
-        for result in delta.get("tool_results") or []:
-            lines.append("")
-            lines.append("  ```")
-            lines.extend(f"  {ln}" for ln in str(result).splitlines())
-            lines.append("  ```")
-    calls = payload["llm_calls"]
-    if calls:
-        lines += ["", f"## LLM calls ({len(calls)})", ""]
-        for c in calls:
-            dur = f"{c['dur']:.1f}s" if isinstance(c["dur"], (int, float)) else "?"
-            toks = f"{c['prompt_tokens'] or 0}→{c['output_tokens'] or 0} tok"
-            lines.append(f"- `{c['node']}` {c['model'] or '?'} — {dur}, {toks}, {c['status']}")
-    lines += ["", "## Final response", "", run["response"] or "(none)", ""]
-    return "\n".join(lines)
-
-
 def export_run(
     db_path,
     run_id: Optional[int] = None,
     dest: Optional[Path] = None,
-    fmt_md: bool = False,
 ) -> "tuple[Path, dict]":
     """THE one export-payload builder + writer — shared by the /trace export handler and the
     headless `saturn -p ... --export FILE` flag, so the two surfaces can never drift onto
     different payloads. `run_id=None` exports the latest run; `dest=None` writes the default
-    logging/exports/run_<id>.<ext>. Returns (path written, payload as written). Raises
+    logging/exports/run_<id>.json. Returns (path written, payload as written). Raises
     LookupError (no such run) / OSError (write failed) — each caller renders those its own
-    way (REPL note vs. stderr + exit code)."""
+    way (REPL note vs. stderr + exit code). (The `--md` second format was CUT 2026-07-16 —
+    the JSON record is the one artifact, replayable via /trace replay.)"""
     with _connect(db_path) as conn:
         if run_id is None:
             row = conn.execute("SELECT MAX(run_id) FROM runs").fetchone()
@@ -378,32 +212,24 @@ def export_run(
     from config import get_config
 
     if dest is None:
-        ext = "md" if fmt_md else "json"
-        dest = get_config().path("exports") / f"run_{run_id}.{ext}"
+        dest = get_config().path("exports") / f"run_{run_id}.json"
     dest.parent.mkdir(parents=True, exist_ok=True)
-    if fmt_md:
-        dest.write_text(_export_markdown(payload), encoding="utf-8")
-    else:
-        dest.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+    dest.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
     return dest, payload
 
 
 def _export(ctx, args):
-    fmt_md = False
     out_path: Optional[str] = None
     bad_out = False
 
     def consume(low, a, it):
-        nonlocal fmt_md, out_path, bad_out
-        if low in ("--md", "-m", "md", "markdown"):
-            fmt_md = True
-            return True
+        nonlocal out_path, bad_out
         if low in ("-o", "--out", "--output"):
             out_path = next(it, None)
             # A dangling -o must not silently write the default, and a flag-shaped "path"
-            # (-o --md) is a swallowed flag, not a destination — refuse both before any
+            # (-o --foo) is a swallowed flag, not a destination — refuse both before any
             # DB/file work.
             if out_path is None or out_path.startswith("-"):
                 bad_out = True
@@ -412,7 +238,7 @@ def _export(ctx, args):
 
     run_id, _count, _list = _parse_run_selector(args, consume=consume)
     if bad_out:
-        _print("  usage: /trace export [#id] [--md] [-o <path>] — -o needs a path; "
+        _print("  usage: /trace export [#id] [-o <path>] — -o needs a path; "
                "nothing written")
         return
 
@@ -421,7 +247,6 @@ def _export(ctx, args):
             ctx.db_path,
             run_id,
             dest=Path(out_path).expanduser() if out_path else None,
-            fmt_md=fmt_md,
         )
     except LookupError as e:
         _print(f"  {e}")
@@ -433,8 +258,7 @@ def _export(ctx, args):
     run_id = payload["run"]["run_id"]
     _print(f"  run #{run_id} exported -> {dest}")
     _print(f"    {len(payload['events'])} event(s), {len(payload['llm_calls'])} LLM call(s)")
-    if not fmt_md:
-        _print("    (replayable offline: /trace replay <file>, or saturn --replay <file>)")
+    _print("    (replayable offline: /trace replay <file>, or saturn --replay <file>)")
 
 
 # --- /trace replay · saturn --replay -----------------------------------------------------------
@@ -729,24 +553,10 @@ def _answer(ctx, args):
     _ui.show_glassbox(gb)
 
 
-def _state(ctx, args):
-    s = ctx.state
-    _print("  agent state:")
-    _print(f"    messages      : {len(s.get('messages', []))}")
-    _print(f"    current_query : {s.get('current_query', '')!r}")
-    _print(f"    iteration     : {s.get('iteration', 0)}")
-    _print(f"    plan steps    : {len(s.get('plan', []))}")
-    _print(f"    tools_called  : {s.get('tools_called', [])}")
-    _print(f"    docs_retrieved: {len(s.get('documents_retrieved', []))}")
-    if "--full" in args:
-        _print("    ---- raw ----")
-        _print(f"    {s}")
-
-
 @command(
     "trace",
     "Observability hub: drill-down of recorded runs + live trace control.",
-    usage="/trace [#id | -l [n] | why | answer | source | invoke | calls | cost | state"
+    usage="/trace [#id | -l [n] | why | answer | source | invoke | context"
           " | export | replay | on|off|full]",
     details="""
 Expands one recorded run from the trace database (database/db.sqlite) into the full replay the
@@ -781,15 +591,16 @@ Subviews:
   /trace invoke [#id]  the LLM calls of a run: each model call's INPUT messages + OUTPUT, with
                        timing + token counts. Defaults to the most recent run with LLM calls; add
                        --full to show whole messages, -l to list runs that have them.
-  /trace calls [n]     recent tool calls + their outputs
-  /trace cost [--all]  session totals: turns, time, tokens
-  /trace state         dump the live AgentState (message count, plan steps, tools called, etc.)
-                       pass --full to also dump the raw state dict
+  /trace context [#id] the context inspector: exactly what the local model was told at each node —
+                       every input message, at full fidelity, no outputs. The legible companion to
+                       the privacy story ("see literally what your machine sent the model").
+                       --node <name> focuses one node so the per-step context is diffable;
+                       --preview clips; -l lists runs that have LLM calls.
   /trace export [#id]  write a run's complete record (events + tool I/O + LLM calls) to a
-                       self-contained file under logging/exports/ — JSON is the replayable
-                       record; --md for a readable markdown report; -o <path> to choose the
-                       destination. The record you can hand to someone else (also: saturn -p
-                       "..." --export <file> writes the same artifact after a headless turn).
+                       self-contained replayable JSON file under logging/exports/; -o <path>
+                       to choose the destination. The record you can hand to someone else
+                       (also: saturn -p "..." --export <file> writes the same artifact after
+                       a headless turn).
   /trace replay <file> replay an exported record OFFLINE through the same drill-down view —
                        no database needed. What makes an export shareable: anyone can replay
                        a run you hand them (also: saturn --replay <file> straight from the
@@ -813,16 +624,14 @@ def _trace(ctx, args):
         return _source(ctx, args[1:])
     if args and args[0].lower() in ("invoke", "--invoke", "llm", "--llm", "model", "models"):
         return _show_llm_calls(ctx, args[1:])
+    if args and args[0].lower() in ("context", "--context", "ctx", "prompt", "prompts"):
+        return _show_llm_context(ctx, args[1:])
     if args and args[0].lower() in ("export", "--export"):
         return _export(ctx, args[1:])
     if args and args[0].lower() in ("replay", "--replay"):
         return _replay(ctx, args[1:])
-    if args and args[0].lower() in ("calls", "io"):
-        return _calls(ctx, args[1:])
-    if args and args[0].lower() in ("cost", "session", "usage"):
-        return _cost(ctx, args[1:])
-    if args and args[0].lower() in ("state", "--state"):
-        return _state(ctx, args[1:])
+    # ("calls"/"cost"/"state" were CUT 2026-07-16 — the run selector prints its "ignoring
+    # unrecognized argument" note for the old spellings.)
     # NOTE: no "0"/"1" verbosity aliases here — a bare digit is a RUN ID (`/trace 1` drills into
     # run #1, same as `/trace #1`); the digit aliases used to eat it and toggle verbosity instead.
     if args and args[0].lower() in ("on", "off", "full", "normal", "quiet", "verbose",
@@ -915,6 +724,68 @@ def _show_llm_calls(ctx, args):
         ).fetchall()
 
     ui.show_llm_calls(run, calls, full=full)
+
+
+def _show_llm_context(ctx, args):
+    """`/trace context [#id]` — the context inspector: exactly what the local model was told at each
+    node, message by message, at full fidelity (the INPUT half of /trace invoke, no outputs). The
+    legible companion to the privacy story — "see literally what your machine sent the model". Full
+    text by default; `--node <name>` focuses one node so per-step context is diffable; `--preview`
+    clips; `-l` lists runs that have LLM calls."""
+    from tui import ui
+
+    node_filter: Optional[str] = None
+    preview = False
+
+    def consume(low, a, it):
+        nonlocal node_filter, preview
+        if low in ("--node", "-n", "node"):
+            node_filter = next(it, None)
+            return True
+        if low in ("--preview", "-p", "preview", "--clip"):
+            preview = True
+            return True
+        return False
+
+    run_id, count, list_mode = _parse_run_selector(args, consume=consume)
+
+    with _connect(ctx.db_path) as conn:
+        has_table = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='llm_calls'"
+        ).fetchone()
+        if not has_table:
+            _print("  (no LLM calls recorded yet — run a query first)")
+            return
+
+        if list_mode:
+            rows = conn.execute(
+                "SELECT c.run_id, COUNT(*) AS n, COALESCE(SUM(c.prompt_tokens), 0), r.query "
+                "FROM llm_calls c LEFT JOIN runs r ON r.run_id = c.run_id "
+                "GROUP BY c.run_id ORDER BY c.run_id DESC LIMIT ?",
+                (max(1, count or 10),),
+            ).fetchall()
+            if not rows:
+                _print("  (no LLM calls recorded yet)")
+                return
+            _print("  runs with recorded context — newest first  (/trace context #<id> to inspect):")
+            for rid, n, ptok, query in rows:
+                _print(f"    #{rid:<4} {n:>2} call(s)  {int(ptok or 0):>7} tok in  {_clip(query, 46)}")
+            return
+
+        run_id, run = _load_run(
+            conn, run_id, latest_from="llm_calls",
+            empty_msg="  (no LLM calls recorded yet — run a query first)",
+            hint="/trace context -l",
+        )
+        if run is None:
+            return
+        calls = conn.execute(
+            "SELECT seq, ts, node, model, dur, prompt_tokens, output_tokens, input, output, status "
+            "FROM llm_calls WHERE run_id = ? ORDER BY seq, id",
+            (run_id,),
+        ).fetchall()
+
+    ui.show_llm_context(run, calls, node_filter=node_filter, preview=preview)
 
 
 # ── /trace source — the raw material behind a citation ────────────────────────────────────────

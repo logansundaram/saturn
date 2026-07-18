@@ -293,18 +293,30 @@ def test_airgap_bare_save_token_is_no_longer_a_save_flag(gate, ctx, capsys, monk
     assert persisted == []
 
 
-def test_redact_save_without_mode_persists_current(gate, ctx, capsys, monkeypatch):
+def test_privacy_redact_is_cut(gate, ctx, capsys, monkeypatch):
+    """/privacy redact was CUT 2026-07-16 (dormant since the cloud shelve): the subcommand is a
+    plain unknown-subcommand error and mutates nothing — the knob survives only as
+    /config runtime.redaction."""
     import config as config_mod
 
     runtime = gate._data["runtime"]
     monkeypatch.setitem(runtime, "redaction", "off")
     persisted = []
     monkeypatch.setattr(config_mod, "persist", lambda key: persisted.append(key))
-    dispatch("/privacy redact --save", ctx)
+    dispatch("/privacy redact warn", ctx)
     out = capsys.readouterr().out
-    assert "no change" in out
+    assert "unknown subcommand" in out
     assert gate.get("runtime.redaction") == "off"  # NOT changed
-    assert persisted == ["runtime.redaction"]  # the current mode, persisted
+    assert persisted == []
+
+
+def test_redact_legacy_spelling_is_plain_unknown(gate, ctx, capsys, monkeypatch):
+    """The old top-level /redact pointer went with the cut — a cut feature leaves no pointer."""
+    monkeypatch.setitem(gate._data["runtime"], "redaction", "off")
+    dispatch("/redact warn", ctx)
+    out = capsys.readouterr().out
+    assert "unknown command" in out
+    assert gate.get("runtime.redaction") == "off"  # untouched
 
 
 # ── /dryrun: CUT 2026-07-03 — the old spelling lands on a moved-pointer, never a flip ────────

@@ -11,7 +11,7 @@ This module is the boundary:
                         observation. Conservative on purpose (like redaction.py): it flags the
                         canonical injection phrasings, it is not a classifier.
   is_untrusted(name)    whether a tool's output comes from outside the trust boundary (web tools,
-                        http_request, remote MCP tools, the ingested-document corpus).
+                        remote MCP tools, the ingested-document corpus).
   wrap_observation(...) the model-facing countermeasure: a flagged observation is fenced between
                         explicit markers with a warning that everything inside is data to report
                         on, not instructions to follow (spotlighting).
@@ -58,7 +58,7 @@ _MODES = ("off", "warn", "gate")
 # /mcp reload — quarantine stays a leaf (imports config + textutil only), so the registry pushes
 # instead of being imported. The hard-coded set below is only the fallback for code paths that
 # never load the registry (unit tests, partial imports); with a push in effect it is unused.
-UNTRUSTED_TOOLS = {"web_search", "web_extract", "http_request", "search_knowledge_base"}
+UNTRUSTED_TOOLS = {"web_search", "web_extract", "search_knowledge_base"}
 _UNTRUSTED_PREFIX = "mcp_"  # every remote MCP tool (fallback-mode heuristic)
 _UNTRUSTED_OVERRIDE: "set[str] | None" = None  # the registry-pushed set; None = fallback mode
 
@@ -110,7 +110,7 @@ _PATTERNS: list[tuple[str, "re.Pattern[str]"]] = [
 # via set_gated_tools — pushed by tools/registry at startup and /mcp reload, so the pattern
 # tracks the actual gated surface instead of a frozen snapshot of four built-in names. The
 # default below is only the no-registry fallback (unit tests, partial imports).
-_GATED_DEFAULT = ("run_shell", "write_file", "edit_file", "http_request")
+_GATED_DEFAULT = ("run_shell", "write_file", "edit_file")
 
 
 def _tool_coercion_pattern(names) -> "re.Pattern[str]":

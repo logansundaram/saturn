@@ -33,7 +33,7 @@ from commands._session import write_autosave
 _GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("conversation", ("clear", "resume")),
     ("knowledge & workspace", ("docs", "init", "memory", "undo")),
-    ("trust & control", ("plan", "policy", "privacy")),
+    ("trust & control", ("draft", "plan", "policy", "privacy")),
     ("observability", ("mcp", "models", "tools", "trace")),
     ("system", ("config", "help", "quit", "update")),
 )

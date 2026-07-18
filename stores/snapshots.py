@@ -171,8 +171,8 @@ def undo_last() -> "tuple[str, list[str]]":
     batch_dir = batches[-1]
     manifest = _load_manifest(batch_dir)
     workspace = get_config().path("workspace")
-    # Imported here, not at module top: document_registry pulls in the LLM stack for its
-    # summarizer, which snapshot_file (called from every gated write) shouldn't load eagerly.
+    # Imported here, not at module top: keeps the snapshot layer import-light (snapshot_file is
+    # called from every gated write) and avoids a stores-internal import cycle.
     from stores.document_registry import register_workspace_file, remove_workspace_file
 
     actions: list[str] = []

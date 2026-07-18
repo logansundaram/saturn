@@ -9,7 +9,7 @@ routes into the `app/` package, where the application actually lives:
     app/turn.py      run_turn(): drive one turn (stream updates + tokens, resolve interrupts)
     app/session.py   per-turn state shape, fresh-turn reset, history compaction
     app/startup.py   shared startup: knowledge-base sync + attachment warnings
-    app/headless.py  the -p path (one query -> stdout; --json / --export contracts)
+    app/headless.py  the -p/-q path (one query -> stdout; --json / --export / -q receipt)
     app/repl.py      the interactive loop
 
 The re-export block below keeps the historical import surface stable: benchmark.py and the
@@ -61,8 +61,8 @@ def main():
 
         policy.set_gate_off(True)
 
-    # --- headless path: one query, print answer, exit ---------------------------------
-    if args.prompt is not None:
+    # --- headless path: one query, print answer, exit (-p, or the -q one-shot render) --
+    if args.prompt is not None or args.query is not None:
         from app.headless import run_headless
 
         run_headless(args)

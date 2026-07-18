@@ -6,25 +6,22 @@ from commands._utils import parse_toggle_status, split_save_flag
 # story quietly stops being true.
 from textutil import human_bytes as _human_bytes
 
-_REDACT_MODES = ("off", "warn", "redact")
-
 
 @command(
     "privacy",
     "The privacy surface: what CAN leave this machine, what DID, and the controls that seal it.",
-    usage="/privacy [egress [clear|n] | airgap [on|off] [--save] | "
-          "redact [<mode>|preview] [--save]]",
+    usage="/privacy [egress [clear|n] | airgap [on|off] [--save]]",
     details="""
 One front door for the whole network boundary. Bare /privacy answers "what can leave this
-machine right now?"; the subcommands are its verifiable companions — what actually left, the
-seal, and the secret-stripper:
+machine right now?"; the subcommands are its verifiable companions — what actually left and
+the seal:
 
   /privacy                 the posture readout: which model serves each role (local vs cloud),
-                           what the web tools send out, which API keys are set, where your data
-                           lives on disk. The privacy claim is meant to be checked, not believed.
+                           what the web tools send out, where your data lives on disk. The
+                           privacy claim is meant to be checked, not believed.
 
   /privacy egress          the ledger: what ACTUALLY left this session — every web search, page
-                           fetch, http_request, remote MCP call, and cloud-model invocation, with
+                           fetch, remote MCP call, and cloud-model invocation, with
                            channel/host/bytes, plus every attempt BLOCKED by air-gap. Pair it
                            with a network monitor and the two agree.
     /privacy egress 20       just the last 20 events
@@ -35,12 +32,6 @@ seal, and the secret-stripper:
                            MCP calls refuse, and a cloud-bound role refuses to run.
     /privacy airgap on|off   set; add --save to persist to config.yaml (`--save` with no value
                              persists the CURRENT setting without changing it)
-
-  /privacy redact          strip secrets (API keys, tokens, private keys, JWTs, emails) from
-                           prompts before they reach a cloud model. Modes: off | warn | redact.
-    /privacy redact preview  scan the CURRENT context and report what WOULD be stripped — sends
-                             nothing
-    /privacy redact <mode> [--save]   (`--save` with no mode persists the current one unchanged)
 
 Telemetry: none. There is nothing to configure off because nothing phones home.
 
@@ -54,9 +45,7 @@ def _privacy(ctx, args):
             return _egress(ctx, args[1:])
         if sub in ("airgap", "air-gap", "seal"):
             return _airgap(ctx, args[1:])
-        if sub in ("redact", "redaction"):
-            return _redact(ctx, args[1:])
-        _print(f"  unknown subcommand: {sub} — usage: /privacy [egress|airgap|redact]")
+        _print(f"  unknown subcommand: {sub} — usage: /privacy [egress|airgap]")
         return
     _overview(ctx)
 
@@ -65,7 +54,6 @@ def _privacy(ctx, args):
 
 
 def _overview(ctx):
-    import env_keys
     from config import get_config
     from tui import ui
 
@@ -97,7 +85,6 @@ def _overview(ctx):
         [
             ("web_search", "the search query goes to DuckDuckGo (keyless — no API key, no account)"),
             ("web_extract", "fetches the page directly from this machine; extraction is local"),
-            ("http_request", "sends exactly the request you approve at the gate — any URL"),
         ]
     )
 
@@ -127,23 +114,8 @@ def _overview(ctx):
         _print("    every MCP tool faces the approval gate unless you lowered its tier "
                "(/mcp, /policy risk).")
 
-    # --- api keys ------------------------------------------------------------
-    # KNOWN_KEYS is empty today (no Saturn feature takes an API key — web is keyless since
-    # 2026-07-06); the section renders only if a managed key ever returns, so the privacy
-    # readout never shows an empty table.
-    if env_keys.KNOWN_KEYS:
-        _print("  api keys (set keys enable the egress above — /config key to manage)")
-        ui.table(
-            [
-                (
-                    k.label,
-                    k.name,
-                    ("set", ui.risk_style("side_effecting")) if env_keys.is_set(k.name)
-                    else ("not set", "dim"),
-                )
-                for k in env_keys.KNOWN_KEYS
-            ]
-        )
+    # (The api-keys table left with the /config key cut, 2026-07-16 — no Saturn feature takes
+    # an API key, so there was never a row to render; MCP env vars live in plain .env.)
 
     # --- data locations -------------------------------------------------------
     _print("  your data (all local)")
@@ -174,8 +146,7 @@ def _overview(ctx):
 
     # This view is what CAN leave. The runtime companions live behind the same front door.
     _print("")
-    _print("  check it:  /privacy egress (what actually left) · airgap (seal the boundary) · "
-           "redact (strip secrets)")
+    _print("  check it:  /privacy egress (what actually left) · airgap (seal the boundary)")
 
 
 # ── /privacy egress — the session ledger ─────────────────────────────────────────────────────
@@ -379,7 +350,7 @@ def _show_posture(ctx, cfg, ui, egress):
     _print("  egress paths")
     ui.table(
         [
-            ("web tools", "web_search / web_extract / http_request", sealed()),
+            ("web tools", "web_search / web_extract", sealed()),
             ("remote MCP", "http/sse server calls (stdio = local process)", sealed()),
             ("off-machine models", "prompts + context to a cloud provider or remote Ollama",
              ("sealed", ui.risk_style("read_only")) if (on or not offmachine)
@@ -394,98 +365,9 @@ def _show_posture(ctx, cfg, ui, egress):
         _print("  seal it with  /privacy airgap on   (then re-run /privacy airgap to verify).")
 
 
-# ── /privacy redact — the cloud-boundary secret stripper ─────────────────────────────────────
-
-
-def _redact(ctx, args):
-    from trust import redaction
-    from config import get_config, persist
-    from tui import ui
-
-    cfg = get_config()
-
-    if args and args[0].lower() in ("preview", "scan", "check", "test"):
-        return _redact_preview(ctx, redaction, ui)
-
-    mode_args, save = split_save_flag(args)
-
-    # No mode -> status; `--save` alone persists the CURRENT mode (the shared convention — it
-    # mutates nothing live).
-    if not mode_args:
-        if save:
-            try:
-                persist("runtime.redaction")
-                _print(f"  redaction mode: {redaction.mode()} — saved runtime.redaction to "
-                       "config.yaml (no change made; /privacy redact <mode> changes it).")
-            except Exception as exc:
-                _print(f"  (could not persist to config.yaml: {exc})")
-            return
-        _print(f"  redaction mode: {redaction.mode()}   (off | warn | redact)")
-        _print("  /privacy redact <mode> to change · /privacy redact preview to see what would")
-        _print("  be stripped now.")
-        return
-
-    new = mode_args[0].lower()
-    if new not in _REDACT_MODES:
-        _print(f"  unknown mode {new!r} — use one of: {', '.join(_REDACT_MODES)}")
-        return
-    cfg.set("runtime.redaction", new)
-
-    if save:
-        try:
-            persist("runtime.redaction")
-        except Exception as exc:
-            _print(f"  (could not persist to config.yaml: {exc})")
-
-    m = redaction.mode()
-    explain = {
-        "off": "no scanning — outgoing text is sent as-is.",
-        "warn": "secrets are detected + counted (see /privacy egress) but sent unmodified.",
-        "redact": "secrets are replaced with [REDACTED:<kind>] before every cloud send.",
-    }[m]
-    _print(f"  redaction mode: {m} — {explain}")
-    if save:
-        _print("  saved runtime.redaction to config.yaml (survives restart).")
-    if m != "off":
-        if not _offmachine_roles(cfg):
-            _print("  note: every role is local right now, so there is no off-machine boundary")
-            _print("        to guard (redaction applies to cloud and remote-Ollama sends).")
-
-
-def _redact_preview(ctx, redaction, ui):
-    """Scan the live turn context for secrets and report what WOULD be stripped — sends nothing."""
-    s = ctx.state or {}
-    sources = [
-        ("query", s.get("current_query", "")),
-        ("grounding context", s.get("context", "")),
-        ("attachments", s.get("attachments", "")),
-    ]
-    for i, m in enumerate(s.get("messages", []) or []):
-        content = getattr(m, "content", None)
-        if isinstance(content, str) and content.strip():
-            sources.append((f"message[{i}] {type(m).__name__}", content))
-
-    rows = []
-    total = 0
-    for label, text in sources:
-        for f in redaction.scan(text or ""):
-            total += 1
-            rows.append((label, f.kind, f.preview))
-
-    if not total:
-        ui.section("redaction preview", "no secrets detected in the current context")
-        _print("  nothing in your query, grounding, attachments, or scratchpad matches a secret")
-        _print("  pattern — a cloud send right now would carry no detectable credentials.")
-        return
-
-    ui.section("redaction preview", f"{total} secret-like value(s) in the current context")
-    ui.table(rows, styles=["dim", "accent", None])
-    mode = redaction.mode()
-    if mode == "redact":
-        _print("  these WOULD be replaced with [REDACTED:<kind>] on the next cloud send.")
-    elif mode == "warn":
-        _print("  mode is `warn`: these would be flagged + counted but SENT — use")
-        _print("  /privacy redact redact to strip.")
-    else:
-        _print("  mode is `off`: these would be sent UNMODIFIED — use /privacy redact redact")
-        _print("  to strip them.")
+# (/privacy redact — the cloud-boundary secret-stripper front end — was CUT 2026-07-16: dormant
+# since the cloud shelve, it configured a boundary that exists only behind a remote OLLAMA_HOST.
+# The MACHINERY stays: trust/redaction.py still guards the remote-Ollama/cloud seam and the MCP
+# http/sse boundary, and the gate's secret-arg warning still uses redaction.scan_args. The mode
+# remains reachable as the config escape hatch: /config runtime.redaction <off|warn|redact> —
+# a trust key, so it persists only with an explicit --save.)

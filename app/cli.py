@@ -25,17 +25,26 @@ def _build_parser():
             "/quit exits). The flags below are the headless/automation surface."
         ),
         epilog=(
-            "headless mode (-p):\n"
+            "headless modes (-p, -q):\n"
             "  Read-only tools run freely; gated (side-effecting/destructive) tool calls are\n"
             "  DENIED by default — there is no human at the approval gate, and safe-by-default\n"
             "  must hold in every mode. Pass --yolo to auto-approve them. Piped stdin attaches\n"
             "  to the turn:\n"
             "    git diff | saturn -p \"review this change\"\n"
+            "  -q is the one-shot spelling of the same turn: ONLY the final answer on stdout\n"
+            "  (pipe-clean), step-line progress + a `recorded: saturn --replay <file>` receipt\n"
+            "  on stderr (the run auto-exports so that command actually works).\n"
         ),
     )
     parser.add_argument("-p", "--prompt", metavar="QUERY", default=None,
                                help="Run a single query headlessly and print the answer to "
                                     "stdout (no TUI, no interactive prompts).")
+    parser.add_argument("-q", "--query", metavar="QUESTION", default=None,
+                               help="One-shot query: the same headless turn as -p (same engine, "
+                                    "same deny-by-default gate), rendered for pipes — ONLY the "
+                                    "final answer on stdout; progress and a `recorded:` replay "
+                                    "receipt on stderr. The run is auto-exported to "
+                                    "logging/exports/ so the receipt's --replay command works.")
     parser.add_argument("--yolo", action="store_true",
                                help="Open the approval gate for the whole run — auto-approve "
                                     "side-effecting/destructive tool calls, headless or "
@@ -46,9 +55,10 @@ def _build_parser():
                                     "tools, tokens, timing) instead of the bare answer. Errors "
                                     "also emit JSON (status: \"error\") and still exit 1.")
     parser.add_argument("--export", metavar="FILE", default=None,
-                               help="With -p: after the turn completes, write the run's complete "
-                                    "export record to FILE "
-                                    "(the same artifact /trace export writes).")
+                               help="With -p or -q: after the turn completes, write the run's "
+                                    "complete export record to FILE (the same artifact /trace "
+                                    "export writes; -q exports to logging/exports/ even "
+                                    "without this flag).")
     parser.add_argument("--replay", metavar="FILE", default=None,
                                help="Replay an exported run record (/trace export) offline — "
                                     "no database needed — then exit.")
@@ -65,11 +75,21 @@ def _parse_cli(argv=None):
     # -p "" (present but blank) is an invocation mistake, distinct from -p absent (interactive).
     if args.prompt is not None and not args.prompt.strip():
         parser.error("empty prompt")
-    if args.prompt is not None and args.replay:
-        parser.error("--replay renders an export offline and cannot be combined with -p/--prompt")
-    if args.export and args.prompt is None:
-        parser.error("--export only applies to a headless turn — use it with -p/--prompt")
+    if args.query is not None and not args.query.strip():
+        parser.error("empty query")
+    if args.prompt is not None and args.query is not None:
+        parser.error("-p/--prompt and -q/--query are two renderings of the same headless "
+                     "turn — pass one, not both")
+    if (args.prompt is not None or args.query is not None) and args.replay:
+        parser.error("--replay renders an export offline and cannot be combined with a "
+                     "headless query (-p/-q)")
+    if args.export and args.prompt is None and args.query is None:
+        parser.error("--export only applies to a headless turn — use it with -p/--prompt "
+                     "or -q/--query")
     if args.json and args.prompt is None:
+        if args.query is not None:
+            parser.error("-q prints only the bare answer (pipe-clean) — use -p with --json "
+                         "for the structured result")
         parser.error("--json only applies to a headless turn — use it with -p/--prompt")
     return args
 

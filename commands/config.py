@@ -2,7 +2,6 @@ from commands._framework import command, _print
 from commands._utils import (
     _ROLES,
     _resync_rag_after_model_change,
-    is_remove_verb,
     split_persist_flags,
 )
 
@@ -10,7 +9,8 @@ _MIN_NUM_CTX = 256  # below this Ollama can't fit the system prompts; reject obv
 
 # Trust-posture keys are EXEMPT from the persist-by-default inversion (2026-07-07): a loosened
 # security posture must never persist silently — the same fail-closed convention that keeps the
-# canonical toggles (/policy open, /privacy airgap/redact) on the opt-IN --save parser. Setting
+# canonical toggles (/policy open, /privacy airgap) on the opt-IN --save parser (runtime.redaction
+# stays a trust key with /config as its ONLY door since the /privacy redact cut, 2026-07-16). Setting
 # one through the generic /config spelling applies for the session; persisting takes an explicit
 # --save (or /config persist <key>).
 _TRUST_KEYS = frozenset({
@@ -49,150 +49,28 @@ def _did_you_mean(cfg, key: str) -> str:
     return f" — did you mean {hint[0]}?" if hint else ""
 
 
-def _list_keys() -> None:
-    """The numbered key listing — also the menu the set-picker selects from. The managed
-    registry is EMPTY today (no Saturn feature takes an API key: web search is keyless since
-    2026-07-06, inference is local) — the listing says so and points at the one remaining use,
-    custom env vars (MCP servers' `${VAR}` expansion)."""
+# (/config key — the managed API-key front end — was CUT 2026-07-16: env_keys.KNOWN_KEYS had
+# been empty since the API-less web pivot, so the picker/fuzzy-resolve/prefix-detect machinery
+# managed nothing. Secrets for MCP `${VAR}` expansion are plain env vars in .env now — the
+# dispatch below points there instead of dead-ending the habit.)
+
+
+def _config_keys_cut() -> None:
     import env_keys
 
-    _print("  API keys (stored in .env, applied live, masked here):")
-    if not env_keys.KNOWN_KEYS:
-        _print("    no managed keys — no Saturn feature takes an API key (web search is keyless,")
-        _print("    inference is local). Custom env vars (e.g. for MCP servers' ${VAR}) still work:")
-    for i, k in enumerate(env_keys.KNOWN_KEYS, start=1):
-        state = env_keys.mask(env_keys.get(k.name)) if env_keys.is_set(k.name) else "not set"
-        _print(f"    {i}. {k.name:<20} {state}")
-        _print(f"       {k.label} — {k.purpose}")
-        if k.url:
-            _print(f"       get one: {k.url}")
-    _print("  set:   /config key set MY_VAR <value>   (an ALL-CAPS name is a custom env var)")
-    _print("  clear: /config key unset <name>")
-
-
-def _resolve_key_name(token: str) -> str | None:
-    """A token the user typed where a key name goes → the env-var name to use. Managed keys match
-    fuzzily (name, label, or unique substring); an ALL-CAPS token is taken verbatim as a deliberate
-    unmanaged env var. Anything else is reported (so a typo can't silently create a new key)."""
-    import env_keys
-
-    key = env_keys.resolve(token)
-    if key:
-        return key.name
-    if token == token.upper():  # deliberately-typed env-var name (e.g. MY_SERVICE_TOKEN)
-        return token
-    known = ", ".join(k.label.lower() for k in env_keys.KNOWN_KEYS) or "none managed"
-    _print(f"  no known key matches {token!r} (known: {known}).")
-    _print("  to store a custom env var, type its name in ALL CAPS: /config key set MY_VAR <value>")
-    return None
-
-
-def _set_key(args: list[str]) -> None:
-    """`/config key set …` — every arg is optional: no name opens a picker, no value prompts for
-    one, and a bare pasted secret (tvly-…, sk-ant-…) picks its own key."""
-    import env_keys
-    from tui import ui
-
-    name: str | None = None
-    value: str | None = None
-
-    if not args:
-        _list_keys()
-        if not env_keys.KNOWN_KEYS:
-            return  # nothing to pick from — the listing already explained what still works
-        sel = ui.ask("which key — enter # (or blank to cancel) » ")
-        if not sel:
-            _print("  (cancelled)")
-            return
-        try:
-            idx = int(sel)
-            if idx < 1:
-                raise IndexError
-            name = env_keys.KNOWN_KEYS[idx - 1].name
-        except (ValueError, IndexError):
-            _print(f"  not a valid selection: {sel!r}")
-            return
-    elif len(args) == 1 and env_keys.detect(args[0]):
-        detected = env_keys.detect(args[0])
-        _print(f"  that looks like a {detected.label} key — storing it as {detected.name}.")
-        name, value = detected.name, args[0]
-    else:
-        name = _resolve_key_name(args[0])
-        if name is None:
-            return
-        value = " ".join(args[1:]).strip() or None
-
-    if value is None:
-        value = ui.ask(f"{name} = ").strip()
-        if not value:
-            _print("  (cancelled — nothing set)")
-            return
-
-    env_keys.set_value(name, value)
-    managed = env_keys.find(name)
-    tag = "" if managed else "  (unmanaged key — stored, but no client reset hook)"
-    _print(f"    {name} set -> {env_keys.mask(value)} (saved to .env, applied now){tag}")
-
-
-def _config_keys(ctx, args):
-    """`/config key …` — the API-key (secrets) front end."""
-    import env_keys
-
-    sub = args[0].lower() if args else "list"
-
-    if sub in ("list", "ls", "status"):
-        _list_keys()
-        return
-
-    if sub == "get":
-        if len(args) < 2:
-            _print("  usage: /config key get <name>")
-            return
-        name = _resolve_key_name(args[1])
-        if name:
-            _print(f"    {name} = {env_keys.mask(env_keys.get(name))}")
-        return
-
-    if sub == "set":
-        _set_key(args[1:])
-        return
-
-    if sub in ("unset", "clear") or is_remove_verb(sub):
-        if len(args) < 2:
-            _print("  usage: /config key unset <name>")
-            return
-        name = _resolve_key_name(args[1])
-        if name is None:
-            return
-        if env_keys.unset_value(name):
-            _print(f"    {name} removed from .env and the live environment.")
-        else:
-            _print(f"    {name} was not set.")
-        return
-
-    # Shorthand — `set` is implied: a pasted secret sets its own key; a key name alone shows it,
-    # with a value sets it. (Inert while KNOWN_KEYS is empty; kept for a managed key's return.)
-    if env_keys.detect(args[0]):
-        _set_key(args)
-        return
-    if env_keys.resolve(args[0]):
-        if len(args) == 1:
-            name = env_keys.resolve(args[0]).name
-            _print(f"    {name} = {env_keys.mask(env_keys.get(name))}")
-        else:
-            _set_key(args)
-        return
-
-    _print(f"  unknown /config key subcommand: {sub!r} — try: list, set, unset, get, or a key name")
+    _print("  /config key was cut — no Saturn feature takes an API key (web search is keyless,")
+    _print("  inference is local). For MCP servers' ${VAR} expansion, put plain env vars in:")
+    _print(f"    {env_keys._ENV_PATH}")
+    _print("  (or export them in your shell; /mcp reload picks up changes).")
 
 
 @command(
     "config",
-    "View or edit runtime config (config.yaml) and API keys (.env); edits persist by default.",
-    usage="/config | /config <dotted.key> [value] [--session] | /config persist <key> | /config setup | /config key … | /config reload",
+    "View or edit runtime config (config.yaml); edits persist by default.",
+    usage="/config | /config <dotted.key> [value] [--session] | /config persist <key> | /config setup | /config reload",
     details="""
 With no args, prints the key runtime settings (active_tier, runtime.max_iterations,
-runtime.auto_approve), the resolved paths, and which API keys are set.
+runtime.auto_approve) and the resolved paths.
 
 With a dotted key, reads that value; with a key and a value, sets it AND writes it back to
 config.yaml in place (comments and layout preserved) so it survives a restart — persisting is the
@@ -215,35 +93,24 @@ the live num_ctx setter (folded in from the old /context):
 The window also frees itself automatically: older turns are compacted as the context fills
 (runtime.auto_compact past runtime.compact_threshold) — no manual step needed.
 
-/config setup (doctor, check) — first-run / health check: is the Ollama daemon up, are the
-active tier's models pulled, and are the keys the tier needs set, with the exact command to fix
-each genuine gap (keys the tier doesn't need are just labeled optional). When models are missing
-and the daemon is up, it offers — y/N, default no — to run the `ollama pull`s for you inline with
-live progress. Runs automatically on first launch; re-run any time with /config setup.
+/config setup (doctor, check) — first-run / health check: is the Ollama daemon up and are the
+active tier's models pulled, with the exact command to fix each genuine gap. When models are
+missing and the daemon is up, it offers — y/N, default no — to run the `ollama pull`s for you
+inline with live progress. Runs automatically on first launch; re-run any time with /config setup.
 
-API keys live in .env, not config.yaml, so they have their own subcommand (already persistent):
-  /config key                       list managed keys and whether each is set (masked)
-  /config key set MY_VAR <value>    store a custom env var (ALL-CAPS name), e.g. for an MCP
-                                    server's ${VAR} expansion
-  /config key unset <name>          remove a key from .env and the environment (clear, or any
-                                    removal verb — remove/rm/delete/del/forget/drop — works)
-  /config key get <name>            show one key (masked)
-
-No Saturn feature takes an API key today: web search is keyless (DuckDuckGo) and extraction/
-inference are local — the managed-key registry (env_keys.py) is empty. (The Anthropic/OpenAI
-keys left with the cloud-model shelve, 2026-07-03; the Tavily key left with the API-less web
-pivot, 2026-07-06 — an already-set key in .env is untouched, just unmanaged.)
+No Saturn feature takes an API key: web search is keyless (DuckDuckGo) and extraction/inference
+are local. Secrets for MCP servers' ${VAR} expansion are plain env vars — put them in .env or
+export them in your shell. (The managed-key front end `/config key` was CUT 2026-07-16.)
 
 Model/tier keys rebuild the cached models on next use; an embedder change re-embeds the corpus.
 To change model bindings specifically, /models is the friendlier front end.
 
 Examples:
   /config                              show the summary
-  /config setup                        check the install (Ollama, models, keys)
+  /config setup                        check the install (Ollama daemon, models)
   /config runtime.max_iterations       read one key
   /config runtime.max_iterations 12    set it and persist to config.yaml (the default)
   /config runtime.max_iterations 12 --session   set it for this session only
-  /config key set MY_VAR <value>       store a custom env var (e.g. for an MCP server)
   /config reload                       re-read config.yaml from disk
 """,
 )
@@ -253,7 +120,7 @@ def _config(ctx, args):
     cfg = get_config()
 
     if args and args[0].lower() in ("key", "keys", "secret", "secrets"):
-        _config_keys(ctx, args[1:])
+        _config_keys_cut()
         return
 
     if args and args[0].lower() in ("doctor", "setup", "check", "health"):
@@ -272,8 +139,6 @@ def _config(ctx, args):
         return
 
     if not args:
-        import env_keys
-
         _print("  runtime config:")
         _print(f"    active_tier           : {cfg.active_tier}")
         _print(f"    runtime.max_iterations: {cfg.max_iterations}")
@@ -282,15 +147,9 @@ def _config(ctx, args):
         _print("  paths:")
         for name in ("documents", "workspace", "memory", "db_sqlite"):
             _print(f"    {name:<10}: {cfg.get('paths.' + name)}")
-        _print("  api keys (.env):")
-        if not env_keys.KNOWN_KEYS:
-            _print("    none needed — web search is keyless, inference is local (/config key "
-                   "for custom vars)")
-        for k in env_keys.KNOWN_KEYS:
-            _print(f"    {k.name:<20}: {'set' if env_keys.is_set(k.name) else 'not set'}")
         _print("  (workspace & memory resolve live; documents/db_sqlite apply on re-ingest/restart)")
         _print("  set a value: /config <dotted.key> <value>   (e.g. /config runtime.max_iterations 12)")
-        _print("  manage keys: /config key   ·   window + hardware: /config context   (see /config --help)")
+        _print("  window + hardware: /config context   (see /config --help)")
         return
 
     if args[0].lower() == "reload":  # case-insensitive like every sibling subcommand match
@@ -469,31 +328,10 @@ def _persist_key(cfg, key: str) -> None:
         _print(f"  set for this session, but persist failed: {exc}")
 
 
-# Why a missing OPTIONAL key is fine, per key (default: the active tier simply doesn't bind the
-# provider). Display notes only — which keys are REQUIRED is derived live in _required_keys.
-# Empty since the API-less web pivot (2026-07-06); repopulate alongside env_keys.KNOWN_KEYS.
-_OPTIONAL_KEY_NOTES: dict[str, str] = {}
-
-
-def _required_keys(cfg) -> set[str]:
-    """The env keys the ACTIVE tier genuinely needs. With cloud model support SHELVED
-    (2026-07-03) and the web tools API-less (2026-07-06) nothing can require a key. Kept as the
-    seam: when cloud returns, this re-derives one required key per cloud provider bound to a
-    role (via the restored llms provider→key table)."""
-    return set()
-
-
-def _key_line(name: str, is_set: bool, required) -> str:
-    """One api-key status line for the doctor (ASCII-only; the caller indents). The fix arrow
-    (`->`) is reserved for keys the active tier genuinely needs: an unset OPTIONAL key is labeled
-    optional with why that's fine, so a privacy-pitched product's first screen never reads as a
-    list of API keys to go get."""
-    if is_set:
-        return f"ok       {name:<18} set"
-    if name in required:
-        return f"MISSING  {name:<18} -> /config key set {name} <value>"
-    note = _OPTIONAL_KEY_NOTES.get(name, "not needed by the active tier")
-    return f"optional {name:<18} ({note})"
+# (The doctor's api-key machinery — _OPTIONAL_KEY_NOTES, _required_keys, _key_line — left with
+# the /config key cut, 2026-07-16: nothing can require a key while cloud is shelved and the web
+# tools are keyless, so the doctor states that in one line below. When a keyed provider returns,
+# rebuild the required-key derivation with it.)
 
 
 def _tier_honesty_line(cfg) -> "str | None":
@@ -584,15 +422,13 @@ def _offer_pull(missing: list[str]) -> None:
 
 
 def _config_doctor(ctx) -> None:
-    """First-run / health view: Ollama up? active-tier models pulled? needed API keys set? Each
-    GENUINE gap is paired with the exact fix; optional keys are labeled optional (an unset one is
-    not a thing to fix). When local models are missing, the daemon is reachable, and a human is
+    """First-run / health view: Ollama up? active-tier models pulled? Each GENUINE gap is paired
+    with the exact fix. When local models are missing, the daemon is reachable, and a human is
     at a TTY, it ends with a y/N offer to run the `ollama pull`s inline — the one consented
     action it can take; otherwise it remains a read-only diagnostic."""
     from config import get_config
     from core.llms import check_models, list_local_models, ollama_reachable
     from commands._utils import _ROLES
-    import env_keys
 
     cfg = get_config()
     # ASCII-only output on purpose: this is the FIRST command a fresh install runs, possibly in a
@@ -628,15 +464,10 @@ def _config_doctor(ctx) -> None:
             missing.append(m)
             _print(f"        MISSING  {m}   -> run `ollama pull {m}`")
 
-    # API keys — the fix arrow only for keys the active tier genuinely needs (see _key_line).
-    # The managed registry is empty today (keyless web, local inference) — one honest line
-    # instead of a bare header, so a fresh install's first screen never hints at keys to go get.
-    _print("    api keys (.env)")
-    required = _required_keys(cfg)
-    if not env_keys.KNOWN_KEYS:
-        _print("        ok       none needed (web search is keyless; inference is local)")
-    for k in env_keys.KNOWN_KEYS:
-        _print(f"        {_key_line(k.name, env_keys.is_set(k.name), required)}")
+    # API keys — one honest line: nothing needs one (keyless web, local inference), so a fresh
+    # install's first screen never reads as a list of API keys to go get.
+    _print("    api keys")
+    _print("        ok       none needed (web search is keyless; inference is local)")
 
     # MCP servers (only when any are configured — most installs have none).
     from tools import mcp_client

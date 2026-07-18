@@ -54,9 +54,6 @@ _ARG_ALIASES: dict[str, dict[str, list[str]]] = {
     "web_extract": {
         "url": ["url", "link", "href", "page", "address"],
     },
-    "http_request": {
-        "url": ["url", "endpoint", "link", "address"],
-    },
     "run_shell": {
         "command": ["command", "cmd", "shell", "script", "code", "bash", "powershell"],
     },
@@ -84,7 +81,6 @@ _OPTIONAL: dict[str, list[str]] = {
     "search_files": ["directory", "file_glob"],
     "write_file": ["overwrite"],
     "edit_file": ["replace_all"],
-    "http_request": ["method", "headers", "body"],
     "remember": ["category"],
     "recall": ["query"],
 }
@@ -103,7 +99,6 @@ _SCHEMA_SHAPES: dict[str, str] = {
     "current_time": "current_time()",
     "web_search": "web_search(query=<web search terms>)",
     "web_extract": "web_extract(url=<the page URL>)",
-    "http_request": "http_request(url=<endpoint URL>, method=<GET|POST|...>)",
     "run_shell": "run_shell(command=<shell command line>)",
     "remember": "remember(fact=<one concise statement>)",
     "recall": "recall(query=<filter text, or empty for everything>)",

@@ -11,52 +11,15 @@ from commands import config as config_cmd
 from config import Config
 
 
-# --- doctor: optional-key rendering --------------------------------------------------------
+# --- doctor: api-key machinery --------------------------------------------------------------
 
-def test_key_line_set_is_ok_with_no_fix_arrow():
-    line = config_cmd._key_line("SOME_API_KEY", True, frozenset())
-    assert line.startswith("ok")
-    assert "->" not in line
-
-
-def test_key_line_missing_required_gets_the_fix_arrow():
-    # No key is currently required (cloud shelved — _required_keys is always empty), but the
-    # rendering seam stays: a name in the required set gets the fix arrow.
-    line = config_cmd._key_line(
-        "SOME_REQUIRED_KEY", False, frozenset({"SOME_REQUIRED_KEY"})
-    )
-    assert "MISSING" in line
-    assert "-> /config key set SOME_REQUIRED_KEY" in line
-
-
-def test_key_line_optional_note_renders_when_registered(monkeypatch):
-    # _OPTIONAL_KEY_NOTES is empty today (no managed keys since the API-less web pivot,
-    # 2026-07-06) — the per-key "why missing is fine" seam itself must keep working for when
-    # a managed key returns.
-    monkeypatch.setitem(config_cmd._OPTIONAL_KEY_NOTES, "SOME_API_KEY", "keyless fallback active")
-    line = config_cmd._key_line("SOME_API_KEY", False, frozenset())
-    assert line.startswith("optional")
-    assert "keyless fallback active" in line
-    assert "->" not in line  # fix-arrow vocabulary reserved for genuinely broken items
-
-
-def test_key_line_optional_unlisted_key_is_not_a_gap():
-    line = config_cmd._key_line("SOME_OTHER_KEY", False, frozenset())
-    assert line.startswith("optional")
-    assert "not needed by the active tier" in line
-    assert "->" not in line
-
-
-def test_required_keys_empty_under_the_cloud_shelve():
-    # Cloud model support is shelved (2026-07-03): even a legacy config still carrying a cloud
-    # binding requires no key — the binding itself can't run (check_models reports it; the key
-    # would unlock nothing).
-    cfg = _cfg("hybrid", {
-        "local": _tier("tiny"),
-        "hybrid": _tier("tiny", planner={"provider": "anthropic", "model": "cloud"}),
-    })
-    assert config_cmd._required_keys(cfg) == set()
-    assert config_cmd._required_keys(_cfg("local", {"local": _tier("tiny")})) == set()
+def test_doctor_key_machinery_left_with_the_config_key_cut():
+    """The doctor's per-key rendering (_key_line/_required_keys/_OPTIONAL_KEY_NOTES) was CUT
+    2026-07-16 with /config key — nothing can require a key while cloud is shelved and the web
+    tools are keyless, so the doctor prints one honest line instead. A resurrected helper here
+    means the cut regressed."""
+    for gone in ("_key_line", "_required_keys", "_OPTIONAL_KEY_NOTES"):
+        assert not hasattr(config_cmd, gone), gone
 
 
 def test_check_models_reports_a_shelved_cloud_binding(monkeypatch):

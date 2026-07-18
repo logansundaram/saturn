@@ -19,18 +19,15 @@ def test_mask_secret_one_envelope():
     assert mask_secret("") == "" and mask_secret(None) == ""
 
 
-def test_both_mask_surfaces_delegate_to_it():
-    """env_keys' key listing and trust/redaction's findings once had different exposure
-    envelopes (3+4 vs 6+2 visible chars); both must render THE one rule now."""
-    import env_keys
+def test_mask_surface_delegates_to_it():
+    """trust/redaction's findings render THE one masking rule (env_keys' key listing — the
+    other historical delegator — left with the /config key cut, 2026-07-16)."""
     from textutil import mask_secret
     from trust import redaction
 
     secret = "tvly-0123456789abcdef"
-    assert mask_secret(secret) in env_keys.mask(secret)
     assert redaction._mask(secret) == mask_secret(secret)
-    # Short secrets show nothing on either surface.
-    assert env_keys.mask("tiny") == "****"
+    # Short secrets show nothing.
     assert redaction._mask("tiny") == "****"
 
 

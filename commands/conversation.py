@@ -106,9 +106,9 @@ def _reprint_banner(ctx) -> None:
 # ── /resume ──────────────────────────────────────────────────────────────────────────────────
 @command(
     "resume",
-    "Sessions: resume the autosave, or save/load/list/delete/rename named sessions.",
+    "Sessions: resume the autosave, or save/load named sessions.",
     aliases=("continue",),
-    usage="/resume [<name> | save [name] | list | delete <name|n> | rename <old> <new>]",
+    usage="/resume [<name> | save [name] | list]",
     details="""
 The one front door to session persistence. (The old /save and /load were folded in here —
 one command, not three.)
@@ -121,21 +121,19 @@ one command, not three.)
   /resume save [name]       save the current conversation under a name (timestamped if
                             omitted); a matching name overwrites. Only messages are persisted —
                             per-turn scratch (plan, iteration, tool results) is rebuilt fresh.
-  /resume list              list the named sessions on disk (numbered).
-  /resume delete <name|n>   delete a named session — by name or its /resume list number.
-                            (any removal verb works: delete/del/rm/remove/forget/drop. The
-                            autosave slot can't be deleted from here.)
-  /resume rename <old> <new>  rename a named session.
+  /resume list              list the named sessions on disk.
+
+Sessions are plain .json files under database/sessions/ (paths.sessions) — delete or rename
+one there. (The in-app delete/rename verbs were CUT 2026-07-16: crash-safe resume is the
+feature; a session library to manage was surface.)
 
 Restoring rebuilds a fresh state seeded with the saved messages — config, model bindings, and
-the RAG corpus are untouched. Files live under database/sessions/ (paths.sessions).
+the RAG corpus are untouched.
 
 Examples:
   /resume                    continue your previous session
   /resume save research      name and keep this conversation
   /resume research           pick it back up later
-  /resume delete 2           drop the second session in /resume list
-  /resume rename research llm-notes
 """,
 )
 def _resume(ctx, args):
@@ -144,10 +142,12 @@ def _resume(ctx, args):
         return _save_named(ctx, args[1:])
     if verb == "list":
         return _list_saved()
-    if verb == "remove":
-        return _delete_named(args[1:])
-    if verb == "rename":
-        return _rename_named(args[1:])
+    if verb in ("remove", "rename"):
+        # CUT 2026-07-16 — intercepted (not treated as a session name) so a habit-typed
+        # `/resume rm old` can't misparse; the files are the interface now.
+        _print("  session delete/rename was cut — sessions are plain files; manage them in:")
+        _print(f"    {_sessions_dir()}")
+        return
     if args:
         return _load_named(ctx, " ".join(args))
 
@@ -171,7 +171,9 @@ def _resume(ctx, args):
 # a session name at save time (the stranded-session trap this hunk fixed: `/resume save list`
 # used to succeed and the session was then only reachable by list number). Per subcommand:
 # (bare spellings — these are also the reserved stems, flag spellings — safe_stem strips their
-# dashes back to the bare words, so they need no separate reservation).
+# dashes back to the bare words, so they need no separate reservation). The remove/rename verbs
+# stay ROUTED even though the features were cut 2026-07-16: the router intercepts them with the
+# cut note (never a load-by-name misparse), and their stems stay unreserved-name-proof.
 _RESUME_VERBS = {
     "save": (("save",), ("--save", "-s")),
     "list": (LIST_VERBS, ("--list", "-l")),
@@ -241,55 +243,9 @@ def _list_saved():
         _print("  no named sessions yet — use /resume save [name] first.")
         return
     _print("  named sessions:")
-    for i, f in enumerate(files, 1):
-        _print(f"    {i}. {f.stem}")
-    _print("  restore one with /resume <name>; /resume delete <name|number> drops one.")
-
-
-def _resolve_named(token: str):
-    """A delete/rename target by name or 1-based /resume list number; None when nothing matches.
-    Underscore-prefixed slots (the autosave) are unreachable: numbers index the named list only,
-    and _session_file sanitizes a leading underscore out of any typed name."""
-    files = _named_sessions()
-    if token.isdigit() and 1 <= int(token) <= len(files):
-        return files[int(token) - 1]
-    path = _session_file(token)
-    return path if path.exists() else None
-
-
-def _delete_named(args):
-    if not args:
-        _print("  usage: /resume delete <name|number>   (numbers as shown by /resume list)")
-        return
-    token = " ".join(args)
-    path = _resolve_named(token)
-    if path is None:
-        _print(f"  no saved session matching {token!r} (/resume list shows what's on disk).")
-        return
-    path.unlink()
-    _print(f"  deleted session {path.stem!r}.")
-
-
-def _rename_named(args):
-    if len(args) != 2:
-        _print("  usage: /resume rename <old> <new>")
-        return
-    old, new = args
-    src = _resolve_named(old)
-    if src is None:
-        _print(f"  no saved session matching {old!r} (/resume list shows what's on disk).")
-        return
-    dest = _session_file(new)
-    # Renaming ONTO a reserved subcommand word strands the session exactly like saving under
-    # one — same refusal, same creation-time boundary.
-    if _refuse_reserved_stem(dest):
-        return
-    if dest.exists():
-        _print(f"  a session named {dest.stem!r} already exists — pick another name "
-               "or /resume delete it first.")
-        return
-    src.rename(dest)
-    _print(f"  renamed session {src.stem!r} -> {dest.stem!r}.")
+    for f in files:
+        _print(f"    {f.stem}")
+    _print(f"  restore one with /resume <name>; the files live in {_sessions_dir()}.")
 
 
 def _load_named(ctx, name: str):

@@ -88,7 +88,6 @@ def run_repl() -> None:
         state=state,
         make_initial_state=_initial_state,
         db_path=DB_PATH,
-        session_started_at=datetime.now().isoformat(),  # session boundary for /cost
     )
 
     # First-run setup check: if the sentinel hasn't been written yet (checked above, where it
@@ -192,6 +191,16 @@ def run_repl() -> None:
             continue
 
         state = _fresh_turn(state, user_input)
+        # A plan the user drafted between turns (/draft): this turn RUNS their steps — seed
+        # the fresh state with them (plan_node honors a pre-seeded plan and skips its own
+        # drafting) and consume the draft, so exactly one turn runs it.
+        if cmd_ctx.pending_plan:
+            state["plan"] = cmd_ctx.pending_plan
+            cmd_ctx.pending_plan = None
+            ui.note(
+                f"running your drafted plan ({len(state['plan'])} step(s)) — "
+                "Esc still pauses for review mid-turn."
+            )
         # Expand @file mentions: read any files the user referenced as `@path` and stash their
         # contents on state for the grounding node to fold into context (so every node sees the
         # file inline; dropped files queued via "[a]ttach" ride along as extra_paths). The message

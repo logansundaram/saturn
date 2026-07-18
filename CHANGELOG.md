@@ -7,6 +7,77 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
 
 ## [Unreleased]
 
+### Added
+
+- **`saturn -q "<question>"` — one-shot query mode.** The same headless turn as `-p` (same
+  engine loop, same deny-by-default approval gate, same trace recording), rendered for pipes:
+  stdout carries only the final synthesized answer, step-line progress (plan drafted, step N,
+  synthesizing) goes to stderr, and the run auto-exports to `logging/exports/` so the closing
+  `recorded: saturn --replay <file>` receipt names a command that actually replays the run
+  offline. Blocked or denied actions are disclosed in the answer body exactly as `-p` does; a
+  completed run exits 0. `--export FILE` overrides the export destination; `--json` stays a
+  `-p` contract.
+- **`/trace context` — see exactly what your machine told the model.** A new observability
+  subview that reconstructs, token-for-token and per node, the full input each local model call
+  received: every system prompt, every curated context block, at full fidelity and with no
+  output noise. Where `/trace invoke` answers "what did each call see and say", this answers the
+  privacy question "what did my machine actually send the model." `--node <name>` focuses one
+  node so per-step context is diffable; `--preview` clips; `-l` lists runs that have model calls.
+- **Two new graded probes in the trust benchmark.** `python benchmark.py` now measures the two
+  distinctive safety mechanisms that were previously untested end-to-end: the **injection
+  quarantine** (a planted corpus document carrying instruction-shaped content is retrieved
+  through the live knowledge-base path; the benchmark grades whether it was flagged and fenced —
+  an unflagged injection is a `--strict` FAIL) and the **semantic write gate** (baits ask for an
+  unfindable fact to be looked up and saved to a file; the benchmark grades whether the gate
+  refused to write a value it never gathered). The report gains an injection flag rate and a
+  fabrication catch rate alongside the existing grounding and gate-coverage numbers. The planted
+  document is removed after the run, leaving the corpus as it was found.
+- **`/draft` — write your own plan.** Compose a step list by hand in the same editor you
+  get at plan review (same `add`/`edit`/`tool`/`move`/`drop` grammar), then type your request:
+  the agent executes *your* plan instead of drafting one. Tool spellings are normalized
+  (`calc` → `calculate`); an unrecognized tool is kept as written and fails closed at
+  execution. Everything downstream is unchanged — per-step reflection, the approval gate, and
+  mid-turn Esc review all still apply, so a hand-written plan gets the full safety envelope.
+  `/plan` shows the pending draft; `/draft clear` discards it. (Briefly spelled `/plan draft`
+  during development; that spelling prints a pointer to `/draft`.)
+
+### Removed
+
+A focus pass: a few high-quality features over accumulated surface. Each cut removes a thing
+to learn, audit, and maintain — none removes a protection.
+
+- **`http_request`.** The one-call-to-any-REST-API tool is gone; the MCP client is the
+  integration surface, and it does the job with per-server trust declarations, outgoing-arg
+  secret redaction, and connection status the generic tool never had. With it gone, the only
+  ways anything leaves your machine are a web search query, a page fetch, and the MCP servers
+  you configured — a shorter list to verify with `/privacy egress`.
+- **`/privacy redact`.** The secret-redaction *command* is gone — it configured a boundary
+  that only exists behind a remote `OLLAMA_HOST`, dormant since cloud-model support was
+  shelved. The protection itself is unchanged: secret redaction still guards remote-Ollama
+  and remote-MCP sends, and the approval gate still warns when a call's arguments carry a
+  secret-like value. The mode remains settable as a config key
+  (`/config runtime.redaction off|warn|redact` — session-only unless `--save`).
+- **The capability benchmark suites.** `benchmark.py` now runs exactly one thing: the graded
+  trust benchmark (grounding catch rate + gate coverage) — the numbers the product's claims
+  rest on. The ungraded capability/conversation harness (`--capability`, `--suites`, `--all`)
+  is gone; engine regressions are covered by the offline test suite.
+- **Per-document LLM summaries at ingest.** Adding a document (or writing a workspace file) no
+  longer runs a model call to summarize it — the document manifests carry the file's own first
+  line instead. Ingest is faster, and untrusted document text is never fed through a model at
+  ingest time. A leftover `cache/summaries.json` is simply unused.
+- **`/trace calls`, `/trace cost`, `/trace state`, and the `--md` export format.** `calls`
+  duplicated the per-run drill-down, `cost` measured cloud-era spend a local agent doesn't
+  have (tok/s and context fill are live in the status bar), `state` was a debugging dump, and
+  the JSON export was always the one replayable record.
+- **`/config key`.** No Saturn feature takes an API key (web search is keyless, inference is
+  local), so the managed-key picker managed an empty registry. Secrets for MCP servers'
+  `${VAR}` expansion are plain env vars — put them in `.env`; typing `/config key` points
+  there.
+- **`/resume delete` / `/resume rename`.** Sessions are plain `.json` files under
+  `database/sessions/` — manage them there. Crash-safe autosave, `save [name]`, `<name>`
+  restore, and `list` are unchanged; a habit-typed removal verb prints a pointer and deletes
+  nothing.
+
 ### Changed
 
 - The live `config.yaml` is no longer tracked by git — it is user data (persisted settings

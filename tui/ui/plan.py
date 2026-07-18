@@ -113,13 +113,13 @@ def _review_emit(text) -> None:
     _emit(text)
 
 
-def _review_header(reason: str) -> None:
+def _review_header(reason: str, title: str = "plan review", subtitle: str = "execution paused") -> None:
     if _RICH:
         _console.print()  # the pause lands mid-trace — let the frame read as its own moment
         top = Text()
         top.append("  ┏━ ", style="bold")
-        top.append("plan review", style=f"bold {_ACCENT}")
-        top.append(" — execution paused", style=_DIM)
+        top.append(title, style=f"bold {_ACCENT}")
+        top.append(f" — {subtitle}", style=_DIM)
         _console.print(top)
         if reason:
             r = Text()
@@ -128,7 +128,7 @@ def _review_header(reason: str) -> None:
             _console.print(r)
     else:
         print()
-        print("  ┏━ plan review — execution paused")
+        print(f"  ┏━ {title} — {subtitle}")
         if reason:
             print(f"  ┃ {reason}")
 
@@ -162,23 +162,23 @@ def _render_review_plan(plan: list[dict]) -> None:
             print(f"  ┃ {line}{tag}{marker}")
 
 
-def _review_hint() -> None:
+def _review_hint(enter_verb: str = "runs", abort_verb: str = "stops") -> None:
     """The one-line standing hint under the plan — enough to act (run, stop, or start editing)
     without reprinting the whole editor grammar at every pause; `help` opens the full version."""
     if _RICH:
         t = Text()
         t.append("  ┃ ", style="bold")
         t.append("enter", style=_ACCENT)
-        t.append(" runs · ", style=_DIM)
+        t.append(f" {enter_verb} · ", style=_DIM)
         t.append("abort", style=_ACCENT)
-        t.append(" stops · edit with ", style=_DIM)
+        t.append(f" {abort_verb} · edit with ", style=_DIM)
         t.append("add/edit/tool/status/move/drop", style="default")
         t.append(" · ", style=_DIM)
         t.append("help", style=_ACCENT)
         t.append(" for the grammar", style=_DIM)
         _console.print(t)
     else:
-        print("  ┃ enter runs · abort stops · edit with add/edit/tool/status/move/drop"
+        print(f"  ┃ enter {enter_verb} · abort {abort_verb} · edit with add/edit/tool/status/move/drop"
               " · help for the grammar")
 
 
@@ -213,17 +213,31 @@ def review_plan(value: dict) -> dict:
     """Handle a plan-review interrupt. Returns `{"action": "continue"|"abort", "plan": <edited>}`
     — the resume value the plan_gate node applies. The edited plan is normalized + renumbered by
     plan_ops, so step ids the user typed always match what's rendered. Bare Enter (or `go`)
-    continues; Ctrl-C/EOF aborts — an interrupted review must never run the plan."""
+    continues; Ctrl-C/EOF aborts — an interrupted review must never run the plan.
+
+    The payload may override the frame's wording so other hosts of the same editor loop stay
+    honest about what enter/abort DO there — `/draft` composes a plan between turns, where
+    nothing is executing and enter saves rather than runs: `title`/`subtitle` (the ┏━ header),
+    `enter_verb`/`abort_verb` (the standing hint), `verbs` (the ┗━ tail as a
+    (continue, abort) pair). Defaults are the mid-turn review's."""
     from core import plan_ops
 
     plan = plan_ops.normalize(value.get("plan") or [])
     reason = value.get("reason", "")
+    verbs = value.get("verbs") or ("running the plan", "aborting the turn")
 
     _live_stop()  # the editor blocks on input(); the bar can't be live while it does
 
-    _review_header(reason)
+    _review_header(
+        reason,
+        title=value.get("title") or "plan review",
+        subtitle=value.get("subtitle") or "execution paused",
+    )
     _render_review_plan(plan)
-    _review_hint()
+    _review_hint(
+        enter_verb=value.get("enter_verb") or "runs",
+        abort_verb=value.get("abort_verb") or "stops",
+    )
 
     action = "continue"
     while True:
@@ -255,14 +269,14 @@ def review_plan(value: dict) -> dict:
         except ValueError as exc:
             _review_note(f"! {exc}")
 
+    verb = verbs[0] if action == "continue" else verbs[1]
     if _RICH:
         tail = Text()
-        verb = "running the plan" if action == "continue" else "aborting the turn"
         tail.append("  ┗━ ", style="bold")
         tail.append(verb, style=_ACCENT)
         _console.print(tail)
     else:
-        print(f"  ┗━ {'running the plan' if action == 'continue' else 'aborting the turn'}")
+        print(f"  ┗━ {verb}")
 
     _base._t_last = time.perf_counter()  # don't bill the human's edit time to the next node
     _live_start()  # the turn continues; re-pin the bar

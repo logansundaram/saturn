@@ -21,10 +21,12 @@ class CommandContext:
     db_path: str
     show_ui: bool = True
     should_quit: bool = False
-    # ISO timestamp of when THIS process's REPL started — the session boundary for /cost.
-    session_started_at: str = ""
     # Persistent plan-review mode: when on, every turn pauses at the first plan_gate.
     review_plan: bool = False
+    # A user-drafted plan composed via /draft, waiting for its request: the REPL seeds it
+    # into the NEXT turn's state (plan_node honors a pre-seeded plan and skips drafting), then
+    # clears it — one draft, one turn. None = nothing drafted.
+    pending_plan: list | None = None
 
 
 Handler = Callable[["CommandContext", list[str]], None]
@@ -109,7 +111,8 @@ _RENAMED = {
     # door; /why becomes a /trace subview (both read the same trace DB).
     "egress": "privacy egress",
     "airgap": "privacy airgap",
-    "redact": "privacy redact",
+    # ("redact" pointed at /privacy redact until that subcommand was CUT 2026-07-16 — a cut
+    # feature leaves no pointer; the knob survives as /config runtime.redaction.)
     "why": "trace why",
     # /commands was never a real command — point the habit at the command list.
     "commands": "help",

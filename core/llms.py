@@ -13,7 +13,9 @@ tier presets exercises cost audit surface for no product. A role bound to a non-
 surfaces the same at startup. The network-boundary machinery is NOT shelved — `_CloudBoundaryModel`
 still wraps a remote-OLLAMA_HOST daemon (redaction + egress + air-gap), and reintroducing cloud
 later is: restore `_build`'s `init_chat_model` branch + the provider key/package checks in
-`check_models` + the Anthropic/OpenAI ManagedKeys in env_keys.py (see the Roadmap note).
+`check_models` + the managed-key layer (env_keys.py holds only the .env read path since the
+2026-07-16 /config key cut; the pre-cut ManagedKey registry is in git history — see the Roadmap
+note).
 Built models are cached per (provider, model); `reset_models()` clears the cache after a live
 model change (the `/model` command).
 

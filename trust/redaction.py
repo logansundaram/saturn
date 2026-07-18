@@ -18,8 +18,9 @@ them or replaces them with a `[REDACTED:<kind>]` placeholder before the send.
 Wired in `llms.py`: every cloud model is wrapped so `process_messages` runs at the boundary, the
 ONE place all nodes funnel through (so a secret can't leak via the planner, agent, judge, or
 synthesizer independently). Local (Ollama) models are never wrapped — there is no boundary to
-guard. `/privacy redact` configures the mode and previews what WOULD be stripped from the live
-context.
+guard. The mode is configured via `/config runtime.redaction` (a trust key — persists only with
+an explicit --save); the `/privacy redact` command front end was CUT 2026-07-16 as dormant since
+the cloud shelve.
 
 Patterns are deliberately conservative (high-signal prefixes, length floors) to avoid false
 positives that would mangle a legitimate prompt — this strips obvious secrets, it is not a DLP
@@ -50,8 +51,7 @@ _PATTERNS: list[_Pattern] = [
     _Pattern("anthropic-key", re.compile(r"sk-ant-[A-Za-z0-9_\-]{20,}")),
     # Negative lookahead so an Anthropic key (sk-ant-…) isn't ALSO counted as an OpenAI key — the
     # `redact` path already avoids the double-hit (it substitutes anthropic first), but `scan`
-    # (used by /privacy redact preview) tests patterns independently, so exclude the overlap
-    # explicitly.
+    # tests patterns independently, so exclude the overlap explicitly.
     _Pattern("openai-key", re.compile(r"sk-(?!ant-)(?:proj-)?[A-Za-z0-9_\-]{20,}")),
     _Pattern("tavily-key", re.compile(r"tvly-[A-Za-z0-9_\-]{16,}")),
     _Pattern("aws-access-key", re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b")),
@@ -104,8 +104,8 @@ def scan(text: str) -> list[Finding]:
 
 def scan_args(args) -> list[Finding]:
     """Secret-like values anywhere inside a tool call's arguments. Used by the approval gate to
-    warn when the call the user is about to approve would carry a secret out (an http_request
-    body, a run_shell command with a token inline). Walks the args tree with
+    warn when the call the user is about to approve would carry a secret out (an MCP call's
+    args, a run_shell command with a token inline). Walks the args tree with
     `textutil.iter_strings` — THE one recursive string-leaf walker over call args — so every
     args scan agrees about what counts as argument content. Display-safe findings only, like
     `scan`."""

@@ -97,30 +97,33 @@ def test_memory_remove_by_index_the_audit_inversion(ctx, capsys, isolated_paths)
 
 
 @pytest.mark.parametrize("verb", REMOVE_VERBS)
-def test_resume_accepts_every_removal_verb(ctx, capsys, isolated_paths, verb):
+def test_resume_removal_verbs_intercepted_by_the_cut(ctx, capsys, isolated_paths, verb):
+    """Session delete was CUT 2026-07-16 — every removal verb still ROUTES (so `/resume rm x`
+    can't misparse as loading a session named 'rm x') but lands on the cut note and deletes
+    nothing."""
     from commands._session import _session_file
 
     _session_file("scratch").write_text('{"version": 1, "messages": []}', encoding="utf-8")
     _resume(ctx, [verb, "scratch"])
-    assert not _session_file("scratch").exists()
-    assert "deleted session" in _out(capsys)
+    assert _session_file("scratch").exists()  # nothing deleted
+    assert "was cut" in _out(capsys)
 
 
-@pytest.mark.parametrize("verb", REMOVE_VERBS + ("unset", "clear"))
-def test_config_key_accepts_unset_clear_and_every_removal_verb(ctx, capsys, tmp_path,
-                                                               monkeypatch, verb):
+def test_config_key_is_cut(ctx, capsys, tmp_path, monkeypatch):
+    """/config key was CUT 2026-07-16 — every spelling prints the .env pointer and mutates
+    nothing (env vars are edited in .env directly; env_keys keeps only the read path MCP's
+    ${VAR} expansion uses)."""
     import env_keys
 
     monkeypatch.setattr(env_keys, "_ENV_PATH", tmp_path / ".env")
-    (tmp_path / ".env").write_text("", encoding="utf-8")
-    # setenv registers the prior (absent) state so teardown drops whatever the test set.
-    monkeypatch.setenv("MY_TEST_VAR", "seed")
-    env_keys.set_value("MY_TEST_VAR", "value-1")  # ALL-CAPS = unmanaged: no on_change hook
-    assert env_keys.is_set("MY_TEST_VAR")
+    (tmp_path / ".env").write_text("MY_TEST_VAR=value-1\n", encoding="utf-8")
 
-    _config(ctx, ["key", verb, "MY_TEST_VAR"])
-    assert not env_keys.is_set("MY_TEST_VAR")
-    assert "removed from .env" in _out(capsys)
+    for spelling in (["key"], ["key", "set", "MY_TEST_VAR", "v2"], ["key", "unset", "MY_TEST_VAR"]):
+        _config(ctx, spelling)
+        out = _out(capsys)
+        assert "was cut" in out and ".env" in out
+    assert env_keys.get("MY_TEST_VAR") == "value-1"  # nothing mutated
+    assert not hasattr(env_keys, "set_value")  # the write path left with the command
 
 
 # --- /models persists the same dotted keys the session edit sets (by default) ----------------

@@ -6,7 +6,7 @@ machine) but never *shown* (what actually left). This module closes that gap. It
 chokepoint every outbound network operation reports through, so "nothing leaves your machine"
 becomes an observable fact rather than a slogan:
 
-  - `record(...)`     every successful egress (a web search, an http_request, a remote MCP call,
+  - `record(...)`     every successful egress (a web search, a page fetch, a remote MCP call,
                       a cloud-model invocation) appends one `EgressEvent` to a process-wide,
                       append-only ledger. `/privacy egress` renders it; the status bar shows a
                       live count.
@@ -51,7 +51,7 @@ BLOCKED = "blocked"  # air-gap refused it before anything was sent
 @dataclass(frozen=True)
 class EgressEvent:
     """One outbound network operation (or one air-gap refusal). `channel` is the kind of egress
-    (web_search/web_extract/http_request/mcp/llm), `host` where it went, `detail` a short human
+    (web_search/web_extract/mcp/llm/embedding), `host` where it went, `detail` a short human
     label (the query, the URL, the model id), `provider` the backend when relevant, `n_bytes` the
     approximate size of what was SENT, `redactions` how many secrets were stripped first. `seq` is
     the session-wide ordinal (monotonic, never reused) — turn slices key on it, not list indexes,

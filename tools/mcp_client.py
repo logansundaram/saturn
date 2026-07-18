@@ -25,7 +25,7 @@ event loop; each registered tool's sync function submits `session.call_tool(...)
 Tool results flow back as plain strings and are clamped by tool_node like every other observation.
 
 Secrets: any `${VAR}` in a server's url/args/env/headers expands from the environment / the
-managed .env (env_keys), so tokens never sit in config.yaml — e.g.
+.env file (env_keys.get), so tokens never sit in config.yaml — e.g.
 `Authorization: Bearer ${GITHUB_TOKEN}`. A reference to an unset var is a startup problem, not a
 silent empty string... it expands to "" so the server still gets a well-formed value, but the gap
 is reported (see _expand/_parse_specs).
@@ -107,7 +107,7 @@ class ServerSpec:
 
 
 def _expand(value: object, missing: set[str]) -> str:
-    """Expand ${VAR} references from the live environment / the managed .env (env_keys), so
+    """Expand ${VAR} references from the live environment / the .env file (env_keys.get), so
     secrets stay out of config.yaml. Unset vars expand to "" and are collected in `missing`
     (reported as a startup problem rather than failing the server outright)."""
     import env_keys

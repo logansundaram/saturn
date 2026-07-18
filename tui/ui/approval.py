@@ -253,49 +253,16 @@ def _render_shell_command(args: dict) -> None:
         print(f"  ┃       {tip}")
 
 
-def _render_http_request(args: dict) -> None:
-    """Render a pending http_request in full — method + URL, every header, and the whole body
-    (wrapped, capped like the diff preview). The tool's contract is that the human sees the EXACT
-    request before anything is sent; the generic 80-char arg repr would hide the tail of a long
-    URL or payload — precisely the part that matters on a destructive outbound call."""
-    method = str(args.get("method", "GET") or "GET").upper()
-    url = str(args.get("url", ""))
-    headers = args.get("headers") or {}
-    body = args.get("body")
-
-    lines: list[str] = [f"{method} {url}"]
-    if isinstance(headers, dict):
-        lines += [f"{k}: {v}" for k, v in headers.items()]
-    else:
-        lines.append(f"headers: {headers!r}")
-    if body is not None:
-        body_lines = str(body).splitlines() or [""]
-        hidden = max(0, len(body_lines) - _MAX_DIFF_LINES)
-        lines.append("")  # blank line between head and body, like the wire format
-        lines += body_lines[:_MAX_DIFF_LINES]
-        if hidden:
-            lines.append(f"… {hidden} more body line(s)")
-
-    if _RICH:
-        head = Text()
-        head.append("  ┃ ", style="bold")
-        head.append("    ↳ request", style=_DIM)
-        _console.print(head)
-    else:
-        print("  ┃     -> request")
-    _frame_wrapped(lines, "> ")
-
-
 # Tools with a bespoke full-surface renderer above. ONE table is the single source: which
 # argument keys the compact repr must SKIP (that arg IS the safety surface, shown in full by the
 # bespoke view) and which renderer draws it. Adding a bespoke-rendered tool is exactly one entry
 # here — the membership tuple below derives from it, so the skip keys, the renderer dispatch, and
-# _full_width_args can never drift apart.
+# _full_width_args can never drift apart. (http_request's full-request renderer left with the
+# tool, 2026-07-16 — MCP tools render through the generic full-width view.)
 _BESPOKE = {
     "write_file": (("content",), _render_write_diff),
     "edit_file": (("old_string", "new_string"), _render_edit_diff),
     "run_shell": (("command",), _render_shell_command),
-    "http_request": (("url", "method", "headers", "body"), _render_http_request),
 }
 
 # Derived view for the branch test: their decisive argument is already shown in full above, so
@@ -358,8 +325,8 @@ def _frame_note(text: str, style: str = "yellow") -> None:
 
 
 def _render_secret_warnings(args: dict) -> None:
-    """Warn when a gated call's arguments carry a secret-like value (an API key in an http_request
-    body, a token inline in a run_shell command): approving the call sends the secret wherever the
+    """Warn when a gated call's arguments carry a secret-like value (an API key in an MCP call's
+    args, a token inline in a run_shell command): approving the call sends the secret wherever the
     call goes. Reuses the redaction scanner; emails are excluded here (common, legitimate argument
     content — this warning is about credentials). Best-effort: a scan failure never blocks the
     gate."""
@@ -391,8 +358,8 @@ def _render_call(tc: dict) -> None:
     and plain prompts (the rendering IS the safety surface, so the two paths must never drift):
     the risk-tier head line, the argument view (full-width when the call has no bespoke renderer,
     compact 80-char repr otherwise — minus the keys the bespoke view shows in full), the bespoke
-    safety surface itself (diff / command / request, from the one _BESPOKE table), the secret
-    warning, and the per-tier hint."""
+    safety surface itself (diff / command, from the one _BESPOKE table), the secret warning, and
+    the per-tier hint."""
     risk = str(tc.get("risk", "destructive"))
     risk_style = _RISK.get(risk, "bold red")
     name = tc.get("name")
@@ -413,9 +380,8 @@ def _render_call(tc: dict) -> None:
     else:
         for k, v in args.items():  # one line per argument — full clarity
             # The keys a bespoke renderer shows in full below (write_file's content as a diff,
-            # edit_file's old/new strings, run_shell's command, the whole http_request) are
-            # skipped here: that arg IS the safety surface, so the 80-char repr would hide the
-            # part that matters.
+            # edit_file's old/new strings, run_shell's command) are skipped here: that arg IS
+            # the safety surface, so the 80-char repr would hide the part that matters.
             if k in skip_keys:
                 continue
             if _RICH:

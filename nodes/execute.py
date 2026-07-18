@@ -71,6 +71,11 @@ _EMPTY_MARKERS = {"", "[]", "()", "{}", "none"}
 # unavailable so we fail closed" — both block the write, but the disclosure should be honest.
 _GATE_UNAVAILABLE = "gate-unavailable (fail-closed)"
 
+# THE stable prefix every write-gate skip result starts with — the one producer, so the one
+# reader that detects a gate skip (the trust benchmark's fabrication grader) keys off a constant
+# instead of a hand-copied string. Change this and every skip return below together.
+WRITE_GATE_SKIP_PREFIX = "skipped write:"
+
 
 def _is_empty_result(res) -> bool:
     if res is None:
@@ -113,7 +118,7 @@ def _write_gate(state: AgentState, step: dict) -> "str | None":
     producers = [s for s in done if s.get("status") == "done"]
     if producers and _is_empty_result(producers[-1].get("result")):
         return (
-            "skipped write: the upstream result was empty, so nothing was written "
+            f"{WRITE_GATE_SKIP_PREFIX} the upstream result was empty, so nothing was written "
             "(a file must not be created from a missing value)."
         )
     ctx = (
@@ -137,11 +142,11 @@ def _write_gate(state: AgentState, step: dict) -> "str | None":
     if not gate.present:
         if gate.evidence == _GATE_UNAVAILABLE:
             return (
-                "skipped write: the write gate could not verify the value to write "
+                f"{WRITE_GATE_SKIP_PREFIX} the write gate could not verify the value to write "
                 "(the judge was unavailable), so nothing was written — fail-closed."
             )
         return (
-            "skipped write: the value to write is not present in the gathered "
+            f"{WRITE_GATE_SKIP_PREFIX} the value to write is not present in the gathered "
             "results, so nothing was written (a file must not be created with a "
             "missing/fabricated value)."
         )

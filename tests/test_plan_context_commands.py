@@ -6,7 +6,9 @@ standalone /context folded into /config as `/config context` (dispatched to `_co
 bare `review` reports status (explicit on|off mutates; the shared parse_toggle_status grammar),
 and a size set PERSISTS runtime.num_ctx via config.persist BY DEFAULT (the shared
 split_persist_flags grammar: settings persist by default, --session opts a single edit out; a bare
-`--save` with no value still persists the CURRENT one), and plan_node always drafts (no seed seam).
+`--save` with no value still persists the CURRENT one). The RECIPE seed seam stays gone;
+plan_node drafts unless the REPL seeded a user-drafted plan this turn (/draft, 2026-07-16 —
+see test_plan_draft.py).
 """
 
 import pytest

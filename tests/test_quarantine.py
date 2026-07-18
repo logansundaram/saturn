@@ -69,7 +69,7 @@ def test_scan_quiet_on_ordinary_text(text):
 # --- trust boundary -------------------------------------------------------------------------
 
 def test_untrusted_classification():
-    for name in ("web_search", "web_extract", "http_request", "search_knowledge_base",
+    for name in ("web_search", "web_extract", "search_knowledge_base",
                  "mcp_github_get_issue"):
         assert quarantine.is_untrusted(name)
     for name in ("read_file", "write_file", "run_shell", "calculate", "remember"):

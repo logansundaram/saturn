@@ -63,8 +63,9 @@ def test_full_width_args_branch():
     # closed to destructive precisely because they're untrusted).
     assert approval._full_width_args("mcp_github_create_issue", "destructive")
     assert approval._full_width_args("some_new_tool", "side_effecting")
-    # The four bespoke-rendered tools keep their dedicated views.
-    for name in ("write_file", "edit_file", "run_shell", "http_request"):
+    # The bespoke-rendered tools keep their dedicated views (http_request left with its tool,
+    # 2026-07-16).
+    for name in ("write_file", "edit_file", "run_shell"):
         assert not approval._full_width_args(name, "destructive")
     # read_only calls (gated only via a quarantine escalation) keep the compact repr.
     assert not approval._full_width_args("web_search", "read_only")

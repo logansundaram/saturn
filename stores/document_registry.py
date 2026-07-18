@@ -1,31 +1,29 @@
 """
-Maintains per-directory markdown manifests that record metadata and LLM-generated
-summaries for every document the agent can see.
+Maintains per-directory markdown manifests that record metadata and a one-line description
+for every document the agent can see.
 
 Two manifests:
   database/workspace/.manifest.md  — files the agent can read/write via tools
   database/documents/.manifest.md  — files ingested into the RAG vector store
 
 The grounding (`ground`) node reads both at the start of each turn so the planning LLM
-knows exactly what documents exist and what they contain before deciding whether to
-call read_file or trigger retrieval.
+knows exactly what documents exist before deciding whether to call read_file or trigger
+retrieval.
+
+The description is MECHANICAL (first heading / first non-empty line) since 2026-07-16 — the
+per-document LLM summary + its content-hash cache (`cache/summaries.json`) were cut: an ingest
+cost a utility-model call for prose that was never cited or graded, only skimmed. What the
+manifests exist for — "these files exist, roughly this is what each is" — the first line
+already answers. A legacy summaries.json is simply orphaned (cache/ is documented safe to
+delete).
 """
 
-"""
-vibe coded, need to review
-"""
-
-import hashlib
-import json
 import re
-import time
 from datetime import date
 from pathlib import Path, PurePath
 
-from langchain.messages import HumanMessage
-
-import diag
 from config import get_config
+from textutil import clip
 
 _MANIFEST_HEADER = "# Document manifest\n\n"
 
@@ -68,33 +66,27 @@ def register_workspace_file(file_path: str, content: str) -> None:
 def remove_workspace_file(file_path: str) -> None:
     """Strip a workspace file's manifest entry. Called by /undo (stores/snapshots.py) when it
     deletes a file the undone turn created, so the grounding manifest never lists a file that is
-    gone. The cached summary is left alone — it is keyed by content hash, so it is simply unused.
-    Normalized with the same _workspace_key as register, so a remove always finds the entry the
-    register created."""
+    gone. Normalized with the same _workspace_key as register, so a remove always finds the entry
+    the register created."""
     _remove_entry(_workspace_manifest(), _workspace_key(file_path))
 
 
 def register_rag_document(source: str, content: str) -> None:
     """Called by rag.sync for each new/changed document. `source` is the corpus-relative path;
-    key the manifest + summary cache by it (not the basename) so e.g. teamA/report.md and
-    teamB/report.md get distinct entries instead of overwriting each other.
+    key the manifest by it (not the basename) so e.g. teamA/report.md and teamB/report.md get
+    distinct entries instead of overwriting each other.
 
     Deliberately NOT normalized (unlike the workspace pair): rag.sync keys register, remove, AND
     its index.json `files` dict by the same str(path.relative_to(root)) form — normalizing only
-    this side would desync remove_rag_document's manifest + summary-cache deletion from the
-    vector index. If symmetry is ever wanted, both sides AND the index must move together."""
+    this side would desync remove_rag_document's manifest deletion from the vector index. If
+    symmetry is ever wanted, both sides AND the index must move together."""
     _upsert(_documents_manifest(), source, content, Path(source).suffix)
 
 
 def remove_rag_document(source: str) -> None:
-    """Strip a document's entry from the RAG manifest and its cached summary. Called by rag.sync
-    when a file is removed from the corpus, so the manifest never lists documents that are gone."""
-    name = source
-    _remove_entry(_documents_manifest(), name)
-    cache = _read_summary_cache()
-    if name in cache:
-        del cache[name]
-        _write_summary_cache(cache)
+    """Strip a document's entry from the RAG manifest. Called by rag.sync when a file is removed
+    from the corpus, so the manifest never lists documents that are gone."""
+    _remove_entry(_documents_manifest(), source)
 
 
 def read_workspace_manifest() -> str:
@@ -135,52 +127,11 @@ def manifest_entries(text: str) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
-# Summaries are an LLM call per document, so they're cached by content hash at
-# `paths.cache/summaries.json` — re-summarizing only happens when a file's content changes.
-# Keyed by basename (matching the manifest's `### <name>` entries).
-_SUMMARY_CACHE_FILE = "summaries.json"
-
-# mtime-validated in-memory memos: syncing N files used to re-read + re-parse the whole
-# summaries.json and re-read the whole manifest PER FILE (O(N²) bytes as they grow), and ground
-# re-read both manifests every turn. One stat per read validates the memo; the mtime check (not
-# a blind cache) keeps a hand-edited file honest. Keyed by path so isolated test configs and a
-# live `/config paths.*` change each get their own slot. Writes stay per-change (an LLM summary
-# is expensive — batching writes to a sync-end flush would lose them all on a crash).
-_summary_mem: "dict[str, tuple[int, dict]]" = {}
+# mtime-validated in-memory memo: ground re-reads both manifests every turn, and syncing N
+# files used to re-read the whole manifest PER FILE. One stat per read validates the memo; the
+# mtime check (not a blind cache) keeps a hand-edited file honest. Keyed by path so isolated
+# test configs and a live `/config paths.*` change each get their own slot.
 _manifest_mem: "dict[str, tuple[int, str]]" = {}
-
-
-def _summary_cache_path() -> Path:
-    return get_config().path("cache") / _SUMMARY_CACHE_FILE
-
-
-def _read_summary_cache() -> dict:
-    p = _summary_cache_path()
-    key = str(p)
-    try:
-        mtime = p.stat().st_mtime_ns
-    except OSError:  # absent (or unreadable) file: nothing cached
-        _summary_mem.pop(key, None)
-        return {}
-    hit = _summary_mem.get(key)
-    if hit is not None and hit[0] == mtime:
-        return hit[1]
-    try:
-        cache = json.loads(p.read_text(encoding="utf-8"))
-    except Exception:
-        cache = {}
-    _summary_mem[key] = (mtime, cache)
-    return cache
-
-
-def _write_summary_cache(cache: dict) -> None:
-    p = _summary_cache_path()
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(cache, indent=2), encoding="utf-8")
-    try:
-        _summary_mem[str(p)] = (p.stat().st_mtime_ns, cache)
-    except OSError:
-        _summary_mem.pop(str(p), None)
 
 
 def _read_manifest_text(path: Path) -> str:
@@ -207,42 +158,21 @@ def _write_manifest_text(path: Path, text: str) -> None:
         _manifest_mem.pop(str(path), None)
 
 
+# The description clip: long first lines truncate rather than bloat the every-turn context.
+_DESC_CAP = 160
+
+
 def _summarize(content: str, filename: str) -> str:
-    """Ask the LLM for a 1-2 sentence summary, cached by content hash. Unchanged documents reuse
-    the cached summary (no LLM call); failures fall back gracefully and are not cached, so they
-    retry next run."""
-    digest = hashlib.sha256(content.encode("utf-8", "replace")).hexdigest()
-    cache = _read_summary_cache()
-    hit = cache.get(filename)
-    if hit and hit.get("hash") == digest:
-        return hit["summary"]
-
-    try:
-        # Import here to avoid circular import at module load time (core.messages pulls the
-        # live tool registry, which imports tools/files.py, which imports this module).
-        # Summaries are a cheap background task -> the `utility` role.
-        from core.llms import get_model
-        from core.messages import DOC_SUMMARY_PROMPT
-
-        start = time.perf_counter()
-        msg = HumanMessage(
-            content=DOC_SUMMARY_PROMPT.format(filename=filename, content=content[:4000])
-        )
-        response = get_model("utility").invoke([msg])
-        diag.log(
-            f"document_registry summary ({filename}) : {time.perf_counter() - start:.4f}s"
-        )
-        # Collapse to ONE line: the manifest locates entry boundaries by "\n### " searches, so a
-        # multi-line summary containing a markdown heading would forge a boundary and corrupt
-        # the manifest ground loads every turn (untrusted document text steers this summary).
-        summary = " ".join(str(response.content).split())
-    except Exception as exc:
-        diag.log(f"document_registry: summary failed for {filename}: {exc}")
-        return "No summary available."
-
-    cache[filename] = {"hash": digest, "summary": summary}
-    _write_summary_cache(cache)
-    return summary
+    """A mechanical one-line description: the first non-empty line (a markdown heading's `#`s
+    stripped), whitespace-collapsed and clipped. Replaced the per-document LLM summary
+    2026-07-16 — an ingest no longer costs a model call, and the manifest's job ("these files
+    exist, roughly what each is") is answered by the file's own first line. Untrusted document
+    text still can't steer more than that one clipped line into the every-turn context."""
+    for line in content.splitlines():
+        line = " ".join(line.strip().lstrip("#").split())
+        if line:
+            return clip(line, _DESC_CAP)
+    return "(empty file)"
 
 
 def _upsert(manifest_path: Path, filename: str, content: str, suffix: str) -> None:

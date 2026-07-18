@@ -84,7 +84,7 @@ from .art import splash
 from .prompt import prompt, banner, ask, answer_question, posture_line
 
 # Execution trace + recorded replays.
-from .trace import show_node, show_run, show_llm_calls
+from .trace import show_node, show_run, show_llm_calls, show_llm_context
 
 # The Glass Box — answer-level provenance.
 from .glass import show_glassbox
@@ -116,7 +116,7 @@ __all__ = [
     "set_input_preview", "reset_turn",
     "splash",
     "prompt", "banner", "ask", "answer_question", "posture_line",
-    "show_node", "show_run", "show_llm_calls",
+    "show_node", "show_run", "show_llm_calls", "show_llm_context",
     "show_glassbox",
     "render_plan", "show_plan", "review_plan",
     "ask_approval",

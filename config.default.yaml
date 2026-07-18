@@ -66,10 +66,10 @@ runtime:
   #   off    no scan (default — a fully-local tier never leaves the machine anyway)
   #   warn   detect + count (recorded to /privacy egress), but send unmodified
   #   redact replace each secret with [REDACTED:<kind>] before sending
-  # Configure + preview with `/privacy redact`. Local (Ollama) calls are never scanned — there's
-  # no boundary.
+  # Set via `/config runtime.redaction <mode>` (a trust key — persists only with an explicit
+  # --save). Local (Ollama) calls are never scanned — there's no boundary.
   redaction: off
-  # Prompt-injection quarantine (quarantine.py): UNTRUSTED tool output (web, http_request, remote
+  # Prompt-injection quarantine (quarantine.py): UNTRUSTED tool output (web, remote
   # MCP, the ingested corpus) is scanned for instruction-shaped content ("ignore your previous
   # instructions", tool-coercion, role overrides). A hit is flagged in the trace rail, fenced
   # between data-not-instructions markers before the model sees it, and shown at the approval
@@ -104,7 +104,8 @@ runtime:
 # ---------------------------------------------------------------------------
 web:
   max_results: 5            # results returned per web_search
-  request_timeout: 30       # seconds before an http_request call is killed (mirrors shell.timeout)
+  # (request_timeout left with the http_request cut, 2026-07-16 — an old config.yaml still
+  # carrying it loads fine; unknown keys are ignored.)
 
 # ---------------------------------------------------------------------------
 # RAG pipeline (stores/rag.py + the search_knowledge_base tool). Escape-hatch tuning knobs —

@@ -124,3 +124,15 @@ def test_extract_multi_url_records_every_host(monkeypatch):
         ("b.example", "web_extract", egress.SENT),
         ("c.example", "web_extract", egress.SENT),
     ]
+
+
+# ── http_request: CUT 2026-07-16 ───────────────────────────────────────────────────────────────
+
+
+def test_http_request_is_cut():
+    """The universal-integration tool is gone — MCP is the integration surface. A resurrected
+    http_request here means the cut regressed (and the gate lost its renderer for it)."""
+    assert not hasattr(web, "http_request")
+    from tools.registry import tools_by_name
+
+    assert "http_request" not in tools_by_name

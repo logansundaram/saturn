@@ -78,9 +78,9 @@ replay. The point isn't how much Saturn can do — it's that you can see and con
   "research" call.
 - **Web search** — **no API key, no account, ever**: keyless DuckDuckGo search + local page
   extraction (`trafilatura`). Your queries never route through a keyed SaaS backend.
-- **Your APIs** — `http_request` talks to any REST endpoint or self-hosted service (Home
-  Assistant, Gitea, Jellyfin, …), and shows you the exact request — method, URL, headers,
-  body — for approval before anything is sent. One auditable tool instead of fifty opaque integrations.
+- **Your APIs** — connect any service as an MCP server (`config.yaml`): its tools face the same
+  approval gate as everything else, never self-declare their risk tier, and their outgoing
+  arguments are scanned for secrets. One integration mechanism, fully gated.
 - **Your files** — read, write, edit (anchored string replace), search (content regex + name
   glob), and list files in a sandboxed workspace — with pre-write snapshots, so `/undo` can
   revert any turn's file changes.
@@ -125,6 +125,10 @@ replay. The point isn't how much Saturn can do — it's that you can see and con
   prompted and denied); `--export <file>` writes the run's replayable export record after the
   turn; `saturn --replay <file>` renders an exported record offline. The CLI is strict:
   unknown flags exit 2 instead of silently launching the chat loop.
+- **One-shot query mode** — `saturn -q "question"` is the pipe-friendly rendering of the same
+  headless turn: stdout carries *only* the final answer, progress lines go to stderr, and the
+  run auto-exports so the closing `recorded: saturn --replay <file>` receipt replays exactly
+  what happened — plan, gates, tool calls — offline. Same engine, same deny-by-default gate.
 
 ---
 
@@ -232,8 +236,8 @@ pip install -r requirements.txt
 > `prompt_toolkit` (live command highlighting) is optional — Saturn runs fine without it.
 
 There is **no API key step**: web search is keyless and inference is local. (Custom env vars —
-e.g. for an MCP server's `${VAR}` expansion — can still be stored with `/config key set MY_VAR
-<value>`; they live in a `.env` file and apply immediately.)
+e.g. for an MCP server's `${VAR}` expansion — go in a plain `.env` file next to the install,
+or in `~/.saturday/.env` for pipx installs.)
 
 ### 3. Run it
 
@@ -308,8 +312,9 @@ Type `/help` for the full list, or `/<command> --help` for details on any one. H
 |---|---|
 | `/help` | The grouped command list, opening with the trust-stack map (posture · activity · proof); `/help <cmd>` details one. |
 | `/models` | List installed Ollama models; switch what drives each role (`--save` persists a binding to `config.yaml`). |
-| `/config` | View/edit settings and **API keys** (`/config key …`); `/config setup` is the health check; `/config context` is the runtime readout (context window + fill, CPU/RAM/GPU) + window resize (`--save` persists). |
+| `/config` | View/edit settings; `/config setup` is the health check; `/config context` is the runtime readout (context window + fill, CPU/RAM/GPU) + window resize. |
 | `/plan` | Show the plan; control review mode and the mid-run pause (bare subcommands report status). |
+| `/draft` | Write your OWN plan in the step editor — your next message executes YOUR steps instead of the agent's draft (same per-step reflection and approval gates). |
 | `/docs` | The knowledge base: list documents, `add <path>`, `remove <name>`, `sync`. |
 | `/tools` | List the agent's tools and their risk tiers. |
 | `/mcp` | MCP server status + the remote tools they add; `reload` after a config edit. |
@@ -317,11 +322,11 @@ Type `/help` for the full list, or `/<command> --help` for details on any one. H
 | `/policy` | The whole safety posture as one object: bare = status; `risk`/`allow`/`open` are its levers (bare forms report, changing is always explicit). The old `/risk`/`/allow`/`/autoapprove` spellings print a pointer here. |
 | `/trace source` | Show the full material behind a citation `[n]` of the last answer (folded in from `/source`). |
 | `/trace answer` | Answer-level provenance — each cited source's origin + trust, what left the machine, and the human gate decisions (folded in from `/glass`; `#id` for past runs). |
-| `/privacy` | The privacy surface: what CAN leave (`/privacy`), what DID (`/privacy egress`), seal the boundary (`/privacy airgap`), and strip secrets from off-machine sends (`/privacy redact`). |
+| `/privacy` | The privacy surface: what CAN leave (`/privacy`), what DID (`/privacy egress`), and seal the boundary (`/privacy airgap`). |
 | `/undo` | Revert the file changes of the last turn that wrote anything. |
 | `/init` | Survey the workspace and draft `SATURDAY.md` standing instructions. |
-| `/trace` | Inspect past runs, tool I/O, LLM calls, cost; `/trace why` explains a run's decisions; `/trace export` writes the run's complete record as JSON; `/trace replay` (or `saturn --replay <file>`) re-renders an exported record anywhere — no database needed. |
-| `/resume` | Continue your last session (autosaved); `save`/`list`/`delete`/`rename`/`<name>` for named sessions. |
+| `/trace` | Inspect past runs, tool I/O, and LLM calls; `/trace why` explains a run's decisions; `/trace export` writes the run's complete record as JSON; `/trace replay` (or `saturn --replay <file>`) re-renders an exported record anywhere — no database needed. |
+| `/resume` | Continue your last session (autosaved); `save [name]`/`list`/`<name>` for named sessions (plain `.json` files under `database/sessions/`). |
 | `/update` | Self-update: pull the latest Saturn (your data is never touched). |
 | `/clear` · `/quit` | Start a fresh conversation / exit. |
 
@@ -371,21 +376,17 @@ architectural reference (including the roadmap).
 
 ## Benchmarking
 
-The headline is the **graded trust benchmark** — it measures the trust stack itself: the
+The benchmark is the **graded trust benchmark** — it measures the trust stack itself: the
 grounding judge's catch rate (queries that bait a confabulated answer, graded on whether the
 agent looked the fact up or the judge caught the ungrounded draft) and approval-gate coverage
-(every non-read-only tool call must have faced the gate). Ungraded capability suites exist too,
-as regression checks on the loop's mechanics:
+(every non-read-only tool call must have faced the gate):
 
 ```bash
-python benchmark.py                                   # the trust benchmark (the headline)
+python benchmark.py                                   # the trust benchmark
 python benchmark.py --strict                          # …and exit 1 on any graded FAIL (CI-friendly)
-python benchmark.py --capability                      # capability suites + conversations (regression)
-python benchmark.py --capability --suites rag web_search   # just some suites
-python benchmark.py --all                             # everything in one combined report
 ```
 
-Reports are written to `logging/benchmarks/` (`trust_<ts>.json` / `benchmark_<ts>.json`).
+Reports are written to `logging/benchmarks/trust_<ts>.json`.
 
 ---
 

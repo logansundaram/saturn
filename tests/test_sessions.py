@@ -1,5 +1,6 @@
-"""commands/_session.py + the /resume delete/rename surface — name sanitization (the autosave
-slot must be unreachable from user input), payload round-trips, and list/number resolution."""
+"""commands/_session.py + the /resume surface — name sanitization (the autosave slot must be
+unreachable from user input), payload round-trips, and the 2026-07-16 delete/rename cut (the
+files are the interface now)."""
 
 from types import SimpleNamespace
 
@@ -13,13 +14,7 @@ from commands._session import (
     clear_autosave,
     write_autosave,
 )
-from commands.conversation import (
-    _delete_named,
-    _load_named,
-    _named_sessions,
-    _rename_named,
-    _resolve_named,
-)
+from commands.conversation import _load_named, _named_sessions, _resume
 
 
 def test_session_file_sanitization(isolated_paths):
@@ -78,29 +73,21 @@ def test_named_sessions_excludes_autosave(isolated_paths):
     assert [f.stem for f in _named_sessions()] == ["alpha"]
 
 
-def test_resolve_by_number_matches_list_order(isolated_paths):
-    _make("bravo")
-    _make("alpha")
-    files = _named_sessions()
-    assert [f.stem for f in files] == ["alpha", "bravo"]  # sorted — the order /resume list shows
-    assert _resolve_named("1").stem == "alpha"
-    assert _resolve_named("2").stem == "bravo"
-    assert _resolve_named("3") is None
-    assert _resolve_named("bravo").stem == "bravo"
-    assert _resolve_named("missing") is None
-
-
-def test_delete_and_rename(isolated_paths):
+def test_delete_and_rename_are_cut(isolated_paths, capsys):
+    """The session-library verbs were CUT 2026-07-16: a removal/rename verb is intercepted with
+    the files-are-the-interface note — never treated as a session name to load, and nothing on
+    disk is touched."""
     _make("keep")
-    _make("drop")
-    _delete_named(["drop"])
-    assert [f.stem for f in _named_sessions()] == ["keep"]
-    _rename_named(["keep", "kept"])
-    assert [f.stem for f in _named_sessions()] == ["kept"]
-    # Renaming onto an existing name is refused.
-    _make("other")
-    _rename_named(["other", "kept"])
-    assert sorted(f.stem for f in _named_sessions()) == ["kept", "other"]
+    ctx = SimpleNamespace(state={"messages": []}, make_initial_state=lambda: {"messages": []})
+    for spelling in (["delete", "keep"], ["rm", "keep"], ["rename", "keep", "kept"]):
+        _resume(ctx, spelling)
+        out = capsys.readouterr().out
+        assert "was cut" in out and "sessions" in out.lower()
+    assert [f.stem for f in _named_sessions()] == ["keep"]  # untouched
+    import commands.conversation as conv
+
+    for gone in ("_delete_named", "_rename_named", "_resolve_named"):
+        assert not hasattr(conv, gone), gone
 
 
 def test_resume_router_and_reserved_stems_share_one_table(isolated_paths):

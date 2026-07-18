@@ -46,15 +46,6 @@ def corpus(isolated_paths, monkeypatch):
     return docs
 
 
-def _seed_summary_cache(*names):
-    """The summarizer stub bypasses the cache write, so seed summaries.json directly — the test
-    needs real keys present to prove remove_rag_document drops exactly the removed one."""
-    cache = document_registry._read_summary_cache()
-    for n in names:
-        cache[n] = {"hash": "seeded", "summary": f"summary of {n}"}
-    document_registry._write_summary_cache(cache)
-
-
 def _spy_rewrites(monkeypatch):
     """Count store.dump / _write_index calls (mtime comparison is untrustworthy on Windows'
     coarse file-time clock). The originals still run, so on-disk state stays real."""
@@ -80,7 +71,6 @@ def test_force_rebuild_drops_removed_files_manifest_entry(corpus):
     (corpus / "keep.md").write_text("kept document", encoding="utf-8")
     (corpus / "old.md").write_text("doomed document", encoding="utf-8")
     rag.sync(verbose=False)
-    _seed_summary_cache("keep.md", "old.md")
     assert "### old.md" in document_registry.read_documents_manifest()
 
     (corpus / "old.md").unlink()
@@ -91,9 +81,6 @@ def test_force_rebuild_drops_removed_files_manifest_entry(corpus):
     manifest = document_registry.read_documents_manifest()
     assert "### keep.md" in manifest
     assert "### old.md" not in manifest
-    cache = document_registry._read_summary_cache()
-    assert "old.md" not in cache
-    assert "keep.md" in cache  # only the removed document's summary is dropped
 
 
 def test_wiped_cache_dir_sync_drops_removed_files_manifest_entry(corpus):

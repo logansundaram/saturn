@@ -639,3 +639,84 @@ def show_llm_calls(run, calls, full: bool = False) -> None:
             out_body = f"ERROR: {out['error']}"
         _llm_leaf("out", out_body or "(no output)", "default" if status == "ok" else "red", clip)
         _emit("")
+
+
+# ── context inspector (/trace context) ───────────────────────────────────────────
+# The model-level companion to /trace invoke that shows only the INPUT side — exactly what each
+# local model call was told, message by message, at full fidelity. Where `invoke` answers "what did
+# each call see and say", this answers the privacy question "what did my machine actually send the
+# model" — so it drops the outputs, keeps every input message uncut by default, and labels each with
+# its size. Grouped per node so the per-call context is diffable step to step.
+
+def show_llm_context(run, calls, *, node_filter: str | None = None, preview: bool = False) -> None:
+    """Replay the INPUT messages of a run's LLM calls — the token-for-token record of what the
+    local model was told at each node. `run` is (run_id, query, …); `calls` are the same
+    (seq, ts, node, model, dur, prompt_tokens, output_tokens, input, output, status) rows
+    /trace invoke reads. `node_filter` shows only calls from one node (case-insensitive substring);
+    `preview` clips each message instead of the default full text."""
+    from stores.trace import decode_json
+
+    run_id, query, *_rest = run
+    clip = _LLM_PREVIEW_CHARS if preview else None
+
+    section(f"run #{run_id} · context", "exactly what the model was told, per node")
+    q = " ".join(str(query or "").split()) or "(empty)"
+    if _RICH:
+        qline = Text("  ")
+        qline.append("» ", style=_DIM)
+        qline.append(q, style="default")
+        _console.print(qline)
+    else:
+        print(f"  » {q}")
+
+    shown = calls
+    if node_filter:
+        nf = node_filter.lower()
+        shown = [c for c in calls if nf in str(c[2] or "").lower()]
+
+    if not shown:
+        if node_filter and calls:
+            _emit(f"  (no LLM calls from a node matching {node_filter!r} — "
+                  f"nodes this run: {', '.join(sorted({str(c[2]) for c in calls}))})")
+        else:
+            _emit("  (no LLM calls recorded for this run)")
+        return
+
+    total_in = sum((c[5] or 0) for c in shown)
+    roll = (f"  {len(shown)} call(s) · {_human_tokens(total_in)} tok of context sent"
+            + (f" · node~{node_filter}" if node_filter else ""))
+    _emit(roll if not _RICH else Text(roll, style=_DIM))
+    if not preview:
+        _emit("  (full message text — the model saw exactly this; add nothing, hide nothing)"
+              if not _RICH else Text(
+                  "  (full message text — the model saw exactly this)", style=_FAINT))
+    _emit("")
+
+    for idx, (_seq, _ts, node, model, _dur, ptok, _otok, inp, _outp, _status) in enumerate(shown, 1):
+        msgs = decode_json(inp, [])
+        toks = f" · {_human_tokens(ptok)} tok in" if ptok else ""
+        head = f"{idx}. {node} · {model} · {len(msgs)} msg(s){toks}"
+        if _RICH:
+            h = Text("  ")
+            h.append(f"{idx}. ", style=f"bold {_ACCENT}")
+            h.append(str(node), style="default")
+            h.append(f" · {model} · {len(msgs)} msg(s){toks}", style=_DIM)
+            _console.print(h)
+        else:
+            print(f"  {head}")
+
+        for m in msgs:
+            tag = _LLM_ROLE.get(m.get("role", ""), (m.get("role") or "msg")[:4])
+            body = m.get("content", "")
+            tc = m.get("tool_calls")
+            if tc:
+                names = ", ".join(str(c.get("name")) for c in tc)
+                body = (body + " " if body else "") + f"[tool_calls: {names}]"
+            # Disclose the recording cut (_LLM_MSG_CAP in stores/trace) so a capped message is
+            # never presented as the whole context the model received.
+            if m.get("truncated"):
+                extra = m["truncated"] - len(str(m.get("content", "")))
+                if extra > 0:
+                    body += f"  … (+{extra} chars not recorded)"
+            _llm_leaf(tag, body or "(empty)", _DIM, clip)
+        _emit("")

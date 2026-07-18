@@ -84,6 +84,7 @@ SATURDAY_MVP_PLAN.md
 documentation.md
 repo-overview.md
 production-readiness.md
+product-focus.md
 
 # Generated dev artifacts: benchmark result dumps (benchmarks/*.json) and Mermaid/PNG graph
 # exports (graphs/). diag.log is already covered by *.log above; this catches the rest.

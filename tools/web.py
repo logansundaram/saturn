@@ -3,15 +3,15 @@ Web tools — everything that reaches the live internet.
 
   web_search    — a single web search query.
   web_extract   — fetch + extract the readable content behind a URL.
-  http_request  — one HTTP request to any URL/API; registered `destructive` so the gate shows
-                  the exact method/URL/headers/body before anything is sent. The universal
-                  integration: it talks to every REST API (self-hosted services especially)
-                  without Saturn owning a per-service integration.
 
 (There is deliberately no monolithic `deep_research` tool: multi-source research is the
 plan/execute loop's job — the planner composes web_search + web_extract steps, each visible in
 the plan rail, gated, and traced. A single opaque research call would hide exactly the steps
-this product exists to show; it was removed June 2026 as a scope cut.)
+this product exists to show; it was removed June 2026 as a scope cut. `http_request` — the
+one-call-to-any-REST-API "universal integration" — was CUT 2026-07-16: the MCP client is the
+integration surface now, and it arrives with per-server trust declarations, arg redaction, and
+status/reload that a generic POST-anywhere tool never had. With it gone, the only ways out of
+this machine are a search query, a page fetch, and the MCP servers the user configured.)
 
 API-less by design (2026-07-06 — the Tavily removal)
 ----------------------------------------------------
@@ -29,10 +29,9 @@ carried.
 2026-07-06. `trust/redaction.py` deliberately KEEPS the `tvly-` secret pattern: the redaction
 scanner guards whatever secrets pass through outgoing text, not just ones Saturn uses.)
 
-`web.max_results` and `web.request_timeout` live in `config.yaml`; nothing is hard-coded here.
+`web.max_results` lives in `config.yaml`; nothing is hard-coded here.
 """
 
-import diag
 from trust import egress
 
 import httpx
@@ -86,8 +85,7 @@ def web_search(query: str):
     if blocked:
         return blocked
     # Recorded BEFORE the attempt — the ledger's deliberate fail-toward-recording property
-    # (egress.record docstring; http_request does the same): a call that dies mid-flight
-    # still left the machine.
+    # (egress.record docstring): a call that dies mid-flight still left the machine.
     egress.record("web_search", "duckduckgo.com", query, provider="duckduckgo",
                   n_bytes=len(query or ""))
     return _ddg_search(query, _max_results())
@@ -118,46 +116,3 @@ def web_extract(url: str):
         egress.record("web_extract", egress.host_of(str(u)), str(u), n_bytes=len(str(u)))
         results[u] = _local_extract(u)
     return results if len(results) > 1 else next(iter(results.values()))
-
-
-# Response content-types returned as text; anything else is summarized, not dumped — a binary
-# body would be mojibake in context (and the tool node clamps observations anyway, gotcha #5).
-_TEXTUAL_TYPES = ("text", "json", "xml", "html", "javascript", "urlencoded")
-
-
-@register_tool("destructive", untrusted=True)
-def http_request(url: str, method: str = "GET", headers: dict | None = None,
-                 body: str | None = None):
-    """Send one HTTP request to a URL or API endpoint and return the response (status code,
-    content type, body). Use this to talk to APIs and self-hosted services (REST endpoints,
-    home-lab apps, webhooks) — NOT for ordinary web reading (use web_search/web_extract for
-    that). Every call is approved by the human first, who sees the exact method, URL, headers,
-    and body before anything is sent."""
-    method = (method or "GET").upper()
-    host = egress.host_of(url)
-    blocked = egress.check("http_request", host, f"{method} {url}")
-    if blocked:
-        return blocked
-    egress.record("http_request", host, f"{method} {url}",
-                  n_bytes=len(url or "") + len(body or ""))
-    try:
-        timeout = float(get_config().get("web.request_timeout", 30))
-    except (TypeError, ValueError):
-        timeout = 30.0
-    diag.log(f"http_request : {method} {url}")  # which endpoint, beyond the wrapper's timing line
-    try:
-        resp = httpx.request(
-            method, url,
-            headers=headers or None,
-            content=body if body is not None else None,
-            timeout=timeout,
-            follow_redirects=True,
-        )
-        ctype = resp.headers.get("content-type", "")
-        if not ctype or any(t in ctype for t in _TEXTUAL_TYPES):
-            payload = resp.text
-        else:
-            payload = f"(binary response: {ctype}, {len(resp.content)} bytes)"
-        return {"status": resp.status_code, "content_type": ctype, "body": payload}
-    except httpx.HTTPError as err:
-        return f"http_request failed: {type(err).__name__}: {err}"

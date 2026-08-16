@@ -195,3 +195,26 @@ def test_tool_call_ladder_arms_the_repeat_penalty_after_a_degenerate_text_answer
     assert args == {"expression": "1+1"} and failure is None
     assert "repeat_penalty" not in seen[0]["options"] and seen[1]["options"]["repeat_penalty"] > 1.0
     assert seen[0]["options"]["num_predict"] == serving.num_predict("tool_args")
+
+
+def test_structured_arms_the_repeat_penalty_after_a_degenerate_unparseable_draw(monkeypatch):
+    """The isolate wired the repetition trigger into core.structured too: a looping,
+    unparseable JSON draw is retried with the repeat penalty on the next rung only."""
+    from core import structured as st
+
+    seen = []
+
+    class M:
+        def __init__(self):
+            self.replies = ['{"rectify": ' + "tru" * 20, '{"rectify": false, "reasoning": "ok"}']
+
+        def invoke(self, msgs, **kw):
+            seen.append(kw)
+            return AIMessage(content=self.replies.pop(0))
+
+    monkeypatch.setattr(llms, "get_model", lambda role: M())
+    monkeypatch.setattr(st, "_role_is_ollama", lambda role: True)
+    out = st.structured("judge", [HumanMessage("q")], st.RectifyBool, st.RECTIFY_FORMAT,
+                        st.RECTIFY_SHAPE, default=None)
+    assert out.rectify is False
+    assert "repeat_penalty" not in seen[0]["options"] and seen[1]["options"]["repeat_penalty"] > 1.0

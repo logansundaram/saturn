@@ -306,14 +306,17 @@ def structured(role, messages, schema, fmt, shape, default=None, attempts=3):
     retries, and a safe `default` when nothing parses (None default → raise)."""
     from core.llms import get_model
 
+    from textutil import looks_repetitive
+
     payload = list(messages) + [SystemMessage(content=shape)]
+    repetition = False  # a degenerate draw arms the retry-only repeat penalty for the next rung
     for i in range(attempts):
         temp = _ATTEMPT_TEMPS[min(i, len(_ATTEMPT_TEMPS) - 1)]
         try:
             from core.llms import generate  # the think-rejection fallback rides every call
 
             resp = generate(get_model(role), payload, tag=_model_tag(role),
-                            **_invoke_kwargs(role, fmt, temp))
+                            **_invoke_kwargs(role, fmt, temp, repetition=repetition))
         except Exception as exc:
             diag.log(f"structured[{role}/{schema.__name__}] attempt {i + 1} call failed: {exc}")
             continue
@@ -327,6 +330,7 @@ def structured(role, messages, schema, fmt, shape, default=None, attempts=3):
                 f"structured[{role}/{schema.__name__}] attempt {i + 1} did not parse: "
                 f"{content[:160]!r}"
             )
+            repetition = repetition or looks_repetitive(content)
     if default is not None:
         return default
     raise ValueError(f"{schema.__name__}: no valid JSON after {attempts} attempts")

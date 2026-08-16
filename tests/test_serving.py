@@ -212,7 +212,8 @@ def test_structured_arms_the_repeat_penalty_after_a_degenerate_unparseable_draw(
             seen.append(kw)
             return AIMessage(content=self.replies.pop(0))
 
-    monkeypatch.setattr(llms, "get_model", lambda role: M())
+    model = M()
+    monkeypatch.setattr(llms, "get_model", lambda role: model)
     monkeypatch.setattr(st, "_role_is_ollama", lambda role: True)
     out = st.structured("judge", [HumanMessage("q")], st.RectifyBool, st.RECTIFY_FORMAT,
                         st.RECTIFY_SHAPE, default=None)

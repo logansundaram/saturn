@@ -13,6 +13,8 @@ plumbing that carries the overlay. Nothing here calls an LLM or the network; the
 import math
 from types import SimpleNamespace
 
+import pytest
+
 from core import confidence, provenance
 
 
@@ -449,3 +451,62 @@ def test_shipped_calibration_table_is_well_formed():
         assert 0.0 < rec["enter"] <= rec["exit"] < 1.0, (tag, rec)
         # measured (tokens > 0) — or explicitly INHERITED from a measured sibling, never silent
         assert rec["tokens"] > 0 or rec.get("inherited_from") in table.CALIBRATION, (tag, rec)
+
+
+class TestOverlayResolutionOrder:
+    """pin > user overlay > shipped table > built-in default."""
+
+    @pytest.fixture
+    def bound(self, isolated_paths, monkeypatch):
+        from core import confidence, confidence_store
+
+        confidence_store.store_path().parent.mkdir(parents=True, exist_ok=True)
+        confidence_store._reset_cache()
+        monkeypatch.setattr(confidence, "_synthesizer_model", lambda: "qwen3.8:27b")
+        yield confidence_store
+        confidence_store._reset_cache()
+
+    def _no_pin(self, monkeypatch):
+        from core import confidence
+
+        monkeypatch.setattr(confidence, "_configured_threshold", lambda: None)
+
+    def test_the_shipped_table_is_used_when_there_is_no_overlay(self, bound, monkeypatch):
+        from core import confidence, confidence_calibration
+
+        self._no_pin(monkeypatch)
+        shipped = confidence_calibration.CALIBRATION["qwen3.8:27b"]["enter"]
+        assert confidence.threshold() == pytest.approx(shipped)
+
+    def test_the_overlay_wins_over_the_shipped_table(self, bound, monkeypatch):
+        from core import confidence
+
+        self._no_pin(monkeypatch)
+        bound.write_entry("qwen3.8:27b", 0.41, 0.62, source="manual")
+        assert confidence.threshold() == pytest.approx(0.41)
+        assert confidence.exit_threshold() == pytest.approx(0.62)
+
+    def test_an_explicit_numeric_pin_still_wins_over_the_overlay(self, bound, monkeypatch):
+        from core import confidence
+
+        bound.write_entry("qwen3.8:27b", 0.41, 0.62, source="manual")
+        monkeypatch.setattr(confidence, "_configured_threshold", lambda: 0.11)
+        assert confidence.threshold() == pytest.approx(0.11)
+
+    def test_an_uncalibrated_model_falls_back_to_the_builtin_default(self, monkeypatch,
+                                                                    isolated_paths):
+        from core import confidence, confidence_store
+
+        confidence_store._reset_cache()
+        self._no_pin(monkeypatch)
+        monkeypatch.setattr(confidence, "_synthesizer_model", lambda: "nothing:known")
+        assert confidence.threshold() == pytest.approx(confidence._DEFAULT_THRESHOLD)
+
+    def test_a_garbled_overlay_degrades_to_the_shipped_table(self, bound, monkeypatch):
+        from core import confidence, confidence_calibration
+
+        self._no_pin(monkeypatch)
+        bound.store_path().write_text("{ not json", encoding="utf-8")
+        bound._reset_cache()
+        shipped = confidence_calibration.CALIBRATION["qwen3.8:27b"]["enter"]
+        assert confidence.threshold() == pytest.approx(shipped)

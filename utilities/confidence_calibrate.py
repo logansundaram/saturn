@@ -88,6 +88,7 @@ def main(argv=None) -> int:
     table = dict(current.CALIBRATION)
     prompts = calibration.PROMPTS[: max(1, args.prompts)]
     for tag in models:
+        print(f"calibrating {tag} over {len(prompts)} prompts…", file=sys.stderr)
         try:
             result = calibration.measure(
                 tag, prompts,
@@ -98,11 +99,18 @@ def main(argv=None) -> int:
             )
         except RuntimeError as exc:
             raise SystemExit(str(exc))
+        if result["tokens"] < calibration.MIN_TOKENS:
+            print(f"  too few scored tokens ({result['tokens']}) — no logprobs from the daemon? "
+                  "skipping", file=sys.stderr)
+            continue
         table[tag.lower()] = {
             "enter": result["enter"], "exit": result["exit"],
             "tokens": result["tokens"], "prompts": result["prompts"],
             "at": _dt.date.today().isoformat(),
         }
+        print(f"  {tag}: enter={result['enter']} (p05)  exit={result['exit']} (p10)  "
+              f"over {result['tokens']} content tokens  (p50={result['p50']:.3f})",
+              file=sys.stderr)
     for spec in args.inherit:
         tag, _, src = spec.partition("=")
         rec = table.get(src.lower())

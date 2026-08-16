@@ -54,6 +54,11 @@ PROMPTS: list[str] = [
 ]
 
 
+# Below this many scored content tokens a quantile is noise, not a threshold — the daemon
+# returning no per-token logprobs is the usual cause. Callers skip rather than record.
+MIN_TOKENS = 50
+
+
 def quantile(values: list, q: float) -> float:
     """The q-quantile of `values` (sorted internally). 0.0 for an empty sample."""
     ordered = sorted(values)
@@ -65,10 +70,17 @@ def quantile(values: list, q: float) -> float:
 
 def summarize(ps: list) -> dict:
     """Token probabilities -> the calibrated pair. `enter` = the 5 % point (a run opens under
-    it), `exit` = the 10 % point (an open run extends under it)."""
+    it), `exit` = the 10 % point (an open run extends under it) — CLAMPED to never fall below
+    `enter` (a flat distribution or rounding can otherwise collide the two points; an inverted
+    pair silently fails core/confidence.exit_threshold's sanity guard and falls back to the
+    derived 1.5x default, so a measured model quietly behaves as an uncalibrated one). `p50` is
+    a diagnostic only, for eyeballing whether a model's distribution looks sane."""
+    enter = round(quantile(ps, 0.05), 4)
+    exit_ = round(max(enter, quantile(ps, 0.10)), 4)
     return {
-        "enter": round(quantile(ps, 0.05), 4),
-        "exit": round(quantile(ps, 0.10), 4),
+        "enter": enter,
+        "exit": exit_,
+        "p50": round(quantile(ps, 0.50), 4),
         "tokens": len(ps),
     }
 

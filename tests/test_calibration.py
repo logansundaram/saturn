@@ -35,6 +35,12 @@ class TestSummarize:
         ps = [0.9, 0.1, 0.5, 0.3, 0.7]
         assert calibration.summarize(ps) == calibration.summarize(sorted(ps, reverse=True))
 
+    def test_exit_never_falls_below_enter_on_a_flat_distribution(self):
+        # p05 and p10 collide when every probability is identical — the clamp exists for exactly
+        # this case; an inverted pair silently defeats core/confidence.exit_threshold's guard.
+        out = calibration.summarize([0.4] * 100)
+        assert out["exit"] >= out["enter"]
+
 
 class TestPrompts:
     def test_the_prompt_set_is_non_empty_and_stable(self):

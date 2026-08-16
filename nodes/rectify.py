@@ -55,6 +55,7 @@ from core.plan_context import (
     vetoes_block,
 )
 from core.plan_ops import is_review_retirement
+from nodes.execute import ASK_GATE_PREFIX  # one producer (execute), one parser (branch 4a)
 from core.state import AgentState
 from core.structured import (
     RectifyBool,
@@ -264,6 +265,35 @@ def rectify_node(state: AgentState):
             "the workspace root) with a corrected keyword/pattern (the data may exist under "
             "a different name or token). If that still finds nothing, report it "
             "plainly and do NOT invent.",
+        }
+
+    # 4a. THE ASK GATE'S REDRAFT (transplanted from the engine isolate): `execute` refused an
+    #     `ask_user` step — past this turn's one-question budget, or before the searchable source
+    #     the request itself named had been searched. The refusal is only half a mechanism:
+    #     without a redraft the turn lands with an incident and no answer. Detected off the
+    #     producer's own prefix, never its wording (the DECLINE_TEXT pattern).
+    if (
+        last_done is not None
+        and str(last_done.get("result") or "").startswith(ASK_GATE_PREFIX)
+        and state.get("replans", 0) < 2
+    ):
+        diag.log(f"rectify_node : {time.perf_counter() - start:.4f}s (ask gate -> redraft)")
+        return {
+            "rectify": True,
+            "reasoning": (
+                "A step tried to ASK THE USER a question this turn must not ask. Replace it, "
+                "choosing by what the request actually needs:\n"
+                "- if the request names a source you can look in (my notes/files/documents), "
+                "search it (search_knowledge_base for notes, search_files or find_files for the "
+                "workspace) and answer from what comes back;\n"
+                "- if the question was gathering an input for an action you have NO tool for, "
+                "do not ask it at all — emit a single 'none' step that states plainly which "
+                "part of the request you cannot carry out;\n"
+                "- if a search genuinely returns nothing relevant, emit a single 'none' step "
+                "reporting that it is not there.\n"
+                "Never substitute a different item that happens to be nearby, and never ask the "
+                "user again this turn."
+            ),
         }
 
     # 4b. REQUESTED-TARGET COVERAGE (transplanted from the engine isolate): the request names a

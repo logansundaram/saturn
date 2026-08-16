@@ -115,6 +115,11 @@ to learn, audit, and maintain — none removes a protection.
 
 ### Fixed
 
+- `ask_user` is gated by three deterministic rules before it interrupts you: one question per
+  turn; if your request names something the agent can search itself ("search my notes…") it
+  searches before asking; and a question whose answer no later step could use is reported in the
+  answer instead of stopping the run. A question you asked for in your own words ("ask me
+  which…") always runs. When a question is refused, the plan is redrafted around it.
 - Pressing Esc to review the plan and then typing a steering correction (Esc with text) before
   the next step boundary no longer loses the review: the pause is honored first and the
   correction is applied at the following boundary (several corrections land together, oldest

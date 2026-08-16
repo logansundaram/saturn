@@ -38,6 +38,7 @@ from core.messages import EXECUTE_TOOL_SYS, EXECUTE_REASONING_SYS, WRITE_GATE_SY
 from core.plan_context import (
     SEARCH_TOOLS,
     WRITE_TOOLS,
+    authorization_basis,
     clean,
     exec_context,
     original_request,
@@ -75,6 +76,70 @@ _GATE_UNAVAILABLE = "gate-unavailable (fail-closed)"
 # reader that detects a gate skip (the trust benchmark's fabrication grader) keys off a constant
 # instead of a hand-copied string. Change this and every skip return below together.
 WRITE_GATE_SKIP_PREFIX = "skipped write:"
+
+
+# --- the ask gate (transplanted from the engine isolate, 2026-08-15) ---------------------------
+#
+# Three DETERMINISTIC rules an `ask_user` step faces before a call is generated — none asks
+# whether a question was "necessary" (that is judgment, and the judge is the thing that failed):
+#   1. a budget: the second `ask_user` of a turn does not run;
+#   2. search-first: the REQUEST names a source the engine can look in, nothing has been searched
+#      yet, and the plan's answer is to ask the user (read from the human's words only);
+#   3. no dangling question: no step follows the ask, so its answer feeds nothing — a question
+#      the plan cannot consume belongs in the ANSWER, not in an interrupt.
+# A question the USER asked for in their own words is exempt from 2 and 3 (the interrupting-tool
+# seam). Measured: dev.absence.kb_miss 3/5 -> 5/5.
+#
+# The refusal's STATUS is the mechanism's second half: rules 1 and 2 have something to redraft
+# TOWARD (finish from what is known / search the named source), so they stamp `error` and carry
+# ASK_GATE_PREFIX for rectify's 4a redraft; rule 3 does not — asked to replace an impossible action
+# a small model substitutes a possible one (measured: "Send an email to Petra" came back writing
+# email_to_petra.txt and claiming it sent) — so it takes the guarded posture, `skipped`, and the
+# run reports it. One producer (this prefix), one parser (rectify 4a).
+ASK_GATE_PREFIX = "error: ask_user was not executed:"
+MAX_ASKS_PER_TURN = 1
+
+
+def _ask_gate(state: AgentState, plan: list, step: dict) -> "tuple[str, str] | None":
+    """The ask gate: None = proceed, else `(result_text, status)` for the refused step."""
+    from core.request_intent import invites_a_question, names_searchable_source
+
+    asks = sum(
+        1
+        for ev in state.get("tool_events") or []
+        if isinstance(ev, dict) and ev.get("name") == "ask_user"
+    )
+    if asks >= MAX_ASKS_PER_TURN:
+        return (
+            f"{ASK_GATE_PREFIX} this turn has already put {asks} question(s) to the user, which "
+            "is the limit — the remaining work must be done from what is already known.",
+            "error",
+        )
+    request = authorization_basis(state)
+    invited = invites_a_question(request)
+    searched = any(
+        s.get("intended_tool") in SEARCH_TOOLS and s.get("result") is not None for s in plan or []
+    )
+    # Rule 2 before rule 3 — load-bearing: when the request names a source, "search it" is a
+    # concrete replacement the turn can act on, and a redraft beats ending the run.
+    if names_searchable_source(request) and not searched and not invited:
+        return (
+            f"{ASK_GATE_PREFIX} the request names a source this engine can search for itself, "
+            "and nothing has been searched yet — search it first and ask only if the answer is "
+            "genuinely not there.",
+            "error",
+        )
+    steps = list(plan or [])
+    idx = next((i for i, s in enumerate(steps) if s is step), None)  # identity, not equality
+    follows = steps[idx + 1:] if idx is not None else []
+    if not follows and not invited:
+        return (
+            "skipped ask: no step follows this question, so nothing in the plan can use the "
+            "answer. Say in the ANSWER what you need from the user, or what you cannot do — an "
+            "interrupt whose answer feeds no step costs a round trip and changes nothing.",
+            "skipped",
+        )
+    return None
 
 
 # The stall detector (transplanted from the engine isolate). A second identical call this turn
@@ -328,6 +393,16 @@ def execute_node(state: AgentState):
         updates.update(_metrics(resp))
         diag.log(f"execute_node : {time.perf_counter() - start:.4f}s (reasoning step)")
         return updates
+
+    # An `ask_user` step faces the ask gate BEFORE a call is generated: a question the engine
+    # could have answered for itself, one past this turn's budget, or one nothing can consume.
+    # The gate returns the status too — see `_ask_gate` for why that choice is the mechanism.
+    if tool_name == "ask_user":
+        refused = _ask_gate(state, state_plan, state_plan[idx])
+        if refused is not None:
+            step["result"], step["status"] = refused
+            diag.log(f"execute_node : {time.perf_counter() - start:.4f}s (ask gate: {step['status']})")
+            return updates
 
     # Write/edit steps face the semantic write gate BEFORE a call is generated: a write whose
     # value the gathered results don't actually contain is skipped, not laundered through.

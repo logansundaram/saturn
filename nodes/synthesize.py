@@ -262,6 +262,7 @@ def _stream_first_pass(llm_input, freeze):
     usage = None
     got_chunk = False
     frozen = False
+    seeker = continuation.FreezeSeeker(freeze)
     gen = model.stream(llm_input, **({"logprobs": True} if confidence.enabled() else {}))
     try:
         for chunk in gen:
@@ -275,11 +276,17 @@ def _stream_first_pass(llm_input, freeze):
             if um:
                 usage = um
             text = chunk.content if isinstance(chunk.content, str) else str(chunk.content)
+            # The word-boundary freeze seek (continuation.FreezeSeeker): a freeze request lands
+            # on a word boundary — a whitespace-led chunk closes the word and is NOT appended;
+            # otherwise up to FREEZE_GRACE more chunks may land; a second Esc forces the cut.
+            if text and seeker.before_chunk(buf.get("text", ""), text):
+                frozen = True
+                break
             if text:
                 provenance.extend_model(
                     buf, text, confidence.align_chunk(text, lp) if lp else None
                 )
-            if freeze is not None and freeze.requested():
+            if seeker.after_chunk(buf.get("text", "")):
                 frozen = True  # stop pulling tokens; closing the generator stops the decode
                 break
     finally:
@@ -311,15 +318,19 @@ def _stream_continuation(model_name: str, llm_input, buf: dict, freeze):
     buf = provenance.clone(buf)
     stream = continuation.continue_from(model_name, llm_input, buf.get("text", ""))
     frozen = False
+    seeker = continuation.FreezeSeeker(freeze)  # the same word-boundary seek as the first pass
     try:
         for text in stream:
             lp = stream.last_logprobs  # this chunk's logprobs (see ContinuationStream)
+            if text and seeker.before_chunk(buf.get("text", ""), text):
+                frozen = True  # a whitespace-led chunk closed the word: cut here, unappended
+                break
             provenance.extend_model(
                 buf, text, confidence.align_chunk(text, lp) if lp else None
             )
             if sink is not None:
                 sink(text, lp)
-            if freeze is not None and freeze.requested():
+            if seeker.after_chunk(buf.get("text", "")):
                 frozen = True
                 break
     finally:

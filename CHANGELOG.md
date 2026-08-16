@@ -116,6 +116,10 @@ to learn, audit, and maintain — none removes a protection.
   allowlist should be, a list where the overrides mapping should be) now fails closed like a
   garbled file — strict defaults, recorded at startup, the file kept aside as `.corrupt` —
   instead of being iterated as-is.
+- Interrupt-and-correct: pressing Esc mid-word now lets the streaming answer finish the word
+  before freezing (a few more tokens at most; a chunk that starts the next word is not kept), so
+  the editor opens on a clean boundary and the continuation picks up naturally — press Esc a
+  second time to cut immediately.
 - Interrupt-and-correct: the edited answer prefix is trimmed of trailing spaces/tabs before
   generation resumes (a trailing space is a token boundary the model never produces, so the
   continuation could start awkwardly); newlines are kept and a resume without changes is not

@@ -180,6 +180,16 @@ def _load() -> dict:
         data = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(data, dict):
             raise ValueError(f"expected a JSON mapping, got {type(data).__name__}")
+        # Field SHAPES get the same treatment as a garbled file (transplanted from the gating
+        # isolate): a wrong-typed field is never iterated as-is — a string shell_allow would
+        # turn each character into an allowlist prefix, a list risk_overrides would raise in
+        # the registry — so it fails closed to defaults through the same recorded/renamed path.
+        overrides = data.get("risk_overrides", {})
+        if not isinstance(overrides, dict):
+            raise ValueError("risk_overrides is not a mapping")
+        allow = data.get("shell_allow", [])
+        if not isinstance(allow, list) or not all(isinstance(p, str) for p in allow):
+            raise ValueError("shell_allow is not a list of prefix strings")
     except FileNotFoundError:
         data = {}
     except OSError as exc:

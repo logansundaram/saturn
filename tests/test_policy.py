@@ -336,3 +336,30 @@ def test_grant_shell_prefix_refuses_a_prefix_the_tail_screen_would_never_honor(i
     ok, why = policy.grant_shell_prefix("git log --output=out.txt", "git log --output=out.txt",
                                         dry_run=True)
     assert ok is True
+
+
+def test_wrong_typed_policy_fields_fail_closed(isolated_paths, monkeypatch):
+    """Transplanted from the gating isolate: a wrong-TYPED field is a garbled file. A string
+    `shell_allow` would otherwise iterate as characters into allowlist prefixes (`g` exempting
+    every command starting with g) and a list `risk_overrides` would raise in the registry.
+    Both degrade LOUDLY to strict defaults (recorded, file moved aside), never iterated as-is."""
+    import json
+
+    monkeypatch.setattr(policy, "_LOAD_PROBLEM", None)
+    path = isolated_paths / "database" / "permissions.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"shell_allow": "git status", "risk_overrides": []}),
+                    encoding="utf-8")
+    assert policy.shell_allow() == []
+    assert policy.risk_overrides() == {}
+    assert policy.shell_allowed("g") is None
+    assert policy.approves("run_shell", "destructive", {"command": "git status"}) is False
+    assert policy.load_problem()
+    assert path.with_name(path.name + ".corrupt").exists()
+
+    # A list of non-strings is the same story.
+    monkeypatch.setattr(policy, "_LOAD_PROBLEM", None)
+    path.write_text(json.dumps({"shell_allow": [1, None], "risk_overrides": {}}),
+                    encoding="utf-8")
+    assert policy.shell_allow() == []
+    assert policy.load_problem()

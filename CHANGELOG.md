@@ -103,6 +103,10 @@ to learn, audit, and maintain — none removes a protection.
   general-purpose interpreter (`python`, `npm`, `powershell`, …) is only ever exempt as the exact
   granted command, and non-ASCII text (a lookalike `；`) never passes the automation path.
   Previously `git log --output=<path>` rode in on a `git log` grant.
+- A hand-edited `permissions.json` whose fields have the wrong shape (a string where the
+  allowlist should be, a list where the overrides mapping should be) now fails closed like a
+  garbled file — strict defaults, recorded at startup, the file kept aside as `.corrupt` —
+  instead of being iterated as-is.
 - The approval gate now approves a batch only on an explicit approval; any unrecognized
   resume value rejects (previously any truthy value approved).
 - An answer that came back empty no longer swallows the engine's own disclosures: the

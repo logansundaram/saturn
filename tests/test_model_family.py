@@ -83,3 +83,87 @@ class TestMigrate:
     def test_migrate_always_returns_a_real_class(self):
         for tag in ["gemma4:e4b", "mystery:33b", "junk", "", None]:
             assert mf.migrate(tag) in mf.classes()
+
+
+class TestConfigMigrationSeam:
+    """config.model_for_role is THE migration seam: substitute in memory, record it, never
+    rewrite config.yaml."""
+
+    def _cfg(self, synth="qwen3.8:27b"):
+        from config import Config
+
+        return Config({
+            "active_tier": "t",
+            "tiers": {"t": {"provider": "ollama", "roles": {
+                "planner": synth, "tool_caller": synth, "synthesizer": synth,
+                "utility": synth, "judge": synth,
+            }, "embedder": "qwen3-embedding:8b"}},
+            "capabilities": {},
+        })
+
+    def setup_method(self):
+        import config
+
+        config.clear_migrations()
+
+    def test_family_binding_passes_through_untouched(self):
+        import config
+
+        spec = self._cfg().model_for_role("synthesizer")
+        assert spec.model == "qwen3.8:27b"
+        assert config.migrated_bindings() == {}
+
+    def test_non_family_binding_is_substituted(self):
+        spec = self._cfg("gemma4:e4b").model_for_role("synthesizer")
+        assert spec.model == "qwen3.5:4b"
+        assert spec.provider == "ollama"
+
+    def test_the_substitution_is_recorded(self):
+        import config
+
+        self._cfg("qwen3-coder:30b").model_for_role("synthesizer")
+        assert config.migrated_bindings() == {"qwen3-coder:30b": "qwen3.8:27b"}
+
+    def test_a_non_ollama_binding_is_left_for_the_cloud_shelve_refusal(self):
+        import config
+        from config import Config
+
+        cfg = Config({
+            "active_tier": "t",
+            "tiers": {"t": {"provider": "ollama", "roles": {
+                "synthesizer": {"provider": "anthropic", "model": "claude-sonnet-4"},
+            }}},
+        })
+        spec = cfg.model_for_role("synthesizer")
+        assert spec.provider == "anthropic"
+        assert spec.model == "claude-sonnet-4"
+        assert config.migrated_bindings() == {}
+
+    def test_the_embedder_is_exempt(self):
+        cfg = self._cfg()
+        assert cfg.embedder_model == "qwen3-embedding:8b"
+
+    def test_capability_max_context_window_defaults_to_the_runtime_window(self):
+        from config import Config
+
+        cfg = Config({"capabilities": {"m": {"context_window": 32768}}})
+        cap = cfg.capability_of("m")
+        assert cap.context_window == 32768
+        assert cap.max_context_window == 32768
+
+    def test_capability_max_context_window_is_read_when_present(self):
+        from config import Config
+
+        cfg = Config({"capabilities": {"m": {"context_window": 32768,
+                                             "max_context_window": 262144}}})
+        cap = cfg.capability_of("m")
+        assert cap.context_window == 32768        # what num_ctx_for returns — unchanged
+        assert cap.max_context_window == 262144   # display only
+
+    def test_num_ctx_for_still_returns_the_runtime_window_not_the_max(self):
+        from config import Config
+
+        cfg = Config({"runtime": {"num_ctx": None},
+                      "capabilities": {"m": {"context_window": 32768,
+                                             "max_context_window": 262144}}})
+        assert cfg.num_ctx_for("m") == 32768

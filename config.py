@@ -28,10 +28,28 @@ from typing import Any
 
 import yaml
 
+from core import model_family  # stdlib-only leaf: importing it keeps config's no-cycle property
+
 # Risk tiers, ordered low -> high. Shared with the approval gate (registry.risk_of returns
 # one of these strings). A tool runs without prompting iff its tier <= the configured
 # `runtime.auto_approve` tier.
 RISK_ORDER = ["read_only", "side_effecting", "destructive"]
+
+# Non-family chat bindings substituted THIS SESSION: original id -> replacement id. Populated by
+# model_for_role, read by llms.check_models and /models so no readout claims the file's value is
+# what is running. In-memory only — config.yaml is NEVER rewritten by the migration path
+# (rebinding with /models tier <class> is the permanent fix).
+_MIGRATIONS: dict[str, str] = {}
+
+
+def migrated_bindings() -> dict:
+    """A copy of this session's family substitutions (original id -> replacement id)."""
+    return dict(_MIGRATIONS)
+
+
+def clear_migrations() -> None:
+    """Forget the recorded substitutions (a config reload, or a test)."""
+    _MIGRATIONS.clear()
 
 
 def _resolve_config_path() -> Path:
@@ -115,6 +133,11 @@ class Capability:
     supports_structured_output: bool = True
     context_window: int = 8192
     supports_vision: bool = False
+    # The model's ARCHITECTURAL maximum — display only (the /models metrics columns). Kept
+    # separate from context_window on purpose: context_window is what num_ctx_for hands
+    # ChatOllama, and every qwen3.x tag reports a 262144 maximum that would exhaust VRAM on any
+    # consumer card if it were requested per call. Never collapse these two fields.
+    max_context_window: int = 0
 
 
 class Config:
@@ -155,6 +178,21 @@ class Config:
             )
         return tier
 
+    def _enforce_family(self, spec: "ModelSpec") -> "ModelSpec":
+        """Substitute a non-family CHAT binding with the ladder tag for its nearest size class,
+        and record the substitution. Saturday.ai supports one family (core/model_family) because
+        confidence coloring is calibrated per model; a binding outside it would be marked against
+        another model's numbers.
+
+        A non-ollama binding is left alone — the cloud-model shelve (2026-07-03) owns that
+        refusal, and quietly rewriting it would hide the real problem. The embedder never reaches
+        here (embedder_model is its own accessor)."""
+        if spec.provider != "ollama" or model_family.in_family(spec.model):
+            return spec
+        replacement = model_family.tag_for(model_family.migrate(spec.model))
+        _MIGRATIONS[spec.model] = replacement
+        return ModelSpec(provider=spec.provider, model=replacement)
+
     def model_for_role(self, role: str) -> ModelSpec:
         """Resolve a role to a concrete (provider, model). Falls back to the `utility`
         role, then to the first role defined, so a missing role never crashes the graph."""
@@ -174,8 +212,12 @@ class Config:
                     f"role '{role}' on tier '{self.active_tier}' is a mapping without a "
                     f"'model' key: {entry!r}"
                 )
-            return ModelSpec(provider=entry.get("provider", default_provider), model=model)
-        return ModelSpec(provider=default_provider, model=str(entry))
+            return self._enforce_family(
+                ModelSpec(provider=entry.get("provider", default_provider), model=model)
+            )
+        return self._enforce_family(
+            ModelSpec(provider=default_provider, model=str(entry))
+        )
 
     @property
     def embedder_model(self) -> str:
@@ -196,11 +238,13 @@ class Config:
         spec = caps.get(model)
         if not spec:
             return Capability()  # conservative defaults
+        cw = spec.get("context_window", 8192)
         return Capability(
             supports_tools=spec.get("supports_tools", True),
             supports_structured_output=spec.get("supports_structured_output", True),
-            context_window=spec.get("context_window", 8192),
+            context_window=cw,
             supports_vision=spec.get("supports_vision", False),
+            max_context_window=spec.get("max_context_window", cw),
         )
 
     # --- runtime knobs -----------------------------------------------------
@@ -407,5 +451,6 @@ def get_config() -> Config:
 def reload() -> Config:
     """Re-read config.yaml from disk (used by /config reload)."""
     global _config
+    clear_migrations()  # a re-read may have fixed the binding — don't let a stale ledger survive
     _config = _load()
     return _config

@@ -31,6 +31,72 @@ def names_searchable_source(request) -> bool:
     return bool(_SEARCHABLE_RE.search(str(request or "").lower()))
 
 
+# ── "the request wants a number that has to be DERIVED" ────────────────────────────────────
+#
+# Motivating failure: "Read ledger_alpha.csv and ledger_beta.csv and tell me which one has the
+# larger total" repeatedly produced two reads and nothing else, so the totals were computed in
+# the ANSWER'S PROSE — untraceable by construction. Vocabulary is restricted to AGGREGATION —
+# words that name a value the `calculate` tool produces. Counting words ("how many", "count")
+# are deliberately absent: "how many vessels are listed" is answered by reading a file.
+
+_AGGREGATION_TERMS = (
+    "total", "totals", "totalled", "totaled", "totalling", "totaling",
+    "sum", "sums", "summed", "subtotal", "grand total",
+    "add up", "adds up", "added up", "adding up",
+    "average", "averages", "averaged",
+    "product of", "multiply", "multiplied",
+    "percentage", "percent",
+    "difference between",
+    "compute", "computes", "computed", "computing",
+    "calculate", "calculates", "calculated", "calculating", "calculator",
+    "work out", "works out", "worked out",
+)
+_AGGREGATION_RE = re.compile(
+    r"\b(?:" + "|".join(t.replace(" ", r"\s+") for t in _AGGREGATION_TERMS) + r")\b"
+)
+
+# A bare arithmetic expression, e.g. "847 * 293" or "(55 + 21) * 0.4". `-` and `x` are only
+# honored with spaces on BOTH sides: `2026-07-30` and `q3-2026` are not subtractions, and
+# `1920x1080` is not a product.
+_EXPRESSION_RE = re.compile(r"\d\s*[+*/×]\s*\d|\d\s+[-x]\s+\d")
+
+
+def wants_derived_number(request) -> bool:
+    """Whether the request asks for a figure that must be COMPUTED rather than read."""
+    text = str(request or "").lower()
+    return bool(_AGGREGATION_RE.search(text) or _EXPRESSION_RE.search(text))
+
+
+def states_an_expression(request) -> bool:
+    """Whether the request contains the arithmetic itself ("847 * 293") — computable with nothing
+    gathered, unlike "the difference between a stack and a queue" (an aggregation word in English)."""
+    return bool(_EXPRESSION_RE.search(str(request or "").lower()))
+
+
+# ── "the request defers one of its own targets to a result" ────────────────────────────────
+#
+# "the file it names" is the user telling the engine, in their own words, that one of this turn's
+# targets will come from an earlier result — both the detection signal and the authorization for
+# the hop. A file's contents can never activate this: the marker has to be in the human's
+# sentence. The referent must be a FILE-LIKE object ("the three amounts it lists" is not a hop).
+
+_DEFERRED_NOUN = r"(?:file|document|doc|page|url|link|report|sheet|path|note|card|attachment)"
+_DEFERRED_VERB = (
+    r"(?:names|named|points?\s+(?:at|to)|pointed\s+(?:at|to)|refers?\s+to|references|"
+    r"mentions|lists|specifies|identifies)"
+)
+_DEFERRED_RE = re.compile(
+    rf"\b(?:the|whatever|whichever)\s+{_DEFERRED_NOUN}\s+"
+    rf"(?:it|that|which|they|this)?\s*{_DEFERRED_VERB}\b"
+    rf"|\b{_DEFERRED_NOUN}\s+named\s+in\b"
+)
+
+
+def names_deferred_reference(request) -> bool:
+    """Whether the request itself defers a target to something an earlier step will produce."""
+    return bool(_DEFERRED_RE.search(str(request or "").lower()))
+
+
 # ── "the user asked to be asked" ───────────────────────────────────────────────────────────
 #
 # A question the user explicitly requested is the task, not a routing failure: "Ask me which

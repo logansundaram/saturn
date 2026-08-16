@@ -115,6 +115,12 @@ to learn, audit, and maintain — none removes a protection.
 
 ### Fixed
 
+- Two more gaps between your request and the plan are closed deterministically once every step
+  has run cleanly: a request for a total/average/difference/comparison that no step computed now
+  gets its calculate step(s) instead of arithmetic done in the answer's prose, and a request that
+  defers a target to an earlier result ("read the file it names") that the plan never followed
+  gets the second hop. Both read your words only, stay quiet on an absence or after you edited
+  the plan at review, and are bounded.
 - **Removing a step at plan review now revokes its EFFECT, not just its wording.** The target
   of a state-changing step you drop or retire at the review editor (the file it names, or every
   write for a step that names none) is refused for the rest of the turn — checked on the step's

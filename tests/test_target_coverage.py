@@ -130,8 +130,8 @@ def test_a_covered_request_falls_through_to_the_judge(monkeypatch):
 
     monkeypatch.setattr(rc, "structured",
                         lambda *a, **k: stm.RectifyBool(rectify=False, reasoning="fine"))
-    state = _state("Save the total to depot/alpha_total.txt",
-                   [_step(1, "Write the total to depot/alpha_total.txt", "write_file", "ok", "done")])
+    state = _state("Save the summary to depot/alpha_total.txt",
+                   [_step(1, "Write the summary to depot/alpha_total.txt", "write_file", "ok", "done")])
     assert rc.rectify_node(state)["rectify"] is False
 
 

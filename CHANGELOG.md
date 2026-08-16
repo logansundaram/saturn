@@ -9,6 +9,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
 
 ### Added
 
+- Interrupt-and-correct (Esc to freeze and edit the streaming answer) now supports the
+  qwen3.8 family (`qwen3.8:27b` verified with the splice-and-continue contract), alongside
+  qwen3.5/3.6 and gemma4.
 - **Always-allow grants now have a lifetime.** Answering `a` at the approval gate grants for
   the rest of the current turn by default (`runtime.grant_scope: task`): the tool's tier drop
   and any shell-prefix grant expire at the turn boundary, and the turn's closing note says what

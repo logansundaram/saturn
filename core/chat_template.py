@@ -83,7 +83,7 @@ class ChatTemplate:
 TEMPLATES: tuple[ChatTemplate, ...] = (
     ChatTemplate(
         family="qwen3.x",
-        prefixes=("qwen3.5", "qwen3.6"),
+        prefixes=("qwen3.5", "qwen3.6", "qwen3.8"),  # qwen3.8: contract green 2026-08-16
         turn_open="<|im_start|>{role}\n",
         turn_close="<|im_end|>\n",
         # Empty think block = the template's enable_thinking=false generation opener; the visible

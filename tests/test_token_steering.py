@@ -478,3 +478,10 @@ def test_first_pass_freeze_at_a_boundary_is_immediate(monkeypatch):
     monkeypatch.setattr(syn, "get_model", lambda role: types.SimpleNamespace(stream=stream))
     buf, frozen, _m, _u = syn._stream_first_pass([], c)
     assert frozen and buf["text"] == "The quick "
+
+
+def test_qwen38_resolves_to_the_qwen3x_family():
+    """qwen3.8 shipped 2026-08 and passed utilities/continuation_contract.py (the one definition
+    of "supported") on 2026-08-16 — same ChatML shape as qwen3.5/3.6."""
+    assert chat_template.template_for("qwen3.8:27b").family == "qwen3.x"
+    assert chat_template.supported("qwen3.8:27b")

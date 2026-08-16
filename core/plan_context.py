@@ -12,6 +12,8 @@ needs_resolution} — see core/state.py) so they are trivially testable offline.
 
 from __future__ import annotations
 
+import re
+
 from config import get_config
 from textutil import head_tail
 
@@ -35,6 +37,43 @@ SEARCH_TOOLS = {"search_knowledge_base", "search_files", "find_files", "web_sear
 def original_request(state) -> str:
     """The user's request as the engine's prompts see it — the current turn's query."""
     return str(state.get("current_query") or "")
+
+
+# --- targets: what a request / a step is ABOUT (transplanted from the engine isolate) ---------
+#
+# THE one notion of a workspace target for the engine's deterministic checks (rectify's coverage
+# branch; the plan-review revocation lock). Deliberately syntactic: a slash-joined path, or a
+# name with a file extension — never a stat, never a guess.
+_PATH_RE = re.compile(r"[A-Za-z0-9_.\-]*(?:/[A-Za-z0-9_.\-]+)+|[A-Za-z0-9_\-]+\.[A-Za-z]{2,8}")
+
+
+def target_tokens(text) -> set:
+    """The workspace paths named anywhere in `text`, lowercased."""
+    return {m.group(0).strip(".").lower() for m in _PATH_RE.finditer(str(text or ""))}
+
+
+def authorization_basis(state) -> str:
+    """What the HUMAN typed this turn — the request plus every mid-turn steering correction
+    (plan_gate records a steer as a HumanMessage: merged onto the turn's message or standalone
+    with STEER_PREFIX). The one text the deterministic completeness/authorization checks read
+    targets from: reading them from RESULTS would let text inside a file or a web page
+    manufacture work the engine then demands of itself — the injection hazard the engine exists
+    to refuse. A steer carries no such hazard, and reading the request alone would let a target
+    the user named mid-turn never register."""
+    from core.state import is_turn_start  # lazy: core.state imports nothing from here
+
+    parts = [original_request(state)]
+    this_turn: list = []
+    for m in reversed(state.get("messages") or []):
+        this_turn.append(m)
+        if is_turn_start(m):
+            break
+    for m in reversed(this_turn):
+        if getattr(m, "type", "") == "human":
+            text = str(getattr(m, "content", "") or "")
+            if text and text != parts[0]:
+                parts.append(text)
+    return "\n".join(parts)
 
 
 def vetoes_block(state) -> str:

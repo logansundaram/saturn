@@ -47,9 +47,11 @@ from core.messages import RECTIFY_SYS, RESOLVE_CHECK_SYS
 from core.plan_context import (
     SEARCH_TOOLS,
     WRITE_TOOLS,
+    authorization_basis,
     original_request,
     plan_txt,
     results_block,
+    target_tokens,
     vetoes_block,
 )
 from core.plan_ops import is_review_retirement
@@ -119,6 +121,26 @@ def _cancel_remaining(plan: list[dict], text: str) -> list[dict]:
             s["result"] = text
             s["status"] = "cancelled"
     return plan
+
+
+def uncovered_request_targets(state, plan: list) -> set:
+    """Workspace paths the USER'S words name that no step in the plan has acted on — the pure
+    classifier behind branch 4b. A step "acts on" a path when its label mentions it (the same
+    target extraction the revocation lock uses — one notion of a step's target). Narrow in three
+    ways, each a correctness property: targets come from `authorization_basis` (the human's
+    words, never results); a path in a plan-review veto is the user's decision, not a gap; a path
+    a completed step mentions is covered whatever its outcome (a read that returned "not found"
+    HAS acted on it — report the absence, don't hunt for a substitute)."""
+    requested = target_tokens(authorization_basis(state))
+    if not requested:
+        return set()
+    covered: set = set()
+    for step in plan or []:
+        covered |= target_tokens(step.get("label"))
+    vetoed: set = set()
+    for label in state.get("plan_vetoes") or []:
+        vetoed |= target_tokens(label)
+    return requested - covered - vetoed
 
 
 def rectify_node(state: AgentState):
@@ -243,6 +265,29 @@ def rectify_node(state: AgentState):
             "a different name or token). If that still finds nothing, report it "
             "plainly and do NOT invent.",
         }
+
+    # 4b. REQUESTED-TARGET COVERAGE (transplanted from the engine isolate): the request names a
+    #     workspace path, every step has run, and no step's label ever mentioned it — the plan
+    #     under-decomposed the request (measured: dev.horizon.write 0/5 -> 5/5). Deterministic —
+    #     no judge — and bounded by the replan budget. Injection-safe by construction: targets are
+    #     read from what the HUMAN typed (plan_context.authorization_basis), never from results,
+    #     so a path inside a file's contents or a web page can never become work the engine
+    #     demands of itself. A path the user vetoed at plan review is removed work, not missing.
+    if not pending and state.get("replans", 0) < 2:
+        missing = uncovered_request_targets(state, plan)
+        if missing:
+            names = ", ".join(sorted(missing))
+            diag.log(f"rectify_node : {time.perf_counter() - start:.4f}s (uncovered: {names})")
+            return {
+                "rectify": True,
+                "reasoning": (
+                    f"The request names {names}, but no step has acted on it and every step has "
+                    "already run. Add the remaining concrete steps needed to finish the "
+                    "request, using the results gathered so far and the EXACT path(s) above — "
+                    "including any calculation the request needs as its own calculate step, and "
+                    "any write as its own final step. Do not repeat completed steps."
+                ),
+            }
 
     # 5. The leftover ambiguity: the judge decides (incl. the groundedness rule — a
     #    current/external-facts request that never searched the web gets rectify=true). The

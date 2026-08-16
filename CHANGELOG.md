@@ -115,6 +115,11 @@ to learn, audit, and maintain — none removes a protection.
 
 ### Fixed
 
+- When a request names a workspace file that no plan step ever acted on and every step has
+  already run, the engine now adds the missing steps deterministically (bounded by the replan
+  budget) instead of answering with the work half done. Only paths YOU named count — text inside
+  a file or web page can never make the engine demand work of itself — and a step you removed at
+  plan review is honored, not re-added.
 - `calculate` can no longer be used to launder a made-up number into a "computed" result: an
   expression that is a bare value (`551`) is refused with a hint to write the actual arithmetic
   over gathered values, and only lands as an incident when every retry does the same.

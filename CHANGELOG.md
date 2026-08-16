@@ -95,6 +95,15 @@ to learn, audit, and maintain — none removes a protection.
   engine can replan around, instead of silently degrading into the model answering the step
   from its own knowledge.
 
+### Added
+
+- **Shell environment scrubbing.** `run_shell` children no longer inherit secret-shaped
+  environment variables (`*API_KEY*`, `*SECRET*`, `*TOKEN*`, `*PASSWORD*`, `*CREDENTIAL*`,
+  `ANTHROPIC*`, `OPENAI*`, `AWS_*`, `GITHUB_*` by default) — a command can read a secret straight
+  out of its own environment, and the workspace sandbox does nothing about that. The fragment
+  list is `shell.env_scrub` in config.yaml; emptying it is a trust setting (session-only unless
+  `--save`).
+
 ### Fixed
 
 - `/policy allow` prefix grants (and the gate's always-allow `a`) now screen the arguments

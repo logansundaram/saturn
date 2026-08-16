@@ -42,6 +42,32 @@ from tools.toolspec import register_tool
 _DEFAULT_TIMEOUT = 60
 
 
+# Env-name fragments scrubbed from a shell command's environment (config `shell.env_scrub`
+# overrides; substring, case-insensitive). A command can read a secret straight out of its own
+# environment — the workspace cwd does nothing about that (transplanted from the gating
+# isolate's sandbox.scrubbed_env; the sandbox itself stayed behind, this slice is dependency-free).
+_DEFAULT_ENV_SCRUB = ("API_KEY", "SECRET", "TOKEN", "PASSWORD", "CREDENTIAL",
+                      "ANTHROPIC", "OPENAI", "AWS_", "GITHUB_")
+
+
+def scrubbed_env() -> dict:
+    """The environment a shell command sees: the parent's, minus every variable whose NAME
+    contains a `shell.env_scrub` fragment. An empty list disables scrubbing (an explicit,
+    session-only-unless-saved trust choice); a malformed value falls back to the built-in
+    default (fail toward scrubbing). PATH/SystemRoot and other plain variables survive."""
+    raw = get_config().get("shell.env_scrub", None)
+    if raw is None:
+        fragments = list(_DEFAULT_ENV_SCRUB)
+    elif isinstance(raw, (list, tuple)):
+        fragments = [str(f) for f in raw if str(f).strip()]
+    else:
+        fragments = list(_DEFAULT_ENV_SCRUB)
+    frags = [f.upper() for f in fragments]
+    if not frags:
+        return dict(os.environ)
+    return {k: v for k, v in os.environ.items() if not any(f in k.upper() for f in frags)}
+
+
 def _timeout() -> "float | None":
     """Max seconds to let a command run before it is terminated (config `shell.timeout`). None
     disables the timeout (a value <= 0); an invalid value falls back to `_DEFAULT_TIMEOUT`."""
@@ -122,6 +148,7 @@ def run_shell(command: str):
             # rather than letting a UnicodeDecodeError crash the turn.
             encoding="utf-8",
             errors="replace",
+            env=scrubbed_env(),
         )
         if sys.platform != "win32":
             # Own session = own process group, so a timeout can kill the whole tree (_kill_tree).

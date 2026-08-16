@@ -166,6 +166,10 @@ mcp:
 # ---------------------------------------------------------------------------
 shell:
   timeout: 60
+  # Environment-variable NAME fragments removed from a run_shell child's environment (substring,
+  # case-insensitive) — a command can read a secret straight out of its own env. An empty list
+  # disables (a trust setting: session-only unless --save).
+  env_scrub: [API_KEY, SECRET, TOKEN, PASSWORD, CREDENTIAL, ANTHROPIC, OPENAI, AWS_, GITHUB_]
 
 # ---------------------------------------------------------------------------
 # Hardware-tier presets. Each maps the agent's roles -> concrete models.

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from commands._framework import command, _print
 from commands._utils import _ROLES, _resync_rag_after_model_change, is_list_verb, split_persist_flags
+from core import model_family
 from tools.registry import tool as TOOLS, risk_of
 
 
@@ -71,6 +72,18 @@ def _bind(cfg, target: str, model: str, *, session: bool = False) -> None:
     simply overwritten — cloud support is shelved (2026-07-03), and rebinding is how a stale
     mapping gets fixed."""
     from core.llms import reset_models
+
+    # The family gate (2026-08-16). The EMBEDDER is exempt — it is not a chat model, has no
+    # raw-mode template and produces no logprobs, so no calibration claim rides on it.
+    if target != "embedder" and not model_family.in_family(model):
+        _print(f"  {model} is outside the supported model family.")
+        _print("  Saturday.ai binds qwen3.5 / qwen3.6 / qwen3.8 only — confidence coloring is")
+        _print("  calibrated per model, so a red run is only a true claim for a measured one.")
+        _print("  supported:")
+        for key, tag in model_family.SIZE_LADDER:
+            _print(f"    {key:<6} {tag}")
+        _print("  switch the whole tier with `/models tier <size>`.")
+        return
 
     tag = " (session only)" if session else ""
 
@@ -133,6 +146,46 @@ def _models_picker(ctx, cfg, local, *, session: bool = False) -> None:
         _print(f"  unknown target: {target} (choose one of {', '.join(_BIND_TARGETS)})")
         return
     _bind(cfg, target, choice.name, session=session)
+
+
+# Parameter counts as `ollama show` reports them — display only, so the listing reads the same
+# whether or not the tag is pulled locally. (Defined before _tier_rows, which reads it.)
+_PARAMS_BY_CLASS = {
+    "800m": "873M", "2b": "2.3B", "4b": "4.7B", "9b": "9.7B", "27b": "27.3B", "35b": "36.0B",
+}
+
+
+def _tier_rows(active: "str | None" = None) -> list:
+    """One row per size-class tier, carrying the metrics the listing shows instead of a
+    nickname: bound model, parameters, runtime + architectural context window, and whether the
+    model has a confidence calibration behind it."""
+    from config import get_config
+    from core import confidence
+
+    cfg = get_config()
+    if active is None:
+        active = cfg.active_tier
+    rows = []
+    for key, tag in model_family.SIZE_LADDER:
+        cap = cfg.capability_of(tag)
+        rows.append({
+            "key": key,
+            "model": tag,
+            "params": _PARAMS_BY_CLASS.get(key, ""),
+            "ctx": cap.context_window,
+            "max_ctx": cap.max_context_window,
+            "calibrated": confidence.calibration_for(tag) is not None,
+            "active": key == active,
+        })
+    return rows
+
+
+def _config_migrations() -> dict:
+    """This session's family substitutions, so the listing never claims the file's value is
+    what is running."""
+    import config as _config
+
+    return _config.migrated_bindings()
 
 
 @command(
@@ -200,10 +253,23 @@ def _models(ctx, args):
 
     if sub == "tier":
         if len(args) < 2:
-            _print("  tiers (switch with /models tier <name>):")
-            for name in cfg.get("tiers", {}):
-                mark = "*" if name == cfg.active_tier else " "
-                _print(f"   {mark} {name}")
+            from tui import ui
+
+            ui.section("tiers", "switch with /models tier <size>")
+            rows = [
+                (
+                    ("* " if r["active"] else "  ") + r["key"],
+                    r["model"],
+                    (r["params"], "dim"),
+                    (f"{r['ctx']} / {r['max_ctx']}", "dim"),
+                    ("calibrated", "green") if r["calibrated"] else ("uncalibrated", "yellow"),
+                )
+                for r in _tier_rows()
+            ]
+            ui.table(rows)
+            migrated = _config_migrations()
+            for original, replacement in migrated.items():
+                _print(f"  note: '{original}' in config.yaml is running as '{replacement}'.")
             return
         tier = args[1]
         # Dict membership, not the dotted cfg.get("tiers.<tier>") path lookup — a tier key

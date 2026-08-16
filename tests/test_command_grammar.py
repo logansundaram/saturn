@@ -137,8 +137,8 @@ def test_models_role_save_persists_the_dotted_key(ctx, capsys, monkeypatch, mode
     monkeypatch.setitem(roles, "planner", roles["planner"])
     key = f"tiers.{cfg.active_tier}.roles.planner"
 
-    _models(ctx, ["planner", "test-model", "--save"])
-    assert cfg.get(key) == "test-model"
+    _models(ctx, ["planner", "qwen3.5:9b", "--save"])
+    assert cfg.get(key) == "qwen3.5:9b"
     assert recording_persist == [key]
     assert "(session only)" not in _out(capsys)
 
@@ -153,8 +153,8 @@ def test_models_save_flag_case_insensitive_any_position(ctx, capsys, monkeypatch
     monkeypatch.setitem(roles, "planner", roles["planner"])
     key = f"tiers.{cfg.active_tier}.roles.planner"
 
-    _models(ctx, ["planner", "-S", "test-model"])
-    assert cfg.get(key) == "test-model"
+    _models(ctx, ["planner", "-S", "qwen3.5:9b"])
+    assert cfg.get(key) == "qwen3.5:9b"
     assert recording_persist == [key]
 
 
@@ -168,8 +168,8 @@ def test_models_role_persists_by_default(ctx, capsys, monkeypatch, models_env,
     monkeypatch.setitem(roles, "planner", roles["planner"])
     key = f"tiers.{cfg.active_tier}.roles.planner"
 
-    _models(ctx, ["planner", "test-model"])
-    assert cfg.get(key) == "test-model"
+    _models(ctx, ["planner", "qwen3.5:9b"])
+    assert cfg.get(key) == "qwen3.5:9b"
     assert recording_persist == [key]
     assert "(session only)" not in _out(capsys)
 
@@ -183,8 +183,8 @@ def test_models_role_session_flag_stays_session_only(ctx, capsys, monkeypatch, m
     roles = cfg._data["tiers"][cfg.active_tier]["roles"]
     monkeypatch.setitem(roles, "planner", roles["planner"])
 
-    _models(ctx, ["planner", "test-model", "--session"])
-    assert cfg.get(f"tiers.{cfg.active_tier}.roles.planner") == "test-model"
+    _models(ctx, ["planner", "qwen3.5:9b", "--session"])
+    assert cfg.get(f"tiers.{cfg.active_tier}.roles.planner") == "qwen3.5:9b"
     assert recording_persist == []
     out = _out(capsys)
     assert "(session only)" in out and "--session" in out  # the note points at the flag
@@ -199,10 +199,10 @@ def test_models_all_save_persists_every_role_key(ctx, capsys, monkeypatch, model
     for role in _ROLES:
         monkeypatch.setitem(roles, role, roles[role])
 
-    _models(ctx, ["all", "test-model", "--save"])
+    _models(ctx, ["all", "qwen3.5:9b", "--save"])
     assert recording_persist == [f"tiers.{cfg.active_tier}.roles.{r}" for r in _ROLES]
     for role in _ROLES:
-        assert cfg.get(f"tiers.{cfg.active_tier}.roles.{role}") == "test-model"
+        assert cfg.get(f"tiers.{cfg.active_tier}.roles.{role}") == "qwen3.5:9b"
 
 
 def test_models_embedder_save_persists_and_still_resyncs(ctx, capsys, monkeypatch, models_env,
@@ -377,8 +377,8 @@ def test_models_scalar_bind_replaces_a_legacy_cloud_mapping(ctx, capsys, monkeyp
     roles = cfg._data["tiers"][cfg.active_tier]["roles"]
     monkeypatch.setitem(roles, "planner", {"provider": "anthropic", "model": "claude-x"})
 
-    _models(ctx, ["planner", "local-x"])
-    assert cfg.get(f"tiers.{cfg.active_tier}.roles.planner") == "local-x"
+    _models(ctx, ["planner", "qwen3.5:9b"])
+    assert cfg.get(f"tiers.{cfg.active_tier}.roles.planner") == "qwen3.5:9b"
 
 
 # --- /config rides the shared persist grammar (split_persist_flags) ---------------------------

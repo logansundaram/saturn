@@ -83,12 +83,14 @@ def show_context(window: int, used: int, source: str, per_role: dict[str, int]) 
 
 # ── model picker / listing ───────────────────────────────────────────────────────
 def show_models(models, bindings: dict, active_tier: str, embedder: str,
-                *, numbered: bool = False) -> None:
+                *, numbered: bool = False, meta: "dict | None" = None) -> None:
     """Render the locally-installed (Ollama) models plus the live role bindings, in the
     trace-rail style. `models` is a list of `llms.LocalModel`; `bindings` maps role -> model id;
     `embedder` is the active embedder tag. With `numbered=True` each installed row gets a 1-based
     index (the selector the interactive picker reads). A `◂ <roles>` tail marks what each model
-    currently drives, so the bindings are visible inline."""
+    currently drives, so the bindings are visible inline. `meta` optionally maps a model id to
+    `{"ctx": int, "max_ctx": int, "calibrated": bool}`, appending its runtime/max context to the
+    detail column when present."""
     # role(s) / embedder each installed tag currently serves -> shown as a tail marker.
     serves: dict[str, list[str]] = {}
     for role, mid in (bindings or {}).items():
@@ -117,7 +119,11 @@ def show_models(models, bindings: dict, active_tier: str, embedder: str,
         _emit("  (no local models — is the Ollama daemon running? `ollama list`)")
     else:
         for i, m in enumerate(models, start=1):
-            meta = " ".join(p for p in (m.parameter_size, m.quantization) if p) or "·"
+            info = meta.get(m.name) if meta else None
+            bits = [p for p in (m.parameter_size, m.quantization) if p]
+            if info:
+                bits.append(f"{info['ctx']}/{info['max_ctx']}")
+            detail = " ".join(bits) or "·"
             tail = _tail_for(m.name)
             idx = f"{i:>2}  " if numbered else ""
             if _RICH:
@@ -126,7 +132,7 @@ def show_models(models, bindings: dict, active_tier: str, embedder: str,
                     line.append(f"{i:>2}  ", style=_ACCENT)
                 line.append(f"{m.name:<26}", style="default")
                 line.append(f"{m.size_h:>7}  ", style=_DIM)
-                line.append(f"{meta:<14}", style=_DIM)
+                line.append(f"{detail:<26}", style=_DIM)
                 if m.is_embedding:
                     line.append("[embed] ", style="yellow")
                 if tail:
@@ -135,7 +141,7 @@ def show_models(models, bindings: dict, active_tier: str, embedder: str,
             else:
                 emb = "[embed] " if m.is_embedding else ""
                 bound = ("◂ " + tail) if tail else ""
-                print(f"  {_RAIL_GLYPH} {idx}{m.name:<26}{m.size_h:>7}  {meta:<14}{emb}{bound}")
+                print(f"  {_RAIL_GLYPH} {idx}{m.name:<26}{m.size_h:>7}  {detail:<26}{emb}{bound}")
 
     # Role bindings summary — the full role list, even for roles whose model isn't pulled locally
     # (a bound tag that hasn't been `ollama pull`ed won't appear in the installed list above).

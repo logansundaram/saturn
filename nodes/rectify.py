@@ -48,6 +48,7 @@ from core.plan_context import (
     SEARCH_TOOLS,
     WRITE_TOOLS,
     authorization_basis,
+    is_revoked,
     original_request,
     plan_txt,
     results_block,
@@ -141,7 +142,10 @@ def uncovered_request_targets(state, plan: list) -> set:
     vetoed: set = set()
     for label in state.get("plan_vetoes") or []:
         vetoed |= target_tokens(label)
-    return requested - covered - vetoed
+    revoked = state.get("revoked_writes") or []
+    # A revoked target is removed work, not missing work — treating it as a gap would have
+    # rectify fight the revocation lock.
+    return {t for t in requested - covered - vetoed if not is_revoked(revoked, "write_file", t)}
 
 
 def rectify_node(state: AgentState):

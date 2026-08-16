@@ -90,6 +90,15 @@ def test_a_vetoed_target_is_removed_work_not_missing_work():
     assert rc.uncovered_request_targets(state, state["plan"]) == set()
 
 
+def test_a_revoked_target_is_removed_work_not_missing_work():
+    state = _state("Save the total to depot/alpha_total.txt",
+                   [_step(1, "Read it", "read_file", "120", "done")],
+                   revoked_writes=["depot/alpha_total.txt"])
+    assert rc.uncovered_request_targets(state, state["plan"]) == set()
+    state["revoked_writes"] = ["*"]
+    assert rc.uncovered_request_targets(state, state["plan"]) == set()
+
+
 def test_a_path_that_appears_only_in_a_result_is_never_demanded():
     state = _state("Read handover_brief.txt and tell me who covers weekends.",
                    [_step(1, "Read handover_brief.txt", "read_file",

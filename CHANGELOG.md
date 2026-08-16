@@ -107,6 +107,11 @@ to learn, audit, and maintain — none removes a protection.
   allowlist should be, a list where the overrides mapping should be) now fails closed like a
   garbled file — strict defaults, recorded at startup, the file kept aside as `.corrupt` —
   instead of being iterated as-is.
+- The approval gate's file-write preview now says what the write will actually do: a
+  byte-identical rewrite (including a Windows CRLF-vs-LF no-op) reads "no change" instead of a
+  full-file diff, an existing binary file is named as binary instead of rendering as garbage,
+  and a path the workspace sandbox will refuse is flagged REFUSED at the prompt. The preview
+  resolves paths through the same sandbox check the file tools use.
 - A plan step with an unrecognized status (a garbled or legacy record) now renders as
   `? ⟨unknown status: …⟩` instead of being shown as pending.
 - The approval prompt always renders: if a preview (the file diff, the shell command view)

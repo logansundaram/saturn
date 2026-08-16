@@ -606,3 +606,58 @@ def test_gate_explain_failure_reprompts_instead_of_dying(isolated_paths, monkeyp
                              "args": {"command": "git status"}}]}
     assert approval.ask_approval(value) is False
     assert "no plan here" in buf.getvalue()
+
+
+# ── write-preview verdicts: no_change / binary / jail-refused (from the gating isolate) ────────
+
+
+def _ws():
+    from config import get_config
+
+    ws = get_config().path("workspace")
+    ws.mkdir(parents=True, exist_ok=True)
+    return ws
+
+
+def test_write_preview_detects_a_no_op_write_across_line_endings(isolated_paths):
+    """write_file writes in TEXT mode, so on Windows a proposed "\n" lands as "\r\n"; the
+    preview compares what will be ON DISK — a byte-identical rewrite is a no_change verdict, not
+    a full-file diff the human has to read to discover nothing changes."""
+    p = _ws() / "same.txt"
+    with open(p, "w", encoding="utf-8") as fh:  # exactly how write_file writes
+        fh.write("one\ntwo\n")
+    v = approval.write_verdict("same.txt", "one\ntwo\n", True)
+    assert v["kind"] == "no_change" and v["rows"] == []
+    v = approval.write_verdict("same.txt", "one\r\ntwo\r\n", True)
+    assert v["kind"] == "no_change"
+    v = approval.write_verdict("same.txt", "one\nTHREE\n", True)
+    assert v["kind"] == "overwrite" and any(k == "del" for k, _ in v["rows"])
+
+
+def test_write_preview_of_a_binary_file_says_so_instead_of_mojibake(isolated_paths):
+    p = _ws() / "blob.bin"
+    p.write_bytes(b"\x00\x01\x02PNG\x00garbage")
+    v = approval.write_verdict("blob.bin", "text", True)
+    assert v["kind"] == "binary" and v["rows"] == []
+    assert "binary" in (v["note"] or "")
+
+
+def test_write_preview_agrees_with_the_jail(isolated_paths):
+    """A path the workspace jail will refuse must SAY so — a human who believes they are
+    authorizing a write outside the workspace is being misinformed either way."""
+    v = approval.write_verdict("../escape.txt", "x", True)
+    assert v["kind"] == "refused" and "outside the workspace" in (v["note"] or "")
+    # …and the old-text reader takes the same jail decision (one resolver: tools/files._resolve).
+    assert approval._workspace_old_text("../escape.txt") == ("", False)
+
+
+def test_write_preview_renders_the_verdict(isolated_paths, monkeypatch, capsys):
+    monkeypatch.setattr(approval, "_RICH", False)
+    p = _ws() / "same2.txt"
+    with open(p, "w", encoding="utf-8") as fh:
+        fh.write("hello\n")
+    approval._render_write_diff({"file_path": "same2.txt", "content": "hello\n"})
+    out = capsys.readouterr().out
+    assert "no change" in out
+    approval._render_write_diff({"file_path": "../nope.txt", "content": "x"})
+    assert "REFUSED" in capsys.readouterr().out

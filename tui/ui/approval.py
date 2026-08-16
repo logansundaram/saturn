@@ -57,21 +57,45 @@ def _show_preamble_if_due() -> None:
             print(f"  {line}")
 
 
-def _workspace_old_text(file_path: str) -> "tuple[str, bool]":
-    """Current contents of a workspace file (for the write_file diff preview) + whether it exists.
-    Resolved exactly like the write_file tool (sandboxed to the workspace), so the preview matches
-    what the write will actually touch. Any failure degrades to ('', False) — the preview is
-    best-effort and must never block the gate."""
+def _workspace_target(file_path: str) -> "tuple[str, str, str | None]":
+    """What the write/edit preview would touch: (text, state, note) with state ∈ missing | text |
+    binary | refused | unreadable. Resolved through THE ONE sandbox resolver (`tools/files._resolve`)
+    so the preview can never disagree with what the tool will actually do — a preview that
+    diffs a.txt for a call the jail will refuse is worse than no preview (transplanted from the
+    gating isolate). Best-effort: any failure is a state, never a raise into the gate."""
     try:
-        from config import get_config
+        from tools.files import _resolve, _is_binary
 
-        workspace = get_config().path("workspace")
-        target = (workspace / file_path).resolve()
-        if not target.is_relative_to(workspace) or not target.exists():
-            return "", False
-        return target.read_text(encoding="utf-8", errors="replace"), True
-    except Exception:
-        return "", False
+        _workspace, target, error = _resolve(str(file_path))
+        if error:
+            return "", "refused", error
+        if not target.exists():
+            return "", "missing", None
+        if not target.is_file():
+            return "", "refused", "path is not a file"
+        if _is_binary(target):
+            try:
+                size = target.stat().st_size
+            except OSError:
+                size = "?"
+            return "", "binary", f"existing content is binary ({size} bytes) — not diffable"
+        return target.read_text(encoding="utf-8", errors="replace"), "text", None
+    except Exception as exc:
+        return "", "unreadable", f"existing content unreadable ({type(exc).__name__})"
+
+
+def _workspace_old_text(file_path: str) -> "tuple[str, bool]":
+    """Current contents of a workspace file (for the diff previews) + whether it exists — the
+    two-tuple view over `_workspace_target`."""
+    text, state, _note = _workspace_target(file_path)
+    return text, state in ("text", "binary")
+
+
+def _norm_eol(text: str) -> str:
+    """Line endings normalized before comparison. Not cosmetic: write_file writes in TEXT mode,
+    so on Windows a proposed LF lands on disk as CRLF (and read_text folds it back) - comparing
+    raw strings reports a change for a write that changes nothing."""
+    return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
 def _unified_rows(old: str, new: str) -> "tuple[list, int]":
@@ -94,13 +118,38 @@ def _unified_rows(old: str, new: str) -> "tuple[list, int]":
     return rows[:_MAX_DIFF_LINES], hidden
 
 
+def write_verdict(file_path: str, content: str, overwrite: bool) -> dict:
+    """What a pending write_file will actually DO — the gate's effect preview (transplanted from
+    the gating isolate): {"kind", "rows", "hidden", "note"} with kind ∈ new file | overwrite |
+    append | no_change (byte-identical after line-ending normalization — approving a no-op is a
+    prompt that should not have happened, and it must not render as a full-file diff) | binary
+    (existing content is not diffable — say so, never render mojibake) | refused (the workspace
+    jail will refuse this path — a human who believes they are authorizing a write outside the
+    workspace is being misinformed) | unreadable. Pure and never raises."""
+    old, state, note = _workspace_target(file_path)
+    if state in ("refused", "unreadable"):
+        return {"kind": state, "rows": [], "hidden": 0, "note": note}
+    if state == "binary":
+        return {"kind": "binary", "rows": [], "hidden": 0, "note": note}
+    if state == "missing":
+        rows, hidden = _unified_rows("", content)
+        return {"kind": "new file", "rows": rows, "hidden": hidden, "note": None}
+    old_n, content_n = _norm_eol(old), _norm_eol(content)
+    new = content_n if overwrite else (old_n + content_n)
+    if new == old_n:
+        return {"kind": "no_change", "rows": [], "hidden": 0,
+                "note": "no change — the file already has exactly this content"}
+    rows, hidden = _unified_rows(old_n, new)
+    return {"kind": "overwrite" if overwrite else "append", "rows": rows, "hidden": hidden,
+            "note": None}
+
+
 def _diff_lines(file_path: str, content: str, overwrite: bool) -> "tuple[list, bool, int]":
-    """Diff rows for a pending write_file: (rows, is_new_file, hidden_count). An append
-    (overwrite=False) diffs old-vs-(old+content) so the appended text reads as additions."""
-    old, existed = _workspace_old_text(file_path)
-    new = content if overwrite else (old + content)
-    rows, hidden = _unified_rows(old, new)
-    return rows, not existed, hidden
+    """Diff rows for a pending write_file: (rows, is_new_file, hidden_count) — the row view over
+    `write_verdict`. An append (overwrite=False) diffs old-vs-(old+content) so the appended text
+    reads as additions."""
+    v = write_verdict(file_path, content, overwrite)
+    return v["rows"], v["kind"] == "new file", v["hidden"]
 
 
 _DIFF_STYLE = {"add": "green", "del": "red", "hunk": _ACCENT, "ctx": _DIM}
@@ -150,9 +199,22 @@ def _render_write_diff(args: dict) -> None:
     content = str(args.get("content", ""))
     overwrite = bool(args.get("overwrite", True))
 
-    rows, is_new, hidden = _diff_lines(file_path, content, overwrite)
-    mode = "new file" if is_new else ("overwrite" if overwrite else "append")
-    _render_diff_rows(mode, file_path, rows, hidden)
+    v = write_verdict(file_path, content, overwrite)
+    kind = v["kind"]
+    if kind == "refused":
+        _render_diff_rows("overwrite" if overwrite else "append", file_path, [], 0)
+        _frame_note(f"REFUSED by the workspace jail: {v['note']} — this write will not happen",
+                    style="bold red")
+        return
+    if kind in ("binary", "unreadable"):
+        _render_diff_rows("overwrite" if overwrite else "append", file_path, [], 0)
+        _frame_note(f"⚠ {v['note']}", style="yellow")
+        return
+    if kind == "no_change":
+        _render_diff_rows("overwrite" if overwrite else "append", file_path, [], 0)
+        _frame_note(v["note"], style=_DIM)
+        return
+    _render_diff_rows(kind, file_path, v["rows"], v["hidden"])
 
 
 def _render_edit_diff(args: dict) -> None:
@@ -164,12 +226,16 @@ def _render_edit_diff(args: dict) -> None:
     new_string = str(args.get("new_string", ""))
     replace_all = bool(args.get("replace_all", False))
 
-    old, existed = _workspace_old_text(file_path)
+    old, state, problem = _workspace_target(file_path)
     note = None
     rows: list = []
     hidden = 0
-    if not existed:
+    if state == "refused":
+        note = f"REFUSED by the workspace jail: {problem} — this edit will fail"
+    elif state == "missing":
         note = "file does not exist — this edit will fail"
+    elif state in ("binary", "unreadable"):
+        note = f"{problem} — this edit will fail"
     else:
         count = old.count(old_string) if old_string else 0
         if count == 0:

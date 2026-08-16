@@ -52,7 +52,7 @@ from core.structured import (
     _invoke_kwargs,
     structured,
 )
-from core.tool_args import coerce_args, parse_text_call, schema_hint
+from core.tool_args import coerce_args, launders_a_value, parse_text_call, schema_hint
 
 # The steps the semantic write gate fronts (WRITE_TOOLS), and the gathering tools whose
 # presence arms it (SEARCH_TOOLS) — both from core/plan_context, THE one home for the engine's
@@ -253,9 +253,20 @@ def _generate_tool_call(tool, context: str):
                 calls = [{"args": parsed}]
         if calls:
             args = coerce_args(tool.name, calls[0].get("args"))
-            if args is not None:
+            if args is None:
+                problem = f"arguments {calls[0].get('args')} do not fit the tool"
+            elif launders_a_value(tool.name, args):
+                # A `calculate` whose expression is a bare literal computes nothing and mints
+                # tool provenance for a number that was never gathered. Refused here, on the
+                # ladder, so the retry gets a hint rather than the step an incident outright.
+                problem = (
+                    f"the expression {args.get('expression')!r} is a bare value, not a "
+                    "calculation — write the actual arithmetic over the values from the "
+                    "results above (for example '120 + 340 + 55'), never a number you have "
+                    "already worked out"
+                )
+            else:
                 return args, None, resp
-            problem = f"arguments {calls[0].get('args')} do not fit the tool"
         else:
             text_fallback = content.strip() or text_fallback
             problem = "no tool call emitted"

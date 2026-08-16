@@ -732,3 +732,69 @@ def test_different_arguments_are_not_a_stall(monkeypatch):
 def test_stall_key_is_order_independent_and_garbage_tolerant():
     assert ex._args_key({"a": 1, "b": 2}) == ex._args_key({"b": 2, "a": 1})
     assert ex._identical_call_count({"tool_events": [None, "x", {"name": "t"}]}, "t", None) == 1
+
+
+# ── core/tool_args + execute: the laundering refusal (transplanted from the engine isolate) ──
+#
+# calculate(expression="551") computes nothing: it mints TOOL provenance for a number the model
+# already worked out (a value the reasoning step invented, laundered into a "computed" result
+# nothing downstream can tell apart). Decidable with no judgment — an expression with no operator
+# and no function is a bare value — and refused on the retry ladder, so the model gets a hint and
+# the step only lands as an incident when every attempt launders.
+
+
+def test_launders_a_value_is_decidable():
+    from core.tool_args import launders_a_value as l
+
+    assert l("calculate", {"expression": "551"})
+    assert l("calculate", {"expression": "  -551 "})
+    assert l("calculate", {"expression": "(551)"})
+    assert l("calculate", {"expression": "3.14"})
+    assert not l("calculate", {"expression": "120 + 431"})
+    assert not l("calculate", {"expression": "2**10"})
+    assert not l("calculate", {"expression": "sum([1, 2, 3])"})
+    assert not l("calculate", {"expression": "round(2.567, 2)"})
+    assert not l("calculate", {"expression": "-3 * 4"})
+    assert not l("calculate", {"expression": ""})          # coercion's job, not ours
+    assert not l("read_file", {"expression": "551"})       # only calculate manufactures values
+    assert not l("calculate", "551")
+
+
+class _Scripted:
+    """A tool_caller stand-in for _generate_tool_call: bind_tools returns self; each invoke pops
+    the next scripted response."""
+
+    def __init__(self, responses):
+        self._r = list(responses)
+        self.calls = 0
+
+    def bind_tools(self, tools):
+        return self
+
+    def invoke(self, msgs, **kw):
+        self.calls += 1
+        return self._r.pop(0)
+
+
+def _call_resp(args):
+    return AIMessage(content="", tool_calls=[{"name": "calculate", "args": args, "id": "c1",
+                                              "type": "tool_call"}])
+
+
+def test_generate_tool_call_refuses_a_laundered_value_then_accepts_arithmetic(monkeypatch):
+    from tools.registry import tools_by_name
+
+    model = _Scripted([_call_resp({"expression": "551"}), _call_resp({"expression": "120 + 431"})])
+    monkeypatch.setattr(ex, "get_model", lambda role: model)
+    args, failure, _resp = ex._generate_tool_call(tools_by_name["calculate"], "ctx")
+    assert failure is None and args == {"expression": "120 + 431"}
+    assert model.calls == 2
+
+
+def test_generate_tool_call_lands_an_incident_when_every_attempt_launders(monkeypatch):
+    from tools.registry import tools_by_name
+
+    model = _Scripted([_call_resp({"expression": "551"})] * len(ex._ATTEMPT_TEMPS))
+    monkeypatch.setattr(ex, "get_model", lambda role: model)
+    args, failure, _resp = ex._generate_tool_call(tools_by_name["calculate"], "ctx")
+    assert args is None and failure.startswith("error:") and "bare value" in failure

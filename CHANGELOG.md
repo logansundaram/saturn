@@ -115,6 +115,9 @@ to learn, audit, and maintain — none removes a protection.
 
 ### Fixed
 
+- `calculate` can no longer be used to launder a made-up number into a "computed" result: an
+  expression that is a bare value (`551`) is refused with a hint to write the actual arithmetic
+  over gathered values, and only lands as an incident when every retry does the same.
 - A turn that keeps issuing the exact same tool call with the same arguments is stopped on the
   third repeat as a disclosed "step is looping" incident (the engine reads its own record of
   executed calls) instead of burning the iteration budget; a legitimate second read still runs.

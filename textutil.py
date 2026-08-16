@@ -154,6 +154,56 @@ def mask_secret(value) -> str:
     return f"{s[:4]}…{s[-2:]}"
 
 
+# ── figures: the numeric claims an answer makes (from the engine isolate, 2026-08-15) ──────────
+#
+# The groundedness gate diffs the figures an ANSWER states against the figures the turn GATHERED.
+# One producer, one comparator, both here (leaf) so synthesize and its tests share them.
+
+_FIGURE_RE = re.compile(r"-?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?")
+
+# `[1]`-style provenance markers are engine syntax, not claims the model made.
+_CITATION_RE = re.compile(r"\[\d+\]")
+
+
+def figure_literals(text) -> "list[tuple[float, str]]":
+    """(value, literal) for every numeric token in `text` that reads as a CLAIMED MEASUREMENT
+    rather than discourse: three or more integer digits, or any non-integer. One- and two-digit
+    integers are excluded on purpose — "I read 2 files", "9 hours" are counts fluent prose
+    produces on its own; treating them as claims would fire on ordinary sentences and train
+    everyone to ignore the gate."""
+    out: list = []
+    for tok in _FIGURE_RE.findall(_CITATION_RE.sub(" ", str(text or ""))):
+        raw = tok.replace(",", "")
+        try:
+            value = float(raw)
+        except ValueError:
+            continue
+        digits = raw.lstrip("-").split(".")[0]
+        if "." in raw or len(digits) >= 3:
+            out.append((value, tok))
+    return out
+
+
+def untraceable_figures(answer, sources) -> "list[str]":
+    """The figures in `answer` that appear in `sources` neither exactly nor as a rounding.
+    Rounding counts as traceable: an observation of 0.857142 legitimately becomes "0.86" — the
+    tolerance is derived from the ANSWER's own precision ("0.86" admits a source rounding to two
+    decimals, "515" one rounding to a whole number), so it never widens beyond what the answer
+    claims."""
+    source_values = [v for v, _lit in figure_literals(sources)]
+    missing: list = []
+    for value, literal in figure_literals(answer):
+        decimals = len(literal.split(".")[1]) if "." in literal else 0
+        if any(
+            abs(src - value) < 1e-9 or abs(round(src, decimals) - value) < 1e-9
+            for src in source_values
+        ):
+            continue
+        if literal not in missing:
+            missing.append(literal)
+    return missing
+
+
 def safe_stem(name, fallback: str) -> str:
     """Sanitize a user-supplied name to a safe filename stem: path parts dropped, a trailing
     `.json` stripped (so `brief.json` and `brief` resolve identically), every other special

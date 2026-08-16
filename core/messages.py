@@ -458,6 +458,27 @@ COMPACTION_PROMPT = (
 # document text through a model at ingest.)
 
 # commands/knowledge /init — drafts SATURDAY.md from the workspace survey.
+# ── synthesize's corrective regenerations (the groundedness gate + the computed-value check,
+# transplanted from the engine isolate, 2026-08-15). These are PROMPTS, but the payload of a
+# deterministic check-correct-once-disclose ladder, not the mechanism: the check that fires them
+# and the disclosure after a failed retry are both mechanical (the shape of tool_args.schema_hint).
+
+GROUNDING_CORRECTIVE = (
+    "Your draft answer stated these figures, which appear in NOTHING the user asked and in "
+    "NONE of the material above: {bad}. You may not compute, estimate, convert, or recall a "
+    "figure — only restate figures that appear verbatim in the material above. Rewrite the "
+    "whole answer now using only figures that appear there. If a number the request needs "
+    "was never gathered, say plainly that it is not available rather than supplying one."
+)
+
+COMPUTED_CORRECTIVE = (
+    "Your draft answer omits the figure this turn actually computed: {missing}. That figure is "
+    "the point of the calculation step the plan ran — a comparison or a total that names no "
+    "number leaves the user with nothing they can check. Rewrite the whole answer now, stating "
+    "{missing} explicitly and in context, and keep every other claim exactly as it was."
+)
+
+
 INIT_DRAFT_PROMPT = """You are initializing SATURDAY.md — a standing-instructions file that a local
 AI agent loads into context at the start of every turn it works in this workspace.
 

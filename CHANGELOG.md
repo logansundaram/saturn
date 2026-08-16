@@ -115,6 +115,14 @@ to learn, audit, and maintain — none removes a protection.
 
 ### Fixed
 
+- **Answers are checked against what was actually gathered.** After a turn that observed
+  something, every figure the answer states (three or more digits, or any decimal) is traced
+  back to your words or the turn's tool results; a figure that traces to nothing gets ONE
+  corrective regeneration, and anything still untraceable is disclosed under the answer
+  ("these figures could not be traced to any gathered result") rather than passed off as
+  gathered. The inverse check makes sure the value the plan's own calculate step produced
+  actually appears in the answer. On a resumed (Esc-edited) answer the checks only mark — your
+  edit is never regenerated over.
 - Two more gaps between your request and the plan are closed deterministically once every step
   has run cleanly: a request for a total/average/difference/comparison that no step computed now
   gets its calculate step(s) instead of arithmetic done in the answer's prose, and a request that

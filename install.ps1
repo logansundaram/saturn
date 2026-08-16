@@ -19,7 +19,7 @@ $Tier       = if ($env:SATURDAY_TIER)   { $env:SATURDAY_TIER }   else { 'laptop'
 # Local models the laptop tier needs (small gemma4 chat model + the RAG embedder). Must match the
 # `laptop` tier bindings in config.yaml - pulling different models than the tier binds breaks the
 # first run. If you override this, rebind the roles afterwards with /models.
-$Models     = if ($env:SATURDAY_MODELS) { $env:SATURDAY_MODELS -split '\s+' } else { @('gemma4:e4b', 'qwen3-embedding:8b') }
+$Models     = if ($env:SATURDAY_MODELS) { $env:SATURDAY_MODELS -split '\s+' } else { @('qwen3.5:4b', 'qwen3-embedding:8b') }
 # Minimum Ollama daemon version. Older daemons can't pull the current model formats (the pull
 # fails or the model runs wrong), so we update below if the installed one is behind this.
 $MinOllama  = if ($env:SATURDAY_MIN_OLLAMA) { $env:SATURDAY_MIN_OLLAMA } else { '0.6.0' }

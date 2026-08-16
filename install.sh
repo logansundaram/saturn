@@ -21,7 +21,7 @@ TIER="${SATURDAY_TIER:-laptop}"
 # Local models the laptop tier needs (small gemma4 chat model + the RAG embedder). Must match the
 # `laptop` tier bindings in config.yaml — pulling different models than the tier binds breaks the
 # first run. If you override this, rebind the roles afterwards with /models.
-MODELS="${SATURDAY_MODELS:-gemma4:e4b qwen3-embedding:8b}"
+MODELS="${SATURDAY_MODELS:-qwen3.5:4b qwen3-embedding:8b}"
 # Minimum Ollama daemon version. Older daemons can't pull the current model formats (the pull
 # fails or the model runs wrong), so we update below if the installed one is behind this.
 MIN_OLLAMA="${SATURDAY_MIN_OLLAMA:-0.6.0}"

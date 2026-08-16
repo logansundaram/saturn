@@ -167,3 +167,69 @@ class TestConfigMigrationSeam:
                       "capabilities": {"m": {"context_window": 32768,
                                              "max_context_window": 262144}}})
         assert cfg.num_ctx_for("m") == 32768
+
+
+class TestShippedConfigMatchesTheLadder:
+    """The template config and the ladder must not drift apart — a tier binding a tag with no
+    capabilities entry silently runs at the conservative 8192 default."""
+
+    def _template(self):
+        import pathlib
+
+        import yaml
+
+        root = pathlib.Path(__file__).resolve().parents[1]
+        return yaml.safe_load((root / "config.default.yaml").read_text(encoding="utf-8"))
+
+    def test_tier_keys_are_exactly_the_size_classes(self):
+        from core import model_family as mf
+
+        assert tuple(self._template()["tiers"]) == mf.classes()
+
+    def test_every_tier_binds_its_ladder_tag_on_every_role(self):
+        from config import MODEL_ROLES
+        from core import model_family as mf
+
+        tiers = self._template()["tiers"]
+        for key, tag in mf.SIZE_LADDER:
+            roles = tiers[key]["roles"]
+            assert set(roles) == set(MODEL_ROLES), key
+            assert set(roles.values()) == {tag}, key
+
+    def test_every_role_binding_is_in_family(self):
+        from core import model_family as mf
+
+        for key, tier in self._template()["tiers"].items():
+            for role, tag in tier["roles"].items():
+                assert mf.in_family(tag), f"{key}.{role} = {tag}"
+
+    def test_every_ladder_tag_has_a_capabilities_entry(self):
+        from core import model_family as mf
+
+        caps = self._template()["capabilities"]
+        for _key, tag in mf.SIZE_LADDER:
+            assert tag in caps, tag
+
+    def test_capabilities_keep_the_runtime_window_off_the_architectural_max(self):
+        # Collapsing these is a latent OOM: 262144 num_ctx exhausts consumer VRAM.
+        from core import model_family as mf
+
+        caps = self._template()["capabilities"]
+        for _key, tag in mf.SIZE_LADDER:
+            assert caps[tag]["context_window"] == 32768, tag
+            assert caps[tag]["max_context_window"] == 262144, tag
+
+    def test_retired_models_are_gone_from_the_template(self):
+        template = self._template()
+        text = str(template)
+        for retired in ("gemma4", "qwen3-coder", "bench-coder"):
+            assert retired not in text, retired
+
+    def test_the_default_tier_is_the_default_class(self):
+        from core import model_family as mf
+
+        assert self._template()["active_tier"] == mf.DEFAULT_CLASS
+
+    def test_the_embedder_is_unchanged_on_every_tier(self):
+        for key, tier in self._template()["tiers"].items():
+            assert tier["embedder"] == "qwen3-embedding:8b", key

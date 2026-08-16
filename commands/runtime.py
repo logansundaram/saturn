@@ -206,7 +206,10 @@ def _models(ctx, args):
                 _print(f"   {mark} {name}")
             return
         tier = args[1]
-        if cfg.get(f"tiers.{tier}") is None:
+        # Dict membership, not the dotted cfg.get("tiers.<tier>") path lookup — a size-class
+        # tier key like "0.8b" contains a literal dot and would otherwise be misread as two
+        # path segments ("0"/"8b") and always report unknown.
+        if tier not in cfg.get("tiers", {}):
             _print(f"  unknown tier: {tier} (defined: {list(cfg.get('tiers', {}))})")
             return
         cfg.set("active_tier", tier)

@@ -31,19 +31,9 @@ def test_qwen_render_is_byte_faithful():
     )
 
 
-def test_gemma_render_is_byte_faithful():
-    msgs = [SystemMessage(content="SYS"), HumanMessage(content="QUESTION")]
-    out = chat_template.render_continuation("gemma4:e4b", msgs, "PREFIX")
-    assert out == (
-        "<|turn>system\nSYS<turn|>\n"
-        "<|turn>user\nQUESTION<turn|>\n"
-        "<|turn>model\nPREFIX"
-    )
-
-
 def test_assistant_turn_is_open_no_end_of_turn_token():
     """The whole feature: the assistant turn is opened but never closed."""
-    for model in ("qwen3.5:9b", "gemma4:e4b"):
+    for model in ("qwen3.5:9b",):
         t = chat_template.template_for(model)
         out = chat_template.render_continuation(model, [("user", "hi")], "half an ans")
         assert out.endswith("half an ans")
@@ -58,11 +48,13 @@ def test_consecutive_same_role_messages_merge_into_one_turn():
 
 
 def test_unsupported_model_refuses_and_supported_reports():
+    """gemma4 is no longer in the registry — the family lock (2026-08-16) retired it, so a
+    gemma4 tag is unsupported the same way any other outsider is."""
     with pytest.raises(chat_template.UnsupportedModel):
         chat_template.template_for("mystery-llm:7b")
     assert not chat_template.supported("mystery-llm:7b")
     assert chat_template.supported("qwen3.6:35b")   # prefix match, any tag
-    assert chat_template.supported("gemma4:26b")
+    assert not chat_template.supported("gemma4:26b")
     assert not continuation.supports("gpt-oss:20b")  # installed but deliberately outside the set
 
 

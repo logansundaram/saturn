@@ -291,3 +291,25 @@ class TestStartupReportsMigrations:
             cfg.model_for_role(role)
 
         assert len(llms._migration_problems()) == 2
+
+
+class TestTemplateRegistryAgreesWithTheFamily:
+    """The freeze hotkey must arm for every bindable model and no others — two lists that drift
+    would either strand a supported model or promise continuation for an unbindable one."""
+
+    def test_template_prefixes_are_exactly_the_family(self):
+        from core import chat_template, model_family as mf
+
+        covered = tuple(p for t in chat_template.TEMPLATES for p in t.prefixes)
+        assert sorted(covered) == sorted(mf.FAMILY_PREFIXES)
+
+    def test_every_ladder_tag_is_supported_for_continuation(self):
+        from core import chat_template, model_family as mf
+
+        for _key, tag in mf.SIZE_LADDER:
+            assert chat_template.supported(tag), tag
+
+    def test_a_retired_family_is_no_longer_supported(self):
+        from core import chat_template
+
+        assert not chat_template.supported("gemma4:e4b")

@@ -19,10 +19,10 @@ passes that test.
   `RENDERER gemma4` in their Modelfiles — the TEMPLATE field is a bare `{{ .Prompt }}`
   passthrough); raw mode bypasses those renderers too, verified by coherent spliced
   continuations on both families.
-- BOS: the gemma4 runner AUTO-ADDS `<bos>` in raw mode (`'hello'` → 2 prompt tokens), and an
-  explicit literal `<bos>` is parsed as the special token without doubling (`'<bos>hello'` → 2).
-  We therefore render WITHOUT a BOS. qwen3.x adds no BOS at all (`'hello'` → 1) and `<bos>` is
-  NOT special there (it tokenizes as text, `'<bos>hello'` → 4) — never emit it.
+- BOS: qwen3.x adds no BOS at all (`'hello'` -> 1 token) and `<bos>` tokenizes as ordinary text,
+  so we render WITHOUT one. (The gemma4 entry — whose runner auto-added `<bos>` in raw mode —
+  was removed with the family lock, 2026-08-16: gemma4 is no longer bindable. Its recovered
+  format is in git history if the family ever widens.)
 - `stop` is honored: continuation halts at the family's end-of-turn string with
   `done_reason: "stop"` rather than running to `num_predict`.
 - `num_ctx` MUST be set explicitly per request — the daemon otherwise front-truncates silently
@@ -92,15 +92,6 @@ TEMPLATES: tuple[ChatTemplate, ...] = (
         assistant_role="assistant",
         stop=("<|im_end|>",),
     ),
-    ChatTemplate(
-        family="gemma4",
-        prefixes=("gemma4",),
-        turn_open="<|turn>{role}\n",
-        turn_close="<turn|>\n",
-        assistant_open="<|turn>model\n",
-        assistant_role="model",
-        stop=("<turn|>",),
-    ),
 )
 
 
@@ -112,9 +103,9 @@ def template_for(model: str) -> ChatTemplate:
         if name.startswith(t.prefixes):
             return t
     raise UnsupportedModel(
-        f"no raw-mode chat template for model {model!r} — interrupt-and-correct is only offered "
-        f"for families that pass the continuation contract test "
-        f"({', '.join(t.family for t in TEMPLATES)}); see core/chat_template.py to extend"
+        f"no raw-mode chat template for model {model!r} — Saturday.ai supports the "
+        f"{', '.join(t.family for t in TEMPLATES)} family only (core/model_family.py); "
+        f"extend the registry only for a model that passes utilities/continuation_contract.py"
     )
 
 

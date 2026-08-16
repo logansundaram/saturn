@@ -61,16 +61,36 @@ def _write_table(table: dict) -> None:
     OUT.write_text(head + sep + body + "\n", encoding="utf-8", newline="\n")
 
 
+def inherit_record(tag: str, src: str, rec: dict, *, today: str | None = None) -> dict:
+    """Build the ESTIMATED row `--inherit TAG=FROM` records for `tag`, borrowing `src`'s
+    thresholds (`rec`, `src`'s own CALIBRATION record). Matches the shipped `qwen3.8:27b` row's
+    shape in core/confidence_calibration.py: `source: 'estimated'` + an `estimated_from` string
+    naming the source tag and its measured basis (tokens/date), never a bare `inherited_from`
+    marker — the contract tests (`tests/test_calibration.py`, `tests/test_confidence.py`) require
+    exactly this vocabulary for any row that measured nothing (`tokens: 0`)."""
+    estimated_from = (
+        f"{src.lower()}, measured {rec['at']} over {rec['tokens']} tokens — inherited via "
+        f"--inherit because {tag.lower()} could not be measured directly on this daemon; "
+        "/confidence tune replaces this with a real measurement once it can."
+    )
+    return {
+        "enter": rec["enter"], "exit": rec["exit"], "tokens": 0, "prompts": 0,
+        "at": today or _dt.date.today().isoformat(),
+        "source": "estimated", "estimated_from": estimated_from,
+    }
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--models", nargs="*", help="model tags to calibrate (default: every tier's synthesizer)")
     ap.add_argument("--prompts", type=int, default=len(calibration.PROMPTS), help="how many prompts to stream")
     ap.add_argument("--quiet", action="store_true")
     ap.add_argument("--inherit", nargs="*", default=[], metavar="TAG=FROM",
-                    help="record TAG with FROM's thresholds, marked inherited (for a model the "
-                         "daemon returns no per-token logprobs for yet — e.g. qwen3.8 on Ollama "
-                         "0.32, which emits logprobs on the first chunk only); a later measured "
-                         "run overwrites it")
+                    help="record TAG with FROM's thresholds, marked as an ESTIMATE "
+                         "(source: 'estimated', not a measurement — for a model the daemon "
+                         "returns no per-token logprobs for yet, e.g. qwen3.8 on Ollama 0.32, "
+                         "which emits logprobs on the first chunk only); a later measured run "
+                         "overwrites it")
     args = ap.parse_args(argv)
 
     from core import confidence_calibration as current
@@ -117,10 +137,8 @@ def main(argv=None) -> int:
         if not (tag and rec):
             print(f"--inherit {spec}: {src!r} is not calibrated — nothing recorded", file=sys.stderr)
             continue
-        table[tag.lower()] = {"enter": rec["enter"], "exit": rec["exit"], "tokens": 0,
-                              "prompts": 0, "at": _dt.date.today().isoformat(),
-                              "inherited_from": src.lower()}
-        print(f"  {tag}: inherited enter={rec['enter']} exit={rec['exit']} from {src} "
+        table[tag.lower()] = inherit_record(tag, src, rec)
+        print(f"  {tag}: estimated enter={rec['enter']} exit={rec['exit']} from {src} "
               "(NOT measured — re-run without --inherit once the daemon returns per-token "
               "logprobs for it)", file=sys.stderr)
     _write_table(table)

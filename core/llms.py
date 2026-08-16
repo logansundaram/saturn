@@ -393,6 +393,22 @@ def _model_present(required: str, have: set[str]) -> bool:
     return _norm(required) in {_norm(h) for h in have}
 
 
+def _migration_problems() -> list[str]:
+    """One health line per family substitution made this session. Kept separate from
+    check_models so it is unit-testable without a daemon."""
+    import config as _config
+
+    out = []
+    for original, replacement in sorted(_config.migrated_bindings().items()):
+        out.append(
+            f"'{original}' is outside the supported model family and is running as "
+            f"'{replacement}' — confidence coloring is calibrated per model, so only the "
+            f"qwen3.5/3.6/3.8 family is supported. config.yaml was NOT changed; make it "
+            f"permanent with `/models tier <size>` (see /models tier for the list)"
+        )
+    return out
+
+
 def check_models() -> list[str]:
     """Startup health report for the active tier. Returns a list of human-readable PROBLEM strings
     (empty when all is well): the Ollama daemon being down, local model tags not pulled, or a
@@ -414,6 +430,12 @@ def check_models() -> list[str]:
                 f"role '{role}' is bound to {spec.provider}:{spec.model} — cloud model support "
                 f"is shelved; rebind it to a local Ollama model (`/models {role} <id>`)"
             )
+
+    # Family substitutions are recorded by config.model_for_role during the loop above, so the
+    # ledger is populated by now. Report them as health problems: the running config differs
+    # from the file on disk until the user rebinds.
+    problems.extend(_migration_problems())
+
     try:
         need_ollama.append(cfg.embedder_model)  # embeddings always run through Ollama
     except KeyError as exc:

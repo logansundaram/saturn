@@ -233,3 +233,55 @@ class TestShippedConfigMatchesTheLadder:
     def test_the_embedder_is_unchanged_on_every_tier(self):
         for key, tier in self._template()["tiers"].items():
             assert tier["embedder"] == "qwen3-embedding:8b", key
+
+
+class TestStartupReportsMigrations:
+    def setup_method(self):
+        import config
+
+        config.clear_migrations()
+
+    def teardown_method(self):
+        import config
+
+        config.clear_migrations()
+
+    def test_no_migration_reports_nothing(self):
+        from core import llms
+
+        assert llms._migration_problems() == []
+
+    def test_a_migration_is_reported_with_both_ids_and_the_fix(self):
+        import config
+        from config import Config
+        from core import llms
+
+        cfg = Config({
+            "active_tier": "t",
+            "tiers": {"t": {"provider": "ollama", "roles": {"synthesizer": "gemma4:e4b"}}},
+        })
+        cfg.model_for_role("synthesizer")
+
+        problems = llms._migration_problems()
+        assert len(problems) == 1
+        line = problems[0]
+        assert "gemma4:e4b" in line          # what the file says
+        assert "qwen3.5:4b" in line          # what is actually running
+        assert "/models tier" in line        # how to make it permanent
+        assert "config.yaml" in line         # and that the file was NOT rewritten
+
+    def test_each_distinct_substitution_is_reported_once(self):
+        from config import Config
+        from core import llms
+
+        cfg = Config({
+            "active_tier": "t",
+            "tiers": {"t": {"provider": "ollama", "roles": {
+                "planner": "gemma4:e4b", "synthesizer": "gemma4:e4b",
+                "judge": "qwen3-coder:30b",
+            }}},
+        })
+        for role in ("planner", "synthesizer", "judge"):
+            cfg.model_for_role(role)
+
+        assert len(llms._migration_problems()) == 2

@@ -48,6 +48,38 @@ from config import get_config, persist, RISK_ORDER
 # redirection, substitution. Such a command is never prefix-exempt; the human reads it at the gate.
 _SHELL_META = re.compile(r"[;&|<>`$\n\r]")
 
+# --- the argument-tail screen (transplanted from the gating isolate, 2026-08-15) ------------
+#
+# A token-prefix grant validated only its HEAD, so `git log --output=<abs>` and
+# `git -c core.pager=!sh -c id` rode in on a benign-looking grant. These tables close the NAMED
+# laundering paths in the tokens AFTER a granted prefix; the screen re-runs at USE against the
+# live command text (never validate-once) and can only ever tighten. It is a denylist and stays
+# defense-in-depth: the boundary is the human approving the exact reviewed command.
+
+# Flags that introduce a new exec or write path on otherwise-benign programs.
+_CAPABILITY_FLAGS = {
+    "-c", "--config", "-e", "--eval", "--exec", "--command",
+    "-o", "--output", "--output-file", "--out",
+    "--upload-pack", "--receive-pack", "--ext", "--to-command",
+    "--pager", "--editor", "--use-compress-program", "-i", "--interactive",
+}
+
+# General-purpose interpreters / launchers: a grant on one is honored only as an EXACT command
+# ("always allow `npm test`" stays useful; "always allow `npm`" never becomes arbitrary code).
+_INTERPRETERS = {
+    "sh", "bash", "zsh", "ksh", "dash", "csh", "tcsh", "fish",
+    "python", "python2", "python3", "py", "perl", "ruby", "lua", "tclsh", "r", "rscript",
+    "node", "deno", "bun", "php", "awk", "gawk", "mawk", "nawk", "sed", "ed",
+    "env", "xargs", "find", "make", "cmake", "ninja",
+    "npm", "npx", "yarn", "pnpm", "pip", "pip3", "uv", "uvx", "poetry", "pipx",
+    "docker", "podman", "kubectl", "ssh", "scp", "rsync", "sudo", "doas", "su",
+    "powershell", "pwsh", "cmd", "iex", "wscript", "cscript", "rundll32", "regsvr32",
+    "msbuild", "dotnet", "java", "go", "cargo", "gradle", "mvn", "ansible", "terraform",
+}
+
+# A glob in the tail: its expansion is not what was screened.
+_GLOB = re.compile(r"[*?\[\]]")
+
 
 # --- the tier threshold (runtime.auto_approve and its views) -----------------------------
 
@@ -270,20 +302,68 @@ def shell_prefix_rejects(text: str) -> "str | None":
         return "empty prefix"
     if _SHELL_META.search(text):
         return "contains a shell metacharacter (; & | < > ` $ or a newline)"
+    if not text.isascii():
+        # A confusable (fullwidth ';' U+FF1B and friends) reads as inert to an ASCII screen and
+        # as punctuation to a human reviewing the grant. The automation path stays ASCII;
+        # anything else goes to a person.
+        return "contains non-ASCII text (confusable with a shell metacharacter)"
+    return None
+
+
+def _escapes_workspace(token: str) -> bool:
+    """Whether an argument names a path that could leave the workspace: absolute (POSIX, UNC,
+    or drive-lettered), parent-relative, or home-relative. Deliberately syntactic."""
+    t = token.strip("'\"")
+    if not t:
+        return False
+    if t.startswith("~") or t.startswith("/") or t.startswith("\\"):
+        return True
+    if re.match(r"^[A-Za-z]:[\\/]", t):  # C:\ or C:/
+        return True
+    return ".." in re.split(r"[\\/]", t)
+
+
+def arg_tail_rejects(prefix: str, command: str) -> "str | None":
+    """Why the tokens AFTER a granted prefix disqualify `command` (None when they don't): the
+    program is a general-purpose interpreter with trailing arguments, or a tail token is a
+    capability-introducing flag, a glob, or a path outside the workspace. Pure and
+    deterministic; a reason is a sentence the gate UI can print verbatim."""
+    p_tokens = str(prefix).split()
+    c_tokens = str(command).split()
+    tail = c_tokens[len(p_tokens):]
+
+    program = (c_tokens[0] if c_tokens else "").lower()
+    program = program.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+    if program.endswith(".exe"):
+        program = program[:-4]
+    if program in _INTERPRETERS and tail:
+        return (f"`{program}` is a general-purpose interpreter — a grant covers it only as an "
+                "exact command, not with trailing arguments")
+
+    for tok in tail:
+        flag = tok.lower().split("=", 1)[0]
+        if flag in _CAPABILITY_FLAGS:
+            return f"argument `{tok}` can introduce a new exec or write path"
+        if _GLOB.search(tok):
+            return f"argument `{tok}` contains a glob — its expansion is not what was screened"
+        if _escapes_workspace(tok):
+            return f"argument `{tok}` names a path outside the workspace"
     return None
 
 
 def shell_prefix_covers(prefix: str, command: str) -> bool:
     """Whether `prefix` would exempt `command` under THE matcher's rules — the per-prefix half of
-    `shell_allowed` (metacharacter screen on the command, then token-boundary equality), exposed
-    pure so the gate UI can validate a typed grant WITHOUT persisting it (the always-allow flow
-    collects grants at decision time and applies them past the interrupt). `shell_allowed`
-    delegates here: one matcher, never a second copy of its rule."""
+    `shell_allowed` (metacharacter screen on the command, token-boundary equality, then the
+    argument-tail screen), exposed pure so the gate UI can validate a typed grant WITHOUT
+    persisting it (the always-allow flow collects grants at decision time and applies them past
+    the interrupt). `shell_allowed` delegates here: one matcher, never a second copy of its rule."""
     if shell_prefix_rejects(command):
         return False
     cmd_tokens = [t.lower() for t in str(command).split()]
     p_tokens = [t.lower() for t in str(prefix).split()]
-    return bool(p_tokens) and cmd_tokens[: len(p_tokens)] == p_tokens
+    if not p_tokens or cmd_tokens[: len(p_tokens)] != p_tokens:
+        return False
+    return arg_tail_rejects(prefix, command) is None
 
 
 def shell_allowed(command: str) -> "str | None":
@@ -316,8 +396,11 @@ def grant_shell_prefix(prefix: str, command: str, *, dry_run: bool = False) -> "
     if not prefix:
         return False, "run_shell: no prefix granted — it keeps prompting"
     if shell_prefix_rejects(prefix) or not shell_prefix_covers(prefix, command):
+        why = (shell_prefix_rejects(prefix) or shell_prefix_rejects(command)
+               or arg_tail_rejects(prefix, command)
+               or "token boundary, no shell metacharacters")
         return False, (f'run_shell: prefix "{prefix}" would not exempt this command '
-                       "(token boundary, no shell metacharacters) — no grant, it keeps prompting")
+                       f"({why}) — no grant, it keeps prompting")
     matched = shell_allowed(command)
     if matched is not None and matched.lower() != prefix.lower():
         # An already-stored prefix covers this command; the new one adds nothing for it — no

@@ -97,6 +97,12 @@ to learn, audit, and maintain — none removes a protection.
 
 ### Fixed
 
+- `/policy allow` prefix grants (and the gate's always-allow `a`) now screen the arguments
+  AFTER the granted prefix at every use: capability-introducing flags (`--output`, `-c`,
+  `--exec`, …), globs, and paths outside the workspace disqualify the command, a
+  general-purpose interpreter (`python`, `npm`, `powershell`, …) is only ever exempt as the exact
+  granted command, and non-ASCII text (a lookalike `；`) never passes the automation path.
+  Previously `git log --output=<path>` rode in on a `git log` grant.
 - The approval gate now approves a batch only on an explicit approval; any unrecognized
   resume value rejects (previously any truthy value approved).
 - An answer that came back empty no longer swallows the engine's own disclosures: the

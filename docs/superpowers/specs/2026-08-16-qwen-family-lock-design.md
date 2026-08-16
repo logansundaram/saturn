@@ -212,8 +212,15 @@ Live-daemon work over 6 models × 55 prompts — the long pole. Everything else 
 
 ## Files touched
 
-**New:** `core/model_family.py`, `core/confidence_store.py`, `commands/confidence.py`,
-`tests/test_model_family.py`, `tests/test_confidence_command.py`
+**New:** `core/model_family.py`, `core/confidence_store.py`, `core/calibration.py`,
+`commands/confidence.py`, `tests/test_model_family.py`, `tests/test_confidence_command.py`,
+`tests/test_confidence_store.py`, `tests/test_calibration.py`, `tests/test_models_command.py`
+
+`core/calibration.py` is a planning-time discovery, not a design change: `utilities/` is excluded
+from the wheel (`pyproject.toml` `packages.find` covers `core*` and not `utilities`), so
+`/confidence tune` could not import the measurement in an installed run. The measurement moves
+into `core/`; `utilities/confidence_calibrate.py` becomes a thin CLI over it. One measurement, two
+callers — the CLI writes the shipped baseline, the command writes the user overlay.
 
 **Changed:** `config.py` (migration seam, `Capability.max_context_window`), `config.default.yaml`
 and `config.yaml` (tiers, capabilities), `core/llms.py` (`check_models` reporting),

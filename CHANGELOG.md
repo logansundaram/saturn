@@ -115,6 +115,9 @@ to learn, audit, and maintain — none removes a protection.
 
 ### Fixed
 
+- A turn that keeps issuing the exact same tool call with the same arguments is stopped on the
+  third repeat as a disclosed "step is looping" incident (the engine reads its own record of
+  executed calls) instead of burning the iteration budget; a legitimate second read still runs.
 - `/policy allow` prefix grants (and the gate's always-allow `a`) now screen the arguments
   AFTER the granted prefix at every use: capability-introducing flags (`--output`, `-c`,
   `--exec`, …), globs, and paths outside the workspace disqualify the command, a

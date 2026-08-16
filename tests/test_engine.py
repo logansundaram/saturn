@@ -685,3 +685,50 @@ def test_verify_writes_markers_match_the_producer(isolated_paths):
     block = verify_writes(state)
     assert "pin.txt now contains" in block
     assert "missing.txt" not in block, "a refusal observation must not be quoted as a write"
+
+
+# ── nodes/execute: the stall detector (transplanted from the engine isolate) ─────────────────
+#
+# A turn that keeps emitting the same call with the same arguments is not deliberating — it is
+# stuck, and the only thing separating it from the iteration cap is wasted budget. The count is
+# read off `tool_events` (what ACTUALLY RAN this turn, never what was planned), so a second
+# identical call (once to inspect, once to verify a write) is ordinary; the repeat AFTER that
+# lands as a disclosed error incident with no call emitted for approval.
+
+
+def _events(name, args, n):
+    return [{"name": name, "args": dict(args), "result": "x", "ok": True} for _ in range(n)]
+
+
+def test_repeated_identical_call_becomes_an_incident(monkeypatch):
+    monkeypatch.setattr(ex, "_generate_tool_call",
+                        lambda tool, ctx: ({"file_path": "a.csv"}, None, None))
+    plan = [_step(1, "read_file")]
+    out = ex.execute_node(_state(plan, tool_events=_events("read_file", {"file_path": "a.csv"},
+                                                            ex.STALL_REPEATS)))
+    s = out["plan"][0]
+    assert s["status"] == "error" and "looping" in s["result"]
+    assert "messages" not in out  # nothing was emitted for approval
+    assert ex.route_after_execute({"messages": [HumanMessage("x")]}) == "rectify"
+
+
+def test_a_legitimate_second_read_still_runs(monkeypatch):
+    monkeypatch.setattr(ex, "_generate_tool_call",
+                        lambda tool, ctx: ({"file_path": "a.csv"}, None, None))
+    plan = [_step(1, "read_file")]
+    out = ex.execute_node(_state(plan, tool_events=_events("read_file", {"file_path": "a.csv"},
+                                                            ex.STALL_REPEATS - 1)))
+    assert out["messages"][-1].tool_calls
+
+
+def test_different_arguments_are_not_a_stall(monkeypatch):
+    monkeypatch.setattr(ex, "_generate_tool_call",
+                        lambda tool, ctx: ({"file_path": "b.csv"}, None, None))
+    plan = [_step(1, "read_file")]
+    out = ex.execute_node(_state(plan, tool_events=_events("read_file", {"file_path": "a.csv"}, 5)))
+    assert out["messages"][-1].tool_calls
+
+
+def test_stall_key_is_order_independent_and_garbage_tolerant():
+    assert ex._args_key({"a": 1, "b": 2}) == ex._args_key({"b": 2, "a": 1})
+    assert ex._identical_call_count({"tool_events": [None, "x", {"name": "t"}]}, "t", None) == 1

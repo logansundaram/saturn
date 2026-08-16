@@ -77,6 +77,36 @@ _GATE_UNAVAILABLE = "gate-unavailable (fail-closed)"
 WRITE_GATE_SKIP_PREFIX = "skipped write:"
 
 
+# The stall detector (transplanted from the engine isolate). A second identical call this turn
+# (once to inspect, once to verify a write) is ordinary; by the THIRD there is no reading under
+# which the turn is making progress — the call is refused as a disclosed error incident instead of
+# burning the iteration budget. Counted off `tool_events`, what ACTUALLY RAN, never what was
+# planned or proposed: a model cannot notice its own loop; the engine can, for free.
+STALL_REPEATS = 2
+
+STALL_TEXT = (
+    "error: this exact call ({name} with the same arguments) has already run {n} times this "
+    "turn without changing anything — the step is looping, so it was not executed again"
+)
+
+
+def _args_key(args) -> str:
+    """A stable, order-independent identity for a call's arguments."""
+    if not isinstance(args, dict):
+        return str(args)
+    return repr(sorted((str(k), str(v)) for k, v in args.items()))
+
+
+def _identical_call_count(state, name, args) -> int:
+    """How many times this exact (tool, arguments) pair has already EXECUTED this turn."""
+    target = (str(name), _args_key(args))
+    return sum(
+        1
+        for ev in state.get("tool_events") or []
+        if isinstance(ev, dict) and (str(ev.get("name")), _args_key(ev.get("args"))) == target
+    )
+
+
 def _is_empty_result(res) -> bool:
     if res is None:
         return True
@@ -308,6 +338,17 @@ def execute_node(state: AgentState):
         step["status"] = "error"
         updates.update(_metrics(resp))
         diag.log(f"execute_node : {time.perf_counter() - start:.4f}s (no call: {failure!r:.80})")
+        return updates
+
+    # The stall detector: the same call with the same arguments, already executed STALL_REPEATS
+    # times this turn, is a loop — refused as an error incident (structural stamp) with no call
+    # emitted; rectify then treats it like any other incident. Deterministic, no model in the loop.
+    repeats = _identical_call_count(state, tool_name, args)
+    if repeats >= STALL_REPEATS:
+        step["result"] = STALL_TEXT.format(name=tool_name, n=repeats)
+        step["status"] = "error"
+        updates.update(_metrics(resp))
+        diag.log(f"execute_node : {time.perf_counter() - start:.4f}s (stall: {tool_name} x{repeats})")
         return updates
 
     # Emit the corrected call as a tool-calling AIMessage: the approval gate + tool node take it

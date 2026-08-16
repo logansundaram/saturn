@@ -27,9 +27,12 @@ FAMILY_PREFIXES: tuple[str, ...] = ("qwen3.5", "qwen3.6", "qwen3.8")
 _FAMILY_RE = re.compile(r"^(?:qwen3\.5|qwen3\.6|qwen3\.8)(?::|$)", re.IGNORECASE)
 
 # size class -> the most advanced family tag at that size. Tags are stored VERBATIM: Ollama tags
-# are case-sensitive and the 0.8B tag really does carry a capital B.
+# are case-sensitive and the 0.8B tag really does carry a capital B. The class KEY is "800m", not
+# "0.8b" — config.get/set/persist parse dotted paths, so a "." inside a tier key silently splits
+# it into two segments and corrupts a role bind (fixed 2026-08-16; see
+# tests/test_model_family.py::test_no_size_class_key_contains_a_dot).
 SIZE_LADDER: tuple[tuple[str, str], ...] = (
-    ("0.8b", "qwen3.5:0.8B"),
+    ("800m", "qwen3.5:0.8B"),
     ("2b", "qwen3.5:2b"),
     ("4b", "qwen3.5:4b"),
     ("9b", "qwen3.5:9b"),
@@ -43,7 +46,7 @@ DEFAULT_CLASS = "4b"
 
 # Real parameter counts (billions, from `ollama show`) — the nearest-size fallback's yardstick.
 _CLASS_PARAMS: dict[str, float] = {
-    "0.8b": 0.87, "2b": 2.3, "4b": 4.7, "9b": 9.7, "27b": 27.3, "35b": 36.0,
+    "800m": 0.87, "2b": 2.3, "4b": 4.7, "9b": 9.7, "27b": 27.3, "35b": 36.0,
 }
 
 # Exact substitutions for the tags that shipped before the lock. The size parse below would

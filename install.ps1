@@ -13,12 +13,12 @@ $RepoUrl    = if ($env:SATURDAY_REPO)   { $env:SATURDAY_REPO }   else { 'https:/
 $Branch     = if ($env:SATURDAY_BRANCH) { $env:SATURDAY_BRANCH } else { 'main' }
 $InstallDir = if ($env:SATURDAY_HOME)   { $env:SATURDAY_HOME }   else { Join-Path $env:USERPROFILE '.saturday' }
 $BinDir     = if ($env:SATURDAY_BIN)    { $env:SATURDAY_BIN }    else { Join-Path $InstallDir 'bin' }
-# Active tier for a fresh install. 'laptop' uses the small gemma4 models (light download, runs on
-# modest hardware); switch to 'workstation'/'cloud-hybrid' later via /models.
-$Tier       = if ($env:SATURDAY_TIER)   { $env:SATURDAY_TIER }   else { 'laptop' }
-# Local models the laptop tier needs (small gemma4 chat model + the RAG embedder). Must match the
-# `laptop` tier bindings in config.yaml - pulling different models than the tier binds breaks the
-# first run. If you override this, rebind the roles afterwards with /models.
+# Active tier for a fresh install. '4b' uses qwen3.5:4b (a light download that runs on modest
+# hardware); switch to a larger size class later via /models tier.
+$Tier       = if ($env:SATURDAY_TIER)   { $env:SATURDAY_TIER }   else { '4b' }
+# Local models the 4b tier needs (qwen3.5:4b + the RAG embedder). Must match the `4b` tier
+# bindings in config.yaml - pulling different models than the tier binds breaks the first run.
+# If you override this, rebind the roles afterwards with /models.
 $Models     = if ($env:SATURDAY_MODELS) { $env:SATURDAY_MODELS -split '\s+' } else { @('qwen3.5:4b', 'qwen3-embedding:8b') }
 # Minimum Ollama daemon version. Older daemons can't pull the current model formats (the pull
 # fails or the model runs wrong), so we update below if the installed one is behind this.

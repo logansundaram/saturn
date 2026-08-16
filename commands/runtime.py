@@ -206,9 +206,10 @@ def _models(ctx, args):
                 _print(f"   {mark} {name}")
             return
         tier = args[1]
-        # Dict membership, not the dotted cfg.get("tiers.<tier>") path lookup — a size-class
-        # tier key like "0.8b" contains a literal dot and would otherwise be misread as two
-        # path segments ("0"/"8b") and always report unknown.
+        # Dict membership, not the dotted cfg.get("tiers.<tier>") path lookup — a tier key
+        # containing a literal dot would otherwise be misread as two path segments and always
+        # report unknown (hit this with the size-class key "0.8b", renamed to "800m" for the
+        # same reason — see core/model_family.py).
         if tier not in cfg.get("tiers", {}):
             _print(f"  unknown tier: {tier} (defined: {list(cfg.get('tiers', {}))})")
             return

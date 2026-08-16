@@ -207,10 +207,13 @@ tiers:
   # outside the family is substituted in memory with the nearest size class and warned about at
   # startup; this file is never rewritten behind your back.
   #
-  # The 0.8b and 2b tiers are offered for completeness. The plan/execute engine leans on
+  # The 800m and 2b tiers are offered for completeness. The plan/execute engine leans on
   # reliable structured output and native tool-calling, and neither size has been through the
   # trust benchmark — treat them as unvalidated.
-  0.8b:
+  # (Key is "800m", not "0.8b" — config.get/set/persist parse dotted paths, and a "." in a tier
+  # key silently splits it into two segments and corrupts a role bind. The MODEL TAG below is
+  # still Ollama's own "qwen3.5:0.8B", unchanged.)
+  800m:
     provider: ollama
     roles:
       planner: "qwen3.5:0.8B"       # capital B — the Ollama tag is case-sensitive

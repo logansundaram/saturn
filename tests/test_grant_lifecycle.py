@@ -156,3 +156,15 @@ def test_fresh_turn_opens_a_task(isolated_paths):
     policy.add_shell_allow("git status")
     _fresh_turn(_initial_state(), "hello")
     assert policy.shell_allow() == []
+
+
+def test_a_failing_restorer_is_named_never_swallowed(isolated_paths):
+    """A tier drop whose undo fails would be lingering authority: end_task must NAME it (the REPL
+    warns and points at /policy risk reset) instead of swallowing the failure."""
+    def bad():
+        raise RuntimeError("registry gone")
+
+    policy.on_task_end(bad)
+    out = policy.end_task()
+    assert out["failed"] and "registry gone" in out["failed"][0]
+    assert policy.grant_log()[-1]["failed"]

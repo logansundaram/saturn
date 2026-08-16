@@ -314,18 +314,22 @@ def end_task() -> dict:
     expired = [g["prefix"] for g in _task_allow]
     _task_allow.clear()
     restored = []
+    failed = []
     for fn in list(_task_restorers):
         try:
             name = fn()
             if name:
                 restored.append(str(name))
-        except Exception as exc:  # an undo must never take the turn down with it
+        except Exception as exc:  # an undo must never take the turn down with it — but a tier
+            # drop left standing is lingering authority: NAMED in the return so the loop's note
+            # tells the user (never silently swallowed).
             diag.log(f"policy: task-boundary restore failed: {exc}")
+            failed.append(f"{type(exc).__name__}: {exc}")
     _task_restorers.clear()
-    if expired or restored:
+    if expired or restored or failed:
         _grant_log.append({"event": "expire", "at": time.time(),
-                           "prefixes": expired, "tools": restored})
-    return {"prefixes": expired, "tools": restored}
+                           "prefixes": expired, "tools": restored, "failed": failed})
+    return {"prefixes": expired, "tools": restored, "failed": failed}
 
 
 def grant_log() -> list:

@@ -384,6 +384,11 @@ def run_repl() -> None:
             ui.note(f"always-allow grants expired with this turn: {what}  "
                     "(lifetime: /config runtime.grant_scope · durable: /policy allow / "
                     "/policy risk --save)")
+        if expired_grants.get("failed"):
+            ui.warn("a task-scoped tier grant could NOT be restored at the turn boundary — the "
+                    "tool may still be auto-approved; check /policy and reset with "
+                    "/policy risk <tool> reset ("
+                    + "; ".join(expired_grants["failed"]) + ")")
         if late_steer:
             ui.note(
                 "your steering correction arrived after the turn had finished — it could not be "

@@ -363,3 +363,27 @@ def test_wrong_typed_policy_fields_fail_closed(isolated_paths, monkeypatch):
                     encoding="utf-8")
     assert policy.shell_allow() == []
     assert policy.load_problem()
+
+
+def test_explicit_tier_choice_supersedes_the_gate_off_snapshot(isolated_paths):
+    """Transplanted from the gating isolate: `/policy open on`, then an explicit tier choice
+    (Shift+Tab / /config) while open, then `/policy open off` must land on the tier the user
+    set LAST — never restore a tier ABOVE it from the pre-open snapshot."""
+    prev = policy.tier()
+    try:
+        policy.set_tier("side_effecting")
+        policy.set_gate_off(True)
+        assert policy.tier() == "destructive"
+        # The user deliberately drops to read_only while the gate is open…
+        policy.set_tier("read_only")
+        assert not policy.gate_off()
+        # …so `off` must not resurrect side_effecting from the snapshot.
+        policy.set_gate_off(False)
+        assert policy.tier() == "read_only"
+        # And the normal round trip still restores the prior threshold.
+        policy.set_tier("side_effecting")
+        policy.set_gate_off(True)
+        policy.set_gate_off(False)
+        assert policy.tier() == "side_effecting"
+    finally:
+        _restore_tier(prev)

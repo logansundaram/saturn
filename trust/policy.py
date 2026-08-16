@@ -92,11 +92,15 @@ def tier() -> str:
 def set_tier(new_tier: str, save: bool = False) -> str:
     """Set the threshold (session-scoped, like every cfg.set; `save` persists to config.yaml).
     Unknown tiers fail closed to read_only. Returns the tier actually set."""
+    global _tier_before_gate_off
     if new_tier not in RISK_ORDER:
         new_tier = "read_only"
     get_config().set("runtime.auto_approve", new_tier)
     if save:
         persist("runtime.auto_approve")
+    # An explicit tier choice supersedes any gate-open snapshot: `/policy open off` must never
+    # restore a tier ABOVE the one the user set last (transplanted from the gating isolate).
+    _tier_before_gate_off = None
     return new_tier
 
 
@@ -120,12 +124,11 @@ def set_gate_off(off: bool) -> None:
     close it by restoring the prior threshold (read_only if none was recorded — fail closed)."""
     global _tier_before_gate_off
     if off:
-        if not gate_off():
-            _tier_before_gate_off = tier()
-        set_tier("destructive")
+        prior = _tier_before_gate_off if gate_off() else tier()
+        set_tier("destructive")  # clears the snapshot — reinstate it after
+        _tier_before_gate_off = prior
     else:
-        set_tier(_tier_before_gate_off or "read_only")
-        _tier_before_gate_off = None
+        set_tier(_tier_before_gate_off or "read_only")  # set_tier clears the snapshot
 
 
 # --- the one gate question ----------------------------------------------------------------

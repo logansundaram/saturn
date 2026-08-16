@@ -107,6 +107,9 @@ to learn, audit, and maintain — none removes a protection.
   allowlist should be, a list where the overrides mapping should be) now fails closed like a
   garbled file — strict defaults, recorded at startup, the file kept aside as `.corrupt` —
   instead of being iterated as-is.
+- Choosing an approval tier explicitly (Shift+Tab, `/config runtime.auto_approve`) while the
+  gate is open now supersedes the pre-open snapshot, so `/policy open off` lands on the tier
+  you set last instead of restoring a looser one.
 - The approval gate now approves a batch only on an explicit approval; any unrecognized
   resume value rejects (previously any truthy value approved).
 - An answer that came back empty no longer swallows the engine's own disclosures: the

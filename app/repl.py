@@ -230,6 +230,7 @@ def run_repl() -> None:
             "callbacks": [tracer.llm_handler(run_id)],
         }
         ui.reset_turn()  # reset node-timing + plan-diff state for this turn's trace
+        expired_grants = {"prefixes": [], "tools": []}  # filled at the task boundary (finally)
         # Renders the synthesize node's answer token-by-token as it streams (on_token below). It
         # opens the response section on the first token and is finished (or aborted) after the turn.
         answer = ui.ResponseStream()
@@ -314,6 +315,16 @@ def run_repl() -> None:
             # their words. Salvage it into the type-ahead queue so it runs as the next message
             # (echoed when drained); the note explaining why prints after the answer renders,
             # never here (printing inside finally could interleave with the live answer region).
+            # Close the grant-lifecycle task: every task-scoped always-allow grant made at this
+            # turn's gate expires here (prefix grants + tier drops), so authority never outlives
+            # the turn that motivated it. Disclosed after the answer renders (below) — a grant
+            # that vanishes silently is as confusing as one that lingers. Never raises.
+            try:
+                from trust import policy as _policy
+
+                expired_grants = _policy.end_task()
+            except Exception as exc:
+                diag.log(f"grant lifecycle end_task failed: {exc}")
             late_req = pause_controller.peek()
             late_steer = (
                 late_req.reason
@@ -366,6 +377,14 @@ def run_repl() -> None:
         # the type-ahead queue (see the finally block above) — tell the user what happened to it.
         # On the error/Ctrl-C paths this note is skipped, but the queued line still echoes when
         # drained, so the correction is never invisible.
+        if expired_grants.get("prefixes") or expired_grants.get("tools"):
+            what = ", ".join(
+                [f'run_shell "{p}"' for p in expired_grants.get("prefixes") or []]
+                + list(expired_grants.get("tools") or [])
+            )
+            ui.note(f"always-allow grants expired with this turn: {what}  "
+                    "(lifetime: /config runtime.grant_scope · durable: /policy allow / "
+                    "/policy risk --save)")
         if late_steer:
             ui.note(
                 "your steering correction arrived after the turn had finished — it could not be "

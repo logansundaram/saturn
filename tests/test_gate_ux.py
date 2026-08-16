@@ -661,3 +661,14 @@ def test_write_preview_renders_the_verdict(isolated_paths, monkeypatch, capsys):
     assert "no change" in out
     approval._render_write_diff({"file_path": "../nope.txt", "content": "x"})
     assert "REFUSED" in capsys.readouterr().out
+
+
+def test_always_allow_note_names_the_lifetime(isolated_paths, monkeypatch, capsys):
+    """The `a` disclosure says how long the grant lives — the lifetime IS the security property
+    (transplanted from the gating isolate; default task scope = the rest of this turn)."""
+    monkeypatch.setattr(approval, "_RICH", False)
+    monkeypatch.setattr("tools.registry", types.SimpleNamespace(TOOL_RISK={}), raising=False)
+    decision = approval._always_allow(
+        [{"id": "1", "name": "write_file", "risk": "side_effecting", "args": {}}], lambda p: "n")
+    assert decision["tools"] == ["write_file"]
+    assert "for the rest of this turn" in capsys.readouterr().out

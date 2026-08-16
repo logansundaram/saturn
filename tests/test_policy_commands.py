@@ -327,3 +327,29 @@ def test_dryrun_is_a_renamed_pointer_not_a_command(gate, ctx, capsys):
     out = capsys.readouterr().out
     assert "moved" in out and "plan review" in out
     assert gate.get("runtime.dry_run") is None  # the knob no longer exists, nothing was set
+
+
+# ── grant lifetimes at the command surface (transplanted from the gating isolate) ────────────
+
+
+def test_allow_command_persists_and_lists_scopes(gate, ctx, capsys):
+    """`/policy allow <prefix>` IS the durable allowlist edit — persist scope regardless of the
+    gate's default lifetime; the listing names each prefix's lifetime and removal reaches every
+    scope by index over the effective list."""
+    dispatch("/policy allow git status", ctx)
+    capsys.readouterr()
+    assert policy.persisted_shell_allow() == ["git status"]
+    policy.add_shell_allow("git log")  # a task-scoped gate grant, for contrast
+    dispatch("/policy allow", ctx)
+    out = capsys.readouterr().out
+    assert "git status" in out and "(persisted)" in out
+    assert "git log" in out and "(this turn)" in out
+    dispatch("/policy allow remove 1", ctx)  # index 1 = the task-scoped one (expiry order)
+    capsys.readouterr()
+    assert policy.shell_allow() == ["git status"]
+
+
+def test_bare_policy_readout_names_the_grant_lifetime(gate, ctx, capsys):
+    dispatch("/policy", ctx)
+    out = capsys.readouterr().out
+    assert "always-allow lifetime" in out and "task" in out

@@ -40,6 +40,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 
 import diag
 from config import get_config, persist, RISK_ORDER
@@ -260,48 +261,160 @@ def clear_risk_override(tool: str) -> bool:
     return True
 
 
+# --- grant lifecycle (transplanted from the gating isolate, 2026-08-15) ---------------------
+#
+# Every always-allow grant carries a LIFETIME. `task` dies at the next turn boundary (the
+# default — the shortest lifetime, so an unknown/garbled scope fails closed to it), `session`
+# dies with the process, and only `persist` reaches permissions.json. Before this, the gate's `a`
+# dropped a tool's tier for the whole session and persisted a shell prefix forever from one
+# keypress — the longest-lived grant in the gate, with nothing to see or revoke it (lingering
+# authority: a grant that outlives the task that motivated it). The `/policy allow` COMMAND is an
+# explicit allowlist edit and stays persist-scoped; only the gate's `a` takes the default.
+
+GRANT_SCOPES = ("task", "session", "persist")
+
+# {"prefix", "granted_at", "scope"} entries; only `persist` scope lives in permissions.json.
+_task_allow: list = []
+_session_allow: list = []
+
+# Undo callbacks run at the task boundary for non-shell grants (tier drops). Registered by
+# nodes/approval._apply_always_grants — this module imports only config + diag, so the undo lives
+# with the code that applied it.
+_task_restorers: list = []
+
+# Every grant, revoke and expiry, in order — the audit trail (grant_log()).
+_grant_log: list = []
+
+
+def default_grant_scope() -> str:
+    """The lifetime a gate `a` grant gets (`runtime.grant_scope`); anything unrecognized fails
+    closed to `task`, the shortest."""
+    try:
+        s = get_config().get("runtime.grant_scope", "task")
+    except Exception:
+        return "task"
+    return s if s in GRANT_SCOPES else "task"
+
+
+def on_task_end(fn) -> None:
+    """Register an undo to run at the next task boundary (returns the tool name it restored)."""
+    _task_restorers.append(fn)
+
+
+def begin_task() -> None:
+    """Open a task (a turn). Any task-scoped grant still standing from a previous task is expired
+    here as well, so an aborted turn cannot leak authority into the next one."""
+    end_task()
+
+
+def end_task() -> dict:
+    """Close a task: expire every task-scoped prefix grant and undo every task-scoped tier drop.
+    Returns {"prefixes": [...], "tools": [...]} — what expired — so the loop can DISCLOSE it (a
+    grant that vanishes silently is as confusing as one that lingers). Never raises."""
+    expired = [g["prefix"] for g in _task_allow]
+    _task_allow.clear()
+    restored = []
+    for fn in list(_task_restorers):
+        try:
+            name = fn()
+            if name:
+                restored.append(str(name))
+        except Exception as exc:  # an undo must never take the turn down with it
+            diag.log(f"policy: task-boundary restore failed: {exc}")
+    _task_restorers.clear()
+    if expired or restored:
+        _grant_log.append({"event": "expire", "at": time.time(),
+                           "prefixes": expired, "tools": restored})
+    return {"prefixes": expired, "tools": restored}
+
+
+def grant_log() -> list:
+    """The audit trail: every grant, revoke and expiry, in order (session-scoped, in memory)."""
+    return list(_grant_log)
+
+
+def reset_grants() -> None:
+    """Drop every in-memory grant, restorer and log entry (tests; never called by the app)."""
+    _task_allow.clear()
+    _session_allow.clear()
+    _task_restorers.clear()
+    _grant_log.clear()
+
+
 # --- run_shell prefix allowlist (/policy allow) -----------------------------------------
 
 
-def shell_allow() -> list[str]:
+def persisted_shell_allow() -> list[str]:
+    """The prefixes in permissions.json — what a brand-new process would inherit."""
     return list(_load()["shell_allow"])
 
 
-def add_shell_allow(prefix: str) -> bool:
-    """Store a prefix; False if it (case-insensitively) is already stored. Raises ValueError on
-    text that could never be a gate-exempt prefix (`shell_prefix_rejects`: empty, or carrying a
-    shell metacharacter) — storing it anyway would create a permanently-inert grant that the
-    confirmation copy then claims skips the gate, a posture the matcher (`shell_allowed`)
-    contradicts. The screen runs on the RAW input BEFORE whitespace normalization: normalization
-    collapses newlines into spaces, which would launder one metacharacter class straight past the
-    screen."""
+def shell_allow() -> list[str]:
+    """The EFFECTIVE allowlist: task + session + persisted, in expiry order."""
+    return ([g["prefix"] for g in _task_allow]
+            + [g["prefix"] for g in _session_allow]
+            + persisted_shell_allow())
+
+
+def shell_allow_by_scope() -> dict:
+    """The allowlist split by lifetime, for display — the scope IS the security property."""
+    return {
+        "task": [g["prefix"] for g in _task_allow],
+        "session": [g["prefix"] for g in _session_allow],
+        "persist": persisted_shell_allow(),
+    }
+
+
+def add_shell_allow(prefix: str, scope: "str | None" = None) -> bool:
+    """Store a prefix at `scope` (default: `default_grant_scope()`); False if it is already
+    stored (case-insensitively) at that scope. Raises ValueError on text that could never be a
+    gate-exempt prefix (`shell_prefix_rejects`: empty, a shell metacharacter, non-ASCII) —
+    storing it anyway would create a permanently-inert grant that the confirmation copy then
+    claims skips the gate, a posture the matcher (`shell_allowed`) contradicts. The screen runs
+    on the RAW input BEFORE whitespace normalization: normalization collapses newlines into
+    spaces, which would launder one metacharacter class straight past the screen."""
     reason = shell_prefix_rejects(prefix)
     if reason:
         raise ValueError(reason)
     prefix = " ".join(prefix.split())
-    data = _load()
-    if any(p.lower() == prefix.lower() for p in data["shell_allow"]):
-        return False
-    data["shell_allow"].append(prefix)
-    _save(data)
+    scope = scope if scope in GRANT_SCOPES else default_grant_scope()
+    if scope == "persist":
+        data = _load()
+        if any(p.lower() == prefix.lower() for p in data["shell_allow"]):
+            return False
+        data["shell_allow"].append(prefix)
+        _save(data)
+    else:
+        store = _task_allow if scope == "task" else _session_allow
+        if any(g["prefix"].lower() == prefix.lower() for g in store):
+            return False
+        store.append({"prefix": prefix, "granted_at": time.time(), "scope": scope})
+    _grant_log.append({"event": "grant", "at": time.time(), "prefix": prefix, "scope": scope})
     return True
 
 
 def remove_shell_allow(token: str) -> "str | None":
-    """Remove a prefix by 1-based index or exact text; returns what was removed, or None."""
-    data = _load()
-    allow = data["shell_allow"]
-    removed = None
-    if token.isdigit() and 1 <= int(token) <= len(allow):
-        removed = allow.pop(int(token) - 1)
+    """Remove a prefix by 1-based index (over the EFFECTIVE list) or exact text; returns what was
+    removed, or None. Searches every scope — a grant the user can see, they can revoke."""
+    effective = shell_allow()
+    if token.isdigit() and 1 <= int(token) <= len(effective):
+        target = effective[int(token) - 1]
     else:
-        for i, p in enumerate(allow):
-            if p.lower() == token.strip().lower():
-                removed = allow.pop(i)
-                break
-    if removed is not None:
-        _save(data)
-    return removed
+        target = token.strip()
+    for store in (_task_allow, _session_allow):
+        for i, g in enumerate(store):
+            if g["prefix"].lower() == target.lower():
+                removed = store.pop(i)["prefix"]
+                _grant_log.append({"event": "revoke", "at": time.time(), "prefix": removed})
+                return removed
+    data = _load()
+    for i, p in enumerate(data["shell_allow"]):
+        if p.lower() == target.lower():
+            removed = data["shell_allow"].pop(i)
+            _save(data)
+            _grant_log.append({"event": "revoke", "at": time.time(), "prefix": removed})
+            return removed
+    return None
 
 
 def shell_prefix_rejects(text: str) -> "str | None":
@@ -388,13 +501,14 @@ def shell_allowed(command: str) -> "str | None":
     equality (not startswith) so "git status" never matches "git statusx"."""
     if shell_prefix_rejects(command):
         return None
-    for prefix in _load()["shell_allow"]:
+    for prefix in shell_allow():  # task + session + persisted — validate-at-USE, every scope
         if shell_prefix_covers(prefix, command):
             return prefix
     return None
 
 
-def grant_shell_prefix(prefix: str, command: str, *, dry_run: bool = False) -> "tuple[bool, str]":
+def grant_shell_prefix(prefix: str, command: str, *, dry_run: bool = False,
+                       scope: "str | None" = None) -> "tuple[bool, str]":
     """The gate's scoped always-allow grant: validate `prefix` against `command` through the one
     matcher and (unless `dry_run`) persist it to the /policy allow store. Returns (command now exempt?,
     disclosure message — the gate UI prints it verbatim).
@@ -419,7 +533,11 @@ def grant_shell_prefix(prefix: str, command: str, *, dry_run: bool = False) -> "
         # An already-stored prefix covers this command; the new one adds nothing for it — no
         # redundant entry to stack up for the user to audit later.
         return True, f'run_shell: already covered by allowlisted prefix "{matched}"'
+    scope = scope if scope in GRANT_SCOPES else default_grant_scope()
     if not dry_run:
-        add_shell_allow(prefix)  # screened above — cannot raise
+        add_shell_allow(prefix, scope=scope)  # screened above — cannot raise
+    lifetime = {"task": "expires at the end of this turn",
+                "session": "expires when Saturn exits",
+                "persist": "persisted to permissions.json — survives restarts"}[scope]
     return True, (f'run_shell: always-allowing commands starting "{prefix}" '
-                  "(persisted to the allowlist; undo: /policy allow remove)")
+                  f"({lifetime}; undo: /policy allow remove)")

@@ -19,6 +19,7 @@ _TRUST_KEYS = frozenset({
     "runtime.quarantine",
     "runtime.redaction",
     "shell.env_scrub",   # emptying it lets a shell child read secrets from its environment
+    "runtime.grant_scope",  # session/persist lengthen how long an always-allow grant lives
 })
 
 # Existence sentinel for cfg.get: distinguishes a key that is ABSENT from one present with an

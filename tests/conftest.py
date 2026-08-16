@@ -47,3 +47,15 @@ def isolated_paths(tmp_path, monkeypatch):
     for name, p in redirects.items():
         monkeypatch.setitem(cfg._data["paths"], name, str(p))
     return tmp_path
+
+
+@pytest.fixture(autouse=True)
+def _reset_grant_lifecycle():
+    """The always-allow grant lifecycle (trust/policy: task/session-scoped grants, task-boundary
+    restorers, the grant log) is process-level state — clear it around every test so a grant
+    made in one test can never exempt a command in another."""
+    from trust import policy
+
+    policy.reset_grants()
+    yield
+    policy.reset_grants()

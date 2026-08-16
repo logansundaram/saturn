@@ -99,6 +99,10 @@ runtime:
   # probability (default: 1.5x the threshold, capped at 0.95) instead of one merely-unlikely
   # token closing it mid-phrase. Closed-class words (the/of/is/...) are never graded on their own.
   # confidence_exit_threshold: 0.30
+  # How long a gate `a` (always-allow) grant lives: task (dies at the end of the turn — the
+  # default), session (dies when Saturn exits), persist (written to permissions.json). The
+  # /policy allow COMMAND always persists. A trust setting: session-only unless --save.
+  grant_scope: task
 
 # ---------------------------------------------------------------------------
 # Web tools (tools/web.py). API-less by design (2026-07-06): web_search is keyless DuckDuckGo,

@@ -558,9 +558,14 @@ def _always_allow(tool_calls: list, ask) -> dict:
     decision: dict = {"approved": True, "tools": granted, "shell_grants": []}
     if granted:
         listing = ", ".join(granted)
-        _grant_note(f"always-allowing this session: {listing}  "
-                    "(undo: /policy risk <tool> <tier> · persist: /policy risk <tool> "
-                    "read_only --save)")
+        # The grant's LIFETIME is the security property — say it (policy.default_grant_scope).
+        lifetime = {
+            "task": "for the rest of this turn",
+            "session": "for the rest of this session",
+            "persist": "persistently (permissions.json)",
+        }[policy.default_grant_scope()]
+        _grant_note(f"always-allowing {lifetime}: {listing}  "
+                    "(undo: /policy risk <tool> <tier> · lifetime: /config runtime.grant_scope)")
 
     if "run_shell" not in names:
         return decision

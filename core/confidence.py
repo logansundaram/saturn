@@ -55,12 +55,56 @@ def enabled() -> bool:
         return True
 
 
-def threshold() -> float:
-    """The low-token probability threshold (`runtime.confidence_threshold`)."""
+def _synthesizer_model() -> str:
+    """The model id serving the synthesizer — the one whose calibration applies to the answer."""
     try:
-        return float(get_config().get("runtime.confidence_threshold", _DEFAULT_THRESHOLD))
+        return str(get_config().model_for_role("synthesizer").model)
     except Exception:
-        return _DEFAULT_THRESHOLD
+        return ""
+
+
+def calibration_for(model: str) -> "dict | None":
+    """The calibrated {enter, exit, …} record for `model` (tag case-insensitive), or None."""
+    from core import confidence_calibration as table  # generated data module
+
+    try:
+        return table.CALIBRATION.get(str(model or "").lower())
+    except Exception:
+        return None
+
+
+def _configured_threshold():
+    """The raw config value: a float (an explicit fixed override), or None for `auto` /
+    absent / garbage (→ the per-model table, then the built-in default)."""
+    try:
+        raw = get_config().get("runtime.confidence_threshold", "auto")
+    except Exception:
+        return None
+    if isinstance(raw, bool) or raw is None:
+        return None
+    if isinstance(raw, (int, float)):
+        return float(raw)
+    try:
+        return float(str(raw).strip())
+    except (TypeError, ValueError):
+        return None  # "auto" — or garbage, which must never pick a threshold at random
+
+
+def threshold() -> float:
+    """The low-token probability threshold: an explicit numeric `runtime.confidence_threshold`
+    wins; otherwise (`auto`, the default since 2026-08-16 — C3, from the confidence_coloring
+    isolate) the synthesizer model's CALIBRATED enter threshold (`core/confidence_calibration`,
+    measured under this module's own scoring), else the built-in default."""
+    fixed = _configured_threshold()
+    if fixed is not None:
+        return fixed
+    rec = calibration_for(_synthesizer_model())
+    try:
+        if rec and 0.0 < float(rec["enter"]) < 1.0:
+            return float(rec["enter"])
+    except (KeyError, TypeError, ValueError):
+        pass
+    return _DEFAULT_THRESHOLD
 
 
 # The exit threshold's default relation to the enter threshold: LOOSER by this factor (a run
@@ -82,6 +126,14 @@ def exit_threshold(enter: "float | None" = None) -> float:
                 return v
     except Exception:
         pass
+    # Under `auto` the calibrated pair belongs together: the table's exit rides with its enter.
+    if enter is None and _configured_threshold() is None:
+        rec = calibration_for(_synthesizer_model())
+        try:
+            if rec and th <= float(rec["exit"]) <= 1.0:
+                return float(rec["exit"])
+        except (KeyError, TypeError, ValueError):
+            pass
     return min(_EXIT_CAP, th * _EXIT_FACTOR)
 
 

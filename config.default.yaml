@@ -91,10 +91,13 @@ runtime:
   # render; the receipt counts the uncertain spans. The model's own uncertainty, made visible
   # where it lands. false stops requesting logprobs entirely (nothing is captured or marked).
   confidence: true
-  # A token counts LOW below this sampled probability (0-1). RAISE to mark more aggressively,
-  # LOWER to mark only the model's wildest guesses (the stricter, quieter default). A run needs
-  # 3+ consecutive low tokens — single uncertain tokens (an open word choice) are never marked.
-  confidence_threshold: 0.20
+  # A token counts LOW below this sampled probability (0-1). `auto` (the default) uses the
+  # synthesizer model's CALIBRATED threshold (core/confidence_calibration.py — "worse than 95% of
+  # this model's clean output"; regenerate with utilities/confidence_calibrate.py) and falls back
+  # to 0.20 for an uncalibrated model. Set a NUMBER to pin it: RAISE to mark more aggressively,
+  # LOWER to mark only the model's wildest guesses. A run needs 3+ consecutive low tokens —
+  # single uncertain tokens (an open word choice) are never marked.
+  confidence_threshold: auto
   # Hysteresis: once a run is open it keeps extending through tokens under this LOOSER exit
   # probability (default: 1.5x the threshold, capped at 0.95) instead of one merely-unlikely
   # token closing it mid-phrase. Closed-class words (the/of/is/...) are never graded on their own.

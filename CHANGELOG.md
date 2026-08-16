@@ -184,6 +184,15 @@ to learn, audit, and maintain — none removes a protection.
   allowlist should be, a list where the overrides mapping should be) now fails closed like a
   garbled file — strict defaults, recorded at startup, the file kept aside as `.corrupt` —
   instead of being iterated as-is.
+- Confidence marking is now calibrated per model: `runtime.confidence_threshold` defaults to
+  `auto`, which uses the synthesizer model's own measured threshold ("worse than 95 % of this
+  model's clean output" — the shipped table covers the tier synthesizers and qwen3.8:27b;
+  regenerate with `utilities/confidence_calibrate.py`) and falls back to the old fixed 0.20 for
+  an uncalibrated model. Set a number to pin it as before. Note: Ollama 0.32 reports per-token
+  logprobs for qwen3.8 on the first chunk only, so its marks are unmeasured for now — the table
+  carries a provisional entry inherited from qwen3.6:27b until the daemon reports them. Note: Ollama 0.32 reports per-token
+  logprobs for qwen3.8 on the first chunk only, so its marks are unmeasured for now — the table
+  carries a provisional entry inherited from qwen3.6:27b until the daemon reports them.
 - Confidence marking is steadier: an uncertain run no longer flickers off on one merely-unlikely
   token (two-threshold hysteresis — `runtime.confidence_exit_threshold`, derived by default),
   and function words (the, of, is, …) never count toward or break a run — they draw low

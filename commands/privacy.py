@@ -282,7 +282,10 @@ def _airgap(ctx, args):
         if offmachine:
             roles = ", ".join(f"{r} ({p}:{m})" for r, p, m in offmachine)
             _print(f"  ⚠  off-machine role(s) will now FAIL: {roles}")
-            _print("     switch to a local tier first:  /models tier workstation")
+            from core import model_family
+
+            _print("     switch to a local tier first:  /models tier "
+                   f"{model_family.DEFAULT_CLASS}   (/models tier lists them)")
     else:
         _print("  air-gap off — network access restored.")
     if save:

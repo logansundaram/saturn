@@ -4,6 +4,7 @@ from commands._utils import (
     _resync_rag_after_model_change,
     split_persist_flags,
 )
+from core import model_family
 
 _MIN_NUM_CTX = 256  # below this Ollama can't fit the system prompts; reject obvious typos
 
@@ -18,12 +19,23 @@ _TRUST_KEYS = frozenset({
     "runtime.airgap",
     "runtime.quarantine",
     "runtime.redaction",
+    "shell.env_scrub",   # emptying it lets a shell child read secrets from its environment
+    "runtime.grant_scope",  # session/persist lengthen how long an always-allow grant lives
 })
 
 # Existence sentinel for cfg.get: distinguishes a key that is ABSENT from one present with an
 # explicit null value (cfg.get's None default conflates the two — exactly how a typo'd key used
 # to read back as a success-shaped `= None`).
 _MISSING = object()
+
+
+def _is_role_binding_key(key: str) -> bool:
+    """Whether a dotted key names a CHAT-role model binding (`tiers.<tier>.roles.<role>`) — the
+    keys /models' family gate guards. The EMBEDDER key (`tiers.<tier>.embedder`) is deliberately
+    NOT one of them: it is not a chat model, has no raw-mode template and produces no logprobs,
+    so no calibration claim rides on it (the same exemption _bind makes)."""
+    parts = str(key or "").split(".")
+    return len(parts) == 4 and parts[0] == "tiers" and parts[2] == "roles" and bool(parts[3])
 
 
 def _leaf_keys(node: dict, prefix: str = "") -> list[str]:
@@ -196,6 +208,19 @@ def _config(ctx, args):
 
     value = " ".join(values)
 
+    # The family gate, at the SECOND door (2026-08-16). `/models` refuses a non-family bind; this
+    # setter writes the very same `tiers.<t>.roles.<role>` keys and — unlike the trust keys —
+    # persists by default, so it used to write to config.yaml a binding the product refuses. The
+    # runtime seam still substitutes, so nothing uncalibrated ever ran; but the file then said one
+    # thing while the agent ran another, and the session read the refused value straight back.
+    # ONE message: commands.runtime.print_family_refusal, the same one /models prints.
+    if _is_role_binding_key(key) and not model_family.in_family(value):
+        from commands.runtime import print_family_refusal
+
+        _print(f"  {key} binds a model — nothing set.")
+        print_family_refusal(value)
+        return
+
     # Section guard: a dotted key naming a whole MAPPING must refuse — cfg.set would replace the
     # mapping with a scalar (every `web.*`-style read silently degrades to defaults for the rest
     # of the session), and a later persist would rewrite the bare `web:` header line into
@@ -334,21 +359,43 @@ def _persist_key(cfg, key: str) -> None:
 # rebuild the required-key derivation with it.)
 
 
+def _small_classes() -> tuple:
+    """The size classes the shipped config does not vouch for at the loop's structured work:
+    every class at or below the install default (config.default.yaml's own comment calls 800m
+    and 2b "offered for completeness", and 4b IS the default that a fresh install pulls)."""
+    classes = model_family.classes()
+    try:
+        return classes[:classes.index(model_family.DEFAULT_CLASS) + 1]
+    except ValueError:
+        return classes[:1]
+
+
 def _tier_honesty_line(cfg) -> "str | None":
-    """The doctor's closing tier-honesty line, when the active tier is the smallest preset
-    configured (the quick-install default): the smallest local models are fine for trying Saturn
-    but measurably less reliable at structured plans and tool calls, and the first screen should
-    say so instead of leaving it to be discovered. Convention: config.yaml's `tiers:` mapping is
-    written smallest -> largest (YAML mapping order is preserved), so the FIRST declared tier IS
-    the smallest — declaration order, never a size heuristic (summing context windows ranks
-    capacity, not model size: a 4B/128k model outsums a 32B/32k one). None when the active tier
-    isn't the first-declared preset, or only one tier exists (nothing to upgrade to)."""
+    """The doctor's closing tier-honesty line, when the active tier is one of the small ones:
+    the smallest local models are fine for trying Saturn but measurably less reliable at
+    structured plans and tool calls, and the first screen should say so instead of leaving it to
+    be discovered.
+
+    Fires for any size class at or below the install DEFAULT (2026-08-16). It used to fire only
+    for the first-declared tier, which the size-class ladder made `800m` — so the line never
+    printed for a fresh install, whose default is `4b`: a dead surface guarding the exact case
+    it exists for. A legacy (non-ladder) tier name keeps the older declaration-order rule:
+    config.yaml's `tiers:` mapping is written smallest -> largest and YAML preserves order, so
+    the FIRST declared tier IS the smallest — never a size heuristic (summing context windows
+    ranks capacity, not model size: a 4B/128k model outsums a 32B/32k one). None when only one
+    tier exists (nothing to upgrade to)."""
     tiers = cfg.get("tiers", {}) or {}
     names = list(tiers)
-    if len(names) < 2 or cfg.active_tier != names[0]:
+    if len(names) < 2:
+        return None
+    active = cfg.active_tier
+    if active in model_family.classes():
+        if active not in _small_classes():
+            return None
+    elif active != names[0]:
         return None
     model = cfg.model_for_role("tool_caller").model
-    return (f"you are on the smallest model tier ({model}) - fine for trying Saturn; "
+    return (f"you are on a small model tier ({model}) - fine for trying Saturn; "
             "/models to upgrade if your hardware allows.")
 
 

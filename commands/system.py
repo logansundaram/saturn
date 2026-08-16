@@ -34,7 +34,7 @@ _GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("conversation", ("clear", "resume")),
     ("knowledge & workspace", ("docs", "init", "memory", "undo")),
     ("trust & control", ("draft", "plan", "policy", "privacy")),
-    ("observability", ("mcp", "models", "tools", "trace")),
+    ("observability", ("confidence", "mcp", "models", "tools", "trace")),
     ("system", ("config", "help", "quit", "update")),
 )
 # (The legacy gate spellings — /risk · /allow · /autoapprove — were CUT 2026-07-06: they were

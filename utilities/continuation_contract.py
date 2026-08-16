@@ -23,7 +23,7 @@ offline pytest suite):
 
     python utilities/continuation_contract.py             # one installed model per family
     python utilities/continuation_contract.py --all       # every installed supported model
-    python utilities/continuation_contract.py --models qwen3.6:27b gemma4:e4b
+    python utilities/continuation_contract.py --models qwen3.6:27b qwen3.8:27b
 
 Exit code 0 = every graded model passed; 1 = any failure (the CI-style gate).
 """
@@ -57,8 +57,8 @@ def _run(model: str, prefix: str, n_predict: int) -> tuple[str, str]:
     """One raw-mode generation through the real primitive; returns (text, done_reason).
 
     Sampling is PINNED (greedy, no repeat penalty) so the grade is deterministic: the check
-    counts number words, and a default repeat_penalty (gemma4 ships without an explicit one, so
-    Ollama's 1.1 applies) punishes the repeated decade tokens hard enough at temperature 0 to
+    counts number words, and a default repeat_penalty (a model shipping without an explicit one
+    gets Ollama's 1.1) punishes the repeated decade tokens hard enough at temperature 0 to
     derail exact counting — a sampling artifact, not a template failure. The FEATURE itself
     never overrides sampling; only the contract's grading environment is pinned."""
     stream = continuation.continue_from(
@@ -154,7 +154,7 @@ def main() -> int:
 
     models = args.models or _default_models(args.all)
     if not models:
-        print("nothing to grade — pull a supported model (qwen3.5/3.6 or gemma4) first")
+        print("nothing to grade — pull a supported model (qwen3.5 / qwen3.6 / qwen3.8) first")
         return 1
 
     failures = 0

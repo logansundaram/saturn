@@ -1,17 +1,22 @@
 from types import SimpleNamespace
 
+import diag
 from config import get_config
 from core import confidence, continuation, provenance
-from core.plan_context import WRITE_TOOLS
+from core.plan_context import WRITE_TOOLS, authorization_basis
+from textutil import figure_literals, untraceable_figures
 from core.state import AgentState, incident_steps, unfinished_steps
 from textutil import clip, parse_doc_sources, split_call_result
 from core.llms import (
     get_model,
+    generate,
     model_id,
+    stream as llm_stream,
     extract_tok_per_sec,
     extract_prompt_tokens,
 )
-from core.messages import synthesize_sys_msg
+from core.structured import _invoke_kwargs, _model_tag
+from core.messages import COMPUTED_CORRECTIVE, GROUNDING_CORRECTIVE, synthesize_sys_msg
 from langchain.messages import HumanMessage, AIMessage, ToolMessage
 
 
@@ -76,6 +81,23 @@ def build_sources(tool_results, documents_retrieved):
         sources.append((n, _doc_source_label(d)))
         numbered_docs.append(f"[{n}] {d}")
     return numbered_tools, numbered_docs, sources
+
+
+# What the recorded answer says when the model generated nothing. A statement of fact (never
+# invented prose) so the turn still reports what happened through the trailers below instead of
+# returning a blank message — the provenance buffer keeps the empty text the model produced.
+NO_ANSWER_TEXT = "No answer text was produced for this turn."
+
+# The mechanical incidents note's header — one producer (this module), read by the tests.
+INCIDENTS_NOTE_HEADER = "Note — the following could not be completed:"
+
+# The groundedness gate's disclosure (2026-08-15, from the engine isolate): figures the answer
+# states that survived a corrective regeneration without becoming traceable. The answer is not
+# suppressed — it is MARKED, so an unverifiable number never reaches the user looking gathered.
+GROUNDING_NOTE_HEADER = "Note — these figures could not be traced to any gathered result:"
+
+# The inverse: a figure a tool PRODUCED that the answer then dropped, stated as a fact of the run.
+COMPUTED_NOTE_HEADER = "Computed this turn, from the plan's own calculation step:"
 
 
 def sources_footer(sources) -> str:
@@ -253,7 +275,13 @@ def _stream_first_pass(llm_input, freeze):
     usage = None
     got_chunk = False
     frozen = False
-    gen = model.stream(llm_input, **({"logprobs": True} if confidence.enabled() else {}))
+    seeker = continuation.FreezeSeeker(freeze)
+    # The serving layer's per-task decisions ride the stream too: think OFF for the answer,
+    # a num_predict bound, num_ctx (never a partial options dict); logprobs as a per-call kwarg.
+    stream_kwargs = dict(_invoke_kwargs("synthesizer", None, 0.7, task="answer"))
+    if confidence.enabled():
+        stream_kwargs["logprobs"] = True
+    gen = llm_stream(model, llm_input, tag=_model_tag("synthesizer"), **stream_kwargs)
     try:
         for chunk in gen:
             got_chunk = True
@@ -266,11 +294,17 @@ def _stream_first_pass(llm_input, freeze):
             if um:
                 usage = um
             text = chunk.content if isinstance(chunk.content, str) else str(chunk.content)
+            # The word-boundary freeze seek (continuation.FreezeSeeker): a freeze request lands
+            # on a word boundary — a whitespace-led chunk closes the word and is NOT appended;
+            # otherwise up to FREEZE_GRACE more chunks may land; a second Esc forces the cut.
+            if text and seeker.before_chunk(buf.get("text", ""), text):
+                frozen = True
+                break
             if text:
                 provenance.extend_model(
                     buf, text, confidence.align_chunk(text, lp) if lp else None
                 )
-            if freeze is not None and freeze.requested():
+            if seeker.after_chunk(buf.get("text", "")):
                 frozen = True  # stop pulling tokens; closing the generator stops the decode
                 break
     finally:
@@ -302,15 +336,19 @@ def _stream_continuation(model_name: str, llm_input, buf: dict, freeze):
     buf = provenance.clone(buf)
     stream = continuation.continue_from(model_name, llm_input, buf.get("text", ""))
     frozen = False
+    seeker = continuation.FreezeSeeker(freeze)  # the same word-boundary seek as the first pass
     try:
         for text in stream:
             lp = stream.last_logprobs  # this chunk's logprobs (see ContinuationStream)
+            if text and seeker.before_chunk(buf.get("text", ""), text):
+                frozen = True  # a whitespace-led chunk closed the word: cut here, unappended
+                break
             provenance.extend_model(
                 buf, text, confidence.align_chunk(text, lp) if lp else None
             )
             if sink is not None:
                 sink(text, lp)
-            if freeze is not None and freeze.requested():
+            if seeker.after_chunk(buf.get("text", "")):
                 frozen = True
                 break
     finally:
@@ -320,17 +358,36 @@ def _stream_continuation(model_name: str, llm_input, buf: dict, freeze):
 
 def _final_updates(buf: dict, incidents, sources, cancelled, *,
                    tok_per_sec: float, context_tokens: int,
-                   response_metadata=None, usage_metadata=None) -> dict:
+                   response_metadata=None, usage_metadata=None,
+                   ungrounded=(), dropped=()) -> dict:
     """The turn's terminal state delta: the buffer text becomes the recorded AIMessage (with the
     mechanical incidents note + Sources footer appended — trailers live on the MESSAGE, never in
     the buffer, so the provenance spans keep indexing the prose exactly), and the buffer itself
     is kept on state as `complete` so the answer render and the trace carry the human spans."""
     content = buf.get("text", "")
 
+    # An EMPTY generation must not silence the engine's own disclosures. Every trailer below used
+    # to be guarded on `content.strip()` — on the model having written something — so a model
+    # that returned nothing produced a turn with no answer, no statement that a rejected write
+    # had not happened, and no sources: a fail-OPEN on the one path this node promises to be
+    # fail-closed (measured live in the engine isolate: `held.guard.reject_write` returned ''
+    # on one model while passing on two others). Each trailer is now gated on its OWN trigger,
+    # and an empty answer becomes a stated fact — the buffer keeps the empty text (no invented
+    # prose ever enters the provenance record).
+    if not content.strip():
+        content = NO_ANSWER_TEXT
+
+    # The computed-value and groundedness disclosures (fail-closed by MARKING — the answer stays,
+    # the unverifiable figure never passes as gathered).
+    if dropped:
+        content = content.rstrip() + f"\n\n{COMPUTED_NOTE_HEADER} " + ", ".join(dropped)
+    if ungrounded:
+        content = content.rstrip() + f"\n\n{GROUNDING_NOTE_HEADER} " + ", ".join(ungrounded)
+
     # A mechanical incidents note under the answer, mirroring the prompt-level disclosure: the
     # user sees what could not be completed even when the model soft-pedals it.
-    if incidents and content.strip():
-        content = content.rstrip() + "\n\nNote — the following could not be completed:\n" + "\n".join(
+    if incidents:
+        content = content.rstrip() + f"\n\n{INCIDENTS_NOTE_HEADER}\n" + "\n".join(
             f"- {i}" for i in incidents
         )
 
@@ -339,7 +396,7 @@ def _final_updates(buf: dict, incidents, sources, cancelled, *,
     # message on finish (ui.ResponseStream.finish(final_text) — see app/repl.py) and the footer
     # appears there. Skipped when nothing was gathered — a pure-knowledge answer has no sources.
     footer = sources_footer(sources)
-    if footer and content.strip():
+    if footer:
         content = content.rstrip() + "\n\n" + footer
 
     msg_kwargs = {"response_metadata": response_metadata or {}}
@@ -353,6 +410,124 @@ def _final_updates(buf: dict, incidents, sources, cancelled, *,
         "tok_per_sec": tok_per_sec,
         "context_tokens": context_tokens,
     }
+
+
+# ── the groundedness gate + the computed-value check (from the engine isolate, 2026-08-15) ─────
+#
+# Every other LLM boundary in this engine verifies its own output and retries with a specific
+# corrective — core.structured on a parse failure, nodes.execute on a rejected tool call.
+# Synthesis was the one that did neither, which is why a figure the model computed in prose
+# reached the user indistinguishable from one a tool returned. Check → correct ONCE → disclose.
+# The correction runs on a normal first pass only; on a RESUME the human edited the prefix and
+# regenerating would discard their edit (their text outranks the engine's self-correction) — so
+# the resume pass DETECTS and marks without regenerating.
+
+
+def observation_pool(state: AgentState, query: str) -> str:
+    """Everything a figure in the answer may legitimately have come from: the human's words and
+    the OBSERVATIONS this turn gathered. Reasoning-step results are deliberately excluded — a
+    "none" step's text is model text, and admitting it would let a fabricated figure launder
+    itself (the reasoning step invents 515, the answer repeats it, 515 is now "traceable")."""
+    parts = [str(query or "")]
+    parts += [str(r) for r in state.get("tool_results") or []]
+    parts += [str(d) for d in state.get("documents_retrieved") or []]
+    parts += [
+        str(s.get("result") or "")
+        for s in state.get("plan") or []
+        if s.get("intended_tool") and s.get("result") is not None
+    ]
+    return "\n".join(parts)
+
+
+def gate_applies(state: AgentState) -> bool:
+    """The gate runs only when the turn actually OBSERVED something: where nothing was gathered
+    there is no ground truth to override, and a general-knowledge answer ("a 256-bit hash") draws
+    on the model's own knowledge exactly as it should."""
+    return any(
+        s.get("intended_tool") and s.get("result") is not None
+        for s in state.get("plan") or []
+    )
+
+
+def ungrounded_figures(buf: dict, state: AgentState, query: str) -> tuple:
+    """Figures the answer states that trace to nothing this turn gathered (the DETECTION half)."""
+    if not gate_applies(state):
+        return ()
+    return tuple(untraceable_figures(buf.get("text", ""), observation_pool(state, query)))
+
+
+def required_figures(state: AgentState) -> tuple:
+    """The figures this turn COMPUTED that the answer is expected to state — only the LAST
+    completed computing step counts (intermediate arithmetic legitimately stays out), and OFF
+    whenever the turn has incidents (a disclosure outranks a figure)."""
+    from nodes.rectify import COMPUTE_TOOLS
+
+    plan = state.get("plan") or []
+    if incidents_block(plan):
+        return ()
+    computed = [
+        s for s in plan
+        if s.get("intended_tool") in COMPUTE_TOOLS and s.get("status") == "done"
+        and s.get("result") is not None
+    ]
+    if not computed:
+        return ()
+    return tuple(lit for _v, lit in figure_literals(computed[-1].get("result")))
+
+
+def unstated_computed_figures(buf: dict, state: AgentState) -> tuple:
+    """Figures this turn COMPUTED that the answer does not state (detection half)."""
+    required = required_figures(state)
+    if not required:
+        return ()
+    return tuple(untraceable_figures(" ".join(required), buf.get("text", "")))
+
+
+def _regenerate(model, llm_input, corrective: str) -> str:
+    """ONE corrective regeneration — a plain resample reproduces the same arithmetic, so the retry
+    carries the specific complaint. '' when the model errors (the ladder falls back to disclosing)."""
+    try:
+        resp = generate(model, list(llm_input) + [HumanMessage(content=corrective)],
+                        tag=_model_tag("synthesizer"),
+                        **_invoke_kwargs("synthesizer", None, 0.7, task="correction"))
+        text = getattr(resp, "content", "")
+        return text if isinstance(text, str) else str(text)
+    except Exception as exc:
+        diag.log(f"synthesize_node : corrective regeneration failed ({exc})")
+        return ""
+
+
+def _rewritten(buf: dict, text: str) -> dict:
+    """The corrected answer as a fresh all-model buffer (a first-pass buffer carries no human
+    spans; the confidence overlay of the discarded draft does not describe the new text)."""
+    return {**provenance.append_model(provenance.new_buffer(), text),
+            **{k: buf[k] for k in ("state",) if k in buf}}
+
+
+def _ground_answer(buf: dict, model, llm_input, state: AgentState, query: str):
+    """Check, correct once, disclose. Returns (buffer, ungrounded_literals) — an empty tuple means
+    the answer is fully traceable. A failed retry keeps the original answer and discloses:
+    suppressing the answer would lose the parts that WERE grounded."""
+    untraceable = ungrounded_figures(buf, state, query)
+    if not untraceable:
+        return buf, ()
+    text = _regenerate(model, llm_input, GROUNDING_CORRECTIVE.format(bad=", ".join(untraceable)))
+    if text.strip():
+        still = untraceable_figures(text, observation_pool(state, query))
+        return _rewritten(buf, text), tuple(still)
+    return buf, tuple(untraceable)
+
+
+def _state_computed(buf: dict, model, llm_input, state: AgentState):
+    """The inverse ladder: the answer must state what the turn computed; correct once, disclose."""
+    missing = unstated_computed_figures(buf, state)
+    if not missing:
+        return buf, ()
+    text = _regenerate(model, llm_input, COMPUTED_CORRECTIVE.format(missing=", ".join(missing)))
+    if text.strip():
+        still = untraceable_figures(" ".join(required_figures(state)), text)
+        return _rewritten(buf, text), tuple(still)
+    return buf, tuple(missing)
 
 
 def synthesize_node(state: AgentState):
@@ -507,10 +682,25 @@ def synthesize_node(state: AgentState):
         # (route_after_synthesize). No message lands yet — the turn is mid-answer.
         return {"answer_buffer": {**buf, "state": "frozen", "edited": False}}
 
+    # The groundedness gate + the computed-value check. CORRECTION on a normal first pass only;
+    # on a RESUME the human edited the prefix — regenerating would discard their edit, so that
+    # pass DETECTS and marks (the notes are trailers on the message, never edits to the answer).
+    # Grounding first, then the computed-value check: the grounding corrective may REPLACE the
+    # whole answer, so asking "does it state 551" before that would test a draft nobody sees.
+    basis = authorization_basis(state)
+    if buf_state == "resume":
+        ungrounded = ungrounded_figures(buf, state, basis)
+        dropped = unstated_computed_figures(buf, state)
+    else:
+        model = get_model("synthesizer")
+        buf, ungrounded = _ground_answer(buf, model, llm_input, state, basis)
+        buf, dropped = _state_computed(buf, model, llm_input, state)
+
     return _final_updates(
         buf, incidents, sources, cancelled,
         tok_per_sec=tok_per_sec, context_tokens=context_tokens,
         response_metadata=response_metadata, usage_metadata=usage_metadata,
+        ungrounded=ungrounded, dropped=dropped,
     )
 
 

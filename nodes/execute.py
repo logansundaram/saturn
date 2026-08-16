@@ -33,26 +33,32 @@ import diag
 from langchain.messages import AIMessage, HumanMessage
 
 from config import get_config
-from core.llms import get_model, extract_tok_per_sec, extract_prompt_tokens
+from core.llms import get_model, generate, extract_tok_per_sec, extract_prompt_tokens
 from core.messages import EXECUTE_TOOL_SYS, EXECUTE_REASONING_SYS, WRITE_GATE_SYS
 from core.plan_context import (
     SEARCH_TOOLS,
     WRITE_TOOLS,
+    authorization_basis,
     clean,
     exec_context,
+    is_revoked,
     original_request,
+    request_authorized,
     results_block,
     steps_before,
 )
+from core.plan_ops import retirement_text
 from core.state import AgentState
+from textutil import looks_repetitive
 from core.structured import (
     WriteGate,
     WRITE_GATE_FORMAT,
     WRITE_GATE_SHAPE,
     _invoke_kwargs,
     structured,
+    _model_tag,
 )
-from core.tool_args import coerce_args, parse_text_call, schema_hint
+from core.tool_args import coerce_args, launders_a_value, parse_text_call, schema_hint
 
 # The steps the semantic write gate fronts (WRITE_TOOLS), and the gathering tools whose
 # presence arms it (SEARCH_TOOLS) — both from core/plan_context, THE one home for the engine's
@@ -75,6 +81,110 @@ _GATE_UNAVAILABLE = "gate-unavailable (fail-closed)"
 # reader that detects a gate skip (the trust benchmark's fabrication grader) keys off a constant
 # instead of a hand-copied string. Change this and every skip return below together.
 WRITE_GATE_SKIP_PREFIX = "skipped write:"
+
+
+# --- the ask gate (transplanted from the engine isolate, 2026-08-15) ---------------------------
+#
+# Three DETERMINISTIC rules an `ask_user` step faces before a call is generated — none asks
+# whether a question was "necessary" (that is judgment, and the judge is the thing that failed):
+#   1. a budget: the second `ask_user` of a turn does not run;
+#   2. search-first: the REQUEST names a source the engine can look in, nothing has been searched
+#      yet, and the plan's answer is to ask the user (read from the human's words only);
+#   3. no dangling question: no step follows the ask, so its answer feeds nothing — a question
+#      the plan cannot consume belongs in the ANSWER, not in an interrupt.
+# A question the USER asked for in their own words is exempt from 2 and 3 (the interrupting-tool
+# seam). Measured: dev.absence.kb_miss 3/5 -> 5/5.
+#
+# The refusal's STATUS is the mechanism's second half: rules 1 and 2 have something to redraft
+# TOWARD (finish from what is known / search the named source), so they stamp `error` and carry
+# ASK_GATE_PREFIX for rectify's 4a redraft; rule 3 does not — asked to replace an impossible action
+# a small model substitutes a possible one (measured: "Send an email to Petra" came back writing
+# email_to_petra.txt and claiming it sent) — so it takes the guarded posture, `skipped`, and the
+# run reports it. One producer (this prefix), one parser (rectify 4a).
+# The plan-review revocation lock's refusal (from the engine isolate): stamped through
+# core.plan_ops.retirement_text so the result ends with the review stamp — which is what tells
+# rectify this is the user's SINGLE-STEP veto ("skip this one, continue the rest") rather than a
+# guard rejection that ends the run.
+_REVOKED_REASON = "the user removed this action at the plan-review prompt"
+
+# The effect-authorization refusal: a step redrafted after results existed acts on something the
+# user's own words never named. `blocked` — a guarded outcome, so rectify cancels the rest.
+UNAUTHORIZED_PREFIX = "blocked: unauthorized effect —"
+
+ASK_GATE_PREFIX = "error: ask_user was not executed:"
+MAX_ASKS_PER_TURN = 1
+
+
+def _ask_gate(state: AgentState, plan: list, step: dict) -> "tuple[str, str] | None":
+    """The ask gate: None = proceed, else `(result_text, status)` for the refused step."""
+    from core.request_intent import invites_a_question, names_searchable_source
+
+    asks = sum(
+        1
+        for ev in state.get("tool_events") or []
+        if isinstance(ev, dict) and ev.get("name") == "ask_user"
+    )
+    if asks >= MAX_ASKS_PER_TURN:
+        return (
+            f"{ASK_GATE_PREFIX} this turn has already put {asks} question(s) to the user, which "
+            "is the limit — the remaining work must be done from what is already known.",
+            "error",
+        )
+    request = authorization_basis(state)
+    invited = invites_a_question(request)
+    searched = any(
+        s.get("intended_tool") in SEARCH_TOOLS and s.get("result") is not None for s in plan or []
+    )
+    # Rule 2 before rule 3 — load-bearing: when the request names a source, "search it" is a
+    # concrete replacement the turn can act on, and a redraft beats ending the run.
+    if names_searchable_source(request) and not searched and not invited:
+        return (
+            f"{ASK_GATE_PREFIX} the request names a source this engine can search for itself, "
+            "and nothing has been searched yet — search it first and ask only if the answer is "
+            "genuinely not there.",
+            "error",
+        )
+    steps = list(plan or [])
+    idx = next((i for i, s in enumerate(steps) if s is step), None)  # identity, not equality
+    follows = steps[idx + 1:] if idx is not None else []
+    if not follows and not invited:
+        return (
+            "skipped ask: no step follows this question, so nothing in the plan can use the "
+            "answer. Say in the ANSWER what you need from the user, or what you cannot do — an "
+            "interrupt whose answer feeds no step costs a round trip and changes nothing.",
+            "skipped",
+        )
+    return None
+
+
+# The stall detector (transplanted from the engine isolate). A second identical call this turn
+# (once to inspect, once to verify a write) is ordinary; by the THIRD there is no reading under
+# which the turn is making progress — the call is refused as a disclosed error incident instead of
+# burning the iteration budget. Counted off `tool_events`, what ACTUALLY RAN, never what was
+# planned or proposed: a model cannot notice its own loop; the engine can, for free.
+STALL_REPEATS = 2
+
+STALL_TEXT = (
+    "error: this exact call ({name} with the same arguments) has already run {n} times this "
+    "turn without changing anything — the step is looping, so it was not executed again"
+)
+
+
+def _args_key(args) -> str:
+    """A stable, order-independent identity for a call's arguments."""
+    if not isinstance(args, dict):
+        return str(args)
+    return repr(sorted((str(k), str(v)) for k, v in args.items()))
+
+
+def _identical_call_count(state, name, args) -> int:
+    """How many times this exact (tool, arguments) pair has already EXECUTED this turn."""
+    target = (str(name), _args_key(args))
+    return sum(
+        1
+        for ev in state.get("tool_events") or []
+        if isinstance(ev, dict) and (str(ev.get("name")), _args_key(ev.get("args"))) == target
+    )
 
 
 def _is_empty_result(res) -> bool:
@@ -170,19 +280,25 @@ def _reasoning_call(context: str):
     """One text generation for a pure reasoning step. Returns (content, last_response)."""
     model = get_model("tool_caller")
     resp = None
+    repetition = False  # a degenerate draw arms the retry-only repeat penalty for the next rung
     for i, temp in enumerate((0.0, 0.4)):
         try:
-            resp = model.invoke(
+            resp = generate(
+                model,
                 [EXECUTE_REASONING_SYS, HumanMessage(content=context)],
-                **_invoke_kwargs("tool_caller", None, temp),
+                tag=_model_tag("tool_caller"),
+                **_invoke_kwargs("tool_caller", None, temp, task="reasoning",
+                                 repetition=repetition),
             )
         except Exception as exc:
             diag.log(f"execute_node : reasoning attempt {i + 1} failed ({exc})")
             continue
         content = str(getattr(resp, "content", "") or "").strip()
-        if content:
+        if content and not looks_repetitive(content):
             return content, resp
-    return "", resp
+        repetition = repetition or looks_repetitive(content)
+    content = str(getattr(resp, "content", "") or "").strip() if resp is not None else ""
+    return content, resp
 
 
 def _generate_tool_call(tool, context: str):
@@ -202,11 +318,15 @@ def _generate_tool_call(tool, context: str):
     text_fallback = ""
     problem = "no tool call emitted"
     resp = None
+    repetition = False  # armed by a degenerate text answer; never a global setting
     for temp in _ATTEMPT_TEMPS:
         try:
-            resp = bound.invoke(
+            resp = generate(
+                bound,
                 [EXECUTE_TOOL_SYS, HumanMessage(content=block)],
-                **_invoke_kwargs("tool_caller", None, temp),
+                tag=_model_tag("tool_caller"),
+                **_invoke_kwargs("tool_caller", None, temp, task="tool_args",
+                                 repetition=repetition),
             )
         except Exception as exc:
             # A transient provider error (an Ollama timeout) must not spend the whole step —
@@ -223,12 +343,24 @@ def _generate_tool_call(tool, context: str):
                 calls = [{"args": parsed}]
         if calls:
             args = coerce_args(tool.name, calls[0].get("args"))
-            if args is not None:
+            if args is None:
+                problem = f"arguments {calls[0].get('args')} do not fit the tool"
+            elif launders_a_value(tool.name, args):
+                # A `calculate` whose expression is a bare literal computes nothing and mints
+                # tool provenance for a number that was never gathered. Refused here, on the
+                # ladder, so the retry gets a hint rather than the step an incident outright.
+                problem = (
+                    f"the expression {args.get('expression')!r} is a bare value, not a "
+                    "calculation — write the actual arithmetic over the values from the "
+                    "results above (for example '120 + 340 + 55'), never a number you have "
+                    "already worked out"
+                )
+            else:
                 return args, None, resp
-            problem = f"arguments {calls[0].get('args')} do not fit the tool"
         else:
             text_fallback = content.strip() or text_fallback
             problem = "no tool call emitted"
+            repetition = repetition or looks_repetitive(content)
         block = context + "\n\n" + schema_hint(tool.name, problem)
     if text_fallback:
         # The step's tool was never called — the prose is NOT a tool observation, and recording
@@ -288,6 +420,25 @@ def execute_node(state: AgentState):
         diag.log(f"execute_node : {time.perf_counter() - start:.4f}s (reasoning step)")
         return updates
 
+    # The plan-review revocation lock, first pass: the step's own description already names a
+    # target the user removed at review, so refuse before spending a generation on it.
+    revoked = state.get("revoked_writes") or []
+    if is_revoked(revoked, tool_name, step.get("label")):
+        step["result"] = retirement_text("skipped", _REVOKED_REASON)
+        step["status"] = "skipped"
+        diag.log(f"execute_node : {time.perf_counter() - start:.4f}s (revoked at review: label)")
+        return updates
+
+    # An `ask_user` step faces the ask gate BEFORE a call is generated: a question the engine
+    # could have answered for itself, one past this turn's budget, or one nothing can consume.
+    # The gate returns the status too — see `_ask_gate` for why that choice is the mechanism.
+    if tool_name == "ask_user":
+        refused = _ask_gate(state, state_plan, state_plan[idx])
+        if refused is not None:
+            step["result"], step["status"] = refused
+            diag.log(f"execute_node : {time.perf_counter() - start:.4f}s (ask gate: {step['status']})")
+            return updates
+
     # Write/edit steps face the semantic write gate BEFORE a call is generated: a write whose
     # value the gathered results don't actually contain is skipped, not laundered through.
     if tool_name in WRITE_TOOLS:
@@ -308,6 +459,42 @@ def execute_node(state: AgentState):
         step["status"] = "error"
         updates.update(_metrics(resp))
         diag.log(f"execute_node : {time.perf_counter() - start:.4f}s (no call: {failure!r:.80})")
+        return updates
+
+    # The revocation lock, second pass — and THE guarantee. The label check above is only an
+    # optimization: a redraft can drop the filename from its description and still generate a
+    # call whose arguments target the revoked path. This reads the ARGUMENTS, i.e. the actual
+    # effect, at the last point before it is emitted for approval and execution.
+    arg_texts = [str(v) for v in (args or {}).values()]
+    if is_revoked(revoked, tool_name, step.get("label"), *arg_texts):
+        step["result"] = retirement_text("skipped", _REVOKED_REASON)
+        step["status"] = "skipped"
+        diag.log(f"execute_node : {time.perf_counter() - start:.4f}s (revoked at review: args)")
+        return updates
+
+    # EFFECT AUTHORIZATION, on the arguments, at the same last-possible point: a step drafted by
+    # replan after results existed may have been written BY those results (a file's contents
+    # turned into `write_file breach_marker.txt`). replan pre-filters on the description; the
+    # arguments are the effect. Results may inform HOW, never WHAT.
+    if not request_authorized(state, step, *arg_texts):
+        step["result"] = (
+            f"{UNAUTHORIZED_PREFIX} this step was added after the results came back and it acts "
+            "on something the request never named. Results may inform HOW the request is "
+            "carried out, never WHAT is done to the workspace."
+        )
+        step["status"] = "blocked"
+        diag.log(f"execute_node : {time.perf_counter() - start:.4f}s (unauthorized effect)")
+        return updates
+
+    # The stall detector: the same call with the same arguments, already executed STALL_REPEATS
+    # times this turn, is a loop — refused as an error incident (structural stamp) with no call
+    # emitted; rectify then treats it like any other incident. Deterministic, no model in the loop.
+    repeats = _identical_call_count(state, tool_name, args)
+    if repeats >= STALL_REPEATS:
+        step["result"] = STALL_TEXT.format(name=tool_name, n=repeats)
+        step["status"] = "error"
+        updates.update(_metrics(resp))
+        diag.log(f"execute_node : {time.perf_counter() - start:.4f}s (stall: {tool_name} x{repeats})")
         return updates
 
     # Emit the corrected call as a tool-calling AIMessage: the approval gate + tool node take it

@@ -108,6 +108,20 @@ def test_node_reject_all_records_event(monkeypatch):
     assert len(cmd.update["messages"]) == 2
 
 
+def test_node_unrecognized_resume_value_rejects(monkeypatch):
+    """Fail-closed on the resume value (transplanted from the gating isolate): only the literal
+    True approves a whole batch. Any other truthy garbage — a stray string, the int 1, a list —
+    is an unrecognized decision and REJECTS; the human's approval must never be inferred from
+    truthiness."""
+    for garbage in ("n", "y", 1, ["c1"], object()):
+        _gate_everything(monkeypatch, garbage)
+        cmd = approval_node(_node_state(list(_CALLS)))
+        assert cmd.goto == "update_plan", garbage
+        (ev,) = cmd.update["gate_events"]
+        assert ev["decision"] == "rejected", garbage
+        assert all(not c["approved"] for c in ev["calls"]), garbage
+
+
 def test_node_partial_records_event(monkeypatch):
     _gate_everything(monkeypatch, {"approved_ids": ["c1"]})
     cmd = approval_node(_node_state(list(_CALLS)))

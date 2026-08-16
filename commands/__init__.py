@@ -26,6 +26,7 @@ from commands._session import write_autosave
 import importlib as _importlib
 
 _COMMAND_MODULES = [
+    "confidence",    # /confidence — the confidence-coloring front door
     "config",        # /config (+ key, setup) — owns the persist seam others import
     "conversation",  # /clear, /resume
     "knowledge",     # /docs, /memory, /init, /undo

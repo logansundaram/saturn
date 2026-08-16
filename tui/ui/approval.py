@@ -8,6 +8,8 @@ human approving the exact diff/command — not a path jail — is the safety bou
 import textwrap
 import time
 
+import diag
+
 from textutil import head_tail
 
 from . import _base
@@ -55,21 +57,45 @@ def _show_preamble_if_due() -> None:
             print(f"  {line}")
 
 
-def _workspace_old_text(file_path: str) -> "tuple[str, bool]":
-    """Current contents of a workspace file (for the write_file diff preview) + whether it exists.
-    Resolved exactly like the write_file tool (sandboxed to the workspace), so the preview matches
-    what the write will actually touch. Any failure degrades to ('', False) — the preview is
-    best-effort and must never block the gate."""
+def _workspace_target(file_path: str) -> "tuple[str, str, str | None]":
+    """What the write/edit preview would touch: (text, state, note) with state ∈ missing | text |
+    binary | refused | unreadable. Resolved through THE ONE sandbox resolver (`tools/files._resolve`)
+    so the preview can never disagree with what the tool will actually do — a preview that
+    diffs a.txt for a call the jail will refuse is worse than no preview (transplanted from the
+    gating isolate). Best-effort: any failure is a state, never a raise into the gate."""
     try:
-        from config import get_config
+        from tools.files import _resolve, _is_binary
 
-        workspace = get_config().path("workspace")
-        target = (workspace / file_path).resolve()
-        if not target.is_relative_to(workspace) or not target.exists():
-            return "", False
-        return target.read_text(encoding="utf-8", errors="replace"), True
-    except Exception:
-        return "", False
+        _workspace, target, error = _resolve(str(file_path))
+        if error:
+            return "", "refused", error
+        if not target.exists():
+            return "", "missing", None
+        if not target.is_file():
+            return "", "refused", "path is not a file"
+        if _is_binary(target):
+            try:
+                size = target.stat().st_size
+            except OSError:
+                size = "?"
+            return "", "binary", f"existing content is binary ({size} bytes) — not diffable"
+        return target.read_text(encoding="utf-8", errors="replace"), "text", None
+    except Exception as exc:
+        return "", "unreadable", f"existing content unreadable ({type(exc).__name__})"
+
+
+def _workspace_old_text(file_path: str) -> "tuple[str, bool]":
+    """Current contents of a workspace file (for the diff previews) + whether it exists — the
+    two-tuple view over `_workspace_target`."""
+    text, state, _note = _workspace_target(file_path)
+    return text, state in ("text", "binary")
+
+
+def _norm_eol(text: str) -> str:
+    """Line endings normalized before comparison. Not cosmetic: write_file writes in TEXT mode,
+    so on Windows a proposed LF lands on disk as CRLF (and read_text folds it back) - comparing
+    raw strings reports a change for a write that changes nothing."""
+    return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
 def _unified_rows(old: str, new: str) -> "tuple[list, int]":
@@ -92,13 +118,38 @@ def _unified_rows(old: str, new: str) -> "tuple[list, int]":
     return rows[:_MAX_DIFF_LINES], hidden
 
 
+def write_verdict(file_path: str, content: str, overwrite: bool) -> dict:
+    """What a pending write_file will actually DO — the gate's effect preview (transplanted from
+    the gating isolate): {"kind", "rows", "hidden", "note"} with kind ∈ new file | overwrite |
+    append | no_change (byte-identical after line-ending normalization — approving a no-op is a
+    prompt that should not have happened, and it must not render as a full-file diff) | binary
+    (existing content is not diffable — say so, never render mojibake) | refused (the workspace
+    jail will refuse this path — a human who believes they are authorizing a write outside the
+    workspace is being misinformed) | unreadable. Pure and never raises."""
+    old, state, note = _workspace_target(file_path)
+    if state in ("refused", "unreadable"):
+        return {"kind": state, "rows": [], "hidden": 0, "note": note}
+    if state == "binary":
+        return {"kind": "binary", "rows": [], "hidden": 0, "note": note}
+    if state == "missing":
+        rows, hidden = _unified_rows("", content)
+        return {"kind": "new file", "rows": rows, "hidden": hidden, "note": None}
+    old_n, content_n = _norm_eol(old), _norm_eol(content)
+    new = content_n if overwrite else (old_n + content_n)
+    if new == old_n:
+        return {"kind": "no_change", "rows": [], "hidden": 0,
+                "note": "no change — the file already has exactly this content"}
+    rows, hidden = _unified_rows(old_n, new)
+    return {"kind": "overwrite" if overwrite else "append", "rows": rows, "hidden": hidden,
+            "note": None}
+
+
 def _diff_lines(file_path: str, content: str, overwrite: bool) -> "tuple[list, bool, int]":
-    """Diff rows for a pending write_file: (rows, is_new_file, hidden_count). An append
-    (overwrite=False) diffs old-vs-(old+content) so the appended text reads as additions."""
-    old, existed = _workspace_old_text(file_path)
-    new = content if overwrite else (old + content)
-    rows, hidden = _unified_rows(old, new)
-    return rows, not existed, hidden
+    """Diff rows for a pending write_file: (rows, is_new_file, hidden_count) — the row view over
+    `write_verdict`. An append (overwrite=False) diffs old-vs-(old+content) so the appended text
+    reads as additions."""
+    v = write_verdict(file_path, content, overwrite)
+    return v["rows"], v["kind"] == "new file", v["hidden"]
 
 
 _DIFF_STYLE = {"add": "green", "del": "red", "hunk": _ACCENT, "ctx": _DIM}
@@ -148,9 +199,22 @@ def _render_write_diff(args: dict) -> None:
     content = str(args.get("content", ""))
     overwrite = bool(args.get("overwrite", True))
 
-    rows, is_new, hidden = _diff_lines(file_path, content, overwrite)
-    mode = "new file" if is_new else ("overwrite" if overwrite else "append")
-    _render_diff_rows(mode, file_path, rows, hidden)
+    v = write_verdict(file_path, content, overwrite)
+    kind = v["kind"]
+    if kind == "refused":
+        _render_diff_rows("overwrite" if overwrite else "append", file_path, [], 0)
+        _frame_note(f"REFUSED by the workspace jail: {v['note']} — this write will not happen",
+                    style="bold red")
+        return
+    if kind in ("binary", "unreadable"):
+        _render_diff_rows("overwrite" if overwrite else "append", file_path, [], 0)
+        _frame_note(f"⚠ {v['note']}", style="yellow")
+        return
+    if kind == "no_change":
+        _render_diff_rows("overwrite" if overwrite else "append", file_path, [], 0)
+        _frame_note(v["note"], style=_DIM)
+        return
+    _render_diff_rows(kind, file_path, v["rows"], v["hidden"])
 
 
 def _render_edit_diff(args: dict) -> None:
@@ -162,12 +226,16 @@ def _render_edit_diff(args: dict) -> None:
     new_string = str(args.get("new_string", ""))
     replace_all = bool(args.get("replace_all", False))
 
-    old, existed = _workspace_old_text(file_path)
+    old, state, problem = _workspace_target(file_path)
     note = None
     rows: list = []
     hidden = 0
-    if not existed:
+    if state == "refused":
+        note = f"REFUSED by the workspace jail: {problem} — this edit will fail"
+    elif state == "missing":
         note = "file does not exist — this edit will fail"
+    elif state in ("binary", "unreadable"):
+        note = f"{problem} — this edit will fail"
     else:
         count = old.count(old_string) if old_string else 0
         if count == 0:
@@ -490,9 +558,14 @@ def _always_allow(tool_calls: list, ask) -> dict:
     decision: dict = {"approved": True, "tools": granted, "shell_grants": []}
     if granted:
         listing = ", ".join(granted)
-        _grant_note(f"always-allowing this session: {listing}  "
-                    "(undo: /policy risk <tool> <tier> · persist: /policy risk <tool> "
-                    "read_only --save)")
+        # The grant's LIFETIME is the security property — say it (policy.default_grant_scope).
+        lifetime = {
+            "task": "for the rest of this turn",
+            "session": "for the rest of this session",
+            "persist": "persistently (permissions.json)",
+        }[policy.default_grant_scope()]
+        _grant_note(f"always-allowing {lifetime}: {listing}  "
+                    "(undo: /policy risk <tool> <tier> · lifetime: /config runtime.grant_scope)")
 
     if "run_shell" not in names:
         return decision
@@ -590,6 +663,44 @@ def _resolve_decision(resp: str, tool_calls: list, ask) -> "bool | dict":
     return False
 
 
+def _plain_call_lines(tc) -> list:
+    """The fallback rendering of one gated call that CANNOT fail: defensive reads over whatever
+    the payload entry is (a non-dict, missing keys, an unprintable value), each argument clipped.
+    Used only when the rich preview raised — the human must always be asked with the call named."""
+    try:
+        d = tc if isinstance(tc, dict) else {}
+        name = str(d.get("name", "?"))
+        risk = str(d.get("risk", "destructive"))
+        args = d.get("args")
+        args = args if isinstance(args, dict) else {"args": args}
+        lines = [f"{name}  ({risk})"]
+        for k, v in args.items():
+            try:
+                text = " ".join(str(v).split())
+            except Exception:
+                text = "<unprintable>"
+            lines.append(f"  {str(k)}={head_tail(text, 200)}")
+        return lines
+    except Exception:
+        return [f"<unrenderable call: {type(tc).__name__}>"]
+
+
+def _render_call_safely(tc) -> None:
+    """The gate's per-call render, fail-soft (transplanted from the visibility isolate): the rich
+    preview (diff / command / full-width args) is the safety surface, but a renderer that raises
+    — a diff over an unreadable file, a width edge case — must never end the turn with the human
+    never asked. On failure the plain fallback names the call and the same N-default prompt runs;
+    the decision path is untouched."""
+    try:
+        _render_call(tc)
+    except Exception as exc:
+        diag.log(f"gate: rich preview failed for {tc!r}: {type(exc).__name__}: {exc}")
+        for ln in _plain_call_lines(tc):
+            _frame_note(ln, style="bold")
+        _frame_note(f"rich preview failed ({type(exc).__name__}: {exc}) — plain view above; "
+                    "N (Enter) rejects", style="yellow")
+
+
 def ask_approval(value: dict) -> "bool | dict":
     """Compact, high-signal gate. Heavy rule + risk-colored tier so it breaks out of the dim
     trace rail. A write_file call additionally renders a colored unified diff of what it will
@@ -621,9 +732,12 @@ def ask_approval(value: dict) -> "bool | dict":
         _console.print(top)
     else:
         print("  ┏━ approval required")
-    _render_quarantine_banner(value)
+    try:
+        _render_quarantine_banner(value)
+    except Exception as exc:  # display only — the prompt below still asks
+        _frame_note(f"quarantine banner failed to render ({type(exc).__name__}: {exc})")
     for tc in tool_calls:
-        _render_call(tc)
+        _render_call_safely(tc)
 
     # The sub-prompts (_always_allow's prefix proposal, _select_calls' arg summaries) embed RAW
     # command/argument text, and rich's Console.input parses markup AND emoji codes by default:
@@ -648,7 +762,10 @@ def ask_approval(value: dict) -> "bool | dict":
                 f"  ┗━ approve? {_KEY_CHOICES}  (Enter = no) » "
             ).strip().lower()
         if resp in _ANSWER["e"]:
-            _render_explain(value)
+            try:
+                _render_explain(value)
+            except Exception as exc:  # explain is a courtesy — never lets the gate die
+                _frame_note(f"explain failed ({type(exc).__name__}: {exc})")
             continue
         note = _unrecognized_note(resp)
         if note:

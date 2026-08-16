@@ -546,3 +546,129 @@ def test_review_frame_names_statuses_and_tracks_the_pointer_through_edits(monkey
     assert "Sum the numbers" in pointer_line
     assert out["action"] == "continue"
     assert [s["label"] for s in out["plan"]] == ["Read the file", "Sum the numbers"]
+
+
+# ── the gate prompt ALWAYS renders (transplanted from the visibility isolate) ───────────────
+
+
+def _rich_gate(monkeypatch, answers):
+    import builtins
+    import io
+
+    from rich.console import Console
+
+    monkeypatch.setattr("tools.registry", types.SimpleNamespace(TOOL_RISK={}), raising=False)
+    buf = io.StringIO()
+    monkeypatch.setattr(approval, "_console",
+                        Console(file=buf, force_terminal=False, width=200, highlight=False))
+    monkeypatch.setattr(approval, "_RICH", True)
+    monkeypatch.setattr(approval, "_live_stop", lambda: None)
+    monkeypatch.setattr(approval, "_live_start", lambda: None)
+    it = iter(answers)
+    monkeypatch.setattr(builtins, "input", lambda *a, **k: next(it))
+    return buf
+
+
+def test_gate_prompt_survives_rich_render_failure(isolated_paths, monkeypatch):
+    """A preview renderer that raises (a diff over an unreadable file, a width edge case) must
+    not kill the turn with the human never asked: a plain fallback names the call and the same
+    N-default prompt still runs. The decision path is untouched — bare Enter rejects."""
+    buf = _rich_gate(monkeypatch, [""])
+
+    def boom(tc):
+        raise RuntimeError("diff renderer exploded")
+
+    monkeypatch.setattr(approval, "_render_call", boom)
+    value = {"tool_calls": [{"id": "1", "name": "write_file", "risk": "side_effecting",
+                             "args": {"file_path": "notes.txt", "content": "hi"}}]}
+    assert approval.ask_approval(value) is False
+    out = buf.getvalue()
+    assert "write_file" in out and "notes.txt" in out
+    assert "preview failed" in out and "diff renderer exploded" in out
+    assert "approve?" in out
+
+
+def test_gate_prompt_survives_a_hostile_payload(isolated_paths, monkeypatch):
+    """Even a malformed tool_calls entry (not a dict, missing keys) renders SOMETHING and asks."""
+    buf = _rich_gate(monkeypatch, ["y"])
+    value = {"tool_calls": [None, {"name": "x"}, {"id": "3", "name": "run_shell",
+                                                   "args": {"command": "git status"}}]}
+    assert approval.ask_approval(value) is True
+    out = buf.getvalue()
+    assert "approve?" in out and "run_shell" in out
+
+
+def test_gate_explain_failure_reprompts_instead_of_dying(isolated_paths, monkeypatch):
+    buf = _rich_gate(monkeypatch, ["e", ""])
+    monkeypatch.setattr(approval, "_render_explain",
+                        lambda v: (_ for _ in ()).throw(ValueError("no plan here")))
+    value = {"tool_calls": [{"id": "1", "name": "run_shell", "risk": "destructive",
+                             "args": {"command": "git status"}}]}
+    assert approval.ask_approval(value) is False
+    assert "no plan here" in buf.getvalue()
+
+
+# ── write-preview verdicts: no_change / binary / jail-refused (from the gating isolate) ────────
+
+
+def _ws():
+    from config import get_config
+
+    ws = get_config().path("workspace")
+    ws.mkdir(parents=True, exist_ok=True)
+    return ws
+
+
+def test_write_preview_detects_a_no_op_write_across_line_endings(isolated_paths):
+    """write_file writes in TEXT mode, so on Windows a proposed "\n" lands as "\r\n"; the
+    preview compares what will be ON DISK — a byte-identical rewrite is a no_change verdict, not
+    a full-file diff the human has to read to discover nothing changes."""
+    p = _ws() / "same.txt"
+    with open(p, "w", encoding="utf-8") as fh:  # exactly how write_file writes
+        fh.write("one\ntwo\n")
+    v = approval.write_verdict("same.txt", "one\ntwo\n", True)
+    assert v["kind"] == "no_change" and v["rows"] == []
+    v = approval.write_verdict("same.txt", "one\r\ntwo\r\n", True)
+    assert v["kind"] == "no_change"
+    v = approval.write_verdict("same.txt", "one\nTHREE\n", True)
+    assert v["kind"] == "overwrite" and any(k == "del" for k, _ in v["rows"])
+
+
+def test_write_preview_of_a_binary_file_says_so_instead_of_mojibake(isolated_paths):
+    p = _ws() / "blob.bin"
+    p.write_bytes(b"\x00\x01\x02PNG\x00garbage")
+    v = approval.write_verdict("blob.bin", "text", True)
+    assert v["kind"] == "binary" and v["rows"] == []
+    assert "binary" in (v["note"] or "")
+
+
+def test_write_preview_agrees_with_the_jail(isolated_paths):
+    """A path the workspace jail will refuse must SAY so — a human who believes they are
+    authorizing a write outside the workspace is being misinformed either way."""
+    v = approval.write_verdict("../escape.txt", "x", True)
+    assert v["kind"] == "refused" and "outside the workspace" in (v["note"] or "")
+    # …and the old-text reader takes the same jail decision (one resolver: tools/files._resolve).
+    assert approval._workspace_old_text("../escape.txt") == ("", False)
+
+
+def test_write_preview_renders_the_verdict(isolated_paths, monkeypatch, capsys):
+    monkeypatch.setattr(approval, "_RICH", False)
+    p = _ws() / "same2.txt"
+    with open(p, "w", encoding="utf-8") as fh:
+        fh.write("hello\n")
+    approval._render_write_diff({"file_path": "same2.txt", "content": "hello\n"})
+    out = capsys.readouterr().out
+    assert "no change" in out
+    approval._render_write_diff({"file_path": "../nope.txt", "content": "x"})
+    assert "REFUSED" in capsys.readouterr().out
+
+
+def test_always_allow_note_names_the_lifetime(isolated_paths, monkeypatch, capsys):
+    """The `a` disclosure says how long the grant lives — the lifetime IS the security property
+    (transplanted from the gating isolate; default task scope = the rest of this turn)."""
+    monkeypatch.setattr(approval, "_RICH", False)
+    monkeypatch.setattr("tools.registry", types.SimpleNamespace(TOOL_RISK={}), raising=False)
+    decision = approval._always_allow(
+        [{"id": "1", "name": "write_file", "risk": "side_effecting", "args": {}}], lambda p: "n")
+    assert decision["tools"] == ["write_file"]
+    assert "for the rest of this turn" in capsys.readouterr().out

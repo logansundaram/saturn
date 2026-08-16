@@ -203,16 +203,19 @@ class FreezeController:
         self._lock = threading.Lock()
         self._armed = False
         self._requested = False
+        self._forced = False
 
     def arm(self) -> None:
         with self._lock:
             self._armed = True
             self._requested = False
+            self._forced = False
 
     def disarm(self) -> None:
         with self._lock:
             self._armed = False
             self._requested = False
+            self._forced = False
 
     @property
     def armed(self) -> bool:
@@ -225,6 +228,8 @@ class FreezeController:
         with self._lock:
             if not self._armed:
                 return False
+            if self._requested:
+                self._forced = True  # a second Esc while the seeker looks for a boundary
             self._requested = True
             return True
 
@@ -232,9 +237,64 @@ class FreezeController:
         with self._lock:
             return self._requested
 
+    def forced(self) -> bool:
+        """Whether Esc was pressed AGAIN after the freeze was requested — the user wants the cut
+        now, boundary or not."""
+        with self._lock:
+            return self._forced
+
     def clear(self) -> None:
         with self._lock:
             self._requested = False
+            self._forced = False
+
+
+# --- the word-boundary freeze seek (transplanted from the token_steering isolate) --------------
+#
+# Esc mid-word used to cut the prefix inside a word — a tail that retokenizes onto boundaries the
+# model never produces (BPE tokens carry their LEADING space; the daemon has no token healing), so
+# the continuation could stumble. After a freeze request the streaming loop SEEKS a boundary:
+# up to FREEZE_GRACE more chunks may land until the buffer ends outside a word, a chunk that
+# begins with whitespace ends the seek WITHOUT being appended, and a second Esc forces the cut.
+# Bounded so a freeze can never be starved; main's chunks are often multi-token, so the grace
+# counts CHUNKS.
+
+FREEZE_GRACE = 5
+
+
+def ends_mid_word(text: str) -> bool:
+    """True when `text` ends inside a word — a bad place to cut a prefix."""
+    return bool(text) and (text[-1].isalnum() or text[-1] == "_")
+
+
+class FreezeSeeker:
+    """Per-stream decision helper over a FreezeController: `before_chunk(text, chunk)` says
+    whether to freeze BEFORE appending the incoming chunk (a whitespace-led chunk closes the
+    word — the chunk is recorded in `dropped`, never appended); `after_chunk(text)` says whether
+    to freeze after the append (boundary reached, second Esc, or grace spent)."""
+
+    def __init__(self, controller) -> None:
+        self._c = controller
+        self._left = FREEZE_GRACE
+        self.dropped = None
+
+    def before_chunk(self, text: str, chunk: str) -> bool:
+        if self._c is None or not self._c.requested():
+            return False
+        if self._c.forced():
+            return True
+        if ends_mid_word(text) and chunk[:1].isspace():
+            self.dropped = chunk
+            return True
+        return False
+
+    def after_chunk(self, text: str) -> bool:
+        if self._c is None or not self._c.requested():
+            return False
+        if self._c.forced() or not ends_mid_word(text):
+            return True
+        self._left -= 1
+        return self._left <= 0
 
 
 _controller = FreezeController()

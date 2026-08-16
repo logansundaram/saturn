@@ -30,6 +30,8 @@ from dataclasses import dataclass
 import httpx
 from langchain_ollama import ChatOllama, OllamaEmbeddings
 
+import diag
+
 from trust import egress
 from trust import redaction
 from config import MODEL_ROLES, get_config
@@ -291,7 +293,7 @@ def reset_models() -> None:
 class LocalModel:
     """A model pulled into the local Ollama daemon, as surfaced by `ollama list`."""
 
-    name: str            # the tag you bind (e.g. "gemma4:e4b")
+    name: str            # the tag you bind (e.g. "qwen3.5:4b")
     size_bytes: int      # on-disk size
     parameter_size: str  # e.g. "4B", "29.9B" ("" if Ollama didn't report it)
     quantization: str    # e.g. "Q4_K_M" ("" if absent)
@@ -391,6 +393,41 @@ def _model_present(required: str, have: set[str]) -> bool:
     return _norm(required) in {_norm(h) for h in have}
 
 
+def _rebind_hint(replacement: str = "") -> str:
+    """How to make a substitution permanent, for THIS config.yaml. `/models tier <size>` only
+    works when the file's tiers ARE the size classes — and the population that sees a migration
+    warning is precisely the one upgrading from laptop/workstation/bench-coder, whose tiers are
+    not. Pointing them at a command that answers "unknown tier" is a dead end, so a legacy-tier
+    config is pointed at the bind that does work on any tier name (2026-08-16)."""
+    from core import model_family
+
+    try:
+        tiers = list(get_config().get("tiers", {}) or {})
+    except Exception:
+        tiers = []
+    if any(t in model_family.classes() for t in tiers):
+        return "`/models tier <size>` (see /models tier for the list)"
+    example = replacement or model_family.tag_for(model_family.DEFAULT_CLASS)
+    return (f"`/models all {example}` — this config's tier names predate the size-class ladder, "
+            f"so there is no `<size>` tier to switch to")
+
+
+def _migration_problems() -> list[str]:
+    """One health line per family substitution made this session. Kept separate from
+    check_models so it is unit-testable without a daemon."""
+    import config as _config
+
+    out = []
+    for original, replacement in sorted(_config.migrated_bindings().items()):
+        out.append(
+            f"'{original}' is outside the supported model family and is running as "
+            f"'{replacement}' — confidence coloring is calibrated per model, so only the "
+            f"qwen3.5/3.6/3.8 family is supported. config.yaml was NOT changed; make it "
+            f"permanent with {_rebind_hint(replacement)}"
+        )
+    return out
+
+
 def check_models() -> list[str]:
     """Startup health report for the active tier. Returns a list of human-readable PROBLEM strings
     (empty when all is well): the Ollama daemon being down, local model tags not pulled, or a
@@ -412,6 +449,12 @@ def check_models() -> list[str]:
                 f"role '{role}' is bound to {spec.provider}:{spec.model} — cloud model support "
                 f"is shelved; rebind it to a local Ollama model (`/models {role} <id>`)"
             )
+
+    # Family substitutions are recorded by config.model_for_role during the loop above, so the
+    # ledger is populated by now. Report them as health problems: the running config differs
+    # from the file on disk until the user rebinds.
+    problems.extend(_migration_problems())
+
     try:
         need_ollama.append(cfg.embedder_model)  # embeddings always run through Ollama
     except KeyError as exc:
@@ -451,6 +494,69 @@ def check_models() -> list[str]:
             )
 
     return problems
+
+
+# ── the think-rejection fallback (from the engine isolate, 2026-08-15) ─────────────────────────
+#
+# Model tags whose daemon rejected a `think` parameter. A model without a thinking template 400s
+# on `think` in EITHER direction, so the engine cannot express "no rationale please" to it — it
+# can only stop asking. Learned once per tag per process, never guessed from the name; the
+# structured layer's `_invoke_kwargs` consults it and omits the flag for such tags.
+_NO_THINK_SUPPORT: set = set()
+
+_THINK_REJECTION_MARKERS = ("does not support thinking", "thinking is not supported", '"think"')
+
+
+def _is_think_rejection(exc: Exception) -> bool:
+    text = f"{exc}".lower()
+    return any(m in text for m in _THINK_REJECTION_MARKERS)
+
+
+def generate(runnable, messages, *, tag: str = "", **kwargs):
+    """`runnable.invoke(messages, **kwargs)` with ONE structural fallback: a daemon that rejects
+    the `reasoning`(think) flag gets the call retried without it and `tag` is remembered in
+    `_NO_THINK_SUPPORT`. That must not be the difference between an engine that works against
+    a thinking model and one that raises against a plain one — and it must not be papered over
+    by dropping the flag globally (every thinking model would fall back to its default: ON)."""
+    try:
+        return runnable.invoke(messages, **kwargs)
+    except Exception as exc:
+        if "reasoning" not in kwargs or not _is_think_rejection(exc):
+            raise
+        _NO_THINK_SUPPORT.add(tag)
+        diag.log(f"llms: {tag or 'model'} rejects the think flag — retrying without it")
+        return runnable.invoke(messages, **{k: v for k, v in kwargs.items() if k != "reasoning"})
+
+
+def stream(runnable, messages, *, tag: str = "", **kwargs):
+    """`runnable.stream(...)` under the same one-shot think fallback as `generate`. The generator
+    is materialized far enough to surface a parameter rejection HERE (the daemon rejects on the
+    first chunk), because a caller iterating the stream cannot retry it."""
+    try:
+        gen = runnable.stream(messages, **kwargs)
+        first = next(gen, None)
+    except Exception as exc:
+        if "reasoning" not in kwargs or not _is_think_rejection(exc):
+            raise
+        _NO_THINK_SUPPORT.add(tag)
+        diag.log(f"llms: {tag or 'model'} rejects the think flag — re-streaming without it")
+        kwargs = {k: v for k, v in kwargs.items() if k != "reasoning"}
+        gen = runnable.stream(messages, **kwargs)
+        first = next(gen, None)
+
+    def _chunks():
+        # try/finally so a consumer that closes this generator between the first chunk and the
+        # rest (exactly what the freeze latch does) still closes the underlying stream.
+        try:
+            if first is not None:
+                yield first
+            yield from gen
+        finally:
+            close = getattr(gen, "close", None)
+            if close:
+                close()
+
+    return _chunks()
 
 
 def extract_tok_per_sec(response) -> float:

@@ -21,15 +21,18 @@ def _plan_line_bare(step: dict, *, show_tool: bool) -> "Text | str":
     """One plan row WITHOUT the trace-rail prefix — for hosts that draw their own gutter (the
     review frame's `┃`), where the railed variant would render a doubled gutter."""
     status = step.get("status", "pending")
-    glyph, style = _PLAN.get(status, _PLAN["pending"])
+    # An unknown status (a garbled/legacy record) renders as UNKNOWN — never guessed as pending
+    # (transplanted from the visibility isolate: views over instrumentation, no defaults).
+    glyph, style = _PLAN.get(status, ("?", "bold yellow"))
     sid = step.get("step_id", "?")
     tool = step.get("intended_tool")
+    unknown = f"  ⟨unknown status: {status}⟩" if status not in _PLAN else ""
 
     # Width-responsive: drop the ::tool tag on a very narrow terminal, then size the label to what's
     # left after the prefix (rail+nest+glyph+id ≈ 12) and the tag, so a step stays on one row.
     tw = _term_width()
     tag = f"  ::{tool}" if (show_tool and tool and tw >= 56) else ""
-    label = _truncate(str(step.get("label", "")), max(20, tw - 14 - len(tag)))
+    label = _truncate(str(step.get("label", "")), max(20, tw - 14 - len(tag) - len(unknown)))
 
     if _RICH:
         line = Text()
@@ -37,10 +40,12 @@ def _plan_line_bare(step: dict, *, show_tool: bool) -> "Text | str":
         line.append(f"{glyph} ", style=style)
         line.append(f"{str(sid):>2}  ", style=_DIM)
         line.append(label, style=style if status in ("active", "skipped") else "default")
+        if unknown:
+            line.append(unknown, style="bold yellow")
         if tag:
             line.append(tag, style=_FAINT)  # the most incidental annotation — faintest
         return line
-    return f"  {glyph} {str(sid):>2}  {label}{tag}"
+    return f"  {glyph} {str(sid):>2}  {label}{unknown}{tag}"
 
 
 def _plan_line(step: dict, *, show_tool: bool) -> "Text | str":

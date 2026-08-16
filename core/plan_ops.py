@@ -55,6 +55,10 @@ def normalize(plan: Optional[list[dict]]) -> list[dict]:
                 "needs_resolution": bool(step.get("needs_resolution")),
             }
         )
+        # `origin` (replan's stamp — the effect-authorization rule keys on it) survives a review
+        # edit: a human's edit never launders a redrafted step into an up-front one.
+        if step.get("origin"):
+            out[-1]["origin"] = step.get("origin")
     return out
 
 
@@ -118,9 +122,28 @@ def set_tool(plan: list[dict], step_id: int, tool: Optional[str]) -> list[dict]:
 _REVIEW_STAMP_SUFFIX = "at plan review — the step did not run"
 
 
+def retirement_text(status: str, reason: str = "") -> str:
+    """THE result text for a step the USER retired — one producer for both ways it happens: the
+    review editor's status verb (`set_status`/`retire_step`) and `nodes/execute`'s revocation
+    refusal (the user removed the effect at review and a later redraft tried to perform it
+    anyway). Both end with `_REVIEW_STAMP_SUFFIX`, which is what tells rectify this is a
+    SINGLE-STEP veto — skip this one, continue the rest — rather than a guard rejection ending
+    the run."""
+    detail = f": {reason} —" if reason else ""
+    return f"marked {status}{detail} {_REVIEW_STAMP_SUFFIX}"
+
+
 def review_stamp(status: str) -> str:
     """The result text stamped onto a step the user retired at the plan-review editor."""
-    return f"marked {status} {_REVIEW_STAMP_SUFFIX}"
+    return retirement_text(status)
+
+
+def retire_step(step: dict, status: str = "skipped") -> dict:
+    """A COPY of `step` retired at the user's request (status + the review stamp as result)."""
+    out = dict(step)
+    out["status"] = status
+    out["result"] = retirement_text(status)
+    return out
 
 
 def is_review_retirement(step) -> bool:
@@ -295,25 +318,56 @@ class PauseController:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._request: Optional[PauseRequest] = None
+        self._steers: list = []
 
     def request(self, source: str, reason: str = "") -> None:
-        """Ask for a pause at the next step boundary. Latest request wins (cheap and harmless —
-        only the most recent reason is shown)."""
+        """Ask for a pause at the next step boundary — or, for source "steer", QUEUE a mid-turn
+        correction. Two slots, not one (transplanted from the engine isolate, 2026-08-15): a
+        pause is a request to INTERRUPT, a steer a request to adjust WITHOUT interrupting, and
+        plan_gate handles them on different paths. Sharing one slot let a steer typed after an
+        Esc-pause overwrite the pause (the user saw the ⏸ acknowledgement and never got the
+        editor), so steers queue and are drained only when no pause is outstanding — the pause
+        outranks the steer, and the path to interrupt() evaluates identically on both LangGraph
+        passes. For pauses the latest request wins (only the most recent reason is shown)."""
         with self._lock:
-            self._request = PauseRequest(source=source, reason=reason)
+            if source == "steer":
+                self._steers.append(PauseRequest(source=source, reason=reason))
+            else:
+                self._request = PauseRequest(source=source, reason=reason)
 
     def pending(self) -> bool:
+        """Whether a PAUSE is outstanding (queued steers don't count — they never interrupt)."""
         with self._lock:
             return self._request is not None
 
     def peek(self) -> Optional[PauseRequest]:
-        """Read the pending request without clearing it."""
+        """Read the pending pause without clearing it — or, when no pause is outstanding, the
+        oldest queued steer (a read-only view for callers that report what is waiting)."""
         with self._lock:
-            return self._request
+            if self._request is not None:
+                return self._request
+            return self._steers[0] if self._steers else None
 
     def clear(self) -> None:
+        """Consume the PAUSE request. Queued steers survive — they were never handled."""
         with self._lock:
             self._request = None
+
+    def steers_pending(self) -> bool:
+        with self._lock:
+            return bool(self._steers)
+
+    def take_steers(self) -> list:
+        """Drain the queued steering corrections, oldest first."""
+        with self._lock:
+            out, self._steers = self._steers, []
+            return out
+
+    def reset(self) -> None:
+        """Drop everything outstanding — the turn boundary, or a test starting clean."""
+        with self._lock:
+            self._request = None
+            self._steers = []
 
 
 # Process-level singleton — every source and the gate share this one instance.

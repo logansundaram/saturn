@@ -29,7 +29,7 @@ def test_check_models_reports_a_shelved_cloud_binding(monkeypatch):
     from core import llms
 
     cfg = _cfg("hybrid", {
-        "hybrid": _tier("tiny", planner={"provider": "anthropic", "model": "claude-x"}),
+        "hybrid": _tier("qwen3.5:2b", planner={"provider": "anthropic", "model": "claude-x"}),
     })
     cfg._data["tiers"]["hybrid"]["embedder"] = "tiny-embed"
     monkeypatch.setattr(config_mod, "_config", cfg, raising=False)
@@ -47,8 +47,8 @@ def test_check_models_reports_a_shelved_cloud_binding(monkeypatch):
 # size heuristic.
 
 _CAPS = {
-    "tiny": {"context_window": 8192},
-    "mid": {"context_window": 32768},
+    "qwen3.5:2b": {"context_window": 8192},
+    "qwen3.5:9b": {"context_window": 32768},
     "cloud": {"context_window": 200000},
 }
 
@@ -66,21 +66,54 @@ def _cfg(active, tiers):
 
 
 def test_tier_honesty_fires_on_the_first_declared_preset():
-    cfg = _cfg("laptop", {"laptop": _tier("tiny"), "workstation": _tier("mid")})
+    cfg = _cfg("laptop", {"laptop": _tier("qwen3.5:2b"), "workstation": _tier("qwen3.5:9b")})
     line = config_cmd._tier_honesty_line(cfg)
     assert line is not None
-    assert "smallest model tier" in line
-    assert "tiny" in line          # the active tier's tool_caller model, derived live
+    assert "small model tier" in line
+    assert "qwen3.5:2b" in line    # the active tier's tool_caller model, derived live
     assert "/models" in line       # the upgrade pointer
 
 
+# The size-class ladder made the first-declared tier `800m` while the install default is `4b`,
+# so the first-declared rule alone meant the disclosure never printed for a fresh install — the
+# exact case it exists for. Every class at or below the default fires now.
+
+def _ladder_tiers():
+    from core import model_family as mf
+
+    return {key: _tier(tag) for key, tag in mf.SIZE_LADDER}
+
+
+def test_tier_honesty_fires_on_the_fresh_install_default_tier():
+    from core import model_family as mf
+
+    line = config_cmd._tier_honesty_line(_cfg(mf.DEFAULT_CLASS, _ladder_tiers()))
+    assert line is not None
+    assert mf.tag_for(mf.DEFAULT_CLASS) in line
+
+
+def test_tier_honesty_fires_on_every_class_up_to_the_default():
+    for key in config_cmd._small_classes():
+        assert config_cmd._tier_honesty_line(_cfg(key, _ladder_tiers())) is not None, key
+
+
+def test_tier_honesty_silent_on_the_classes_above_the_default():
+    from core import model_family as mf
+
+    small = set(config_cmd._small_classes())
+    bigger = [k for k in mf.classes() if k not in small]
+    assert bigger                                   # there is something to upgrade to
+    for key in bigger:
+        assert config_cmd._tier_honesty_line(_cfg(key, _ladder_tiers())) is None, key
+
+
 def test_tier_honesty_silent_on_a_later_declared_tier():
-    cfg = _cfg("workstation", {"laptop": _tier("tiny"), "workstation": _tier("mid")})
+    cfg = _cfg("workstation", {"laptop": _tier("qwen3.5:2b"), "workstation": _tier("qwen3.5:9b")})
     assert config_cmd._tier_honesty_line(cfg) is None
 
 
 def test_tier_honesty_silent_with_a_single_preset():
-    assert config_cmd._tier_honesty_line(_cfg("only", {"only": _tier("tiny")})) is None
+    assert config_cmd._tier_honesty_line(_cfg("only", {"only": _tier("qwen3.5:2b")})) is None
 
 
 def test_tier_honesty_is_declaration_order_not_window_sums():
@@ -88,7 +121,7 @@ def test_tier_honesty_is_declaration_order_not_window_sums():
     # model with a huge window outsummed a big model with a modest one, firing the line on the
     # wrong tier. Declaration order decides now: the FIRST tier fires even when its windows
     # outsum the second's, and the second never fires even when its windows are smaller.
-    tiers = {"small-but-big-window": _tier("cloud"), "big-but-small-window": _tier("tiny")}
+    tiers = {"small-but-big-window": _tier("cloud"), "big-but-small-window": _tier("qwen3.5:2b")}
     assert config_cmd._tier_honesty_line(_cfg("small-but-big-window", tiers)) is not None
     assert config_cmd._tier_honesty_line(_cfg("big-but-small-window", tiers)) is None
 
@@ -97,9 +130,9 @@ def test_tier_honesty_silent_on_a_hybrid_declared_after_the_local_preset():
     # The hybrid preset is declared after the all-local one (bigger by convention), so only the
     # first-declared local preset triggers the line.
     tiers = {
-        "laptop": _tier("tiny"),
+        "laptop": _tier("qwen3.5:2b"),
         "hybrid": _tier(
-            "tiny",
+            "qwen3.5:2b",
             planner={"provider": "anthropic", "model": "cloud"},
             synthesizer={"provider": "anthropic", "model": "cloud"},
         ),

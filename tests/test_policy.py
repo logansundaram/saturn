@@ -2,6 +2,8 @@
 boundary: a match skips the approval gate entirely), the persisted /risk overrides, and the
 auto-approve threshold with its /autoapprove (gate-off) view."""
 
+import pytest
+
 from trust import policy
 
 
@@ -224,5 +226,164 @@ def test_set_tier_unknown_fails_closed(isolated_paths):
     try:
         assert policy.set_tier("nonsense") == "read_only"
         assert policy.tier() == "read_only"
+    finally:
+        _restore_tier(prev)
+
+
+# --- the argument-tail screen (transplanted from the gating isolate) -------------------------
+#
+# A token-prefix grant validated only its HEAD, so `git log --output=<abs>` and
+# `git -c core.pager=!sh -c id` rode in on a benign-looking grant. The screen re-runs at USE
+# against the live command text and only ever tightens: interpreters are honored as exact
+# commands only, capability-introducing flags / globs / workspace-escaping paths in the tail
+# disqualify the command, and non-ASCII text (a confusable `；`) never passes the automation
+# path. Deterministic — no model in the loop.
+
+
+def test_prefix_grant_does_not_launder_write_path(isolated_paths):
+    policy.add_shell_allow("git log")
+    assert policy.approves("run_shell", "destructive",
+                           {"command": r"git log --output=C:\Users\x\laundered.txt"}) is False
+    assert policy.approves("run_shell", "destructive",
+                           {"command": "git log --output=/tmp/laundered.txt"}) is False
+    assert policy.approves("run_shell", "destructive",
+                           {"command": "git log --oneline -n 5"}) is True
+
+
+def test_prefix_grant_does_not_launder_exec(isolated_paths):
+    policy.add_shell_allow("git")
+    assert policy.approves("run_shell", "destructive",
+                           {"command": 'git -c core.pager=!sh -c "id"'}) is False
+    assert policy.approves("run_shell", "destructive", {"command": "git status"}) is True
+
+
+def test_arg_tail_screen_is_defense_in_depth_not_a_boundary(isolated_paths):
+    """The honest bound: a denylist closes the NAMED laundering paths and nothing more. An
+    unlisted capability flag still rides through — asserted so the screen is never mistaken
+    for the boundary (the human gate on the exact reviewed command is the boundary)."""
+    policy.add_shell_allow("tar")
+    assert policy.approves("run_shell", "destructive",
+                           {"command": "tar --use-compress-program=sh -cf x ."}) is False
+    assert policy.approves("run_shell", "destructive",
+                           {"command": "tar --totals=/bin/sh -cf x ."}) is True
+
+
+_EVASION_CORPUS = [
+    ("cat notes.txt", "cat notes.txt ../policy.py", "arg-tail path read"),
+    ("git", 'git -c core.pager=!sh -c "id"', "config-exec laundering"),
+    ("cp", "cp notes.txt /dev/stdout", "versatile copy"),
+    ("awk", 'awk \'BEGIN{system("id")}\'', "versatile interpreter -> exec"),
+    ("cat", "cat *", "glob expansion"),
+    ("git status", "git status ； rm a.txt", "unicode lookalike ';' (inert in sh/pwsh)"),
+    ("python", "python evil.py", "unlisted-by-a-denylist interpreter runs a script"),
+    ("npm", "npm run pwn", "package script is arbitrary code"),
+    ("find", "find . -exec sh -c id ;", "find -exec"),
+    ("sed", "sed -i s/a/b/ ../policy.py", "in-place edit outside the workspace"),
+    ("diff", "diff notes.txt /etc/passwd", "diff as a file reader"),
+    ("cp", "cp ../permissions.json /tmp/x", "cp exfiltrating the policy store"),
+    ("tee", "tee ../escape.txt", "tee as a writer outside the workspace"),
+    ("powershell", "powershell -c Get-Process", "the host shell itself"),
+    ("Get-Content", r"Get-Content ~\secrets.txt", "home-relative path"),
+]
+
+
+@pytest.mark.parametrize("grant,command,label", _EVASION_CORPUS)
+def test_screen_evasion_corpus_routes_to_ask(isolated_paths, grant, command, label):
+    policy.add_shell_allow(grant)
+    assert policy.approves("run_shell", "destructive", {"command": command}) is False, label
+
+
+@pytest.mark.parametrize("grant,command", [
+    ("git status", "git status --short"),
+    ("git log", "git log --oneline -n 5"),
+    ("pytest", "pytest"),
+    ("npm test", "npm test"),            # interpreter, exact match — still granted
+    ("python -m pytest", "python -m pytest"),
+    ("ls", "ls -la subdir"),
+    ("Get-ChildItem", "Get-ChildItem subdir -Recurse"),
+])
+def test_screen_does_not_over_block_benign_commands(isolated_paths, grant, command):
+    """The other half of the screen's job: a grant has to stay USEFUL, or the fix is approval
+    fatigue with extra steps."""
+    policy.add_shell_allow(grant)
+    assert policy.approves("run_shell", "destructive", {"command": command}) is True
+
+
+def test_shell_prefix_rejects_non_ascii():
+    assert policy.shell_prefix_rejects("git status ；rm a") is not None
+    assert policy.shell_prefix_rejects("git status") is None
+
+
+def test_arg_tail_rejects_is_pure_and_names_the_reason():
+    assert policy.arg_tail_rejects("git log", "git log --oneline") is None
+    why = policy.arg_tail_rejects("git log", "git log --output=/x")
+    assert why and "--output" in why
+    why = policy.arg_tail_rejects("cat", "cat *.txt")
+    assert why and "glob" in why
+    why = policy.arg_tail_rejects("cat", "cat ../x")
+    assert why and "outside the workspace" in why
+    why = policy.arg_tail_rejects("python", "python evil.py")
+    assert why and "interpreter" in why
+
+
+def test_grant_shell_prefix_refuses_a_prefix_the_tail_screen_would_never_honor(isolated_paths):
+    """The gate's always-allow flow (dry-run) must not collect a grant that could not exempt the
+    reviewed command — and the disclosure says why."""
+    ok, why = policy.grant_shell_prefix("git log", "git log --output=/x", dry_run=True)
+    assert ok is False and "--output" in why
+    # The FULL command as the prefix (the gate's default proposal) still works — the tail is
+    # empty, so the reviewed command is exactly what is exempted.
+    ok, why = policy.grant_shell_prefix("git log --output=out.txt", "git log --output=out.txt",
+                                        dry_run=True)
+    assert ok is True
+
+
+def test_wrong_typed_policy_fields_fail_closed(isolated_paths, monkeypatch):
+    """Transplanted from the gating isolate: a wrong-TYPED field is a garbled file. A string
+    `shell_allow` would otherwise iterate as characters into allowlist prefixes (`g` exempting
+    every command starting with g) and a list `risk_overrides` would raise in the registry.
+    Both degrade LOUDLY to strict defaults (recorded, file moved aside), never iterated as-is."""
+    import json
+
+    monkeypatch.setattr(policy, "_LOAD_PROBLEM", None)
+    path = isolated_paths / "database" / "permissions.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"shell_allow": "git status", "risk_overrides": []}),
+                    encoding="utf-8")
+    assert policy.shell_allow() == []
+    assert policy.risk_overrides() == {}
+    assert policy.shell_allowed("g") is None
+    assert policy.approves("run_shell", "destructive", {"command": "git status"}) is False
+    assert policy.load_problem()
+    assert path.with_name(path.name + ".corrupt").exists()
+
+    # A list of non-strings is the same story.
+    monkeypatch.setattr(policy, "_LOAD_PROBLEM", None)
+    path.write_text(json.dumps({"shell_allow": [1, None], "risk_overrides": {}}),
+                    encoding="utf-8")
+    assert policy.shell_allow() == []
+    assert policy.load_problem()
+
+
+def test_explicit_tier_choice_supersedes_the_gate_off_snapshot(isolated_paths):
+    """Transplanted from the gating isolate: `/policy open on`, then an explicit tier choice
+    (Shift+Tab / /config) while open, then `/policy open off` must land on the tier the user
+    set LAST — never restore a tier ABOVE it from the pre-open snapshot."""
+    prev = policy.tier()
+    try:
+        policy.set_tier("side_effecting")
+        policy.set_gate_off(True)
+        assert policy.tier() == "destructive"
+        # The user deliberately drops to read_only while the gate is open…
+        policy.set_tier("read_only")
+        assert not policy.gate_off()
+        # …so `off` must not resurrect side_effecting from the snapshot.
+        policy.set_gate_off(False)
+        assert policy.tier() == "read_only"
+        # And the normal round trip still restores the prior threshold.
+        policy.set_tier("side_effecting")
+        policy.set_gate_off(True)
+        policy.set_gate_off(False)
+        assert policy.tier() == "side_effecting"
     finally:
         _restore_tier(prev)

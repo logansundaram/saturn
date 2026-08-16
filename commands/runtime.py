@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from commands._framework import command, _print
 from commands._utils import _ROLES, _resync_rag_after_model_change, is_list_verb, split_persist_flags
+from core import model_family
 from tools.registry import tool as TOOLS, risk_of
 
 
@@ -64,6 +65,20 @@ def _persist_bindings(cfg, keys: list[str]) -> None:
         _persist_key(cfg, key)
 
 
+def print_family_refusal(model: str) -> None:
+    """THE family-gate refusal, in one place. `/models` binds through _bind; `/config` writes the
+    same `tiers.*.roles.*` keys directly and must refuse identically — two hand-written messages
+    would drift, and the second door silently persisting what the first refuses is worse than a
+    wording drift (2026-08-16)."""
+    _print(f"  {model} is outside the supported model family.")
+    _print("  Saturday.ai binds qwen3.5 / qwen3.6 / qwen3.8 only — confidence coloring is")
+    _print("  calibrated per model, so a red run is only a true claim for a measured one.")
+    _print("  supported:")
+    for key, tag in model_family.SIZE_LADDER:
+        _print(f"    {key:<6} {tag}")
+    _print("  switch the whole tier with `/models tier <size>`.")
+
+
 def _bind(cfg, target: str, model: str, *, session: bool = False) -> None:
     """Bind a role / all roles / the embedder to a local Ollama model id (a bare scalar in
     config.yaml). The change PERSISTS to config.yaml by default (a model switch should stick);
@@ -71,6 +86,12 @@ def _bind(cfg, target: str, model: str, *, session: bool = False) -> None:
     simply overwritten — cloud support is shelved (2026-07-03), and rebinding is how a stale
     mapping gets fixed."""
     from core.llms import reset_models
+
+    # The family gate (2026-08-16). The EMBEDDER is exempt — it is not a chat model, has no
+    # raw-mode template and produces no logprobs, so no calibration claim rides on it.
+    if target != "embedder" and not model_family.in_family(model):
+        print_family_refusal(model)
+        return
 
     tag = " (session only)" if session else ""
 
@@ -135,6 +156,99 @@ def _models_picker(ctx, cfg, local, *, session: bool = False) -> None:
     _bind(cfg, target, choice.name, session=session)
 
 
+# Parameter counts as `ollama show` reports them — display only, so the listing reads the same
+# whether or not the tag is pulled locally. (Defined before _tier_rows, which reads it.)
+_PARAMS_BY_CLASS = {
+    "800m": "873M", "2b": "2.3B", "4b": "4.7B", "9b": "9.7B", "27b": "27.3B", "35b": "36.0B",
+}
+
+
+def _tier_model(cfg, key: str) -> str:
+    """What a tier actually binds, read straight off the tiers mapping (dict access, never the
+    dotted cfg.get path — a legacy tier name may contain a dot)."""
+    tier = (cfg.get("tiers", {}) or {}).get(key) or {}
+    roles = tier.get("roles", {}) or {}
+    entry = roles.get("synthesizer") or next(iter(roles.values()), None)
+    if isinstance(entry, dict):
+        entry = entry.get("model", "")
+    return str(entry or "")
+
+
+def _tier_rows(active: "str | None" = None, cfg=None) -> list:
+    """One row per tier the CONFIG defines, carrying the metrics the listing shows instead of a
+    nickname: bound model, parameters, runtime + architectural context window, and whether the
+    model has a confidence calibration behind it.
+
+    Walks the config's OWN tiers, not the ladder (2026-08-16): `/models tier <name>` validates
+    against config.yaml, so a listing built from the ladder offered an upgrading user six rows
+    they could not select while hiding the three they had. A tier whose name is not a size class
+    is marked `legacy` and shows what it really binds."""
+    from config import get_config
+    from core import confidence
+
+    if cfg is None:
+        cfg = get_config()
+    if active is None:
+        active = cfg.active_tier
+    tiers = list(cfg.get("tiers", {}) or {})
+    classes = model_family.classes()
+    rows = []
+    for key in tiers or classes:
+        ladder = key in classes
+        declared = model_family.tag_for(key) if ladder else _tier_model(cfg, key)
+        # What selecting this tier actually RUNS: a non-family binding is substituted at the
+        # model_for_role seam, so showing the file's value here would put a window and a
+        # calibration verdict against a model that never loads (the substitution itself is
+        # named by the migration note under the table).
+        tag = declared
+        if tag and not model_family.in_family(tag):
+            tag = model_family.tag_for(model_family.migrate(tag))
+        cap = cfg.capability_of(tag)
+        rows.append({
+            "key": key,
+            "model": tag,
+            "declared": declared,
+            "params": _PARAMS_BY_CLASS.get(key, ""),
+            "ctx": cap.context_window,
+            "max_ctx": cap.max_context_window,
+            "calibrated": confidence.calibration_for(tag) is not None,
+            "legacy": not ladder,
+            "active": key == active,
+        })
+    return rows
+
+
+def _model_meta(models, cfg=None) -> dict:
+    """Per-tag metrics for the /models listing: the runtime + architectural context window, and
+    whether the tag has a confidence calibration behind it. The same facts `/models tier` shows,
+    so one tag reads identically in both listings (the readout's `meta` hook had no caller at
+    all until 2026-08-16, so the listing showed none of it).
+
+    An EMBEDDER gets no calibration verdict: it is not a chat model, produces no logprobs, and
+    'uncalibrated' would read as a defect rather than an exemption."""
+    from config import get_config
+    from core import confidence
+
+    if cfg is None:
+        cfg = get_config()
+    out = {}
+    for m in models or []:
+        cap = cfg.capability_of(m.name)
+        info = {"ctx": cap.context_window, "max_ctx": cap.max_context_window}
+        if not getattr(m, "is_embedding", False):
+            info["calibrated"] = confidence.calibration_for(m.name) is not None
+        out[m.name] = info
+    return out
+
+
+def _config_migrations() -> dict:
+    """This session's family substitutions, so the listing never claims the file's value is
+    what is running."""
+    import config as _config
+
+    return _config.migrated_bindings()
+
+
 @command(
     "models",
     "List installed models; pick or switch what drives each role / the embedder.",
@@ -187,7 +301,8 @@ def _models(ctx, args):
 
     if not args:
         local = list_local_models()
-        ui.show_models(local, bindings, cfg.active_tier, cfg.embedder_model, numbered=True)
+        ui.show_models(local, bindings, cfg.active_tier, cfg.embedder_model, numbered=True,
+                       meta=_model_meta(local, cfg))
         _models_picker(ctx, cfg, local, session=session)
         return
 
@@ -195,18 +310,45 @@ def _models(ctx, args):
 
     if is_list_verb(sub):
         # The non-interactive view (`ollama list`-style): the same table, no picker.
-        ui.show_models(list_local_models(), bindings, cfg.active_tier, cfg.embedder_model)
+        local = list_local_models()
+        ui.show_models(local, bindings, cfg.active_tier, cfg.embedder_model,
+                       meta=_model_meta(local, cfg))
         return
 
     if sub == "tier":
         if len(args) < 2:
-            _print("  tiers (switch with /models tier <name>):")
-            for name in cfg.get("tiers", {}):
-                mark = "*" if name == cfg.active_tier else " "
-                _print(f"   {mark} {name}")
+            from tui import ui
+
+            ui.section("tiers", "switch with /models tier <name>")
+            tiers = _tier_rows()
+            rows = [
+                (
+                    ("* " if r["active"] else "  ") + r["key"],
+                    r["model"] or "—",
+                    ("legacy tier", "yellow") if r["legacy"] else (r["params"], "dim"),
+                    (f"{r['ctx']} / {r['max_ctx']}", "dim"),
+                    ("calibrated", "green") if r["calibrated"] else ("uncalibrated", "yellow"),
+                )
+                for r in tiers
+            ]
+            ui.table(rows)
+            if any(r["legacy"] for r in tiers):
+                # These are the tiers this config can actually switch between; the size classes
+                # are not among them, so name the bind that DOES work here.
+                _print("  legacy tier names predate the size-class ladder. Rebind a tier's")
+                _print("  models in place with `/models all <tag>`:")
+                for key, tag in model_family.SIZE_LADDER:
+                    _print(f"    {key:<6} {tag}")
+            migrated = _config_migrations()
+            for original, replacement in migrated.items():
+                _print(f"  note: '{original}' in config.yaml is running as '{replacement}'.")
             return
         tier = args[1]
-        if cfg.get(f"tiers.{tier}") is None:
+        # Dict membership, not the dotted cfg.get("tiers.<tier>") path lookup — a tier key
+        # containing a literal dot would otherwise be misread as two path segments and always
+        # report unknown (hit this with the size-class key "0.8b", renamed to "800m" for the
+        # same reason — see core/model_family.py).
+        if tier not in cfg.get("tiers", {}):
             _print(f"  unknown tier: {tier} (defined: {list(cfg.get('tiers', {}))})")
             return
         cfg.set("active_tier", tier)

@@ -173,9 +173,15 @@ Then open a new terminal and run `saturn`. The first run pulls a few GB of model
 minute. Prefer to read before you pipe? Both scripts are plain text at the URLs above — download
 and inspect first.
 
-The installer defaults to the lightweight **`laptop`** tier (`gemma4:e4b`); switch to a bigger
-tier anytime with `/models`, or set `SATURDAY_TIER=workstation` before installing. Other knobs:
-`SATURDAY_HOME` (install dir), `SATURDAY_MODELS` (models to pull), `SATURDAY_BRANCH`.
+The installer defaults to the lightweight **`4b`** size class (`qwen3.5:4b`); switch to a bigger
+class anytime with `/models tier`, or set `SATURDAY_TIER=9b` (or `27b`/`35b`) before installing.
+Other knobs: `SATURDAY_HOME` (install dir), `SATURDAY_MODELS` (models to pull), `SATURDAY_BRANCH`.
+
+Saturn runs the **qwen3.5–3.8 family only**, as one tier per parameter size. That is a
+deliberate limit, not a missing feature: confidence coloring marks what the model itself was
+least sure of, and "least sure" is calibrated per model — a threshold borrowed from a model of a
+different size is meaningless. `/models tier` shows the ladder; `/confidence` shows what your
+active model is calibrated at.
 
 > Prefer to set it up by hand, or hacking on Saturn itself? Use the **Manual install** below.
 
@@ -193,7 +199,7 @@ uv tool install saturn-agent
 (Want the unreleased tip of `main` instead? `pipx install git+https://github.com/logansundaram/saturn`.)
 
 Then run `saturn`. You still need [Ollama](https://ollama.com/download) running and the tier
-models pulled — for the `laptop` tier that's `ollama pull gemma4:e4b` and
+models pulled — for the `4b` tier that's `ollama pull qwen3.5:4b` and
 `ollama pull qwen3-embedding:8b` (multi-GB downloads; Ollama prints each one's exact size as the
 pull starts). The quick installer above does both for you, and `/config setup` reports what's
 missing — when models are missing it offers to run the pulls for you (y/N, default no). Installed this way, your data and `config.yaml` live in `~/.saturday` (override with
@@ -206,18 +212,23 @@ saturn-agent` instead of `/update`.
 
 - **Python 3.11+**
 - **[Ollama](https://ollama.com/download)** installed and running locally.
-- The local models pulled. The default (`workstation`) tier uses one ~9B model for everything
+- The local models pulled. The default (`4b`) tier uses one small qwen3.5 model for everything
   plus an embedding model — both multi-GB downloads (Ollama prints each one's exact size as the
   pull starts):
 
   ```bash
-  ollama pull qwen3.5:9b           # all five roles (~9B)
+  ollama pull qwen3.5:4b           # all five roles (~4B)
   ollama pull qwen3-embedding:8b   # the embedder (RAG)
   ```
 
-  > Lighter on hardware? Edit `active_tier` in `config.yaml` to `laptop` and pull the smaller
-  > `gemma4:e4b` instead (same embedder). (Small models are less reliable at tool-calling — see
-  > the gotchas in `CLAUDE.md`; `/config setup` will say so too.)
+  > More hardware to spare? Edit `active_tier` in `config.yaml` to a bigger size class — `9b`,
+  > `27b`, or `35b` — and pull that class's tag instead (same embedder); `/models tier` lists
+  > all six. Saturn binds the **qwen3.5–3.8 family only** — each size class is calibrated per
+  > model for confidence coloring (see `/confidence`; the 27b tier's thresholds are estimated
+  > from its measured 27.8B sibling pending daemon support for qwen3.8 logprobs), so this is a
+  > closed ladder, not an open model list.
+  > (Small models are still less reliable at tool-calling — see the gotchas in `CLAUDE.md`;
+  > `/config setup` will say so too.)
 
 ### 2. Clone and install
 
@@ -277,9 +288,10 @@ everything else is a turn for the agent.
 
 Everything lives in **`config.yaml`**:
 
-- **`active_tier`** — which hardware preset is live (`laptop`, `workstation`).
+- **`active_tier`** — which size-class preset is live (`800m`, `2b`, `4b`, `9b`, `27b`, `35b`).
 - **`tiers`** — maps each role (planner / tool_caller / synthesizer / …) to a concrete model, so
-  swapping hardware is a one-line change.
+  swapping hardware is a one-line change. Every tag is qwen3.5/3.6/3.8 — `/models tier` lists the
+  ladder with params, context window, and calibration state.
 - **`runtime`** — loop and safety knobs: `max_iterations`, `auto_approve` (the approval policy),
   `num_ctx` (context window), `citations` (inline source citations in answers).
 - **`web`** — web-tool knobs (`max_results`, `request_timeout`). The backend is fixed and

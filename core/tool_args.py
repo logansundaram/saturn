@@ -115,6 +115,29 @@ def parse_text_call(content: str) -> Optional[dict]:
     return {k: v for k, v in pairs} if pairs else None
 
 
+# --- the laundering refusal (transplanted from the engine isolate, 2026-08-15) ---------------
+#
+# calculate(expression="551") computes nothing: it mints TOOL provenance for a number the model
+# already worked out — a value a reasoning step invented, laundered into a "computed" result that
+# nothing downstream can tell from a real one. The test is decidable and needs no judgment: an
+# expression with no infix operator and no function call is a bare value. Function names track
+# tools/calculator._ALLOWED_FUNCS; `**` matches on `*`.
+
+_ARITH_OP_RE = re.compile(r"[+\-*/%^]|\b(?:abs|round|min|max|pow|sum)\s*\(")
+
+
+def launders_a_value(tool_name: str, args) -> bool:
+    """Whether this call would manufacture provenance for a value instead of computing one."""
+    if tool_name != "calculate" or not isinstance(args, dict):
+        return False
+    expr = str(args.get("expression") or "").strip()
+    if not expr:
+        return False  # an empty expression is coercion's failure, not laundering
+    # A LEADING sign is part of the literal, not an operation: "-551" computes nothing. Strip
+    # leading signs/brackets/space so only an INFIX operator or a function counts as arithmetic.
+    return not _ARITH_OP_RE.search(expr.lstrip("+-( \t"))
+
+
 def coerce_args(name: str, args) -> Optional[dict]:
     """Map emitted args onto `name`'s real schema via the alias tables. Returns the corrected
     dict, or None when a REQUIRED arg is missing under every alias (the caller retries with a

@@ -12,6 +12,8 @@ needs_resolution} — see core/state.py) so they are trivially testable offline.
 
 from __future__ import annotations
 
+import re
+
 from config import get_config
 from textutil import head_tail
 
@@ -35,6 +37,134 @@ SEARCH_TOOLS = {"search_knowledge_base", "search_files", "find_files", "web_sear
 def original_request(state) -> str:
     """The user's request as the engine's prompts see it — the current turn's query."""
     return str(state.get("current_query") or "")
+
+
+# --- targets: what a request / a step is ABOUT (transplanted from the engine isolate) ---------
+#
+# THE one notion of a workspace target for the engine's deterministic checks (rectify's coverage
+# branch; the plan-review revocation lock). Deliberately syntactic: a slash-joined path, or a
+# name with a file extension — never a stat, never a guess.
+_PATH_RE = re.compile(r"[A-Za-z0-9_.\-]*(?:/[A-Za-z0-9_.\-]+)+|[A-Za-z0-9_\-]+\.[A-Za-z]{2,8}")
+
+
+def target_tokens(text) -> set:
+    """The workspace paths named anywhere in `text`, lowercased."""
+    return {m.group(0).strip(".").lower() for m in _PATH_RE.finditer(str(text or ""))}
+
+
+# --- the plan-review revocation lock + effect authorization (from the engine isolate) ---------
+#
+# Revocation: what removing an un-run step at plan review REVOKES, as targets — the label is a
+# sentence a redraft can reword; the target is what the user actually removed, and `execute`
+# refuses any state-changing action that lands on one for the rest of the turn (on the label
+# before a generation is spent, on the generated ARGUMENTS at the last point before the call is
+# emitted). Authorization: a state-changing step drafted AFTER results exist may only act on a
+# target the user's own words name — results may inform HOW the request is carried out, never
+# WHAT is done to the workspace.
+
+REVOKE_ALL = "*"
+ORIGIN_REPLAN = "replan"
+
+
+def state_changing(tool) -> bool:
+    """Whether `tool` can change state — REGISTRY-derived: any tier above read_only (write/edit,
+    run_shell, remember, every MCP tool; an unknown name fails closed to destructive). Never a
+    hand list a new tool silently escapes."""
+    if not tool:
+        return False
+    try:
+        from tools.registry import risk_of  # lazy: plan_context is imported by the registry's users
+    except Exception:
+        return str(tool) in WRITE_TOOLS or str(tool) == "run_shell"
+    return risk_of(str(tool)) != "read_only"
+
+
+def revoked_targets(step) -> set:
+    """What removing this un-run step revokes, as target tokens. ONLY a state-changing step
+    revokes anything (removing a read is not removing an effect). A state-changing TOOL revokes
+    the paths its label names — or REVOKE_ALL for a filesystem/shell effect that names none (the
+    conservative reading a redraft cannot walk around by omitting the filename), or `tool:<name>`
+    for a non-path effect (a dropped `remember` revokes further memory writes, not every write).
+    A write folded into a read-only step's DESCRIPTION ("…and save it to x.txt") is trusted for
+    the paths it names and nothing more."""
+    from core.request_intent import wants_state_change
+
+    tool = step.get("intended_tool")
+    label = str(step.get("label") or "")
+    if state_changing(tool):
+        named = target_tokens(label)
+        if named:
+            return named
+        return {REVOKE_ALL} if (tool in WRITE_TOOLS or tool == "run_shell") else {f"tool:{tool}"}
+    if wants_state_change(label):
+        return target_tokens(label)
+    return set()
+
+
+def _same_target(revoked: str, named: str) -> bool:
+    """Whether a path an action names IS the revoked target: the same token, or the same file
+    reached by a longer/shorter path — compared as whole path SEGMENTS, never substrings
+    (revoking out.txt must not refuse handout.txt)."""
+    return revoked == named or named.endswith("/" + revoked) or revoked.endswith("/" + named)
+
+
+def is_revoked(revoked, tool, *texts) -> bool:
+    """Whether a state-changing action with `tool` over `texts` (label, generated arguments)
+    lands on something the user revoked at plan review. Read-only tools are never revoked."""
+    if not revoked or not state_changing(tool):
+        return False
+    revoked = [str(r).lower() for r in revoked]
+    if REVOKE_ALL in revoked or f"tool:{tool}".lower() in revoked:
+        return True
+    named = target_tokens(" ".join(str(t or "") for t in texts))
+    return any(_same_target(r, n) for r in revoked for n in named)
+
+
+def request_authorized(state, step, *texts) -> bool:
+    """Whether a state-changing action from `step` is authorized by the user's own words. A step
+    drafted before any result existed (no `origin: replan`), or one that cannot change state, is
+    authorized — nothing had been read, so nothing could have steered it. A request that asks
+    for NO workspace change authorizes none ("tell me the late fee" cannot license a write,
+    whatever the file being read says). A request that asks for a change and NAMES the target
+    authorizes exactly that target (whole path segments); one that names no path ("save the
+    summary somewhere") authorizes the model's choice — the deliberate residual. The authorizing
+    text is `authorization_basis` (request + this turn's steers)."""
+    from core.request_intent import wants_state_change
+
+    if step.get("origin") != ORIGIN_REPLAN or not state_changing(step.get("intended_tool")):
+        return True
+    request = authorization_basis(state)
+    if not wants_state_change(request):
+        return False
+    requested = target_tokens(request)
+    if not requested:
+        return True
+    named = target_tokens(" ".join([str(step.get("label") or "")] + [str(t or "") for t in texts]))
+    return any(_same_target(r, n) for r in requested for n in named)
+
+
+def authorization_basis(state) -> str:
+    """What the HUMAN typed this turn — the request plus every mid-turn steering correction
+    (plan_gate records a steer as a HumanMessage: merged onto the turn's message or standalone
+    with STEER_PREFIX). The one text the deterministic completeness/authorization checks read
+    targets from: reading them from RESULTS would let text inside a file or a web page
+    manufacture work the engine then demands of itself — the injection hazard the engine exists
+    to refuse. A steer carries no such hazard, and reading the request alone would let a target
+    the user named mid-turn never register."""
+    from core.state import is_turn_start  # lazy: core.state imports nothing from here
+
+    parts = [original_request(state)]
+    this_turn: list = []
+    for m in reversed(state.get("messages") or []):
+        this_turn.append(m)
+        if is_turn_start(m):
+            break
+    for m in reversed(this_turn):
+        if getattr(m, "type", "") == "human":
+            text = str(getattr(m, "content", "") or "")
+            if text and text != parts[0]:
+                parts.append(text)
+    return "\n".join(parts)
 
 
 def vetoes_block(state) -> str:

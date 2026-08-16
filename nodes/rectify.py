@@ -47,12 +47,16 @@ from core.messages import RECTIFY_SYS, RESOLVE_CHECK_SYS
 from core.plan_context import (
     SEARCH_TOOLS,
     WRITE_TOOLS,
+    authorization_basis,
+    is_revoked,
     original_request,
     plan_txt,
     results_block,
+    target_tokens,
     vetoes_block,
 )
 from core.plan_ops import is_review_retirement
+from nodes.execute import ASK_GATE_PREFIX  # one producer (execute), one parser (branch 4a)
 from core.state import AgentState
 from core.structured import (
     RectifyBool,
@@ -119,6 +123,93 @@ def _cancel_remaining(plan: list[dict], text: str) -> list[dict]:
             s["result"] = text
             s["status"] = "cancelled"
     return plan
+
+
+# Tools that can PRODUCE a derived number (a total can be computed by awk as easily as by
+# calculate) and tools whose call FETCHES material (a followed reference is at least two fetches).
+COMPUTE_TOOLS = ("calculate", "run_shell")
+_FETCH_TOOLS = ("read_file", "web_extract")
+
+
+def plan_is_clean(plan: list) -> bool:
+    """Whether every step ran and produced a usable observation. The completeness branches infer
+    "the request asked for X and the plan never did X" — sound only on a plan that WORKED. When a
+    step errored, was skipped, or came back a producer-declared absence, the honest response is
+    to report the absence, not to hunt for a substitute. A computed value from `calculate` is
+    never an absence — "0" is a value (F8), so calculate is exempt from the dead-end reading."""
+    steps = list(plan or [])
+    if not steps:
+        return False
+    return all(
+        s.get("result") is not None
+        and s.get("status") == "done"
+        and (s.get("intended_tool") == "calculate" or not dead_end_result(s.get("result")))
+        for s in steps
+    )
+
+
+def human_edited_the_plan(state) -> bool:
+    """Whether the user removed steps at the plan-review editor this turn — when they did, the
+    completeness heuristics go quiet (`vetoes_block` already promises the prompts will not treat
+    the absence as a gap; a deterministic branch that kept demanding it would be the engine
+    arguing with the human through a different door)."""
+    return bool(state.get("plan_vetoes"))
+
+
+def missing_computation(state, plan: list) -> bool:
+    """The request asks for a DERIVED number (`wants_derived_number` over the human's words) and
+    no step used a computing tool. There must be something to compute FROM: an observation, or
+    arithmetic the request itself states — "the difference between a stack and a queue" is
+    English that happens to contain an aggregation word."""
+    from core.request_intent import states_an_expression, wants_derived_number
+
+    request = authorization_basis(state)
+    if not wants_derived_number(request):
+        return False
+    gathered = any(s.get("intended_tool") and s.get("result") is not None for s in plan or [])
+    if not (gathered or states_an_expression(request)):
+        return False
+    return not any(s.get("intended_tool") in COMPUTE_TOOLS for s in plan or [])
+
+
+def unfollowed_reference(state, plan: list) -> bool:
+    """The request defers a target to an earlier result ("the file it names" — the human's own
+    words, the injection-safe activation) and the plan never made the hop: no step names a
+    path the request did not name, AND fewer than two fetch calls happened."""
+    from core.request_intent import names_deferred_reference
+
+    request = authorization_basis(state)
+    if not names_deferred_reference(request):
+        return False
+    requested = target_tokens(request)
+    for s in plan or []:
+        if target_tokens(s.get("label")) - requested:
+            return False  # a step acted on a path the request never named: the hop was taken
+    fetches = sum(1 for s in plan or [] if s.get("intended_tool") in _FETCH_TOOLS)
+    return fetches < 2
+
+
+def uncovered_request_targets(state, plan: list) -> set:
+    """Workspace paths the USER'S words name that no step in the plan has acted on — the pure
+    classifier behind branch 4b. A step "acts on" a path when its label mentions it (the same
+    target extraction the revocation lock uses — one notion of a step's target). Narrow in three
+    ways, each a correctness property: targets come from `authorization_basis` (the human's
+    words, never results); a path in a plan-review veto is the user's decision, not a gap; a path
+    a completed step mentions is covered whatever its outcome (a read that returned "not found"
+    HAS acted on it — report the absence, don't hunt for a substitute)."""
+    requested = target_tokens(authorization_basis(state))
+    if not requested:
+        return set()
+    covered: set = set()
+    for step in plan or []:
+        covered |= target_tokens(step.get("label"))
+    vetoed: set = set()
+    for label in state.get("plan_vetoes") or []:
+        vetoed |= target_tokens(label)
+    revoked = state.get("revoked_writes") or []
+    # A revoked target is removed work, not missing work — treating it as a gap would have
+    # rectify fight the revocation lock.
+    return {t for t in requested - covered - vetoed if not is_revoked(revoked, "write_file", t)}
 
 
 def rectify_node(state: AgentState):
@@ -243,6 +334,101 @@ def rectify_node(state: AgentState):
             "a different name or token). If that still finds nothing, report it "
             "plainly and do NOT invent.",
         }
+
+    # 4a. THE ASK GATE'S REDRAFT (transplanted from the engine isolate): `execute` refused an
+    #     `ask_user` step — past this turn's one-question budget, or before the searchable source
+    #     the request itself named had been searched. The refusal is only half a mechanism:
+    #     without a redraft the turn lands with an incident and no answer. Detected off the
+    #     producer's own prefix, never its wording (the DECLINE_TEXT pattern).
+    if (
+        last_done is not None
+        and str(last_done.get("result") or "").startswith(ASK_GATE_PREFIX)
+        and state.get("replans", 0) < 2
+    ):
+        diag.log(f"rectify_node : {time.perf_counter() - start:.4f}s (ask gate -> redraft)")
+        return {
+            "rectify": True,
+            "reasoning": (
+                "A step tried to ASK THE USER a question this turn must not ask. Replace it, "
+                "choosing by what the request actually needs:\n"
+                "- if the request names a source you can look in (my notes/files/documents), "
+                "search it (search_knowledge_base for notes, search_files or find_files for the "
+                "workspace) and answer from what comes back;\n"
+                "- if the question was gathering an input for an action you have NO tool for, "
+                "do not ask it at all — emit a single 'none' step that states plainly which "
+                "part of the request you cannot carry out;\n"
+                "- if a search genuinely returns nothing relevant, emit a single 'none' step "
+                "reporting that it is not there.\n"
+                "Never substitute a different item that happens to be nearby, and never ask the "
+                "user again this turn."
+            ),
+        }
+
+    # 4b. REQUESTED-TARGET COVERAGE (transplanted from the engine isolate): the request names a
+    #     workspace path, every step has run, and no step's label ever mentioned it — the plan
+    #     under-decomposed the request (measured: dev.horizon.write 0/5 -> 5/5). Deterministic —
+    #     no judge — and bounded by the replan budget. Injection-safe by construction: targets are
+    #     read from what the HUMAN typed (plan_context.authorization_basis), never from results,
+    #     so a path inside a file's contents or a web page can never become work the engine
+    #     demands of itself. A path the user vetoed at plan review is removed work, not missing.
+    if not pending and state.get("replans", 0) < 2:
+        missing = uncovered_request_targets(state, plan)
+        if missing:
+            names = ", ".join(sorted(missing))
+            diag.log(f"rectify_node : {time.perf_counter() - start:.4f}s (uncovered: {names})")
+            return {
+                "rectify": True,
+                "reasoning": (
+                    f"The request names {names}, but no step has acted on it and every step has "
+                    "already run. Add the remaining concrete steps needed to finish the "
+                    "request, using the results gathered so far and the EXACT path(s) above — "
+                    "including any calculation the request needs as its own calculate step, and "
+                    "any write as its own final step. Do not repeat completed steps."
+                ),
+            }
+
+    # 4c/4d. REQUEST-SIDE COMPLETENESS (transplanted from the engine isolate) — 4b's siblings:
+    #     4c the request asks for a number that must be COMPUTED and no step computes (the model
+    #     would do the arithmetic in the answer's prose, where nothing can verify it); 4d the
+    #     request defers a target to a result ("the file it names") and the plan never made the
+    #     hop. Both read the HUMAN's words only, both go quiet on an unclean plan (report the
+    #     absence) or after a plan-review edit (the human's edit wins), both bounded. 4d BEFORE
+    #     4c — gather before compute: demanding the total while the file it computes from was
+    #     never opened drafts a step over material that does not exist yet.
+    if (
+        not pending
+        and state.get("replans", 0) < 2
+        and not human_edited_the_plan(state)
+        and plan_is_clean(plan)
+    ):
+        if unfollowed_reference(state, plan):
+            diag.log(f"rectify_node : {time.perf_counter() - start:.4f}s (unfollowed reference)")
+            return {
+                "rectify": True,
+                "reasoning": (
+                    "The request asks you to follow a reference from one file to another — and "
+                    "every step has run without the second file ever being opened. The results "
+                    "above contain the name it points to: add one concrete step that reads "
+                    "EXACTLY that file, plus whatever further step the request needs to answer "
+                    "from its contents. Use the literal name as it appears in the results; "
+                    "never guess a filename that is not there, and if the results name no such "
+                    "file, emit a single 'none' step saying so."
+                ),
+            }
+        if missing_computation(state, plan):
+            diag.log(f"rectify_node : {time.perf_counter() - start:.4f}s (missing computation)")
+            return {
+                "rectify": True,
+                "reasoning": (
+                    "The request asks for a computed figure (a total, sum, average, difference "
+                    "or comparison of amounts), every step has already run, and NO step used "
+                    "the calculate tool — so the figure does not exist yet and must not be "
+                    "worked out in the final answer. Add one calculate step per figure the "
+                    "request needs, in order, using the EXACT values from the results above. A "
+                    "comparison needs each side computed as its own calculate step first. Do "
+                    "not repeat completed steps."
+                ),
+            }
 
     # 5. The leftover ambiguity: the judge decides (incl. the groundedness rule — a
     #    current/external-facts request that never searched the web gets rectify=true). The

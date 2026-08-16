@@ -250,6 +250,12 @@ def run_headless(args) -> None:
             graph.checkpointer.delete_thread(thread_id)
         except Exception:
             pass
+        try:  # the grant-lifecycle task boundary (headless never grants, but the seam is one)
+            from trust import policy as _policy
+
+            _policy.end_task()
+        except Exception:
+            pass
     # Export: write the run's record only AFTER the answer is out — a failed write must never
     # cost the user the answer the turn already produced (error to stderr, exit 1; stdout stays
     # the answer/JSON contract). -p exports on --export; -q always exports (default dest

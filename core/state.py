@@ -199,6 +199,11 @@ class AgentState(TypedDict):
     # synthesize describes them as skipped at the user's request, never as failures. Written
     # only by plan_gate (review resume, read-merge-write); reset per turn.
     plan_vetoes: List[str]
+    # The effect-typed half of the review veto (2026-08-15, from the engine isolate): the TARGETS
+    # (path tokens, REVOKE_ALL, or tool:<name>) of un-run state-changing steps the user removed
+    # or retired at plan review — written only by plan_gate, consumed by execute's revocation
+    # lock (label + generated arguments) and replan's pre-filter. Reset per turn.
+    revoked_writes: List[str]
 
     # Interrupt-and-correct: the provenance-tagged answer buffer (core/provenance.py — plain
     # dicts, gotcha #4: {"text", "spans", "edits", "state", ...}). None until the user freezes

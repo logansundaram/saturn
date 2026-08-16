@@ -85,18 +85,40 @@ def _apply_always_grants(decision: dict) -> None:
     since a node cannot print."""
     from tools import registry  # lazy, matching the UI: binds the live TOOL_RISK
 
+    # Every grant carries a LIFETIME (policy.default_grant_scope, default "task" — transplanted
+    # from the gating isolate): a task-scoped tier drop registers its own undo with the policy so
+    # the next turn starts from the declared tier; persist scope reaches permissions.json (or the
+    # scope would be a lie in the narrow direction — the drop looked durable and the next process
+    # started from the declared tier); session scope simply stands until Saturn exits.
+    scope = policy.default_grant_scope()
     for name in decision.get("tools") or []:
         # run_shell never drops a tier (one keypress must not un-gate every future command —
         # it gets the scoped prefix grants below instead). The UI never sends it here, but the
         # resume value is still external input: fail closed.
-        if name and name != "run_shell":
-            registry.TOOL_RISK[str(name)] = "read_only"
+        if not name or name == "run_shell":
+            continue
+        name = str(name)
+        prior = registry.TOOL_RISK.get(name)
+        registry.TOOL_RISK[name] = "read_only"
+        if scope == "task":
+            def restore(_n=name, _t=prior):
+                if _t is None:
+                    registry.TOOL_RISK.pop(_n, None)
+                else:
+                    registry.TOOL_RISK[_n] = _t
+                return _n
+            policy.on_task_end(restore)
+        elif scope == "persist":
+            try:
+                policy.set_risk_override(name, "read_only")
+            except Exception as exc:  # the live drop stands (this session's decision) — but say so
+                diag.log(f"approval_node: tier drop for {name} could not be persisted — {exc}")
     for grant in decision.get("shell_grants") or []:
         if not isinstance(grant, dict):
             continue
         try:
             ok, msg = policy.grant_shell_prefix(
-                str(grant.get("prefix") or ""), str(grant.get("command") or "")
+                str(grant.get("prefix") or ""), str(grant.get("command") or ""), scope=scope
             )
         except Exception as exc:  # resume value is external input — a grant must never kill the turn
             ok, msg = False, str(exc)
@@ -109,7 +131,8 @@ def approval_node(state: AgentState) -> Command[Literal["tools", "update_plan"]]
     straight through. If any pending call exceeds it, pause via `interrupt` and let the user
     decide per batch OR per call.
 
-    The resume value is a bool (True = approve the whole batch, False = reject it),
+    The resume value is the literal True (approve the whole batch; anything else that is not one
+    of the dict shapes below rejects — fail-closed),
     `{"approved_ids": [...]}` from the UI's per-call select mode, or the always-allow decision
     dict `{"approved": True, "tools": [...], "shell_grants": [...]}` whose grants are applied
     past the interrupt by `_apply_always_grants`. Rejected calls get a decline
@@ -175,9 +198,12 @@ def approval_node(state: AgentState) -> Command[Literal["tools", "update_plan"]]
         approved_ids = set(gated_ids) if decision.get("approved") else set()
         if approved_ids:
             _apply_always_grants(decision)
-    elif decision:
+    elif decision is True:
         approved_ids = set(gated_ids)
     else:
+        # Fail-closed on the resume value: ONLY the literal True approves a whole batch. Anything
+        # else — False, None, a stray string, an int, an unrecognized dict — is a rejection. The
+        # human's approval is never inferred from truthiness (transplanted from the gating isolate).
         approved_ids = set()
 
     # Past the interrupt: this runs exactly once, with the human's decision in hand. The one-shot

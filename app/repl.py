@@ -230,6 +230,7 @@ def run_repl() -> None:
             "callbacks": [tracer.llm_handler(run_id)],
         }
         ui.reset_turn()  # reset node-timing + plan-diff state for this turn's trace
+        expired_grants = {"prefixes": [], "tools": []}  # filled at the task boundary (finally)
         # Renders the synthesize node's answer token-by-token as it streams (on_token below). It
         # opens the response section on the first token and is finished (or aborted) after the turn.
         answer = ui.ResponseStream()
@@ -314,19 +315,28 @@ def run_repl() -> None:
             # their words. Salvage it into the type-ahead queue so it runs as the next message
             # (echoed when drained); the note explaining why prints after the answer renders,
             # never here (printing inside finally could interleave with the live answer region).
+            # Close the grant-lifecycle task: every task-scoped always-allow grant made at this
+            # turn's gate expires here (prefix grants + tier drops), so authority never outlives
+            # the turn that motivated it. Disclosed after the answer renders (below) — a grant
+            # that vanishes silently is as confusing as one that lingers. Never raises.
+            try:
+                from trust import policy as _policy
+
+                expired_grants = _policy.end_task()
+            except Exception as exc:
+                diag.log(f"grant lifecycle end_task failed: {exc}")
+            late_steers = [
+                r.reason for r in pause_controller.take_steers() if r is not None and r.reason
+            ]
+            late_steer = "; ".join(late_steers) if late_steers else None
             late_req = pause_controller.peek()
-            late_steer = (
-                late_req.reason
-                if late_req is not None and late_req.source == "steer" and late_req.reason
-                else None
-            )
             # A late PAUSE can't be salvaged (there is no plan left to review), but the user saw
             # the ⏸ acknowledgement — dropping it silently reads as "pause is broken". Noted
             # after the answer renders, like the late-steer note below.
             late_pause = late_req is not None and late_req.source != "steer"
-            if late_steer:
-                input_queue.push(late_steer)
-            pause_controller.clear()
+            for text in late_steers:
+                input_queue.push(text)  # each salvaged correction runs as its own next message
+            pause_controller.reset()  # the turn boundary: nothing outstanding survives it
             # Prune this turn's checkpoints. Each turn runs on a fresh thread_id and cross-turn
             # memory rides on the manually-carried `messages` (not the checkpointer), so once the
             # turn returns its checkpoints/writes are dead weight — without this they accumulate in
@@ -366,6 +376,19 @@ def run_repl() -> None:
         # the type-ahead queue (see the finally block above) — tell the user what happened to it.
         # On the error/Ctrl-C paths this note is skipped, but the queued line still echoes when
         # drained, so the correction is never invisible.
+        if expired_grants.get("prefixes") or expired_grants.get("tools"):
+            what = ", ".join(
+                [f'run_shell "{p}"' for p in expired_grants.get("prefixes") or []]
+                + list(expired_grants.get("tools") or [])
+            )
+            ui.note(f"always-allow grants expired with this turn: {what}  "
+                    "(lifetime: /config runtime.grant_scope · durable: /policy allow / "
+                    "/policy risk --save)")
+        if expired_grants.get("failed"):
+            ui.warn("a task-scoped tier grant could NOT be restored at the turn boundary — the "
+                    "tool may still be auto-approved; check /policy and reset with "
+                    "/policy risk <tool> reset ("
+                    + "; ".join(expired_grants["failed"]) + ")")
         if late_steer:
             ui.note(
                 "your steering correction arrived after the turn had finished — it could not be "

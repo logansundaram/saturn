@@ -7,8 +7,9 @@ Small local models mis-handle the full Pydantic JSON schema (`$ref`/`$defs`) tha
 defensive plumbing around every judgment call the engine makes:
 
   - FLAT, hand-written JSON schemas (the `*_FORMAT` dicts) constrain Ollama's decoder without
-    `$ref` indirection, plus a one-line JSON "shape" hint appended as a system message so a model
-    that ignores the grammar still sees the exact expected spelling.
+    `$ref` indirection, plus a one-line JSON "shape" hint appended as a trailing HumanMessage (see
+    `structured`'s docstring — NEVER a SystemMessage, which Ollama 0.32.13 rejects mid-conversation
+    for qwen3.8 models) so a model that ignores the grammar still sees the exact expected spelling.
   - `_extract_json` salvages the outermost `{...}` from prose-wrapped output.
   - LENIENT parse models (`_PlanOut`, `RectifyBool`, `ResolutionCheck`, `WriteGate`) with
     defaults, so a missing field degrades instead of raising.
@@ -26,7 +27,7 @@ from __future__ import annotations
 
 from typing import List, Optional
 
-from langchain.messages import SystemMessage
+from langchain.messages import HumanMessage
 from pydantic import BaseModel, Field, ValidationError
 
 import diag
@@ -254,24 +255,47 @@ def _role_is_ollama(role: str) -> bool:
         return False
 
 
-def _invoke_kwargs(role: str, fmt: "dict | None", temp: float) -> dict:
-    """Constrained decoding + per-attempt temperature ride the invoke kwargs for Ollama roles
-    (ChatOllama forwards `format`/`options` to the daemon); other providers take neither — they
-    get the shape hint + salvage parsing alone.
+def _model_tag(role: str) -> str:
+    """The concrete model id serving `role`, '' when the binding can't be read."""
+    try:
+        return str(get_config().model_for_role(role).model)
+    except Exception:
+        return ""
+
+
+def _invoke_kwargs(role: str, fmt: "dict | None", temp: float, task: "str | None" = None, *,
+                   repetition: bool = False) -> dict:
+    """Constrained decoding + per-attempt temperature + the serving layer's per-TASK decisions
+    ride the invoke kwargs for Ollama roles (ChatOllama forwards `format`/`options`/`reasoning`
+    to the daemon); other providers take none — they get the shape hint + salvage parsing alone.
 
     The options dict must carry `num_ctx` too: langchain_ollama treats an invoke-time `options`
     as a FULL REPLACEMENT for the constructor-built options (which is the only place the
     configured context window lives), so temperature alone would silently revert the daemon to
-    its ~2048 default and front-truncate long prompts."""
+    its ~2048 default and front-truncate long prompts. Since 2026-08-15 (from the engine
+    isolate) it also carries the task's `num_predict` bound, and `reasoning` (think) is set
+    EXPLICITLY per task (`core/serving.thinks`) — never the model's default — unless the daemon
+    already rejected the flag for this tag (`llms._NO_THINK_SUPPORT`). `repetition=True` adds
+    the retry-only repeat penalty after a degenerate draw."""
     if not _role_is_ollama(role):
         return {}
+    from core import llms, serving  # lazy: structured is imported by the registry's users
+
+    task = task or serving.task_for_role(role)
     options: dict = {"temperature": temp}
+    tag = _model_tag(role)
     try:
         cfg = get_config()
         options["num_ctx"] = cfg.num_ctx_for(cfg.model_for_role(role).model)
     except Exception:  # a broken binding must not fail the call that would surface it
         pass
+    if task is not None:
+        options["num_predict"] = serving.num_predict(task)
+    if repetition:
+        options.update(serving.repetition_options())
     kwargs: dict = {"options": options}
+    if task is not None and tag not in llms._NO_THINK_SUPPORT:
+        kwargs["reasoning"] = serving.thinks(task)
     if fmt is not None:
         kwargs["format"] = fmt
     return kwargs
@@ -280,14 +304,29 @@ def _invoke_kwargs(role: str, fmt: "dict | None", temp: float) -> dict:
 def structured(role, messages, schema, fmt, shape, default=None, attempts=3):
     """One structured judgment call through the role's trust-wrapped model: shape hint appended,
     constrained decoding where supported, JSON salvage + lenient validation, temp-escalating
-    retries, and a safe `default` when nothing parses (None default → raise)."""
+    retries, and a safe `default` when nothing parses (None default → raise).
+
+    The shape hint rides as a trailing HumanMessage, never a SystemMessage (2026-08-16): Ollama
+    0.32.13 raises `system message must be at the beginning (status code: 500)` for qwen3.8
+    models — the shipped `27b` tier's default binding — when a SystemMessage follows any other
+    message, which made EVERY structured call on that tier fail all `attempts` and silently fall
+    back to `default` (an empty plan every turn, the rectify verdict, the resolution check, and
+    the write gate all degraded). A trailing HumanMessage validates universally (measured against
+    the live daemon on both qwen3.8:27b and qwen3.5:9b) and reads naturally as the final user
+    turn — it IS a formatting instruction. Do not move this back to SystemMessage."""
     from core.llms import get_model
 
-    payload = list(messages) + [SystemMessage(content=shape)]
+    from textutil import looks_repetitive
+
+    payload = list(messages) + [HumanMessage(content=shape)]
+    repetition = False  # a degenerate draw arms the retry-only repeat penalty for the next rung
     for i in range(attempts):
         temp = _ATTEMPT_TEMPS[min(i, len(_ATTEMPT_TEMPS) - 1)]
         try:
-            resp = get_model(role).invoke(payload, **_invoke_kwargs(role, fmt, temp))
+            from core.llms import generate  # the think-rejection fallback rides every call
+
+            resp = generate(get_model(role), payload, tag=_model_tag(role),
+                            **_invoke_kwargs(role, fmt, temp, repetition=repetition))
         except Exception as exc:
             diag.log(f"structured[{role}/{schema.__name__}] attempt {i + 1} call failed: {exc}")
             continue
@@ -301,6 +340,7 @@ def structured(role, messages, schema, fmt, shape, default=None, attempts=3):
                 f"structured[{role}/{schema.__name__}] attempt {i + 1} did not parse: "
                 f"{content[:160]!r}"
             )
+            repetition = repetition or looks_repetitive(content)
     if default is not None:
         return default
     raise ValueError(f"{schema.__name__}: no valid JSON after {attempts} attempts")

@@ -130,6 +130,11 @@ def _fresh_turn(state: AgentState, user_input: str) -> AgentState:
     from trust import quarantine
 
     quarantine.reset_turn()
+    # Open the grant-lifecycle task: a task-scoped always-allow grant left standing by an aborted
+    # turn (Ctrl-C never reached end_task) expires here instead of leaking into this turn.
+    from trust import policy
+
+    policy.begin_task()
     # The reset is DERIVED from _initial_state — one canonical field list, so a new AgentState
     # field resets across turns automatically instead of silently leaking until someone
     # remembers to extend a second hand-maintained list (attachments is set by the loop after
@@ -160,6 +165,7 @@ def _initial_state() -> AgentState:
         "tool_events": [],
         "gate_events": [],
         "plan_vetoes": [],
+        "revoked_writes": [],
         "answer_buffer": None,
         "tok_per_sec": 0.0,
         "context_tokens": 0,

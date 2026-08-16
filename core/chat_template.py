@@ -15,14 +15,13 @@ passes that test.
 
 ── Pinned backend behavior (Ollama 0.30.11, verified live 2026-07-06) ────────────────────────────
 - `/api/generate` with `raw: true` sends the prompt through with NO server-side templating.
-  The models this registry covers use Ollama's *built-in* renderers (`RENDERER qwen3.5` /
-  `RENDERER gemma4` in their Modelfiles — the TEMPLATE field is a bare `{{ .Prompt }}`
-  passthrough); raw mode bypasses those renderers too, verified by coherent spliced
-  continuations on both families.
-- BOS: the gemma4 runner AUTO-ADDS `<bos>` in raw mode (`'hello'` → 2 prompt tokens), and an
-  explicit literal `<bos>` is parsed as the special token without doubling (`'<bos>hello'` → 2).
-  We therefore render WITHOUT a BOS. qwen3.x adds no BOS at all (`'hello'` → 1) and `<bos>` is
-  NOT special there (it tokenizes as text, `'<bos>hello'` → 4) — never emit it.
+  The models this registry covers use Ollama's *built-in* renderers (`RENDERER qwen3.5` in
+  their Modelfiles — the TEMPLATE field is a bare `{{ .Prompt }}` passthrough); raw mode
+  bypasses those renderers too, verified by coherent spliced continuations.
+- BOS: qwen3.x adds no BOS at all (`'hello'` -> 1 token) and `<bos>` tokenizes as ordinary text,
+  so we render WITHOUT one. (The gemma4 entry — whose runner auto-added `<bos>` in raw mode —
+  was removed with the family lock, 2026-08-16: gemma4 is no longer bindable. Its recovered
+  format is in git history if the family ever widens.)
 - `stop` is honored: continuation halts at the family's end-of-turn string with
   `done_reason: "stop"` rather than running to `num_predict`.
 - `num_ctx` MUST be set explicitly per request — the daemon otherwise front-truncates silently
@@ -34,11 +33,12 @@ passes that test.
   think block `<think>\n\n</think>\n\n` (the template's enable_thinking=false form — the
   first-pass /api/chat parser strips thinking from the visible text the user edits, so the
   continuation prefix is post-think prose and the no-think opener is the canonical match).
-- gemma4: no embedded GGUF template; the format was recovered from Ollama's built-in `gemma4`
-  renderer strings (`<|turn>system\n` / `<|turn>user\n` / `<|turn>model\n`, closed by
-  `<turn|>\n`) and verified live by the contract test. Roles are system/user/model.
+  (A retired family's format — recovered from Ollama's built-in renderer strings and verified
+  live by the contract test before the family lock — is in git history if the ladder ever widens.)
 
-This module is a leaf: no project imports, so the tests exercise it fully offline.
+This module is a leaf: stdlib plus core/model_family, itself a stdlib-only leaf (`supported`
+delegates the family question to it rather than re-deriving it from a loose prefix match). The
+tests exercise it fully offline.
 """
 
 from __future__ import annotations
@@ -83,7 +83,7 @@ class ChatTemplate:
 TEMPLATES: tuple[ChatTemplate, ...] = (
     ChatTemplate(
         family="qwen3.x",
-        prefixes=("qwen3.5", "qwen3.6"),
+        prefixes=("qwen3.5", "qwen3.6", "qwen3.8"),  # qwen3.8: contract green 2026-08-16
         turn_open="<|im_start|>{role}\n",
         turn_close="<|im_end|>\n",
         # Empty think block = the template's enable_thinking=false generation opener; the visible
@@ -91,15 +91,6 @@ TEMPLATES: tuple[ChatTemplate, ...] = (
         assistant_open="<|im_start|>assistant\n<think>\n\n</think>\n\n",
         assistant_role="assistant",
         stop=("<|im_end|>",),
-    ),
-    ChatTemplate(
-        family="gemma4",
-        prefixes=("gemma4",),
-        turn_open="<|turn>{role}\n",
-        turn_close="<turn|>\n",
-        assistant_open="<|turn>model\n",
-        assistant_role="model",
-        stop=("<turn|>",),
     ),
 )
 
@@ -112,14 +103,26 @@ def template_for(model: str) -> ChatTemplate:
         if name.startswith(t.prefixes):
             return t
     raise UnsupportedModel(
-        f"no raw-mode chat template for model {model!r} — interrupt-and-correct is only offered "
-        f"for families that pass the continuation contract test "
-        f"({', '.join(t.family for t in TEMPLATES)}); see core/chat_template.py to extend"
+        f"no raw-mode chat template for model {model!r} — Saturday.ai supports the "
+        f"{', '.join(t.family for t in TEMPLATES)} family only (core/model_family.py); "
+        f"extend the registry only for a model that passes utilities/continuation_contract.py"
     )
 
 
 def supported(model: str) -> bool:
-    """Whether `model` has a template entry (i.e. the freeze hotkey may arm for it)."""
+    """Whether the freeze hotkey may arm for `model`: it is in the supported family AND has a
+    template entry.
+
+    The family test is delegated to core/model_family.in_family (a stdlib-only leaf like this
+    one, so no cycle) rather than re-derived from `startswith`: a loose prefix match called
+    `qwen3.50:1b` and `qwen3.6-abliterated:8b` supported, promising raw-mode continuation for
+    models whose template is a guess. template_for keeps its own prefix match — that is the
+    "which shape" question, not the "is this bindable" one — and is still consulted here, so a
+    family member with no entry never arms either (2026-08-16)."""
+    from core import model_family
+
+    if not model_family.in_family(model):
+        return False
     try:
         template_for(model)
         return True

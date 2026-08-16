@@ -9,6 +9,7 @@ and the TUI; `_trace_warning` surfaces the trace circuit breaker's silent degrad
 from langgraph.types import Command
 from langchain.messages import AIMessageChunk
 
+import diag
 from tui import ui
 
 
@@ -100,12 +101,28 @@ def run_turn(graph, payload, config, approver, on_update=None, pause=None, on_to
 
 
 def _make_on_update(tracer, run_id, show_ui=True):
+    """The per-delta subscriber: record first (the tracer self-guards — the watcher never takes
+    down the watched), then render. DISPLAY is fail-soft (transplanted from the visibility
+    isolate): a render bug — a hostile step dict, a width edge case — must never raise out of
+    run_turn, land a healthy turn as `error`, and lose the answer. Each ui call is guarded on
+    its own; a failure prints one line and the loop continues."""
+    def _render(what, fn, *args):
+        try:
+            fn(*args)
+        except Exception as exc:  # display only — the record already landed above
+            diag.log(f"turn: display error rendering {what}: {type(exc).__name__}: {exc}")
+            try:
+                ui.warn(f"display error ({what}): {type(exc).__name__}: {exc} — "
+                        "the run is recorded; see /trace")
+            except Exception:
+                pass
+
     def on_update(node, delta):
         tracer.log_event(run_id, node, delta)
         if show_ui:
-            ui.show_node(node, delta)
+            _render(f"node {node}", ui.show_node, node, delta)
             if delta.get("plan"):
-                ui.show_plan(delta["plan"])
+                _render("plan", ui.show_plan, delta["plan"])
 
     return on_update
 

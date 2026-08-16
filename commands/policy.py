@@ -139,9 +139,15 @@ def _allow_list(policy) -> None:
         _print("  no allowlisted shell prefixes — add one with /policy allow <prefix words…>")
         _print("  e.g. /policy allow git status")
         return
+    by_scope = policy.shell_allow_by_scope()
+    lifetime = {"task": "this turn", "session": "this session", "persist": "persisted"}
+    scope_of = {}
+    for scope, items in by_scope.items():
+        for pfx in items:
+            scope_of.setdefault(pfx, scope)
     _print("  run_shell commands starting with these run WITHOUT the approval gate:")
     for i, p in enumerate(prefixes, 1):
-        _print(f"    {i}. {p}")
+        _print(f"    {i}. {p}   ({lifetime.get(scope_of.get(p, 'persist'), 'persisted')})")
     _print("  remove: /policy allow remove <n|prefix>   add: /policy allow add <prefix>")
 
 
@@ -151,7 +157,7 @@ def _allow_add(policy, prefix: str) -> None:
     shell metacharacter) — rendered here as the command's own refusal, never the dispatcher's
     generic '/policy failed' catch-all."""
     try:
-        added = policy.add_shell_allow(prefix)
+        added = policy.add_shell_allow(prefix, scope="persist")  # the command IS the durable edit
     except ValueError as exc:
         _print(f"  cannot allowlist `{prefix}`: {exc}.")
         _print("  such a command always faces the gate — nothing was stored.")
@@ -259,9 +265,14 @@ def _policy_cmd(ctx, args):
         else:
             _print("    risk overrides         : (none)")
         if allow:
-            _print(f"    shell allowlist        : {len(allow)} prefix(es) — " + " · ".join(allow))
+            by = policy.shell_allow_by_scope()
+            scoped = " · ".join(f"{k}: {len(v)}" for k, v in by.items() if v)
+            _print(f"    shell allowlist        : {len(allow)} prefix(es) ({scoped}) — "
+                   + " · ".join(allow))
         else:
             _print("    shell allowlist        : (none)")
+        _print(f"    always-allow lifetime  : {policy.default_grant_scope()}  "
+               "(runtime.grant_scope)")
         from trust import quarantine
 
         _print(f"    airgap                 : {'on' if cfg.get('runtime.airgap', False) else 'off'}")

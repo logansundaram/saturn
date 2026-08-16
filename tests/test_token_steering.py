@@ -31,19 +31,9 @@ def test_qwen_render_is_byte_faithful():
     )
 
 
-def test_gemma_render_is_byte_faithful():
-    msgs = [SystemMessage(content="SYS"), HumanMessage(content="QUESTION")]
-    out = chat_template.render_continuation("gemma4:e4b", msgs, "PREFIX")
-    assert out == (
-        "<|turn>system\nSYS<turn|>\n"
-        "<|turn>user\nQUESTION<turn|>\n"
-        "<|turn>model\nPREFIX"
-    )
-
-
 def test_assistant_turn_is_open_no_end_of_turn_token():
     """The whole feature: the assistant turn is opened but never closed."""
-    for model in ("qwen3.5:9b", "gemma4:e4b"):
+    for model in ("qwen3.5:9b",):
         t = chat_template.template_for(model)
         out = chat_template.render_continuation(model, [("user", "hi")], "half an ans")
         assert out.endswith("half an ans")
@@ -58,11 +48,13 @@ def test_consecutive_same_role_messages_merge_into_one_turn():
 
 
 def test_unsupported_model_refuses_and_supported_reports():
+    """gemma4 is no longer in the registry — the family lock (2026-08-16) retired it, so a
+    gemma4 tag is unsupported the same way any other outsider is."""
     with pytest.raises(chat_template.UnsupportedModel):
         chat_template.template_for("mystery-llm:7b")
     assert not chat_template.supported("mystery-llm:7b")
     assert chat_template.supported("qwen3.6:35b")   # prefix match, any tag
-    assert chat_template.supported("gemma4:26b")
+    assert not chat_template.supported("gemma4:26b")
     assert not continuation.supports("gpt-oss:20b")  # installed but deliberately outside the set
 
 
@@ -217,6 +209,54 @@ def test_answer_gate_done_accepts_the_text_as_final(monkeypatch):
     assert out["answer_buffer"]["state"] == "done"
 
 
+def test_answer_gate_strips_trailing_spaces_before_a_resume(monkeypatch):
+    """Transplanted from the token_steering isolate: a prefix ending in a space or tab is a bad
+    BPE tail (tokens carry their LEADING space, so " word" can never follow "abc "), and the
+    daemon has no token healing. The resume prefix is rstripped of spaces/tabs — newlines kept —
+    MECHANICALLY: an unchanged resume of a buffer that happened to freeze on a space is not a
+    human edit (no span, no edit record), and the spans still tile the text exactly."""
+    import nodes.answer_gate as gate
+
+    monkeypatch.setattr(gate, "interrupt", lambda payload: True)
+    out = gate.answer_gate_node(_frozen_state("draft answer so far   \t"))
+    buf = out["answer_buffer"]
+    assert buf["text"] == "draft answer so far"
+    assert not buf["edited"] and not buf["edits"] and not provenance.human_spans(buf)
+    assert buf["spans"][-1]["end"] == len(buf["text"])
+
+    # A newline tail is kept (a paragraph break is a legitimate continuation point).
+    out = gate.answer_gate_node(_frozen_state("para one.\n\n"))
+    assert out["answer_buffer"]["text"] == "para one.\n\n"
+
+    # A human edit ending in a space: the typed span is trimmed with the text.
+    monkeypatch.setattr(gate, "interrupt",
+                        lambda payload: {"action": "resume", "text": "draft answer FIXED "})
+    out = gate.answer_gate_node(_frozen_state())
+    buf = out["answer_buffer"]
+    assert buf["text"] == "draft answer FIXED" and buf["edited"]
+    assert provenance.human_spans(buf) == [(13, 18)]
+    assert buf["spans"][-1]["end"] == len(buf["text"])
+
+    # `done` finalizes the text as typed — no generation follows, nothing to strip for.
+    monkeypatch.setattr(gate, "interrupt", lambda payload: {"action": "done", "text": "keep  "})
+    out = gate.answer_gate_node(_frozen_state())
+    assert out["answer_buffer"]["text"] == "keep  "
+
+
+def test_provenance_rstrip_trailing_keeps_spans_tiling():
+    buf = provenance.append_model(provenance.new_buffer(), "abc ")
+    buf = provenance.apply_edit(buf, "abc  xyz \t")
+    out = provenance.rstrip_trailing(buf)
+    assert out["text"] == "abc  xyz"
+    assert out["spans"][-1]["end"] == len(out["text"])
+    # an all-whitespace trailing span disappears rather than surviving as an empty span
+    buf2 = provenance.apply_edit(provenance.append_model(provenance.new_buffer(), "abc"), "abc   ")
+    out2 = provenance.rstrip_trailing(buf2)
+    assert out2["text"] == "abc" and all(sp["end"] > sp["start"] for sp in out2["spans"])
+    # immutability: the input buffer is untouched
+    assert buf["text"] == "abc  xyz \t"
+
+
 # --- synthesize routing + the no-generation finalize path -------------------------------------------
 
 def test_route_after_synthesize():
@@ -321,3 +361,119 @@ def test_edit_answer_returns_the_resume_contract(monkeypatch, capsys):
     monkeypatch.setattr(correction, "ask", lambda _q: next(answers))
     out = correction.edit_answer({"text": "the streamed text", "spans": []})
     assert out == {"action": "resume", "text": "the streamed text"}
+
+
+# --- word-boundary freeze grace (transplanted from the token_steering isolate) ------------------------
+#
+# Esc mid-word used to cut the prefix inside a word — a tail that retokenizes onto boundaries the
+# model never produces (the daemon has no token healing), so the continuation could stumble. The
+# freeze now SEEKS a boundary: after Esc, up to FREEZE_GRACE more chunks may land until the buffer
+# ends outside a word (or the next chunk begins with whitespace — dropped, not appended); a second
+# Esc forces the immediate cut. The seek is bounded so a freeze can never be starved.
+
+
+def test_ends_mid_word():
+    assert continuation.ends_mid_word("The quick bro")
+    assert continuation.ends_mid_word("snake_cas")
+    assert not continuation.ends_mid_word("The quick brown ")
+    assert not continuation.ends_mid_word("done.")
+    assert not continuation.ends_mid_word("")
+
+
+def test_freeze_seeker_lands_on_a_word_boundary():
+    c = continuation.FreezeController()
+    c.arm()
+    seek = continuation.FreezeSeeker(c)
+    assert seek.before_chunk("The quick bro", " brown") is False  # nothing requested yet
+    c.freeze()
+    # after the chunk that completed a word lands, the buffer ends mid-word: keep pulling
+    assert seek.after_chunk("The quick bro") is False
+    assert seek.after_chunk("The quick brown") is False   # still alnum-terminal
+    # the next chunk begins with whitespace: the word is over — freeze WITHOUT appending it
+    assert seek.before_chunk("The quick brown", " fox") is True
+    assert seek.dropped == " fox"
+
+
+def test_freeze_seeker_stops_immediately_at_a_boundary():
+    c = continuation.FreezeController()
+    c.arm()
+    c.freeze()
+    seek = continuation.FreezeSeeker(c)
+    assert seek.after_chunk("Sentence one. ") is True
+
+
+def test_freeze_seeker_grace_is_bounded():
+    c = continuation.FreezeController()
+    c.arm()
+    c.freeze()
+    seek = continuation.FreezeSeeker(c)
+    text = "abc"
+    decisions = []
+    for _ in range(continuation.FREEZE_GRACE + 2):
+        text += "d"  # never reaches a boundary
+        decisions.append(seek.after_chunk(text))
+    assert True in decisions
+    assert decisions.index(True) < continuation.FREEZE_GRACE  # cut within the grace budget
+
+
+def test_second_esc_forces_the_cut():
+    c = continuation.FreezeController()
+    c.arm()
+    assert c.freeze() and not c.forced()
+    seek = continuation.FreezeSeeker(c)
+    assert seek.after_chunk("mid-wor") is False
+    assert c.freeze() and c.forced()          # Esc again while seeking
+    assert seek.after_chunk("mid-word") is True
+    c.clear()
+    assert not c.forced()
+
+
+def test_first_pass_freeze_lands_on_a_boundary(monkeypatch):
+    """End to end through _stream_first_pass with a scripted chunk stream: Esc arrives after
+    "The qui"; the freeze lands at "The quick" (word completed) and the whitespace-led chunk
+    that follows is not appended."""
+    import types
+
+    from nodes import synthesize as syn
+
+    chunks = ["The ", "qui", "ckl", "y", " brown", " fox"]
+    c = continuation.FreezeController()
+    c.arm()
+
+    def stream(_inp, **_kw):
+        for i, t in enumerate(chunks):
+            if i == 2:
+                c.freeze()  # Esc lands while "qui" is the tail
+            yield types.SimpleNamespace(content=t, response_metadata={}, usage_metadata=None)
+
+    monkeypatch.setattr(syn, "get_model", lambda role: types.SimpleNamespace(stream=stream))
+    buf, frozen, _meta, _usage = syn._stream_first_pass([], c)
+    assert frozen
+    assert buf["text"] == "The quickly"
+
+
+def test_first_pass_freeze_at_a_boundary_is_immediate(monkeypatch):
+    import types
+
+    from nodes import synthesize as syn
+
+    chunks = ["The ", "quick ", "brown", " fox"]
+    c = continuation.FreezeController()
+    c.arm()
+
+    def stream(_inp, **_kw):
+        for i, t in enumerate(chunks):
+            if i == 1:
+                c.freeze()
+            yield types.SimpleNamespace(content=t, response_metadata={}, usage_metadata=None)
+
+    monkeypatch.setattr(syn, "get_model", lambda role: types.SimpleNamespace(stream=stream))
+    buf, frozen, _m, _u = syn._stream_first_pass([], c)
+    assert frozen and buf["text"] == "The quick "
+
+
+def test_qwen38_resolves_to_the_qwen3x_family():
+    """qwen3.8 shipped 2026-08 and passed utilities/continuation_contract.py (the one definition
+    of "supported") on 2026-08-16 — same ChatML shape as qwen3.5/3.6."""
+    assert chat_template.template_for("qwen3.8:27b").family == "qwen3.x"
+    assert chat_template.supported("qwen3.8:27b")

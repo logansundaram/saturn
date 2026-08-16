@@ -178,6 +178,17 @@ def _render_trust_annotations(node: str, delta: dict) -> None:
         the streaming answer) and the correction they typed (from the buffer's edit records) —
         a human edit mid-generation is a first-class auditable event, echoed permanently here
         exactly like a gate decision."""
+    # A delta the tracer had to bound at write time says so (stores/trace._bound_delta): what
+    # was dropped is NAMED, never silently absent from the record the user is reading.
+    tr = delta.get("truncated")
+    if isinstance(tr, dict):
+        dropped = tr.get("dropped") or []
+        what = ("everything" if dropped == ["*"] else
+                ", ".join(str(k) for k in dropped) if dropped else "no keys (leaves clipped)")
+        size = tr.get("original_chars")
+        _node_leaf("record bounded at write time"
+                   + (f" ({size} chars)" if size is not None else "")
+                   + f" — dropped: {what}", "yellow")
     buf = delta.get("answer_buffer")
     if node == "synthesize" and isinstance(buf, dict) and buf.get("state") == "frozen":
         _node_leaf("✂ you froze the answer mid-generation — editing", "cyan")

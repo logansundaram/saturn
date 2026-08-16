@@ -107,6 +107,10 @@ to learn, audit, and maintain — none removes a protection.
   allowlist should be, a list where the overrides mapping should be) now fails closed like a
   garbled file — strict defaults, recorded at startup, the file kept aside as `.corrupt` —
   instead of being iterated as-is.
+- An oversized node delta no longer vanishes from the trace record: instead of slicing the
+  stored JSON (an undecodable blob — the whole update gone from `/trace`, `data: null` in
+  exports), the tracer clips long values, then keeps the fields that fit and records an explicit
+  `truncated` marker naming what was dropped; `/trace` replay discloses it under the node row.
 - Choosing an approval tier explicitly (Shift+Tab, `/config runtime.auto_approve`) while the
   gate is open now supersedes the pre-open snapshot, so `/policy open off` lands on the tier
   you set last instead of restoring a looser one.

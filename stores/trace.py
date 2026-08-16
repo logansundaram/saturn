@@ -129,16 +129,57 @@ def _summarize(delta: dict) -> tuple[str, str]:
     summary = " | ".join(parts) or "(update)"
     data = json.dumps(delta, default=_json_default)
     if len(data) > _DATA_CAP:
-        # Clip long string LEAVES and re-encode instead of slicing the JSON text: a mid-token
-        # cut stores an undecodable blob (decode_json -> default), degrading /trace replays and
-        # Glass Box reconstruction to INCOMPLETE. Leaf-clipping keeps the record parseable.
-        try:
-            clipped = map_strings(json.loads(data), lambda s: head_tail(s, _LEAF_CAP))
-            data = json.dumps(clipped)
-        except Exception:
-            pass
-        data = data[:_DATA_CAP]  # last-resort bound (e.g. a plan with hundreds of steps)
+        data = _bound_delta(data, len(data))
     return summary, data
+
+
+def _bound_delta(data: str, original: int) -> str:
+    """Bring an oversized delta under _DATA_CAP while keeping it PARSEABLE (transplanted from
+    the visibility isolate). Clip long string LEAVES (head+tail, marker inside the text) with a
+    cap that halves until the JSON fits; a delta that still overflows (a plan with hundreds of
+    steps, a thousand tiny messages) keeps every key that fits on its own and replaces the rest
+    with an explicit `truncated` record naming what was dropped and the original size. Never a
+    slice of the JSON text: a mid-token cut stores an undecodable blob — decode_json -> default,
+    the whole delta (tool events, the plan update) silently gone from /trace replay, `data: null`
+    in an export, and the Glass Box reconstruction INCOMPLETE for the wrong reason."""
+    note = f"delta exceeded the {_DATA_CAP}-char record cap at write time"
+    try:
+        obj = json.loads(data)
+    except Exception:
+        # json.dumps produced `data`, so this is belt and braces.
+        return json.dumps({"truncated": {"original_chars": original, "dropped": ["*"],
+                                         "note": "delta could not be re-encoded"}})
+    cap = _LEAF_CAP
+    while cap >= 50:
+        try:
+            clipped = json.dumps(map_strings(obj, lambda s, c=cap: head_tail(s, c)))
+        except Exception:
+            break
+        if len(clipped) <= _DATA_CAP:
+            return clipped
+        cap //= 2
+    # Per-key salvage: keep the keys that fit, drop the rest with a marker.
+    if isinstance(obj, dict):
+        kept: dict = {}
+        dropped = []
+        budget = _DATA_CAP - 200  # room for the marker itself
+        for k, v in obj.items():
+            try:
+                small = map_strings(v, lambda s: head_tail(s, 100))
+                piece = json.dumps({k: small})
+            except Exception:
+                dropped.append(str(k))
+                continue
+            if len(piece) <= budget:
+                kept[k] = small
+                budget -= len(piece)
+            else:
+                dropped.append(str(k))
+        kept["truncated"] = {"original_chars": original, "dropped": dropped, "note": note}
+        out = json.dumps(kept)
+        if len(out) <= _DATA_CAP + 400:
+            return out
+    return json.dumps({"truncated": {"original_chars": original, "dropped": ["*"], "note": note}})
 
 
 class Tracer:

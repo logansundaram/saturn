@@ -98,6 +98,39 @@ def test_plan_format_enum_tracks_given_names():
     assert "none" in enum and "read_file" in enum and "web_search" in enum
 
 
+def test_structured_shape_hint_rides_a_trailing_human_message_never_system(monkeypatch):
+    # Ollama 0.32.13 raises `system message must be at the beginning (status code: 500)` for
+    # qwen3.8 models when a SystemMessage follows any other message — the shipped `27b` tier's
+    # default binding, so every structured() call used to fail all `attempts` and silently return
+    # `default` (an empty plan every turn, plus the rectify/resolution/write-gate fallbacks).
+    # structured() imports `generate` from core.llms FRESH on every retry-loop iteration (not at
+    # module import time), so patching the `core.llms` module attribute is what actually
+    # intercepts the call the isolated `from core.llms import generate` binds to.
+    from core import llms
+
+    captured = {}
+
+    def fake_generate(runnable, messages, *, tag="", **kwargs):
+        captured["messages"] = list(messages)
+        return AIMessage(content='{"reasoning": "ok", "rectify": false}')
+
+    monkeypatch.setattr(llms, "generate", fake_generate)
+    monkeypatch.setattr(llms, "get_model", lambda role: object())
+    monkeypatch.setattr(st, "_role_is_ollama", lambda role: False)  # keep _invoke_kwargs trivial
+
+    out = st.structured("judge", [HumanMessage("the request")], st.RectifyBool,
+                         st.RECTIFY_FORMAT, st.RECTIFY_SHAPE, default=None)
+
+    assert out.rectify is False
+    assert "messages" in captured, "the patched core.llms.generate never fired"
+    payload = captured["messages"]
+    assert len(payload) >= 2
+    # the invariant the daemon enforces: nothing after the first message may carry the system role
+    assert all(getattr(m, "type", None) != "system" for m in payload[1:])
+    # the fix must not be achievable by silently dropping the hint
+    assert st.RECTIFY_SHAPE in str(payload[-1].content)
+
+
 # ── core/tool_args: alias coercion + text-call recovery ───────────────────────────────────────
 
 

@@ -69,9 +69,42 @@ def test_tier_honesty_fires_on_the_first_declared_preset():
     cfg = _cfg("laptop", {"laptop": _tier("qwen3.5:2b"), "workstation": _tier("qwen3.5:9b")})
     line = config_cmd._tier_honesty_line(cfg)
     assert line is not None
-    assert "smallest model tier" in line
+    assert "small model tier" in line
     assert "qwen3.5:2b" in line    # the active tier's tool_caller model, derived live
     assert "/models" in line       # the upgrade pointer
+
+
+# The size-class ladder made the first-declared tier `800m` while the install default is `4b`,
+# so the first-declared rule alone meant the disclosure never printed for a fresh install — the
+# exact case it exists for. Every class at or below the default fires now.
+
+def _ladder_tiers():
+    from core import model_family as mf
+
+    return {key: _tier(tag) for key, tag in mf.SIZE_LADDER}
+
+
+def test_tier_honesty_fires_on_the_fresh_install_default_tier():
+    from core import model_family as mf
+
+    line = config_cmd._tier_honesty_line(_cfg(mf.DEFAULT_CLASS, _ladder_tiers()))
+    assert line is not None
+    assert mf.tag_for(mf.DEFAULT_CLASS) in line
+
+
+def test_tier_honesty_fires_on_every_class_up_to_the_default():
+    for key in config_cmd._small_classes():
+        assert config_cmd._tier_honesty_line(_cfg(key, _ladder_tiers())) is not None, key
+
+
+def test_tier_honesty_silent_on_the_classes_above_the_default():
+    from core import model_family as mf
+
+    small = set(config_cmd._small_classes())
+    bigger = [k for k in mf.classes() if k not in small]
+    assert bigger                                   # there is something to upgrade to
+    for key in bigger:
+        assert config_cmd._tier_honesty_line(_cfg(key, _ladder_tiers())) is None, key
 
 
 def test_tier_honesty_silent_on_a_later_declared_tier():

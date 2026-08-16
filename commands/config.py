@@ -359,21 +359,43 @@ def _persist_key(cfg, key: str) -> None:
 # rebuild the required-key derivation with it.)
 
 
+def _small_classes() -> tuple:
+    """The size classes the shipped config does not vouch for at the loop's structured work:
+    every class at or below the install default (config.default.yaml's own comment calls 800m
+    and 2b "offered for completeness", and 4b IS the default that a fresh install pulls)."""
+    classes = model_family.classes()
+    try:
+        return classes[:classes.index(model_family.DEFAULT_CLASS) + 1]
+    except ValueError:
+        return classes[:1]
+
+
 def _tier_honesty_line(cfg) -> "str | None":
-    """The doctor's closing tier-honesty line, when the active tier is the smallest preset
-    configured (the quick-install default): the smallest local models are fine for trying Saturn
-    but measurably less reliable at structured plans and tool calls, and the first screen should
-    say so instead of leaving it to be discovered. Convention: config.yaml's `tiers:` mapping is
-    written smallest -> largest (YAML mapping order is preserved), so the FIRST declared tier IS
-    the smallest — declaration order, never a size heuristic (summing context windows ranks
-    capacity, not model size: a 4B/128k model outsums a 32B/32k one). None when the active tier
-    isn't the first-declared preset, or only one tier exists (nothing to upgrade to)."""
+    """The doctor's closing tier-honesty line, when the active tier is one of the small ones:
+    the smallest local models are fine for trying Saturn but measurably less reliable at
+    structured plans and tool calls, and the first screen should say so instead of leaving it to
+    be discovered.
+
+    Fires for any size class at or below the install DEFAULT (2026-08-16). It used to fire only
+    for the first-declared tier, which the size-class ladder made `800m` — so the line never
+    printed for a fresh install, whose default is `4b`: a dead surface guarding the exact case
+    it exists for. A legacy (non-ladder) tier name keeps the older declaration-order rule:
+    config.yaml's `tiers:` mapping is written smallest -> largest and YAML preserves order, so
+    the FIRST declared tier IS the smallest — never a size heuristic (summing context windows
+    ranks capacity, not model size: a 4B/128k model outsums a 32B/32k one). None when only one
+    tier exists (nothing to upgrade to)."""
     tiers = cfg.get("tiers", {}) or {}
     names = list(tiers)
-    if len(names) < 2 or cfg.active_tier != names[0]:
+    if len(names) < 2:
+        return None
+    active = cfg.active_tier
+    if active in model_family.classes():
+        if active not in _small_classes():
+            return None
+    elif active != names[0]:
         return None
     model = cfg.model_for_role("tool_caller").model
-    return (f"you are on the smallest model tier ({model}) - fine for trying Saturn; "
+    return (f"you are on a small model tier ({model}) - fine for trying Saturn; "
             "/models to upgrade if your hardware allows.")
 
 

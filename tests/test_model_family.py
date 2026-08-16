@@ -53,6 +53,19 @@ class TestLadder:
     def test_default_class_is_on_the_ladder(self):
         assert mf.DEFAULT_CLASS in mf.classes()
 
+    def test_the_parameter_table_covers_exactly_the_ladder(self):
+        # A stray or missing key makes tag_for(migrate(id)) raise KeyError inside model_for_role
+        # — i.e. on EVERY model resolution, for anyone with a legacy binding.
+        assert set(mf._CLASS_PARAMS) == set(mf.classes())
+
+    def test_is_ladder_tag_matches_the_ladder_case_insensitively(self):
+        for _key, tag in mf.SIZE_LADDER:
+            assert mf.is_ladder_tag(tag)
+            assert mf.is_ladder_tag(tag.upper())
+        # in_family is broader on purpose: a family tag we do not ship is not a ladder tag.
+        assert mf.in_family("qwen3.5:99b") and not mf.is_ladder_tag("qwen3.5:99b")
+        assert not mf.is_ladder_tag("")
+
     def test_no_size_class_key_contains_a_dot(self):
         # config.get/set/persist parse dotted paths, so a "." in a tier key splits it into two
         # segments and role binds write to the wrong place. Keep class keys dot-free.
@@ -77,6 +90,15 @@ class TestMigrate:
 
     def test_legacy_lookup_is_case_insensitive(self):
         assert mf.migrate("GEMMA4:E4B") == "4b"
+
+    def test_the_legacy_table_takes_precedence_over_the_size_parse(self, monkeypatch):
+        """Every shipped _LEGACY row happens to agree with the size parse, so the table above is
+        tautological — deleting _LEGACY entirely would leave it green. This pins that the table
+        is CONSULTED and wins, which is the property the declared mapping exists for."""
+        # The size parse would put a 33B tag on 35b (|33-36| < |33-27.3|).
+        assert mf.migrate("mystery:33b") == "35b"
+        monkeypatch.setitem(mf._LEGACY, "mystery:33b", "2b")
+        assert mf.migrate("mystery:33b") == "2b"
 
     def test_unknown_tag_falls_back_to_the_size_parse(self):
         # |33 - 27.3| = 5.7 vs |33 - 36.0| = 3.0 -> nearest class is 35b, not 27b.
@@ -187,6 +209,20 @@ class TestConfigMigrationSeam:
         cfg = self._cfg()
         assert cfg.embedder_model == "qwen3-embedding:8b"
 
+    def test_a_config_without_an_active_tier_falls_back_to_the_default_class(self):
+        """The fallback used to be "workstation", a preset that stopped shipping with the family
+        lock — so a config missing the key named a tier that does not exist and hard-failed on
+        every model resolution."""
+        from config import Config, MODEL_ROLES
+        from core import model_family as mf
+
+        cfg = Config({"tiers": {key: {"provider": "ollama",
+                                      "roles": {r: tag for r in MODEL_ROLES},
+                                      "embedder": "qwen3-embedding:8b"}
+                                for key, tag in mf.SIZE_LADDER}})
+        assert cfg.active_tier == mf.DEFAULT_CLASS
+        assert cfg.model_for_role("synthesizer").model == mf.tag_for(mf.DEFAULT_CLASS)
+
     def test_capability_max_context_window_defaults_to_the_runtime_window(self):
         from config import Config
 
@@ -253,6 +289,35 @@ class TestShippedConfigMatchesTheLadder:
         caps = self._template()["capabilities"]
         for _key, tag in mf.SIZE_LADDER:
             assert tag in caps, tag
+
+    def test_the_family_capability_fallback_matches_the_template(self):
+        """A config predating the family lock has no capabilities entry for the tag a legacy
+        binding is SUBSTITUTED with; the generic default would quarter its window to 8192,
+        undisclosed. The fallback constants must therefore stay equal to what ships."""
+        import config
+
+        caps = self._template()["capabilities"]
+        for _key, tag in self._ladder():
+            assert caps[tag]["context_window"] == config.FAMILY_CONTEXT_WINDOW, tag
+            assert caps[tag]["max_context_window"] == config.FAMILY_MAX_CONTEXT_WINDOW, tag
+
+    def test_a_ladder_tag_with_no_capabilities_entry_gets_the_family_defaults(self):
+        import config
+        from config import Config
+        from core import model_family as mf
+
+        cfg = Config({"capabilities": {}})              # an upgrader's config.yaml
+        cap = cfg.capability_of(mf.tag_for(mf.DEFAULT_CLASS))
+        assert cap.context_window == config.FAMILY_CONTEXT_WINDOW
+        assert cap.max_context_window == config.FAMILY_MAX_CONTEXT_WINDOW
+        # Everything else keeps the conservative default — this is a family fallback, not a
+        # blanket one.
+        assert cfg.capability_of("something-else:7b").context_window == 8192
+
+    def _ladder(self):
+        from core import model_family as mf
+
+        return mf.SIZE_LADDER
 
     def test_capabilities_keep_the_runtime_window_off_the_architectural_max(self):
         # Collapsing these is a latent OOM: 262144 num_ctx exhausts consumer VRAM.
@@ -340,6 +405,20 @@ class TestTemplateRegistryAgreesWithTheFamily:
 
         covered = tuple(p for t in chat_template.TEMPLATES for p in t.prefixes)
         assert sorted(covered) == sorted(mf.FAMILY_PREFIXES)
+
+    @pytest.mark.parametrize(
+        "tag",
+        ["qwen3.5:4b", "qwen3.6:35b", "qwen3.8:27b", "QWEN3.5:0.8B",     # bindable
+         "qwen3.50:1b", "qwen3.6-abliterated:8b",                        # loose-prefix traps
+         "gemma4:e4b", "qwen3-coder:30b", "", "   "],                    # plain outsiders
+    )
+    def test_supported_is_the_same_predicate_as_in_family(self, tag):
+        """Pins the PREDICATES, not the two prefix lists: supported() used to prefix-match on
+        its own, so `qwen3.50:1b` and `qwen3.6-abliterated:8b` armed raw-mode continuation
+        against a template that is only a guess for them."""
+        from core import chat_template, model_family as mf
+
+        assert chat_template.supported(tag) == mf.in_family(tag), tag
 
     def test_every_ladder_tag_is_supported_for_continuation(self):
         from core import chat_template, model_family as mf

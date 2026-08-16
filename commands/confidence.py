@@ -72,6 +72,18 @@ def _source_of(model: str) -> str:
     return "built-in default (uncalibrated model)"
 
 
+_LABEL_INDENT = " " * 13   # aligns a continuation under the readout's value column
+
+
+def _wrapped(text: str) -> list:
+    """A provenance sentence as readout lines, wrapped under the value column. The estimate's
+    basis is a full explanation, not a word — unwrapped it ran off the terminal."""
+    import textwrap
+
+    return [_LABEL_INDENT + line
+            for line in textwrap.wrap(text, width=79 - len(_LABEL_INDENT)) or [""]]
+
+
 def _provenance_lines(model: str) -> list:
     """How the live numbers were ARRIVED AT — measured (over how many tokens, and when) or
     estimated (and from what). Covers the shipped table as well as the user overlay: a shipped
@@ -96,10 +108,10 @@ def _provenance_lines(model: str) -> list:
         out = ["  estimated  these thresholds are a best-guess ESTIMATE, not a measurement of "
                "this model."]
         if basis:
-            out.append(f"             from: {basis}")
-        out.append("             `/confidence tune` replaces them with a real measurement once "
-                   "your daemon")
-        out.append("             returns per-token logprobs for this model.")
+            out += _wrapped("from: " + basis)
+        if "/confidence tune" not in basis:
+            out += _wrapped("`/confidence tune` replaces them with a real measurement once your "
+                            "daemon returns per-token logprobs for this model.")
         return out
 
     tokens = rec.get("tokens", 0)
@@ -162,8 +174,9 @@ def _set(args: list) -> None:
                    "looser one an open run extends through.")
             return
     else:
-        # The same derivation an uncalibrated model gets: looser by 1.5x, capped.
-        exit_p = min(confidence._EXIT_CAP, enter * confidence._EXIT_FACTOR)
+        # The same derivation an uncalibrated model gets, through the ONE function that owns it
+        # (reaching into the private factor/cap to recompute it here is how the two drift).
+        exit_p = confidence.derive_exit(enter)
 
     model = _active_model()
     confidence_store.write_entry(model, enter, exit_p, source="manual")
@@ -266,7 +279,8 @@ why Saturday.ai binds one model family (qwen3.5 / qwen3.6 / qwen3.8) — see /mo
   /confidence reset              drop your values; back to the shipped calibration
 
 on/off persists to config.yaml by default; add --session to apply it for this session only.
-Your tuned and typed values live in database/confidence_calibration.json and survive /update.
+Your tuned and typed values live in database/confidence_calibration.json and survive /update —
+they are per-model, not a config setting, so set/tune/reset take no --session.
 """.strip(),
 )
 def _confidence(ctx, args):
@@ -275,6 +289,17 @@ def _confidence(ctx, args):
     args = list(args or [])
     args, session, _save = split_persist_flags(args)
     sub = args[0].lower() if args else ""
+
+    # --session scopes a CONFIG setting to this session; set/tune/reset write per-model
+    # thresholds to database/confidence_calibration.json instead, which has no session scope.
+    # Accepting the flag and silently ignoring it would leave the user believing a durable
+    # write was temporary — refuse instead of writing something they did not ask for.
+    if session and sub in ("set", "tune", "reset"):
+        _print(f"  --session has no meaning for `{sub}`: it writes your per-model thresholds to "
+               "database/confidence_calibration.json,")
+        _print("  not a config setting. Re-run without --session, or use `/confidence reset` to "
+               "drop your values. Nothing done.")
+        return
 
     if sub == "set":
         _set(args[1:])

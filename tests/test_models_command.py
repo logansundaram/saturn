@@ -150,7 +150,9 @@ class TestLegacyTierAdviceIsActionable:
         # Every listed row is a key /models tier validates against — no unselectable rows.
         for row in rows:
             assert row["key"] in cfg.get("tiers", {})
-        assert rows[1]["model"] == "gemma4:31b"    # what the tier really binds
+        assert rows[1]["declared"] == "gemma4:31b"   # what the file says
+        assert rows[1]["model"] == "qwen3.8:27b"     # what selecting it would actually run
+        assert rows[1]["ctx"] == 32768               # …and that model's real window, not 8192
 
     def test_the_warning_points_at_a_command_that_works_here(self, monkeypatch):
         import config as config_mod
@@ -243,3 +245,67 @@ class TestConfigDoorIsGatedToo:
         self._run(["tiers.4b.embedder", "nomic-embed-text:v2"])
 
         assert cfg.get("tiers.4b.embedder") == "nomic-embed-text:v2"
+
+
+class TestListingMetrics:
+    """`tui/ui/readouts.show_models` grew a `meta` hook — and until 2026-08-16 nothing passed
+    it, so /models list showed none of the metrics the spec asks for and the detail column had
+    been widened 14 -> 26 for data that never arrived."""
+
+    class _Local:
+        def __init__(self, name, is_embedding=False):
+            self.name = name
+            self.is_embedding = is_embedding
+            self.size_bytes = 1
+            self.parameter_size = "4.7B"
+            self.quantization = "Q4_K_M"
+            self.family = "qwen"
+            self.size_h = "3.4G"
+
+    def test_meta_carries_windows_and_calibration_per_tag(self, isolated_paths):
+        # isolated_paths: the calibration verdict also consults the USER overlay under
+        # database/, and a real one on the developer's machine must not decide a test.
+        from commands.runtime import _model_meta
+
+        cfg = _template_config()
+        meta = _model_meta([self._Local("qwen3.5:4b"), self._Local("mystery:7b")], cfg)
+
+        assert meta["qwen3.5:4b"] == {"ctx": 32768, "max_ctx": 262144, "calibrated": True}
+        assert meta["mystery:7b"]["calibrated"] is False
+
+    def test_an_embedder_gets_no_calibration_verdict(self, isolated_paths):
+        # Not a chat model: it produces no logprobs, so "uncalibrated" would read as a defect.
+        from commands.runtime import _model_meta
+
+        meta = _model_meta([self._Local("qwen3-embedding:8b", is_embedding=True)],
+                           _template_config())
+        assert "calibrated" not in meta["qwen3-embedding:8b"]
+
+    def test_the_listing_actually_passes_it(self, cfg, monkeypatch):
+        from commands import runtime
+
+        seen = {}
+        monkeypatch.setattr("core.llms.list_local_models",
+                            lambda: [self._Local("qwen3.5:4b")])
+        monkeypatch.setattr("core.llms.model_id", lambda role: "qwen3.5:4b")
+        monkeypatch.setattr("tui.ui.show_models",
+                            lambda *a, **k: seen.update(k))
+        import config as config_mod
+
+        monkeypatch.setattr(config_mod, "_config", cfg, raising=False)
+        runtime._models(None, ["list"])
+
+        assert seen["meta"]["qwen3.5:4b"]["ctx"]
+        assert "calibrated" in seen["meta"]["qwen3.5:4b"]
+
+    def test_the_renderer_shows_them_without_crashing(self, capsys):
+        from tui import ui
+
+        ui.show_models(
+            [self._Local("qwen3.5:4b")], {"synthesizer": "qwen3.5:4b"}, "4b",
+            "qwen3-embedding:8b",
+            meta={"qwen3.5:4b": {"ctx": 32768, "max_ctx": 262144, "calibrated": True}},
+        )
+        out = capsys.readouterr().out
+        assert "32k/256k" in out          # compact, so the bindings tail still fits
+        assert "calibrated" in out

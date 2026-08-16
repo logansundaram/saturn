@@ -122,6 +122,12 @@ _REPO_ROOT = _CONFIG_PATH.parent
 # ever seeing the new binding).
 MODEL_ROLES = ("planner", "tool_caller", "synthesizer", "utility", "judge")
 
+# The window pair every ladder tag ships in config.default.yaml — the fallback for a family tag
+# a user's older config has no `capabilities:` entry for (see capability_of). Kept in step with
+# the template by tests/test_model_family.py.
+FAMILY_CONTEXT_WINDOW = 32768
+FAMILY_MAX_CONTEXT_WINDOW = 262144
+
 
 @dataclass(frozen=True)
 class ModelSpec:
@@ -173,7 +179,10 @@ class Config:
     # --- tier / roles ------------------------------------------------------
     @property
     def active_tier(self) -> str:
-        return self._data.get("active_tier", "workstation")
+        # The fallback is the ladder's default CLASS, not a retired preset name: "workstation"
+        # stopped shipping with the family lock, so a config missing the key resolved to a tier
+        # that does not exist and hard-failed on every model resolution (2026-08-16).
+        return self._data.get("active_tier", model_family.DEFAULT_CLASS)
 
     def _tier(self) -> dict:
         tiers = self._data.get("tiers", {})
@@ -248,6 +257,13 @@ class Config:
         caps = self._data.get("capabilities", {})
         spec = caps.get(model)
         if not spec:
+            if model_family.is_ladder_tag(model):
+                # A config predating the family lock has no `capabilities:` entry for the tag a
+                # legacy binding was SUBSTITUTED with, and the conservative default would quarter
+                # its window to 8192 with nothing said (and render "8192 / 0" in /models tier).
+                # Every ladder tag ships the same pair in config.default.yaml — use it.
+                return Capability(context_window=FAMILY_CONTEXT_WINDOW,
+                                  max_context_window=FAMILY_MAX_CONTEXT_WINDOW)
             return Capability()  # conservative defaults
         cw = spec.get("context_window", 8192)
         return Capability(

@@ -4,7 +4,7 @@ from the confidence_coloring isolate, 2026-08-16). Sibling of continuation_contr
 utility, not shipped, run by hand.
 
     python utilities/confidence_calibrate.py                    # every tier's synthesizer that is installed
-    python utilities/confidence_calibrate.py --models qwen3.8:27b gemma4:e4b
+    python utilities/confidence_calibrate.py --models qwen3.8:27b qwen3.5:4b
     python utilities/confidence_calibrate.py --prompts 20       # a quick, coarser pass
 
 The measurement itself — streaming known-good prompts through the synthesizer's real prompt

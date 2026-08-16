@@ -195,11 +195,19 @@ def _tier_rows(active: "str | None" = None, cfg=None) -> list:
     rows = []
     for key in tiers or classes:
         ladder = key in classes
-        tag = model_family.tag_for(key) if ladder else _tier_model(cfg, key)
+        declared = model_family.tag_for(key) if ladder else _tier_model(cfg, key)
+        # What selecting this tier actually RUNS: a non-family binding is substituted at the
+        # model_for_role seam, so showing the file's value here would put a window and a
+        # calibration verdict against a model that never loads (the substitution itself is
+        # named by the migration note under the table).
+        tag = declared
+        if tag and not model_family.in_family(tag):
+            tag = model_family.tag_for(model_family.migrate(tag))
         cap = cfg.capability_of(tag)
         rows.append({
             "key": key,
             "model": tag,
+            "declared": declared,
             "params": _PARAMS_BY_CLASS.get(key, ""),
             "ctx": cap.context_window,
             "max_ctx": cap.max_context_window,
@@ -208,6 +216,29 @@ def _tier_rows(active: "str | None" = None, cfg=None) -> list:
             "active": key == active,
         })
     return rows
+
+
+def _model_meta(models, cfg=None) -> dict:
+    """Per-tag metrics for the /models listing: the runtime + architectural context window, and
+    whether the tag has a confidence calibration behind it. The same facts `/models tier` shows,
+    so one tag reads identically in both listings (the readout's `meta` hook had no caller at
+    all until 2026-08-16, so the listing showed none of it).
+
+    An EMBEDDER gets no calibration verdict: it is not a chat model, produces no logprobs, and
+    'uncalibrated' would read as a defect rather than an exemption."""
+    from config import get_config
+    from core import confidence
+
+    if cfg is None:
+        cfg = get_config()
+    out = {}
+    for m in models or []:
+        cap = cfg.capability_of(m.name)
+        info = {"ctx": cap.context_window, "max_ctx": cap.max_context_window}
+        if not getattr(m, "is_embedding", False):
+            info["calibrated"] = confidence.calibration_for(m.name) is not None
+        out[m.name] = info
+    return out
 
 
 def _config_migrations() -> dict:
@@ -270,7 +301,8 @@ def _models(ctx, args):
 
     if not args:
         local = list_local_models()
-        ui.show_models(local, bindings, cfg.active_tier, cfg.embedder_model, numbered=True)
+        ui.show_models(local, bindings, cfg.active_tier, cfg.embedder_model, numbered=True,
+                       meta=_model_meta(local, cfg))
         _models_picker(ctx, cfg, local, session=session)
         return
 
@@ -278,7 +310,9 @@ def _models(ctx, args):
 
     if is_list_verb(sub):
         # The non-interactive view (`ollama list`-style): the same table, no picker.
-        ui.show_models(list_local_models(), bindings, cfg.active_tier, cfg.embedder_model)
+        local = list_local_models()
+        ui.show_models(local, bindings, cfg.active_tier, cfg.embedder_model,
+                       meta=_model_meta(local, cfg))
         return
 
     if sub == "tier":

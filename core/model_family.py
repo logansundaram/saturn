@@ -71,6 +71,14 @@ def in_family(model_id) -> bool:
     return bool(_FAMILY_RE.match(str(model_id or "").strip()))
 
 
+def is_ladder_tag(model_id) -> bool:
+    """Whether `model_id` is one of the tags the ladder actually binds (case-insensitively) —
+    narrower than in_family, which accepts any tag of the three families. Callers that want the
+    shipped defaults for a tag they know we ship ask this."""
+    want = str(model_id or "").strip().lower()
+    return any(tag.lower() == want for _key, tag in SIZE_LADDER)
+
+
 def classes() -> tuple[str, ...]:
     """The size-class keys, smallest first — the tier names and what /models tier accepts."""
     return tuple(key for key, _tag in SIZE_LADDER)

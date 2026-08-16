@@ -293,7 +293,7 @@ def reset_models() -> None:
 class LocalModel:
     """A model pulled into the local Ollama daemon, as surfaced by `ollama list`."""
 
-    name: str            # the tag you bind (e.g. "gemma4:e4b")
+    name: str            # the tag you bind (e.g. "qwen3.5:4b")
     size_bytes: int      # on-disk size
     parameter_size: str  # e.g. "4B", "29.9B" ("" if Ollama didn't report it)
     quantization: str    # e.g. "Q4_K_M" ("" if absent)

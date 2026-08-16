@@ -89,8 +89,10 @@ def show_models(models, bindings: dict, active_tier: str, embedder: str,
     `embedder` is the active embedder tag. With `numbered=True` each installed row gets a 1-based
     index (the selector the interactive picker reads). A `◂ <roles>` tail marks what each model
     currently drives, so the bindings are visible inline. `meta` optionally maps a model id to
-    `{"ctx": int, "max_ctx": int, "calibrated": bool}`, appending its runtime/max context to the
-    detail column when present."""
+    `{"ctx": int, "max_ctx": int, "calibrated": bool}`, appending its runtime/max context window
+    and confidence-calibration state to the detail column — the same metrics `/models tier`
+    shows, so a tag reads identically in both listings. Windows render compactly (`32k/256k`):
+    the raw token counts pushed the bindings tail off the line."""
     # role(s) / embedder each installed tag currently serves -> shown as a tail marker.
     serves: dict[str, list[str]] = {}
     for role, mid in (bindings or {}).items():
@@ -113,16 +115,33 @@ def show_models(models, bindings: dict, active_tier: str, embedder: str,
             parts.append("embedder")
         return "  ".join(parts)
 
+    def _ctx_h(n) -> str:
+        """A context window in the shortest honest form: 32768 -> 32k, 262144 -> 256k."""
+        try:
+            n = int(n)
+        except (TypeError, ValueError):
+            return "?"
+        return f"{n // 1024}k" if n >= 1024 else str(n)
+
+    def _meta_bits(name: str) -> list:
+        info = meta.get(name) if meta else None
+        if not info:
+            return []
+        bits = []
+        if info.get("ctx") or info.get("max_ctx"):
+            bits.append(f"{_ctx_h(info.get('ctx'))}/{_ctx_h(info.get('max_ctx'))}")
+        if "calibrated" in info:
+            bits.append("calibrated" if info["calibrated"] else "uncalibrated")
+        return bits
+
     section("models", f"tier {active_tier} · embedder {embedder or '—'}")
 
     if not models:
         _emit("  (no local models — is the Ollama daemon running? `ollama list`)")
     else:
         for i, m in enumerate(models, start=1):
-            info = meta.get(m.name) if meta else None
             bits = [p for p in (m.parameter_size, m.quantization) if p]
-            if info:
-                bits.append(f"{info['ctx']}/{info['max_ctx']}")
+            bits += _meta_bits(m.name)
             detail = " ".join(bits) or "·"
             tail = _tail_for(m.name)
             idx = f"{i:>2}  " if numbered else ""

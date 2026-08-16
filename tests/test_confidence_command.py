@@ -189,9 +189,41 @@ class TestReset:
         _run(ctx, ["reset"])
         assert store.entry_for("qwen3.8:27b") is None
 
-    def test_reset_with_nothing_stored_says_so(self, ctx, printed, store):
+    def test_reset_reports_dropping_values_it_actually_had(self, ctx, printed, store):
+        store.write_entry("qwen3.8:27b", 0.41, 0.62, source="manual")
         _run(ctx, ["reset"])
-        assert "shipped" in "\n".join(printed).lower() or "nothing" in "\n".join(printed).lower()
+        blob = "\n".join(printed).lower()
+        assert "dropped" in blob                      # the success branch, distinctly
+        assert "nothing of yours" not in blob
+
+    def test_reset_with_nothing_stored_says_so(self, ctx, printed, store):
+        # Distinct from the branch above: an `or` across the two words passed either way.
+        _run(ctx, ["reset"])
+        blob = "\n".join(printed).lower()
+        assert "nothing of yours" in blob
+        assert "dropped" not in blob
+
+
+class TestSessionFlagOnPerModelWrites:
+    """--session scopes a CONFIG setting; set/tune/reset write per-model thresholds to
+    database/confidence_calibration.json, which has no session scope. Accepting and ignoring the
+    flag left the user believing a durable write was temporary."""
+
+    @pytest.mark.parametrize("sub", ["set", "tune", "reset"])
+    def test_it_is_refused_rather_than_ignored(self, ctx, printed, store, sub, monkeypatch):
+        from core import calibration
+
+        monkeypatch.setattr(calibration, "measure",
+                            lambda *a, **k: pytest.fail("tune ran despite --session"))
+        store.write_entry("qwen3.8:27b", 0.41, 0.62, source="manual")
+
+        _run(ctx, [sub, "0.31", "0.52", "--session"])
+
+        assert "--session" in "\n".join(printed)
+        # Nothing done: the pre-existing entry is untouched (a reset would have dropped it, a
+        # set would have overwritten it).
+        rec = store.entry_for("qwen3.8:27b")
+        assert (rec["enter"], rec["exit"]) == (0.41, 0.62)
 
 
 class TestTune:

@@ -353,3 +353,21 @@ def test_bare_policy_readout_names_the_grant_lifetime(gate, ctx, capsys):
     dispatch("/policy", ctx)
     out = capsys.readouterr().out
     assert "always-allow lifetime" in out and "task" in out
+
+
+def test_airgap_offmachine_warning_names_a_tier_that_exists(gate, ctx, capsys, monkeypatch):
+    """The 'switch to a local tier first' remediation named `workstation`, a preset that stopped
+    shipping with the family lock — advice that answers "unknown tier"."""
+    import config as config_mod
+    from commands import privacy as privacy_cmd
+    from core import model_family
+
+    monkeypatch.setattr(config_mod, "persist", lambda key: key)
+    monkeypatch.setattr(privacy_cmd, "_offmachine_roles",
+                        lambda cfg: [("synthesizer", "anthropic", "claude-x")])
+    dispatch("/privacy airgap on", ctx)
+    out = capsys.readouterr().out
+
+    assert "/models tier" in out
+    named = out.split("/models tier", 1)[1].split()[0]
+    assert named in model_family.classes(), named

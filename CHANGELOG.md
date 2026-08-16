@@ -107,6 +107,8 @@ to learn, audit, and maintain — none removes a protection.
   allowlist should be, a list where the overrides mapping should be) now fails closed like a
   garbled file — strict defaults, recorded at startup, the file kept aside as `.corrupt` —
   instead of being iterated as-is.
+- A plan step with an unrecognized status (a garbled or legacy record) now renders as
+  `? ⟨unknown status: …⟩` instead of being shown as pending.
 - The approval prompt always renders: if a preview (the file diff, the shell command view)
   fails to draw, a plain view names the call and the same reject-by-default prompt runs —
   previously the turn died with the human never asked.

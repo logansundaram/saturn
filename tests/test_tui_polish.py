@@ -192,3 +192,20 @@ def test_statusbar_key_legend_trails_the_bar():
     # Trailing on purpose: the bar trims from the right on narrow terminals, so the legend is
     # the first thing sacrificed.
     assert plain.rstrip().endswith("esc pause · ctrl-c cancel")
+
+
+# ── an unknown plan status is rendered as UNKNOWN, never guessed as pending ─────────────────
+# (transplanted from the visibility isolate: views over instrumentation, never a guess)
+
+
+def test_unknown_plan_status_renders_as_unknown_never_pending(monkeypatch):
+    from tui.ui import plan as plan_ui
+
+    monkeypatch.setattr(plan_ui, "_RICH", False)
+    row = plan_ui._plan_line_bare({"step_id": 1, "label": "x", "status": "garbage"},
+                                  show_tool=False)
+    assert "?" in row and "garbage" in row
+    assert not row.lstrip().startswith("·")  # the pending glyph would be a guess
+    # a step carrying no status at all is still pending (the producer's default)
+    row = plan_ui._plan_line_bare({"step_id": 1, "label": "x"}, show_tool=False)
+    assert row.lstrip().startswith("·")

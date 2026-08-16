@@ -546,3 +546,63 @@ def test_review_frame_names_statuses_and_tracks_the_pointer_through_edits(monkey
     assert "Sum the numbers" in pointer_line
     assert out["action"] == "continue"
     assert [s["label"] for s in out["plan"]] == ["Read the file", "Sum the numbers"]
+
+
+# ── the gate prompt ALWAYS renders (transplanted from the visibility isolate) ───────────────
+
+
+def _rich_gate(monkeypatch, answers):
+    import builtins
+    import io
+
+    from rich.console import Console
+
+    monkeypatch.setattr("tools.registry", types.SimpleNamespace(TOOL_RISK={}), raising=False)
+    buf = io.StringIO()
+    monkeypatch.setattr(approval, "_console",
+                        Console(file=buf, force_terminal=False, width=200, highlight=False))
+    monkeypatch.setattr(approval, "_RICH", True)
+    monkeypatch.setattr(approval, "_live_stop", lambda: None)
+    monkeypatch.setattr(approval, "_live_start", lambda: None)
+    it = iter(answers)
+    monkeypatch.setattr(builtins, "input", lambda *a, **k: next(it))
+    return buf
+
+
+def test_gate_prompt_survives_rich_render_failure(isolated_paths, monkeypatch):
+    """A preview renderer that raises (a diff over an unreadable file, a width edge case) must
+    not kill the turn with the human never asked: a plain fallback names the call and the same
+    N-default prompt still runs. The decision path is untouched — bare Enter rejects."""
+    buf = _rich_gate(monkeypatch, [""])
+
+    def boom(tc):
+        raise RuntimeError("diff renderer exploded")
+
+    monkeypatch.setattr(approval, "_render_call", boom)
+    value = {"tool_calls": [{"id": "1", "name": "write_file", "risk": "side_effecting",
+                             "args": {"file_path": "notes.txt", "content": "hi"}}]}
+    assert approval.ask_approval(value) is False
+    out = buf.getvalue()
+    assert "write_file" in out and "notes.txt" in out
+    assert "preview failed" in out and "diff renderer exploded" in out
+    assert "approve?" in out
+
+
+def test_gate_prompt_survives_a_hostile_payload(isolated_paths, monkeypatch):
+    """Even a malformed tool_calls entry (not a dict, missing keys) renders SOMETHING and asks."""
+    buf = _rich_gate(monkeypatch, ["y"])
+    value = {"tool_calls": [None, {"name": "x"}, {"id": "3", "name": "run_shell",
+                                                   "args": {"command": "git status"}}]}
+    assert approval.ask_approval(value) is True
+    out = buf.getvalue()
+    assert "approve?" in out and "run_shell" in out
+
+
+def test_gate_explain_failure_reprompts_instead_of_dying(isolated_paths, monkeypatch):
+    buf = _rich_gate(monkeypatch, ["e", ""])
+    monkeypatch.setattr(approval, "_render_explain",
+                        lambda v: (_ for _ in ()).throw(ValueError("no plan here")))
+    value = {"tool_calls": [{"id": "1", "name": "run_shell", "risk": "destructive",
+                             "args": {"command": "git status"}}]}
+    assert approval.ask_approval(value) is False
+    assert "no plan here" in buf.getvalue()

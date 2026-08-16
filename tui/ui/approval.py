@@ -8,6 +8,8 @@ human approving the exact diff/command — not a path jail — is the safety bou
 import textwrap
 import time
 
+import diag
+
 from textutil import head_tail
 
 from . import _base
@@ -590,6 +592,44 @@ def _resolve_decision(resp: str, tool_calls: list, ask) -> "bool | dict":
     return False
 
 
+def _plain_call_lines(tc) -> list:
+    """The fallback rendering of one gated call that CANNOT fail: defensive reads over whatever
+    the payload entry is (a non-dict, missing keys, an unprintable value), each argument clipped.
+    Used only when the rich preview raised — the human must always be asked with the call named."""
+    try:
+        d = tc if isinstance(tc, dict) else {}
+        name = str(d.get("name", "?"))
+        risk = str(d.get("risk", "destructive"))
+        args = d.get("args")
+        args = args if isinstance(args, dict) else {"args": args}
+        lines = [f"{name}  ({risk})"]
+        for k, v in args.items():
+            try:
+                text = " ".join(str(v).split())
+            except Exception:
+                text = "<unprintable>"
+            lines.append(f"  {str(k)}={head_tail(text, 200)}")
+        return lines
+    except Exception:
+        return [f"<unrenderable call: {type(tc).__name__}>"]
+
+
+def _render_call_safely(tc) -> None:
+    """The gate's per-call render, fail-soft (transplanted from the visibility isolate): the rich
+    preview (diff / command / full-width args) is the safety surface, but a renderer that raises
+    — a diff over an unreadable file, a width edge case — must never end the turn with the human
+    never asked. On failure the plain fallback names the call and the same N-default prompt runs;
+    the decision path is untouched."""
+    try:
+        _render_call(tc)
+    except Exception as exc:
+        diag.log(f"gate: rich preview failed for {tc!r}: {type(exc).__name__}: {exc}")
+        for ln in _plain_call_lines(tc):
+            _frame_note(ln, style="bold")
+        _frame_note(f"rich preview failed ({type(exc).__name__}: {exc}) — plain view above; "
+                    "N (Enter) rejects", style="yellow")
+
+
 def ask_approval(value: dict) -> "bool | dict":
     """Compact, high-signal gate. Heavy rule + risk-colored tier so it breaks out of the dim
     trace rail. A write_file call additionally renders a colored unified diff of what it will
@@ -621,9 +661,12 @@ def ask_approval(value: dict) -> "bool | dict":
         _console.print(top)
     else:
         print("  ┏━ approval required")
-    _render_quarantine_banner(value)
+    try:
+        _render_quarantine_banner(value)
+    except Exception as exc:  # display only — the prompt below still asks
+        _frame_note(f"quarantine banner failed to render ({type(exc).__name__}: {exc})")
     for tc in tool_calls:
-        _render_call(tc)
+        _render_call_safely(tc)
 
     # The sub-prompts (_always_allow's prefix proposal, _select_calls' arg summaries) embed RAW
     # command/argument text, and rich's Console.input parses markup AND emoji codes by default:
@@ -648,7 +691,10 @@ def ask_approval(value: dict) -> "bool | dict":
                 f"  ┗━ approve? {_KEY_CHOICES}  (Enter = no) » "
             ).strip().lower()
         if resp in _ANSWER["e"]:
-            _render_explain(value)
+            try:
+                _render_explain(value)
+            except Exception as exc:  # explain is a courtesy — never lets the gate die
+                _frame_note(f"explain failed ({type(exc).__name__}: {exc})")
             continue
         note = _unrecognized_note(resp)
         if note:

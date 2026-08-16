@@ -107,6 +107,9 @@ to learn, audit, and maintain — none removes a protection.
   allowlist should be, a list where the overrides mapping should be) now fails closed like a
   garbled file — strict defaults, recorded at startup, the file kept aside as `.corrupt` —
   instead of being iterated as-is.
+- The approval prompt always renders: if a preview (the file diff, the shell command view)
+  fails to draw, a plain view names the call and the same reject-by-default prompt runs —
+  previously the turn died with the human never asked.
 - A display bug while rendering the live trace rail or plan can no longer fail the turn: the
   render error prints as one line, the run stays recorded, and the answer still arrives.
 - An oversized node delta no longer vanishes from the trace record: instead of slicing the

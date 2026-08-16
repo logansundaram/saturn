@@ -78,6 +78,15 @@ def build_sources(tool_results, documents_retrieved):
     return numbered_tools, numbered_docs, sources
 
 
+# What the recorded answer says when the model generated nothing. A statement of fact (never
+# invented prose) so the turn still reports what happened through the trailers below instead of
+# returning a blank message — the provenance buffer keeps the empty text the model produced.
+NO_ANSWER_TEXT = "No answer text was produced for this turn."
+
+# The mechanical incidents note's header — one producer (this module), read by the tests.
+INCIDENTS_NOTE_HEADER = "Note — the following could not be completed:"
+
+
 def sources_footer(sources) -> str:
     """The `Sources:` block appended to the answer — the mechanical map from each inline [n] to
     the tool call / document behind it. Empty string when nothing was gathered."""
@@ -327,10 +336,21 @@ def _final_updates(buf: dict, incidents, sources, cancelled, *,
     is kept on state as `complete` so the answer render and the trace carry the human spans."""
     content = buf.get("text", "")
 
+    # An EMPTY generation must not silence the engine's own disclosures. Every trailer below used
+    # to be guarded on `content.strip()` — on the model having written something — so a model
+    # that returned nothing produced a turn with no answer, no statement that a rejected write
+    # had not happened, and no sources: a fail-OPEN on the one path this node promises to be
+    # fail-closed (measured live in the engine isolate: `held.guard.reject_write` returned ''
+    # on one model while passing on two others). Each trailer is now gated on its OWN trigger,
+    # and an empty answer becomes a stated fact — the buffer keeps the empty text (no invented
+    # prose ever enters the provenance record).
+    if not content.strip():
+        content = NO_ANSWER_TEXT
+
     # A mechanical incidents note under the answer, mirroring the prompt-level disclosure: the
     # user sees what could not be completed even when the model soft-pedals it.
-    if incidents and content.strip():
-        content = content.rstrip() + "\n\nNote — the following could not be completed:\n" + "\n".join(
+    if incidents:
+        content = content.rstrip() + f"\n\n{INCIDENTS_NOTE_HEADER}\n" + "\n".join(
             f"- {i}" for i in incidents
         )
 
@@ -339,7 +359,7 @@ def _final_updates(buf: dict, incidents, sources, cancelled, *,
     # message on finish (ui.ResponseStream.finish(final_text) — see app/repl.py) and the footer
     # appears there. Skipped when nothing was gathered — a pure-knowledge answer has no sources.
     footer = sources_footer(sources)
-    if footer and content.strip():
+    if footer:
         content = content.rstrip() + "\n\n" + footer
 
     msg_kwargs = {"response_metadata": response_metadata or {}}

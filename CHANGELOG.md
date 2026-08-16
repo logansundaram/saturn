@@ -97,6 +97,11 @@ to learn, audit, and maintain — none removes a protection.
 
 ### Fixed
 
+- The approval gate now approves a batch only on an explicit approval; any unrecognized
+  resume value rejects (previously any truthy value approved).
+- An answer that came back empty no longer swallows the engine's own disclosures: the
+  "could not be completed" incidents note and the Sources footer are appended regardless, and
+  the recorded answer states that no answer text was produced.
 - The semantic write gate and the self-correction judge no longer misread a successful step
   whose output merely *begins* with "ERROR" (e.g. reading an error log) as a failed step —
   failure now keys exclusively on the step's recorded status. Previously this could skip a

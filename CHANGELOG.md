@@ -9,6 +9,22 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
 
 ### Added
 
+- **Always-allow grants now have a lifetime.** Answering `a` at the approval gate grants for
+  the rest of the current turn by default (`runtime.grant_scope: task`): the tool's tier drop
+  and any shell-prefix grant expire at the turn boundary, and the turn's closing note says what
+  expired. `session` keeps the old behavior (grants live until Saturn exits); `persist` writes
+  both halves — the tier drop and the prefix — to `permissions.json`. Previously one keypress
+  relaxed a tool for the whole session and persisted a shell prefix forever, with nothing to see
+  or revoke it. `/policy allow <prefix>` (the explicit command) still persists; the allowlist
+  readout names each prefix's lifetime. The scope is a trust setting (session-only unless
+  `--save`).
+- **Shell environment scrubbing.** `run_shell` children no longer inherit secret-shaped
+  environment variables (`*API_KEY*`, `*SECRET*`, `*TOKEN*`, `*PASSWORD*`, `*CREDENTIAL*`,
+  `ANTHROPIC*`, `OPENAI*`, `AWS_*`, `GITHUB_*` by default) — a command can read a secret straight
+  out of its own environment, and the workspace sandbox does nothing about that. The fragment
+  list is `shell.env_scrub` in config.yaml; emptying it is a trust setting (session-only unless
+  `--save`).
+
 - **`saturn -q "<question>"` — one-shot query mode.** The same headless turn as `-p` (same
   engine loop, same deny-by-default approval gate, same trace recording), rendered for pipes:
   stdout carries only the final synthesized answer, step-line progress (plan drafted, step N,
@@ -103,24 +119,6 @@ to learn, audit, and maintain — none removes a protection.
 - A plan step naming a tool that doesn't exist now fails closed as a disclosed error the
   engine can replan around, instead of silently degrading into the model answering the step
   from its own knowledge.
-
-### Added
-
-- **Always-allow grants now have a lifetime.** Answering `a` at the approval gate grants for
-  the rest of the current turn by default (`runtime.grant_scope: task`): the tool's tier drop
-  and any shell-prefix grant expire at the turn boundary, and the turn's closing note says what
-  expired. `session` keeps the old behavior (grants live until Saturn exits); `persist` writes
-  both halves — the tier drop and the prefix — to `permissions.json`. Previously one keypress
-  relaxed a tool for the whole session and persisted a shell prefix forever, with nothing to see
-  or revoke it. `/policy allow <prefix>` (the explicit command) still persists; the allowlist
-  readout names each prefix's lifetime. The scope is a trust setting (session-only unless
-  `--save`).
-- **Shell environment scrubbing.** `run_shell` children no longer inherit secret-shaped
-  environment variables (`*API_KEY*`, `*SECRET*`, `*TOKEN*`, `*PASSWORD*`, `*CREDENTIAL*`,
-  `ANTHROPIC*`, `OPENAI*`, `AWS_*`, `GITHUB_*` by default) — a command can read a secret straight
-  out of its own environment, and the workspace sandbox does nothing about that. The fragment
-  list is `shell.env_scrub` in config.yaml; emptying it is a trust setting (session-only unless
-  `--save`).
 
 ### Fixed
 

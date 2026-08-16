@@ -80,6 +80,15 @@ to learn, audit, and maintain — none removes a protection.
 
 ### Changed
 
+- Every model call now states explicitly whether the model may "think" (emit a hidden
+  rationale) instead of inheriting the model's default: only the planner keeps its rationale
+  (measured to matter for plan quality on small models); the judge, tool-argument generation,
+  reasoning steps and the streamed answer run without it (measured faster and more accurate on
+  small models, and a rationale can no longer eat the output budget and return an empty answer).
+  Every call also carries an output-token bound so a looping generation ends as a truncated
+  result instead of filling the context window; a model that rejects the think flag is
+  detected once and the call retried without it; a degenerate, repeating draw is retried with a
+  repeat penalty on that retry only.
 - The live `config.yaml` is no longer tracked by git — it is user data (persisted settings
   land in it), and tracking it could make `/update` fail once you had ever saved a setting.
   It is now seeded on first run from the tracked template `config.default.yaml`.

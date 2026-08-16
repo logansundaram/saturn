@@ -9,10 +9,13 @@ from core.state import AgentState, incident_steps, unfinished_steps
 from textutil import clip, parse_doc_sources, split_call_result
 from core.llms import (
     get_model,
+    generate,
     model_id,
+    stream as llm_stream,
     extract_tok_per_sec,
     extract_prompt_tokens,
 )
+from core.structured import _invoke_kwargs, _model_tag
 from core.messages import COMPUTED_CORRECTIVE, GROUNDING_CORRECTIVE, synthesize_sys_msg
 from langchain.messages import HumanMessage, AIMessage, ToolMessage
 
@@ -273,7 +276,12 @@ def _stream_first_pass(llm_input, freeze):
     got_chunk = False
     frozen = False
     seeker = continuation.FreezeSeeker(freeze)
-    gen = model.stream(llm_input, **({"logprobs": True} if confidence.enabled() else {}))
+    # The serving layer's per-task decisions ride the stream too: think OFF for the answer,
+    # a num_predict bound, num_ctx (never a partial options dict); logprobs as a per-call kwarg.
+    stream_kwargs = dict(_invoke_kwargs("synthesizer", None, 0.7, task="answer"))
+    if confidence.enabled():
+        stream_kwargs["logprobs"] = True
+    gen = llm_stream(model, llm_input, tag=_model_tag("synthesizer"), **stream_kwargs)
     try:
         for chunk in gen:
             got_chunk = True
@@ -479,7 +487,9 @@ def _regenerate(model, llm_input, corrective: str) -> str:
     """ONE corrective regeneration — a plain resample reproduces the same arithmetic, so the retry
     carries the specific complaint. '' when the model errors (the ladder falls back to disclosing)."""
     try:
-        resp = model.invoke(list(llm_input) + [HumanMessage(content=corrective)])
+        resp = generate(model, list(llm_input) + [HumanMessage(content=corrective)],
+                        tag=_model_tag("synthesizer"),
+                        **_invoke_kwargs("synthesizer", None, 0.7, task="correction"))
         text = getattr(resp, "content", "")
         return text if isinstance(text, str) else str(text)
     except Exception as exc:

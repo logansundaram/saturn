@@ -254,24 +254,47 @@ def _role_is_ollama(role: str) -> bool:
         return False
 
 
-def _invoke_kwargs(role: str, fmt: "dict | None", temp: float) -> dict:
-    """Constrained decoding + per-attempt temperature ride the invoke kwargs for Ollama roles
-    (ChatOllama forwards `format`/`options` to the daemon); other providers take neither — they
-    get the shape hint + salvage parsing alone.
+def _model_tag(role: str) -> str:
+    """The concrete model id serving `role`, '' when the binding can't be read."""
+    try:
+        return str(get_config().model_for_role(role).model)
+    except Exception:
+        return ""
+
+
+def _invoke_kwargs(role: str, fmt: "dict | None", temp: float, task: "str | None" = None, *,
+                   repetition: bool = False) -> dict:
+    """Constrained decoding + per-attempt temperature + the serving layer's per-TASK decisions
+    ride the invoke kwargs for Ollama roles (ChatOllama forwards `format`/`options`/`reasoning`
+    to the daemon); other providers take none — they get the shape hint + salvage parsing alone.
 
     The options dict must carry `num_ctx` too: langchain_ollama treats an invoke-time `options`
     as a FULL REPLACEMENT for the constructor-built options (which is the only place the
     configured context window lives), so temperature alone would silently revert the daemon to
-    its ~2048 default and front-truncate long prompts."""
+    its ~2048 default and front-truncate long prompts. Since 2026-08-15 (from the engine
+    isolate) it also carries the task's `num_predict` bound, and `reasoning` (think) is set
+    EXPLICITLY per task (`core/serving.thinks`) — never the model's default — unless the daemon
+    already rejected the flag for this tag (`llms._NO_THINK_SUPPORT`). `repetition=True` adds
+    the retry-only repeat penalty after a degenerate draw."""
     if not _role_is_ollama(role):
         return {}
+    from core import llms, serving  # lazy: structured is imported by the registry's users
+
+    task = task or serving.task_for_role(role)
     options: dict = {"temperature": temp}
+    tag = _model_tag(role)
     try:
         cfg = get_config()
         options["num_ctx"] = cfg.num_ctx_for(cfg.model_for_role(role).model)
     except Exception:  # a broken binding must not fail the call that would surface it
         pass
+    if task is not None:
+        options["num_predict"] = serving.num_predict(task)
+    if repetition:
+        options.update(serving.repetition_options())
     kwargs: dict = {"options": options}
+    if task is not None and tag not in llms._NO_THINK_SUPPORT:
+        kwargs["reasoning"] = serving.thinks(task)
     if fmt is not None:
         kwargs["format"] = fmt
     return kwargs
@@ -287,7 +310,10 @@ def structured(role, messages, schema, fmt, shape, default=None, attempts=3):
     for i in range(attempts):
         temp = _ATTEMPT_TEMPS[min(i, len(_ATTEMPT_TEMPS) - 1)]
         try:
-            resp = get_model(role).invoke(payload, **_invoke_kwargs(role, fmt, temp))
+            from core.llms import generate  # the think-rejection fallback rides every call
+
+            resp = generate(get_model(role), payload, tag=_model_tag(role),
+                            **_invoke_kwargs(role, fmt, temp))
         except Exception as exc:
             diag.log(f"structured[{role}/{schema.__name__}] attempt {i + 1} call failed: {exc}")
             continue

@@ -30,6 +30,8 @@ from dataclasses import dataclass
 import httpx
 from langchain_ollama import ChatOllama, OllamaEmbeddings
 
+import diag
+
 from trust import egress
 from trust import redaction
 from config import MODEL_ROLES, get_config
@@ -451,6 +453,69 @@ def check_models() -> list[str]:
             )
 
     return problems
+
+
+# ── the think-rejection fallback (from the engine isolate, 2026-08-15) ─────────────────────────
+#
+# Model tags whose daemon rejected a `think` parameter. A model without a thinking template 400s
+# on `think` in EITHER direction, so the engine cannot express "no rationale please" to it — it
+# can only stop asking. Learned once per tag per process, never guessed from the name; the
+# structured layer's `_invoke_kwargs` consults it and omits the flag for such tags.
+_NO_THINK_SUPPORT: set = set()
+
+_THINK_REJECTION_MARKERS = ("does not support thinking", "thinking is not supported", '"think"')
+
+
+def _is_think_rejection(exc: Exception) -> bool:
+    text = f"{exc}".lower()
+    return any(m in text for m in _THINK_REJECTION_MARKERS)
+
+
+def generate(runnable, messages, *, tag: str = "", **kwargs):
+    """`runnable.invoke(messages, **kwargs)` with ONE structural fallback: a daemon that rejects
+    the `reasoning`(think) flag gets the call retried without it and `tag` is remembered in
+    `_NO_THINK_SUPPORT`. That must not be the difference between an engine that works against
+    a thinking model and one that raises against a plain one — and it must not be papered over
+    by dropping the flag globally (every thinking model would fall back to its default: ON)."""
+    try:
+        return runnable.invoke(messages, **kwargs)
+    except Exception as exc:
+        if "reasoning" not in kwargs or not _is_think_rejection(exc):
+            raise
+        _NO_THINK_SUPPORT.add(tag)
+        diag.log(f"llms: {tag or 'model'} rejects the think flag — retrying without it")
+        return runnable.invoke(messages, **{k: v for k, v in kwargs.items() if k != "reasoning"})
+
+
+def stream(runnable, messages, *, tag: str = "", **kwargs):
+    """`runnable.stream(...)` under the same one-shot think fallback as `generate`. The generator
+    is materialized far enough to surface a parameter rejection HERE (the daemon rejects on the
+    first chunk), because a caller iterating the stream cannot retry it."""
+    try:
+        gen = runnable.stream(messages, **kwargs)
+        first = next(gen, None)
+    except Exception as exc:
+        if "reasoning" not in kwargs or not _is_think_rejection(exc):
+            raise
+        _NO_THINK_SUPPORT.add(tag)
+        diag.log(f"llms: {tag or 'model'} rejects the think flag — re-streaming without it")
+        kwargs = {k: v for k, v in kwargs.items() if k != "reasoning"}
+        gen = runnable.stream(messages, **kwargs)
+        first = next(gen, None)
+
+    def _chunks():
+        # try/finally so a consumer that closes this generator between the first chunk and the
+        # rest (exactly what the freeze latch does) still closes the underlying stream.
+        try:
+            if first is not None:
+                yield first
+            yield from gen
+        finally:
+            close = getattr(gen, "close", None)
+            if close:
+                close()
+
+    return _chunks()
 
 
 def extract_tok_per_sec(response) -> float:

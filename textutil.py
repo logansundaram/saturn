@@ -204,6 +204,38 @@ def untraceable_figures(answer, sources) -> "list[str]":
     return missing
 
 
+# ── degenerate-generation detection (from the engine isolate, 2026-08-15) ─────────────────────
+#
+# A RETRY TRIGGER, never a global setting: the caller re-rolls the next rung with a repeat penalty
+# (core/serving.repetition_options) only after a draw carries the signature of a decoding loop.
+
+# How many times a fragment must recur back-to-back before it reads as a loop rather than emphasis.
+_LOOP_RUN = 4
+
+# Immediate self-repetition of a 3+ character fragment, four or more times running.
+_LOOP_RE = re.compile(r"(.{3,40}?)\1{" + str(_LOOP_RUN - 1) + r",}", re.DOTALL)
+
+
+def looks_repetitive(text) -> bool:
+    """Whether `text` carries the signature of a decoding loop: a fragment repeated back-to-back
+    (`reviewedreviewedreviewed`) or a whole line repeated down the output — both a run of
+    `_LOOP_RUN`, comfortably past what prose or JSON structure produces on its own."""
+    s = str(text or "")
+    if len(s) < 12:
+        return False
+    if _LOOP_RE.search(s):
+        return True
+    lines = [ln.strip() for ln in s.splitlines() if ln.strip()]
+    if len(lines) < _LOOP_RUN:
+        return False
+    run = 1
+    for prev, cur in zip(lines, lines[1:]):
+        run = run + 1 if cur == prev else 1
+        if run >= _LOOP_RUN:
+            return True
+    return False
+
+
 def safe_stem(name, fallback: str) -> str:
     """Sanitize a user-supplied name to a safe filename stem: path parts dropped, a trailing
     `.json` stripped (so `brief.json` and `brief` resolve identically), every other special

@@ -33,7 +33,7 @@ import diag
 from langchain.messages import AIMessage, HumanMessage
 
 from config import get_config
-from core.llms import get_model, extract_tok_per_sec, extract_prompt_tokens
+from core.llms import get_model, generate, extract_tok_per_sec, extract_prompt_tokens
 from core.messages import EXECUTE_TOOL_SYS, EXECUTE_REASONING_SYS, WRITE_GATE_SYS
 from core.plan_context import (
     SEARCH_TOOLS,
@@ -49,12 +49,14 @@ from core.plan_context import (
 )
 from core.plan_ops import retirement_text
 from core.state import AgentState
+from textutil import looks_repetitive
 from core.structured import (
     WriteGate,
     WRITE_GATE_FORMAT,
     WRITE_GATE_SHAPE,
     _invoke_kwargs,
     structured,
+    _model_tag,
 )
 from core.tool_args import coerce_args, launders_a_value, parse_text_call, schema_hint
 
@@ -278,19 +280,25 @@ def _reasoning_call(context: str):
     """One text generation for a pure reasoning step. Returns (content, last_response)."""
     model = get_model("tool_caller")
     resp = None
+    repetition = False  # a degenerate draw arms the retry-only repeat penalty for the next rung
     for i, temp in enumerate((0.0, 0.4)):
         try:
-            resp = model.invoke(
+            resp = generate(
+                model,
                 [EXECUTE_REASONING_SYS, HumanMessage(content=context)],
-                **_invoke_kwargs("tool_caller", None, temp),
+                tag=_model_tag("tool_caller"),
+                **_invoke_kwargs("tool_caller", None, temp, task="reasoning",
+                                 repetition=repetition),
             )
         except Exception as exc:
             diag.log(f"execute_node : reasoning attempt {i + 1} failed ({exc})")
             continue
         content = str(getattr(resp, "content", "") or "").strip()
-        if content:
+        if content and not looks_repetitive(content):
             return content, resp
-    return "", resp
+        repetition = repetition or looks_repetitive(content)
+    content = str(getattr(resp, "content", "") or "").strip() if resp is not None else ""
+    return content, resp
 
 
 def _generate_tool_call(tool, context: str):
@@ -310,11 +318,15 @@ def _generate_tool_call(tool, context: str):
     text_fallback = ""
     problem = "no tool call emitted"
     resp = None
+    repetition = False  # armed by a degenerate text answer; never a global setting
     for temp in _ATTEMPT_TEMPS:
         try:
-            resp = bound.invoke(
+            resp = generate(
+                bound,
                 [EXECUTE_TOOL_SYS, HumanMessage(content=block)],
-                **_invoke_kwargs("tool_caller", None, temp),
+                tag=_model_tag("tool_caller"),
+                **_invoke_kwargs("tool_caller", None, temp, task="tool_args",
+                                 repetition=repetition),
             )
         except Exception as exc:
             # A transient provider error (an Ollama timeout) must not spend the whole step —
@@ -348,6 +360,7 @@ def _generate_tool_call(tool, context: str):
         else:
             text_fallback = content.strip() or text_fallback
             problem = "no tool call emitted"
+            repetition = repetition or looks_repetitive(content)
         block = context + "\n\n" + schema_hint(tool.name, problem)
     if text_fallback:
         # The step's tool was never called — the prose is NOT a tool observation, and recording

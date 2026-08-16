@@ -109,7 +109,8 @@ def approval_node(state: AgentState) -> Command[Literal["tools", "update_plan"]]
     straight through. If any pending call exceeds it, pause via `interrupt` and let the user
     decide per batch OR per call.
 
-    The resume value is a bool (True = approve the whole batch, False = reject it),
+    The resume value is the literal True (approve the whole batch; anything else that is not one
+    of the dict shapes below rejects — fail-closed),
     `{"approved_ids": [...]}` from the UI's per-call select mode, or the always-allow decision
     dict `{"approved": True, "tools": [...], "shell_grants": [...]}` whose grants are applied
     past the interrupt by `_apply_always_grants`. Rejected calls get a decline
@@ -175,9 +176,12 @@ def approval_node(state: AgentState) -> Command[Literal["tools", "update_plan"]]
         approved_ids = set(gated_ids) if decision.get("approved") else set()
         if approved_ids:
             _apply_always_grants(decision)
-    elif decision:
+    elif decision is True:
         approved_ids = set(gated_ids)
     else:
+        # Fail-closed on the resume value: ONLY the literal True approves a whole batch. Anything
+        # else — False, None, a stray string, an int, an unrecognized dict — is a rejection. The
+        # human's approval is never inferred from truthiness (transplanted from the gating isolate).
         approved_ids = set()
 
     # Past the interrupt: this runs exactly once, with the human's decision in hand. The one-shot

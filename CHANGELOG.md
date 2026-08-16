@@ -10,11 +10,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
 ### Changed
 
 - **One model family.** Saturday.ai now binds qwen3.5 / qwen3.6 / qwen3.8 only, as six tiers
-  keyed by parameter size (`0.8b`, `2b`, `4b`, `9b`, `27b`, `35b`), each on the most advanced
+  keyed by parameter size (`800m`, `2b`, `4b`, `9b`, `27b`, `35b`), each on the most advanced
   tag the family offers at that size. Confidence coloring is calibrated per model, and a red run
-  only means "worse than 95 % of this model's clean output" for a model that was measured —
-  every shipped tag is. `/models tier` lists parameters, context window and calibration state
-  instead of a nickname.
+  only means "worse than 95 % of this model's clean output" for a model that was measured — five
+  of the six tags were, with the 27b tier's thresholds estimated from its measured 27.8B sibling
+  pending daemon support for qwen3.8 logprobs (`/confidence` names which you are on, and
+  `/confidence tune` re-measures against your own daemon). `/models tier` lists parameters,
+  context window and calibration state instead of a nickname.
 - A binding left over from an older config (gemma4, qwen3-coder) is substituted in memory with
   the nearest size class and reported at startup. **config.yaml is never rewritten** — rebind
   with `/models tier <size>` to make it permanent.

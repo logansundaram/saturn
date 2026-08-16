@@ -223,8 +223,10 @@ saturn-agent` instead of `/update`.
 
   > More hardware to spare? Edit `active_tier` in `config.yaml` to a bigger size class — `9b`,
   > `27b`, or `35b` — and pull that class's tag instead (same embedder); `/models tier` lists
-  > all six. Saturn binds the **qwen3.5–3.8 family only** — every size class is calibrated for
-  > confidence coloring (see `/confidence`), so this is a closed ladder, not an open model list.
+  > all six. Saturn binds the **qwen3.5–3.8 family only** — each size class is calibrated per
+  > model for confidence coloring (see `/confidence`; the 27b tier's thresholds are estimated
+  > from its measured 27.8B sibling pending daemon support for qwen3.8 logprobs), so this is a
+  > closed ladder, not an open model list.
   > (Small models are still less reliable at tool-calling — see the gotchas in `CLAUDE.md`;
   > `/config setup` will say so too.)
 

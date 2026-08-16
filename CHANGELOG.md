@@ -7,11 +7,28 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
 
 ## [Unreleased]
 
+### Changed
+
+- **One model family.** Saturday.ai now binds qwen3.5 / qwen3.6 / qwen3.8 only, as six tiers
+  keyed by parameter size (`0.8b`, `2b`, `4b`, `9b`, `27b`, `35b`), each on the most advanced
+  tag the family offers at that size. Confidence coloring is calibrated per model, and a red run
+  only means "worse than 95 % of this model's clean output" for a model that was measured —
+  every shipped tag is. `/models tier` lists parameters, context window and calibration state
+  instead of a nickname.
+- A binding left over from an older config (gemma4, qwen3-coder) is substituted in memory with
+  the nearest size class and reported at startup. **config.yaml is never rewritten** — rebind
+  with `/models tier <size>` to make it permanent.
+- The fresh-install pull drops from `gemma4:e4b` (9.6 GB) to `qwen3.5:4b` (3.4 GB).
+
 ### Added
+- **`/confidence`** — the front door for confidence coloring: `on`/`off` (on by default),
+  `tune` to re-measure the active model against your daemon, `set <enter> [exit]` to type your
+  own thresholds, `reset` to go back to the shipped calibration. Your values live in
+  `database/confidence_calibration.json` and survive `/update`.
 
 - Interrupt-and-correct (Esc to freeze and edit the streaming answer) now supports the
   qwen3.8 family (`qwen3.8:27b` verified with the splice-and-continue contract), alongside
-  qwen3.5/3.6 and gemma4.
+  qwen3.5/3.6 — the whole supported family (gemma4 support is gone with the family lock above).
 - **Always-allow grants now have a lifetime.** Answering `a` at the approval gate grants for
   the rest of the current turn by default (`runtime.grant_scope: task`): the tool's tier drop
   and any shell-prefix grant expire at the turn boundary, and the turn's closing note says what

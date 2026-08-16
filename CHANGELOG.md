@@ -116,6 +116,10 @@ to learn, audit, and maintain — none removes a protection.
   allowlist should be, a list where the overrides mapping should be) now fails closed like a
   garbled file — strict defaults, recorded at startup, the file kept aside as `.corrupt` —
   instead of being iterated as-is.
+- Interrupt-and-correct: the edited answer prefix is trimmed of trailing spaces/tabs before
+  generation resumes (a trailing space is a token boundary the model never produces, so the
+  continuation could start awkwardly); newlines are kept and a resume without changes is not
+  recorded as an edit.
 - The approval gate's file-write preview now says what the write will actually do: a
   byte-identical rewrite (including a Windows CRLF-vs-LF no-op) reads "no change" instead of a
   full-file diff, an existing binary file is named as binary instead of rendering as garbage,

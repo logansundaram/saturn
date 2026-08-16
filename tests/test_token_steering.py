@@ -217,6 +217,54 @@ def test_answer_gate_done_accepts_the_text_as_final(monkeypatch):
     assert out["answer_buffer"]["state"] == "done"
 
 
+def test_answer_gate_strips_trailing_spaces_before_a_resume(monkeypatch):
+    """Transplanted from the token_steering isolate: a prefix ending in a space or tab is a bad
+    BPE tail (tokens carry their LEADING space, so " word" can never follow "abc "), and the
+    daemon has no token healing. The resume prefix is rstripped of spaces/tabs — newlines kept —
+    MECHANICALLY: an unchanged resume of a buffer that happened to freeze on a space is not a
+    human edit (no span, no edit record), and the spans still tile the text exactly."""
+    import nodes.answer_gate as gate
+
+    monkeypatch.setattr(gate, "interrupt", lambda payload: True)
+    out = gate.answer_gate_node(_frozen_state("draft answer so far   \t"))
+    buf = out["answer_buffer"]
+    assert buf["text"] == "draft answer so far"
+    assert not buf["edited"] and not buf["edits"] and not provenance.human_spans(buf)
+    assert buf["spans"][-1]["end"] == len(buf["text"])
+
+    # A newline tail is kept (a paragraph break is a legitimate continuation point).
+    out = gate.answer_gate_node(_frozen_state("para one.\n\n"))
+    assert out["answer_buffer"]["text"] == "para one.\n\n"
+
+    # A human edit ending in a space: the typed span is trimmed with the text.
+    monkeypatch.setattr(gate, "interrupt",
+                        lambda payload: {"action": "resume", "text": "draft answer FIXED "})
+    out = gate.answer_gate_node(_frozen_state())
+    buf = out["answer_buffer"]
+    assert buf["text"] == "draft answer FIXED" and buf["edited"]
+    assert provenance.human_spans(buf) == [(13, 18)]
+    assert buf["spans"][-1]["end"] == len(buf["text"])
+
+    # `done` finalizes the text as typed — no generation follows, nothing to strip for.
+    monkeypatch.setattr(gate, "interrupt", lambda payload: {"action": "done", "text": "keep  "})
+    out = gate.answer_gate_node(_frozen_state())
+    assert out["answer_buffer"]["text"] == "keep  "
+
+
+def test_provenance_rstrip_trailing_keeps_spans_tiling():
+    buf = provenance.append_model(provenance.new_buffer(), "abc ")
+    buf = provenance.apply_edit(buf, "abc  xyz \t")
+    out = provenance.rstrip_trailing(buf)
+    assert out["text"] == "abc  xyz"
+    assert out["spans"][-1]["end"] == len(out["text"])
+    # an all-whitespace trailing span disappears rather than surviving as an empty span
+    buf2 = provenance.apply_edit(provenance.append_model(provenance.new_buffer(), "abc"), "abc   ")
+    out2 = provenance.rstrip_trailing(buf2)
+    assert out2["text"] == "abc" and all(sp["end"] > sp["start"] for sp in out2["spans"])
+    # immutability: the input buffer is untouched
+    assert buf["text"] == "abc  xyz \t"
+
+
 # --- synthesize routing + the no-generation finalize path -------------------------------------------
 
 def test_route_after_synthesize():

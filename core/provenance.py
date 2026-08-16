@@ -175,6 +175,34 @@ def apply_edit(buf: dict, new_text: str) -> dict:
     return {**buf, "text": new_text, "spans": _merged(spans), "edits": edits, "confidence": conf}
 
 
+def rstrip_trailing(buf: dict, chars: str = " \t") -> dict:
+    """A new buffer with trailing `chars` (spaces/tabs by default — newlines KEPT) removed from
+    the text, the spans and confidence overlay clamped to the new length so they still tile the
+    text exactly, and an all-whitespace trailing span dropped rather than surviving empty. A
+    MECHANICAL trim: no human span, no edit record — this is not an edit, it is the transport's
+    tokenizer hygiene (transplanted from the token_steering isolate: BPE tokens carry their
+    LEADING space, so a prefix ending in a space is a tail the model never produces and the
+    daemon has no token healing). A no-op returns a plain copy."""
+    text = buf.get("text", "")
+    new_text = text.rstrip(chars)
+    if new_text == text:
+        return dict(buf)
+    n = len(new_text)
+    spans = []
+    for sp in buf.get("spans") or []:
+        start, end = int(sp.get("start", 0)), int(sp.get("end", 0))
+        if start >= n:
+            continue
+        spans.append({**sp, "start": start, "end": min(end, n)})
+    conf = []
+    for c in buf.get("confidence") or []:
+        cs, ce = int(c.get("start", 0)), int(c.get("end", 0))
+        if cs >= n:
+            continue
+        conf.append({**c, "start": cs, "end": min(ce, n)})
+    return {**buf, "text": new_text, "spans": spans, "confidence": conf}
+
+
 def human_spans(buf: dict) -> list[tuple[int, int]]:
     """The human-authored character ranges, for display marking and the audit record."""
     return [

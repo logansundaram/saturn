@@ -54,6 +54,13 @@ def answer_gate_node(state: AgentState):
             text = decision["text"]
 
     edited = provenance.apply_edit(buf, text)
+    if action != "done":
+        # The resume prefix is rstripped of spaces/tabs (newlines kept) BEFORE the continuation
+        # sees it — mechanically, after the human edit is recorded, so an unchanged resume of a
+        # buffer that froze on a space is not misattributed as an edit (transplanted from the
+        # token_steering isolate: a trailing space is a BPE tail the model never produces, and
+        # the daemon has no token healing). `done` finalizes the text exactly as typed.
+        edited = provenance.rstrip_trailing(edited)
     return {
         "answer_buffer": {
             **edited,

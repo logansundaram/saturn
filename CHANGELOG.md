@@ -116,6 +116,10 @@ to learn, audit, and maintain — none removes a protection.
   allowlist should be, a list where the overrides mapping should be) now fails closed like a
   garbled file — strict defaults, recorded at startup, the file kept aside as `.corrupt` —
   instead of being iterated as-is.
+- Confidence marking is steadier: an uncertain run no longer flickers off on one merely-unlikely
+  token (two-threshold hysteresis — `runtime.confidence_exit_threshold`, derived by default),
+  and function words (the, of, is, …) never count toward or break a run — they draw low
+  probability from many valid continuations, not from uncertainty about content.
 - Interrupt-and-correct: pressing Esc mid-word now lets the streaming answer finish the word
   before freezing (a few more tokens at most; a chunk that starts the next word is not kept), so
   the editor opens on a clean boundary and the continuation picks up naturally — press Esc a

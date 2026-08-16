@@ -95,6 +95,10 @@ runtime:
   # LOWER to mark only the model's wildest guesses (the stricter, quieter default). A run needs
   # 3+ consecutive low tokens — single uncertain tokens (an open word choice) are never marked.
   confidence_threshold: 0.20
+  # Hysteresis: once a run is open it keeps extending through tokens under this LOOSER exit
+  # probability (default: 1.5x the threshold, capped at 0.95) instead of one merely-unlikely
+  # token closing it mid-phrase. Closed-class words (the/of/is/...) are never graded on their own.
+  # confidence_exit_threshold: 0.30
 
 # ---------------------------------------------------------------------------
 # Web tools (tools/web.py). API-less by design (2026-07-06): web_search is keyless DuckDuckGo,

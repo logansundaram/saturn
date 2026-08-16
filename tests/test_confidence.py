@@ -10,6 +10,7 @@ plumbing that carries the overlay. Nothing here calls an LLM or the network; the
 (a daemon actually answering logprobs on both paths) belongs to utilities/continuation_contract.
 """
 
+import math
 from types import SimpleNamespace
 
 from core import confidence, provenance
@@ -322,3 +323,61 @@ def test_answer_gate_payload_carries_the_overlay(monkeypatch):
     )
     assert captured["confidence"] == buf["confidence"]
     assert out["answer_buffer"]["confidence"] == buf["confidence"]
+
+
+# --- hysteresis + the closed-class stoplist (transplanted from the confidence_coloring isolate) ------
+#
+# Two-threshold hysteresis: a run OPENS on tokens under the enter threshold (the min_run onset
+# floor is unchanged) and, once building, EXTENDS through tokens under the looser exit threshold
+# instead of one p=0.21 token closing it mid-phrase. Closed-class words (the, of, is, …) draw low
+# mass from many valid continuations, so they are NEUTRAL like punctuation: they ride along a run
+# without counting toward the floor or breaking it, and never form a run on their own.
+
+MID = math.log(0.25)  # above enter=0.20, below the default exit (0.30)
+
+
+def test_hysteresis_extends_an_open_run_through_a_mid_token():
+    text = "aa bb cc dd ee"
+    ents = _entries(text, [("aa", LOW), (" bb", LOW), (" cc", LOW), (" dd", MID), (" ee", LOW)])
+    # Without hysteresis: [aa..cc] then a lone ee (< min_run) — the phrase is cut at dd.
+    assert confidence.low_runs(ents, text, threshold_p=0.20, exit_p=0.20) == [(0, 8)]
+    # With the exit threshold, dd rides along and ee joins the run.
+    assert confidence.low_runs(ents, text, threshold_p=0.20, exit_p=0.30) == [(0, 14)]
+
+
+def test_hysteresis_never_opens_a_run_by_itself():
+    text = "aa bb cc"
+    ents = _entries(text, [("aa", MID), (" bb", MID), (" cc", MID)])
+    assert confidence.low_runs(ents, text, threshold_p=0.20, exit_p=0.30) == []
+
+
+def test_default_exit_threshold_is_looser_than_enter_and_bounded():
+    assert confidence.exit_threshold(0.20) > 0.20
+    assert confidence.exit_threshold(0.90) <= 0.95
+    assert confidence.exit_threshold(0.0) == 0.0
+
+
+def test_stopwords_are_neutral_bridges():
+    text = "aa the bb of cc"
+    ents = _entries(text, [("aa", LOW), (" the", HIGH), (" bb", LOW), (" of", HIGH), (" cc", LOW)])
+    assert confidence.low_runs(ents, text, threshold_p=0.35) == [(0, 15)]
+    # …but stopwords alone never form a run, however unlikely the model found them.
+    text2 = "the of and"
+    ents2 = _entries(text2, [("the", LOW), (" of", LOW), (" and", LOW)])
+    assert confidence.low_runs(ents2, text2, threshold_p=0.35) == []
+
+
+def test_stopword_match_is_casefolded_and_punctuation_trimmed():
+    assert confidence.is_stopword(" The")
+    assert confidence.is_stopword("(and")
+    assert confidence.is_stopword("'s")
+    assert confidence.is_stopword(" it's")
+    assert not confidence.is_stopword(" theory")
+    assert not confidence.is_stopword("Paris")
+
+
+def test_a_content_high_token_still_breaks_the_run():
+    text = "aa bb Paris cc dd ee"
+    ents = _entries(text, [("aa", LOW), (" bb", LOW), (" Paris", HIGH),
+                           (" cc", LOW), (" dd", LOW), (" ee", LOW)])
+    assert confidence.low_runs(ents, text, threshold_p=0.35) == [(12, 20)]

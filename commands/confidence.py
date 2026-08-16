@@ -34,6 +34,29 @@ def _active_model() -> str:
     return confidence._synthesizer_model()
 
 
+def _shipped_row(model: str) -> "dict | None":
+    """The shipped table's record for `model` (the baseline the wheel carries), or None."""
+    from core import confidence_calibration as table
+
+    try:
+        return table.CALIBRATION.get(str(model or "").lower()) or None
+    except Exception:
+        return None
+
+
+def _is_estimated(rec) -> bool:
+    """Whether a calibration record is an ESTIMATE rather than a measurement — the shipped
+    table's `source: 'estimated'` marker (see core/confidence_calibration's docstring), or an
+    older row carrying the pre-2026-08-16 `inherited_from` key. Estimated numbers must never be
+    reported as measured: "worse than 95 % of THIS model's clean output" is only true for a
+    model that was actually measured."""
+    if not isinstance(rec, dict):
+        return False
+    if str(rec.get("source", "")).strip().lower() == "estimated":
+        return True
+    return bool(rec.get("estimated_from") or rec.get("inherited_from"))
+
+
 def _source_of(model: str) -> str:
     """Where the live thresholds come from, for the status line."""
     from core import confidence, confidence_store
@@ -43,11 +66,48 @@ def _source_of(model: str) -> str:
     rec = confidence_store.entry_for(model)
     if rec:
         return f"{rec.get('source', 'overlay')} · {rec.get('at', '')}".strip(" ·")
-    from core import confidence_calibration as table
-
-    if table.CALIBRATION.get(str(model or "").lower()):
-        return "shipped calibration"
+    shipped = _shipped_row(model)
+    if shipped:
+        return "shipped calibration" + (" (estimated)" if _is_estimated(shipped) else "")
     return "built-in default (uncalibrated model)"
+
+
+def _provenance_lines(model: str) -> list:
+    """How the live numbers were ARRIVED AT — measured (over how many tokens, and when) or
+    estimated (and from what). Covers the shipped table as well as the user overlay: a shipped
+    row used to report nothing at all, so an estimate read exactly like a measurement."""
+    from core import confidence, confidence_store
+
+    if confidence._configured_threshold() is not None:
+        return ["  pinned     runtime.confidence_threshold overrides every calibration."]
+
+    rec = confidence_store.entry_for(model)
+    if rec is None:
+        rec = _shipped_row(model)
+    if not rec:
+        return ["  ! no calibration for this model — the built-in default applies, so a mark is "
+                "not a per-model claim."]
+
+    if str(rec.get("source", "")).strip().lower() == "manual":
+        return ["  typed      your own values (/confidence set) — not a measurement."]
+
+    if _is_estimated(rec):
+        basis = str(rec.get("estimated_from") or rec.get("inherited_from") or "").strip()
+        out = ["  estimated  these thresholds are a best-guess ESTIMATE, not a measurement of "
+               "this model."]
+        if basis:
+            out.append(f"             from: {basis}")
+        out.append("             `/confidence tune` replaces them with a real measurement once "
+                   "your daemon")
+        out.append("             returns per-token logprobs for this model.")
+        return out
+
+    tokens = rec.get("tokens", 0)
+    if not tokens:
+        return ["  measured   (no sample size recorded)"]
+    at = str(rec.get("at", "")).strip()
+    return [f"  measured   {tokens} tokens over {rec.get('prompts', 0)} prompts"
+            + (f", {at}" if at else "")]
 
 
 def _status() -> None:
@@ -63,10 +123,9 @@ def _status() -> None:
     _print(f"  enter      {confidence.threshold():.4f}   (a run opens below this probability)")
     _print(f"  exit       {confidence.exit_threshold():.4f}   (an open run extends below this)")
     _print(f"  source     {_source_of(model)}")
+    for line in _provenance_lines(model):
+        _print(line)
 
-    rec = confidence_store.entry_for(model)
-    if rec and rec.get("tokens"):
-        _print(f"  measured   {rec['tokens']} tokens over {rec.get('prompts', 0)} prompts")
     problem = confidence_store.load_problem()
     if problem:
         _print(f"  ! {problem}")

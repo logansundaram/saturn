@@ -129,6 +129,14 @@ _EXIT_FACTOR = 1.5
 _EXIT_CAP = 0.95
 
 
+def derive_exit(enter: float) -> float:
+    """The exit threshold DERIVED from an enter threshold (looser by `_EXIT_FACTOR`, capped at
+    `_EXIT_CAP`). THE one home for that derivation: `exit_threshold`'s fallback and
+    `/confidence set`'s omitted-exit branch must never drift apart — a command reaching into
+    the private factor/cap to recompute it by hand is how they would."""
+    return min(_EXIT_CAP, float(enter) * _EXIT_FACTOR)
+
+
 def exit_threshold(enter: "float | None" = None) -> float:
     """The probability under which an already-open run keeps extending (>= the enter threshold).
     Config `runtime.confidence_exit_threshold` wins when set and sane; otherwise derived."""
@@ -149,7 +157,7 @@ def exit_threshold(enter: "float | None" = None) -> float:
                 return float(rec["exit"])
         except (KeyError, TypeError, ValueError):
             pass
-    return min(_EXIT_CAP, th * _EXIT_FACTOR)
+    return derive_exit(th)
 
 
 # Closed-class words are never graded on their own: function words draw low mass from many valid

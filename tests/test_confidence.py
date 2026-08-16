@@ -449,8 +449,12 @@ def test_shipped_calibration_table_is_well_formed():
     for tag, rec in table.CALIBRATION.items():
         assert tag == tag.lower(), tag
         assert 0.0 < rec["enter"] <= rec["exit"] < 1.0, (tag, rec)
-        # measured (tokens > 0) — or explicitly INHERITED from a measured sibling, never silent
-        assert rec["tokens"] > 0 or rec.get("inherited_from") in table.CALIBRATION, (tag, rec)
+        # measured (tokens > 0) — or explicitly marked as an ESTIMATE naming what it came from,
+        # never a silent guess wearing a measurement's clothes.
+        assert rec["tokens"] > 0 or (
+            str(rec.get("source", "")).lower() == "estimated"
+            and str(rec.get("estimated_from", "")).strip()
+        ), (tag, rec)
 
 
 class TestOverlayResolutionOrder:

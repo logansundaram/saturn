@@ -78,6 +78,52 @@ class TestStatus:
         assert "manual" in "\n".join(printed)
 
 
+class TestShippedProvenanceIsHonest:
+    """A shipped row used to render as a bare "shipped calibration" whether it was measured or
+    guessed. An estimate presented as a measurement is the one failure this whole feature
+    exists to prevent, so the status readout must distinguish them."""
+
+    def test_an_estimated_shipped_row_says_so_and_points_at_tune(self, ctx, printed, store,
+                                                                 monkeypatch):
+        from core import confidence, confidence_calibration
+
+        monkeypatch.setattr(confidence, "_synthesizer_model", lambda: "est-model")
+        monkeypatch.setitem(
+            confidence_calibration.CALIBRATION, "est-model",
+            {"enter": 0.2229, "exit": 0.4247, "tokens": 0, "prompts": 0, "at": "2026-08-16",
+             "source": "estimated", "estimated_from": "qwen3.6:27b, a 27.8B sibling"},
+        )
+        _run(ctx, [])
+        blob = "\n".join(printed).lower()
+        assert "estimate" in blob
+        assert "qwen3.6:27b" in "\n".join(printed)       # what it was estimated FROM
+        assert "/confidence tune" in "\n".join(printed)  # how to replace it
+        assert "measured" not in blob                    # never claimed as a measurement
+
+    def test_a_measured_shipped_row_reports_its_sample_and_date(self, ctx, printed, store,
+                                                                monkeypatch):
+        from core import confidence, confidence_calibration
+
+        monkeypatch.setattr(confidence, "_synthesizer_model", lambda: "meas-model")
+        monkeypatch.setitem(
+            confidence_calibration.CALIBRATION, "meas-model",
+            {"enter": 0.2538, "exit": 0.4897, "tokens": 737, "prompts": 55, "at": "2026-08-16"},
+        )
+        _run(ctx, [])
+        blob = "\n".join(printed)
+        assert "measured" in blob.lower()
+        assert "737" in blob and "55" in blob and "2026-08-16" in blob
+        assert "estimate" not in blob.lower()
+
+    def test_the_shipped_qwen38_row_is_disclosed_as_an_estimate(self, ctx, printed, store):
+        """The one shipped estimate today — pinned so a later measurement (or a careless edit)
+        has to update this test deliberately."""
+        _run(ctx, [])                       # the store fixture binds qwen3.8:27b
+        blob = "\n".join(printed)
+        assert "estimate" in blob.lower()
+        assert "/confidence tune" in blob
+
+
 class TestToggle:
     def test_off_then_on(self, ctx, printed, store, monkeypatch):
         from config import get_config

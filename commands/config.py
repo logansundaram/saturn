@@ -4,6 +4,7 @@ from commands._utils import (
     _resync_rag_after_model_change,
     split_persist_flags,
 )
+from core import model_family
 
 _MIN_NUM_CTX = 256  # below this Ollama can't fit the system prompts; reject obvious typos
 
@@ -26,6 +27,15 @@ _TRUST_KEYS = frozenset({
 # explicit null value (cfg.get's None default conflates the two — exactly how a typo'd key used
 # to read back as a success-shaped `= None`).
 _MISSING = object()
+
+
+def _is_role_binding_key(key: str) -> bool:
+    """Whether a dotted key names a CHAT-role model binding (`tiers.<tier>.roles.<role>`) — the
+    keys /models' family gate guards. The EMBEDDER key (`tiers.<tier>.embedder`) is deliberately
+    NOT one of them: it is not a chat model, has no raw-mode template and produces no logprobs,
+    so no calibration claim rides on it (the same exemption _bind makes)."""
+    parts = str(key or "").split(".")
+    return len(parts) == 4 and parts[0] == "tiers" and parts[2] == "roles" and bool(parts[3])
 
 
 def _leaf_keys(node: dict, prefix: str = "") -> list[str]:
@@ -197,6 +207,19 @@ def _config(ctx, args):
         return
 
     value = " ".join(values)
+
+    # The family gate, at the SECOND door (2026-08-16). `/models` refuses a non-family bind; this
+    # setter writes the very same `tiers.<t>.roles.<role>` keys and — unlike the trust keys —
+    # persists by default, so it used to write to config.yaml a binding the product refuses. The
+    # runtime seam still substitutes, so nothing uncalibrated ever ran; but the file then said one
+    # thing while the agent ran another, and the session read the refused value straight back.
+    # ONE message: commands.runtime.print_family_refusal, the same one /models prints.
+    if _is_role_binding_key(key) and not model_family.in_family(value):
+        from commands.runtime import print_family_refusal
+
+        _print(f"  {key} binds a model — nothing set.")
+        print_family_refusal(value)
+        return
 
     # Section guard: a dotted key naming a whole MAPPING must refuse — cfg.set would replace the
     # mapping with a scalar (every `web.*`-style read silently degrades to defaults for the rest

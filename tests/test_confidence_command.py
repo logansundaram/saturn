@@ -261,6 +261,23 @@ class TestTune:
         assert "logprob" in "\n".join(printed).lower()
 
 
+    def test_ctrl_c_cancels_the_tune_without_killing_the_session(self, ctx, printed, store,
+                                                                 monkeypatch):
+        """`tune` is the first command that runs for minutes by design, so Ctrl-C is the
+        expected abort — and KeyboardInterrupt is not an Exception, so neither the dispatcher's
+        catch nor the REPL's command path would keep it from taking the whole session down."""
+        from core import calibration
+
+        def interrupted(*a, **k):
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(calibration, "measure", interrupted)
+        _run(ctx, ["tune"])          # must NOT propagate
+
+        assert store.entry_for("qwen3.8:27b") is None
+        assert "cancelled" in "\n".join(printed).lower()
+
+
 class TestUnknownSubcommand:
     def test_unknown_subcommand_errors_with_usage(self, ctx, printed, store):
         _run(ctx, ["tunne"])

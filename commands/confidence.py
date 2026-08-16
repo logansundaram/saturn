@@ -210,6 +210,14 @@ def _tune(args: list) -> None:
 
     try:
         result = calibration.measure(model, prompts, on_progress=_progress)
+    except KeyboardInterrupt:
+        # `tune` is the first command that runs for MINUTES by design, so Ctrl-C is the expected
+        # abort — and KeyboardInterrupt is not an Exception, so neither the dispatcher's catch
+        # (commands/_framework) nor the REPL's command path would stop it from killing the whole
+        # session. Catch it here, at the one long-running call, and write nothing.
+        _print("  cancelled — nothing written.")
+        _print("  the previous thresholds still apply.")
+        return
     except Exception as exc:
         _print(f"  calibration failed: {exc}")
         _print("  nothing was written — the previous thresholds still apply.")

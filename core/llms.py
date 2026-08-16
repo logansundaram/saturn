@@ -393,6 +393,25 @@ def _model_present(required: str, have: set[str]) -> bool:
     return _norm(required) in {_norm(h) for h in have}
 
 
+def _rebind_hint(replacement: str = "") -> str:
+    """How to make a substitution permanent, for THIS config.yaml. `/models tier <size>` only
+    works when the file's tiers ARE the size classes — and the population that sees a migration
+    warning is precisely the one upgrading from laptop/workstation/bench-coder, whose tiers are
+    not. Pointing them at a command that answers "unknown tier" is a dead end, so a legacy-tier
+    config is pointed at the bind that does work on any tier name (2026-08-16)."""
+    from core import model_family
+
+    try:
+        tiers = list(get_config().get("tiers", {}) or {})
+    except Exception:
+        tiers = []
+    if any(t in model_family.classes() for t in tiers):
+        return "`/models tier <size>` (see /models tier for the list)"
+    example = replacement or model_family.tag_for(model_family.DEFAULT_CLASS)
+    return (f"`/models all {example}` — this config's tier names predate the size-class ladder, "
+            f"so there is no `<size>` tier to switch to")
+
+
 def _migration_problems() -> list[str]:
     """One health line per family substitution made this session. Kept separate from
     check_models so it is unit-testable without a daemon."""
@@ -404,7 +423,7 @@ def _migration_problems() -> list[str]:
             f"'{original}' is outside the supported model family and is running as "
             f"'{replacement}' — confidence coloring is calibrated per model, so only the "
             f"qwen3.5/3.6/3.8 family is supported. config.yaml was NOT changed; make it "
-            f"permanent with `/models tier <size>` (see /models tier for the list)"
+            f"permanent with {_rebind_hint(replacement)}"
         )
     return out
 

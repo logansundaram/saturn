@@ -1,4 +1,6 @@
-"""The measurement core behind /confidence tune — pure parts only, no daemon."""
+"""The measurement core behind /confidence tune — offline: the daemon is faked, never called."""
+
+import math
 
 import pytest
 
@@ -87,3 +89,117 @@ class TestShippedTable:
                 continue
             assert str(rec.get("source", "")).lower() == "estimated", tag
             assert str(rec.get("estimated_from", "")).strip(), tag
+
+
+# ── measure(): the only new logic that decides a threshold ───────────────────────────────────
+# Every other test monkeypatches it away, which left the load-bearing line — the isalnum /
+# is_stopword filter that must MIRROR core/confidence.low_runs — with no guard at all. The
+# "measured under main's own scoring unit" claim rests entirely on it, and it can drift silently.
+
+class _Chunk:
+    """One streamed chunk as langchain_ollama yields it: text + the daemon's logprob entries."""
+
+    def __init__(self, content, tokens=None):
+        self.content = content
+        self.response_metadata = {}
+        if tokens:
+            self.response_metadata["logprobs"] = [
+                {"token": tok, "logprob": lp} for tok, lp in tokens
+            ]
+
+
+@pytest.fixture
+def daemon(monkeypatch):
+    """A fake Ollama: `stream` replays scripted chunks per prompt, `_build` returns a stub."""
+    from core import llms
+    from trust import egress
+
+    monkeypatch.setattr(egress, "ollama_is_local", lambda: True)
+    monkeypatch.setattr(egress, "airgap_on", lambda: False)
+    monkeypatch.setattr(llms, "_build", lambda provider, tag: object())
+
+    script = {"chunks": [], "calls": [], "kwargs": []}
+
+    def fake_stream(model, messages, *, tag="", **kwargs):
+        script["calls"].append(messages)
+        script["kwargs"].append(kwargs)
+        return iter(script["chunks"])
+
+    monkeypatch.setattr(llms, "stream", fake_stream)
+    return script
+
+
+class TestMeasure:
+    # "Paris is the capital." split over two chunks; the second chunk's entries are only at the
+    # right character offsets because measure passes offset=len(text) into align_chunk.
+    _CHUNKS = [
+        _Chunk("Paris is", [("Paris", -0.5), (" is", -4.0)]),
+        _Chunk(" the capital.", [(" the", -3.0), (" capital", 0.25), (".", -6.0)]),
+    ]
+
+    def test_scores_only_the_tokens_low_runs_would_grade(self, daemon):
+        """The filter must mirror core/confidence.low_runs exactly: punctuation-only tokens and
+        closed-class stopwords are neutral there, so they are neutral here too. 'is'/'the' are
+        stopwords and '.' has no alnum — only 'Paris' and 'capital' are content."""
+        daemon["chunks"] = self._CHUNKS
+        out = calibration.measure("fake:1b", ["q"])
+
+        assert out["tokens"] == 2
+        assert out["prompts"] == 1
+
+    def test_offsets_are_global_not_chunk_relative(self, daemon):
+        """A second chunk aligned at offset 0 would slice 'Pari' / 's is the' out of the text —
+        different tokens, a different filter verdict, and probabilities attributed to the wrong
+        words. The exact quantiles pin the two tokens that survived."""
+        daemon["chunks"] = self._CHUNKS
+        out = calibration.measure("fake:1b", ["q"])
+
+        # ps = [exp(-0.5) for "Paris", 1.0 for " capital"]; p05 and p10 of a 2-sample both land
+        # on the lower one.
+        assert out["enter"] == round(math.exp(-0.5), 4)
+        assert out["exit"] == round(math.exp(-0.5), 4)
+
+    def test_a_positive_logprob_is_clamped_to_probability_one(self, daemon):
+        """math.exp(min(logprob, 0.0)): daemons do emit tiny positive logprobs, and exp() of one
+        is > 1 — a "probability" above certainty would drag a quantile upward."""
+        daemon["chunks"] = [_Chunk("Paris", [("Paris", 0.25)])]
+        out = calibration.measure("fake:1b", ["q"])
+
+        assert out["tokens"] == 1
+        assert out["enter"] == 1.0          # not exp(0.25) == 1.284
+
+    def test_a_chunk_without_logprobs_contributes_nothing(self, daemon):
+        daemon["chunks"] = [_Chunk("Paris is the capital.")]
+        out = calibration.measure("fake:1b", ["q"])
+
+        assert out["tokens"] == 0
+
+    def test_on_progress_reports_the_per_prompt_delta(self, daemon):
+        daemon["chunks"] = self._CHUNKS
+        seen = []
+        calibration.measure("fake:1b", ["q1", "q2"], on_progress=lambda *a: seen.append(a))
+
+        # Each prompt replays the same script, so each adds the same 2 content tokens — the
+        # 4th field is the DELTA, not the running total.
+        assert seen == [(1, 2, "q1", 2), (2, 2, "q2", 2)]
+
+    def test_it_asks_the_daemon_for_per_token_logprobs(self, daemon):
+        daemon["chunks"] = self._CHUNKS
+        calibration.measure("fake:1b", ["q"])
+
+        assert daemon["kwargs"][0]["logprobs"] is True
+        assert daemon["kwargs"][0]["reasoning"] is False   # a rationale is not answer prose
+
+    def test_the_air_gap_refuses_an_off_machine_daemon(self, monkeypatch):
+        """The measurement streams through core.llms' Ollama boundary; with the seal on and
+        OLLAMA_HOST off-machine it must refuse BEFORE building a model, not leak the prompts."""
+        from core import llms
+        from trust import egress
+
+        monkeypatch.setattr(egress, "ollama_is_local", lambda: False)
+        monkeypatch.setattr(egress, "airgap_on", lambda: True)
+        monkeypatch.setattr(llms, "_build",
+                            lambda *a, **k: pytest.fail("built a model past the air-gap"))
+
+        with pytest.raises(RuntimeError, match="air-gap"):
+            calibration.measure("fake:1b", ["q"])

@@ -35,16 +35,23 @@ from core import model_family  # stdlib-only leaf: importing it keeps config's n
 # `runtime.auto_approve` tier.
 RISK_ORDER = ["read_only", "side_effecting", "destructive"]
 
-# Non-family chat bindings substituted THIS SESSION: original id -> replacement id. Populated by
-# model_for_role, read by llms.check_models and /models so no readout claims the file's value is
-# what is running. In-memory only — config.yaml is NEVER rewritten by the migration path
-# (rebinding with /models tier <class> is the permanent fix).
-_MIGRATIONS: dict[str, str] = {}
+# Non-family chat bindings being substituted RIGHT NOW: role -> (original id, replacement id).
+# Populated by model_for_role, read by llms.check_models and /models so no readout claims the
+# file's value is what is running. In-memory only — config.yaml is NEVER rewritten by the
+# migration path (rebinding is the permanent fix).
+#
+# Keyed by ROLE, not by original id, since 2026-08-16: this is CURRENT STATE, not history. An
+# append-only log kept every readout asserting "'gemma4:e4b' in config.yaml is running as
+# 'qwen3.5:4b'" for the rest of the session after the user had already fixed the binding — a
+# false claim about the file, from the surface whose entire job is to keep the file and the
+# running agent from diverging silently. A role that next resolves in-family drops its entry.
+_MIGRATIONS: dict[str, tuple] = {}
 
 
 def migrated_bindings() -> dict:
-    """A copy of this session's family substitutions (original id -> replacement id)."""
-    return dict(_MIGRATIONS)
+    """The family substitutions in force right now (original id -> replacement id). Empty once
+    every role resolves in-family again."""
+    return {original: replacement for original, replacement in _MIGRATIONS.values()}
 
 
 def clear_migrations() -> None:
@@ -178,7 +185,7 @@ class Config:
             )
         return tier
 
-    def _enforce_family(self, spec: "ModelSpec") -> "ModelSpec":
+    def _enforce_family(self, spec: "ModelSpec", role: str) -> "ModelSpec":
         """Substitute a non-family CHAT binding with the ladder tag for its nearest size class,
         and record the substitution. Saturday.ai supports one family (core/model_family) because
         confidence coloring is calibrated per model; a binding outside it would be marked against
@@ -186,11 +193,15 @@ class Config:
 
         A non-ollama binding is left alone — the cloud-model shelve (2026-07-03) owns that
         refusal, and quietly rewriting it would hide the real problem. The embedder never reaches
-        here (embedder_model is its own accessor)."""
+        here (embedder_model is its own accessor).
+
+        The record is per ROLE and is CLEARED when that role resolves in-family again, so a
+        binding the user has since fixed stops being reported (see _MIGRATIONS)."""
         if spec.provider != "ollama" or model_family.in_family(spec.model):
+            _MIGRATIONS.pop(role, None)
             return spec
         replacement = model_family.tag_for(model_family.migrate(spec.model))
-        _MIGRATIONS[spec.model] = replacement
+        _MIGRATIONS[role] = (spec.model, replacement)
         return ModelSpec(provider=spec.provider, model=replacement)
 
     def model_for_role(self, role: str) -> ModelSpec:
@@ -213,10 +224,10 @@ class Config:
                     f"'model' key: {entry!r}"
                 )
             return self._enforce_family(
-                ModelSpec(provider=entry.get("provider", default_provider), model=model)
+                ModelSpec(provider=entry.get("provider", default_provider), model=model), role
             )
         return self._enforce_family(
-            ModelSpec(provider=default_provider, model=str(entry))
+            ModelSpec(provider=default_provider, model=str(entry)), role
         )
 
     @property

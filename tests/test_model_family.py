@@ -112,6 +112,13 @@ class TestConfigMigrationSeam:
 
         config.clear_migrations()
 
+    def teardown_method(self):
+        # _MIGRATIONS is a module-level singleton: without this, a recorded substitution leaks
+        # into every later test FILE (llms.check_models and /models both read it).
+        import config
+
+        config.clear_migrations()
+
     def test_family_binding_passes_through_untouched(self):
         import config
 
@@ -128,6 +135,37 @@ class TestConfigMigrationSeam:
         import config
 
         self._cfg("qwen3-coder:30b").model_for_role("synthesizer")
+        assert config.migrated_bindings() == {"qwen3-coder:30b": "qwen3.8:27b"}
+
+    def test_a_fixed_binding_stops_being_reported(self):
+        """migrated_bindings() is CURRENT STATE, not history. An append-only ledger kept every
+        readout claiming "'gemma4:e4b' in config.yaml is running as 'qwen3.5:4b'" for the rest
+        of the session after the user had already rebound it — a false claim about the file."""
+        import config
+
+        cfg = self._cfg("gemma4:e4b")
+        cfg.model_for_role("synthesizer")
+        assert config.migrated_bindings() == {"gemma4:e4b": "qwen3.5:4b"}
+
+        cfg.set("tiers.t.roles.synthesizer", "qwen3.5:9b")   # the user fixes the binding
+        assert cfg.model_for_role("synthesizer").model == "qwen3.5:9b"
+        assert config.migrated_bindings() == {}
+
+    def test_one_fixed_role_does_not_clear_another_still_diverging(self):
+        import config
+        from config import Config
+
+        cfg = Config({
+            "active_tier": "t",
+            "tiers": {"t": {"provider": "ollama", "roles": {
+                "planner": "gemma4:e4b", "synthesizer": "qwen3-coder:30b",
+            }}},
+        })
+        cfg.model_for_role("planner")
+        cfg.model_for_role("synthesizer")
+        cfg.set("tiers.t.roles.planner", "qwen3.5:4b")
+        cfg.model_for_role("planner")
+
         assert config.migrated_bindings() == {"qwen3-coder:30b": "qwen3.8:27b"}
 
     def test_a_non_ollama_binding_is_left_for_the_cloud_shelve_refusal(self):

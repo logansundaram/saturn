@@ -41,10 +41,13 @@ from core.plan_context import (
     authorization_basis,
     clean,
     exec_context,
+    is_revoked,
     original_request,
+    request_authorized,
     results_block,
     steps_before,
 )
+from core.plan_ops import retirement_text
 from core.state import AgentState
 from core.structured import (
     WriteGate,
@@ -96,6 +99,16 @@ WRITE_GATE_SKIP_PREFIX = "skipped write:"
 # a small model substitutes a possible one (measured: "Send an email to Petra" came back writing
 # email_to_petra.txt and claiming it sent) — so it takes the guarded posture, `skipped`, and the
 # run reports it. One producer (this prefix), one parser (rectify 4a).
+# The plan-review revocation lock's refusal (from the engine isolate): stamped through
+# core.plan_ops.retirement_text so the result ends with the review stamp — which is what tells
+# rectify this is the user's SINGLE-STEP veto ("skip this one, continue the rest") rather than a
+# guard rejection that ends the run.
+_REVOKED_REASON = "the user removed this action at the plan-review prompt"
+
+# The effect-authorization refusal: a step redrafted after results existed acts on something the
+# user's own words never named. `blocked` — a guarded outcome, so rectify cancels the rest.
+UNAUTHORIZED_PREFIX = "blocked: unauthorized effect —"
+
 ASK_GATE_PREFIX = "error: ask_user was not executed:"
 MAX_ASKS_PER_TURN = 1
 
@@ -394,6 +407,15 @@ def execute_node(state: AgentState):
         diag.log(f"execute_node : {time.perf_counter() - start:.4f}s (reasoning step)")
         return updates
 
+    # The plan-review revocation lock, first pass: the step's own description already names a
+    # target the user removed at review, so refuse before spending a generation on it.
+    revoked = state.get("revoked_writes") or []
+    if is_revoked(revoked, tool_name, step.get("label")):
+        step["result"] = retirement_text("skipped", _REVOKED_REASON)
+        step["status"] = "skipped"
+        diag.log(f"execute_node : {time.perf_counter() - start:.4f}s (revoked at review: label)")
+        return updates
+
     # An `ask_user` step faces the ask gate BEFORE a call is generated: a question the engine
     # could have answered for itself, one past this turn's budget, or one nothing can consume.
     # The gate returns the status too — see `_ask_gate` for why that choice is the mechanism.
@@ -424,6 +446,31 @@ def execute_node(state: AgentState):
         step["status"] = "error"
         updates.update(_metrics(resp))
         diag.log(f"execute_node : {time.perf_counter() - start:.4f}s (no call: {failure!r:.80})")
+        return updates
+
+    # The revocation lock, second pass — and THE guarantee. The label check above is only an
+    # optimization: a redraft can drop the filename from its description and still generate a
+    # call whose arguments target the revoked path. This reads the ARGUMENTS, i.e. the actual
+    # effect, at the last point before it is emitted for approval and execution.
+    arg_texts = [str(v) for v in (args or {}).values()]
+    if is_revoked(revoked, tool_name, step.get("label"), *arg_texts):
+        step["result"] = retirement_text("skipped", _REVOKED_REASON)
+        step["status"] = "skipped"
+        diag.log(f"execute_node : {time.perf_counter() - start:.4f}s (revoked at review: args)")
+        return updates
+
+    # EFFECT AUTHORIZATION, on the arguments, at the same last-possible point: a step drafted by
+    # replan after results existed may have been written BY those results (a file's contents
+    # turned into `write_file breach_marker.txt`). replan pre-filters on the description; the
+    # arguments are the effect. Results may inform HOW, never WHAT.
+    if not request_authorized(state, step, *arg_texts):
+        step["result"] = (
+            f"{UNAUTHORIZED_PREFIX} this step was added after the results came back and it acts "
+            "on something the request never named. Results may inform HOW the request is "
+            "carried out, never WHAT is done to the workspace."
+        )
+        step["status"] = "blocked"
+        diag.log(f"execute_node : {time.perf_counter() - start:.4f}s (unauthorized effect)")
         return updates
 
     # The stall detector: the same call with the same arguments, already executed STALL_REPEATS

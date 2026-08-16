@@ -35,20 +35,19 @@ so the pause decision evaluates the same both times.
 from langchain.messages import HumanMessage
 from langgraph.types import interrupt
 
+from core.plan_context import REVOKE_ALL, revoked_targets, target_tokens
 from core.state import AgentState, current_step, STEER_PREFIX
 from core.plan_ops import get_pause_controller, is_review_retirement
 
 
-def _review_vetoes(before: list, after: list) -> list:
-    """Labels of un-run steps the user's review edit removed (`drop`) or retired (the editor's
-    `status` verb → skipped/cancelled/blocked, carrying plan_ops' review stamp). These are the
-    human's explicit "do not do this" — recorded onto state["plan_vetoes"] so the engine's
-    self-correction (rectify's judge, replan) can never reinstate the work; the human's edit
-    outranks the judge, the same principle as the gate's guarded outcome.
-
-    Matching is by label: a step the user merely RELABELED reads as a veto of the old wording,
-    which is benign — the reworded step is still in the plan and runs; the note only tells the
-    engine not to resurrect the wording the user rewrote."""
+def _removed_steps(before: list, after: list) -> list:
+    """The un-run STEPS the user's review edit removed (`drop`) or retired (the editor's `status`
+    verb → skipped/cancelled/blocked, carrying plan_ops' review stamp) — the human's explicit "do
+    not do this". Returns the step dicts because the veto is recorded twice from them:
+    `plan_vetoes` takes the LABEL (the prompts + display), `revoked_writes` takes the TARGETS
+    (what survives a redraft rewording the label). Matching is by label: a step the user merely
+    RELABELED reads as a veto of the old wording, which is benign for the label half (the
+    reworded step still runs) — see `_effect_survives` for the target half."""
     after_labels = {str(s.get("label") or "").strip().lower() for s in after or []}
     before_retired = {
         str(s.get("label") or "").strip().lower()
@@ -56,20 +55,49 @@ def _review_vetoes(before: list, after: list) -> list:
         if is_review_retirement(s)
     }
     out: list = []
+    seen: set = set()
     for s in before or []:
         label = str(s.get("label") or "").strip()
         if s.get("result") is None and label and label.lower() not in after_labels:
-            out.append(label)  # dropped while still un-run (a dropped DONE step is bookkeeping)
+            out.append(s)  # dropped while still un-run (a dropped DONE step is bookkeeping)
+            seen.add(label)
     for s in after or []:
         label = str(s.get("label") or "").strip()
         if (
             is_review_retirement(s)
             and label
             and label.lower() not in before_retired  # only NEWLY retired (re-reviews don't dup)
-            and label not in out
+            and label not in seen
         ):
-            out.append(label)
+            out.append(s)
+            seen.add(label)
     return out
+
+
+def _review_vetoes(before: list, after: list) -> list:
+    """The removed steps' labels — the label view of `_removed_steps` (recorded onto
+    state["plan_vetoes"] so rectify's judge, replan and synthesize can never reinstate the work;
+    the human's edit outranks the judge, the same principle as the gate's guarded outcome)."""
+    return [str(s.get("label") or "").strip() for s in _removed_steps(before, after)]
+
+
+def _step_effect(step) -> "tuple[str, set]":
+    """A step's effect as (tool, targets) — what it would DO, independent of wording."""
+    return (step.get("intended_tool"), target_tokens(step.get("label")) or {REVOKE_ALL})
+
+
+def _effect_survives(step, after: list) -> bool:
+    """Whether the EFFECT of `step` is still pending in the edited plan under other wording. A
+    relabeled step reads as removed by label; revoking its target would make execute refuse the
+    very step the user was refining — an effect the edited plan still intends was not revoked."""
+    tool, targets = _step_effect(step)
+    for s in after or []:
+        if s.get("result") is not None:
+            continue
+        other_tool, other_targets = _step_effect(s)
+        if other_tool == tool and targets & other_targets:
+            return True
+    return False
 
 
 def plan_gate_node(state: AgentState):
@@ -141,10 +169,24 @@ def plan_gate_node(state: AgentState):
             updates["plan"] = edited
             # Record what the user REMOVED as vetoes (read-merge-write; only this node writes
             # the field) so rectify/replan/synthesize treat it as deliberately out of scope.
-            vetoes = _review_vetoes(plan, edited)
+            removed = _removed_steps(plan, edited)
+            vetoes = [str(s.get("label") or "").strip() for s in removed]
+            vetoes = [v for v in vetoes if v]
             if vetoes:
                 existing = list(state.get("plan_vetoes") or [])
                 updates["plan_vetoes"] = existing + [v for v in vetoes if v not in existing]
+            # The EFFECT-typed half of the veto (2026-08-15, from the engine isolate): the
+            # target is what the user actually revoked, and `execute` refuses any state-changing
+            # action that lands on one for the rest of the turn. A step whose effect is still
+            # pending under different wording was RELABELED, not revoked.
+            targets: list = []
+            for s in removed:
+                if _effect_survives(s, edited):
+                    continue
+                targets += sorted(revoked_targets(s))
+            if targets:
+                known = list(state.get("revoked_writes") or [])
+                updates["revoked_writes"] = known + [t for t in targets if t not in known]
         if review.get("action") == "abort":
             updates["aborted"] = True
     # A non-dict resume value (e.g. a bare True from an auto-approver that never expected this

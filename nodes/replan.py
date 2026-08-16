@@ -19,9 +19,16 @@ import diag
 from langchain.messages import HumanMessage
 
 from core.messages import planner_sys_msg
-from core.plan_context import original_request, plan_txt, vetoes_block
+from core.plan_context import (
+    ORIGIN_REPLAN,
+    is_revoked,
+    original_request,
+    plan_txt,
+    request_authorized,
+    vetoes_block,
+)
 from core.state import AgentState
-from nodes.rectify import retryable_dead_end
+from nodes.rectify import MAX_REPLANS, retryable_dead_end
 from core.structured import (
     _PlanOut,
     PLAN_SHAPE,
@@ -111,11 +118,37 @@ def replan_node(state: AgentState):
     # user-removed step VERBATIM drops here (exact label match, case-insensitive); a reworded
     # resurrection is the prompt's job to prevent.
     vetoed = {str(v).strip().lower() for v in state.get("plan_vetoes") or []}
-    new_steps = [
+    fresh = [
         s for s in to_steps(draft)
         if str(s.get("label") or "").strip().lower() not in done_descs
         and str(s.get("label") or "").strip().lower() not in vetoed
     ]
+    # The EFFECT-typed backstop for the reworded resurrection the label match misses (2026-08-15,
+    # from the engine isolate). A cheap pre-filter, not the guarantee: `execute` refuses a
+    # revoked action on its generated ARGUMENTS; dropping it here spares a replan cycle.
+    revoked = state.get("revoked_writes") or []
+    new_steps = [
+        s for s in fresh if not is_revoked(revoked, s.get("intended_tool"), s.get("label"))
+    ]
+    # EFFECT AUTHORIZATION: this redraft's prompt contains plan_txt, and plan_txt contains the
+    # RESULTS — anything a file or a web page says can appear here as a proposed step. Every
+    # step drafted while results exist is stamped origin=replan, and a state-changing one is
+    # dropped unless the USER'S words name its target (execute re-checks on the arguments).
+    if done:
+        for s in new_steps:
+            s["origin"] = ORIGIN_REPLAN
+        new_steps = [s for s in new_steps if request_authorized(state, s)]
+
+    if fresh and not new_steps:
+        # The redraft was ENTIRELY revoked/unauthorized work: another cycle can only produce it
+        # again (rectify sees the same plan and asks for the same missing write). Consuming the
+        # budget lands the turn at an honest synthesize NOW — the refused step is already a
+        # disclosed incident, and the plan-review note tells the answer to describe it as
+        # removed at the user's request.
+        diag.log(f"replan_node : {time.perf_counter() - start:.4f}s (redraft wholly revoked)")
+        return {"replans": MAX_REPLANS, "rectify": False,
+                "reasoning": "remaining work revoked or unauthorized"}
+
     if not new_steps:
         # A failed/empty redraft keeps the pending steps as they were — degrading to the old
         # plan beats stranding the turn (and beats silently dropping the remaining work).

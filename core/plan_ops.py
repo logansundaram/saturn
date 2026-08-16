@@ -55,6 +55,10 @@ def normalize(plan: Optional[list[dict]]) -> list[dict]:
                 "needs_resolution": bool(step.get("needs_resolution")),
             }
         )
+        # `origin` (replan's stamp — the effect-authorization rule keys on it) survives a review
+        # edit: a human's edit never launders a redrafted step into an up-front one.
+        if step.get("origin"):
+            out[-1]["origin"] = step.get("origin")
     return out
 
 
@@ -118,9 +122,28 @@ def set_tool(plan: list[dict], step_id: int, tool: Optional[str]) -> list[dict]:
 _REVIEW_STAMP_SUFFIX = "at plan review — the step did not run"
 
 
+def retirement_text(status: str, reason: str = "") -> str:
+    """THE result text for a step the USER retired — one producer for both ways it happens: the
+    review editor's status verb (`set_status`/`retire_step`) and `nodes/execute`'s revocation
+    refusal (the user removed the effect at review and a later redraft tried to perform it
+    anyway). Both end with `_REVIEW_STAMP_SUFFIX`, which is what tells rectify this is a
+    SINGLE-STEP veto — skip this one, continue the rest — rather than a guard rejection ending
+    the run."""
+    detail = f": {reason} —" if reason else ""
+    return f"marked {status}{detail} {_REVIEW_STAMP_SUFFIX}"
+
+
 def review_stamp(status: str) -> str:
     """The result text stamped onto a step the user retired at the plan-review editor."""
-    return f"marked {status} {_REVIEW_STAMP_SUFFIX}"
+    return retirement_text(status)
+
+
+def retire_step(step: dict, status: str = "skipped") -> dict:
+    """A COPY of `step` retired at the user's request (status + the review stamp as result)."""
+    out = dict(step)
+    out["status"] = status
+    out["result"] = retirement_text(status)
+    return out
 
 
 def is_review_retirement(step) -> bool:

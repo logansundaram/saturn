@@ -165,6 +165,7 @@ def _initial_state() -> AgentState:
         "tool_events": [],
         "gate_events": [],
         "plan_vetoes": [],
+        "revoked_writes": [],
         "answer_buffer": None,
         "tok_per_sec": 0.0,
         "context_tokens": 0,

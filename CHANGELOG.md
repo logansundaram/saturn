@@ -115,6 +115,20 @@ to learn, audit, and maintain — none removes a protection.
 
 ### Fixed
 
+- **Removing a step at plan review now revokes its EFFECT, not just its wording.** The target
+  of a state-changing step you drop or retire at the review editor (the file it names, or every
+  write for a step that names none) is refused for the rest of the turn — checked on the step's
+  description before anything is generated and again on the generated arguments right before
+  the call is emitted, so a redraft cannot re-do the work under a different sentence or a
+  hidden path. Removing a read revokes nothing; a step you merely reworded still runs; the
+  refusal reads as your single-step veto (the rest of the plan continues). Removed steps whose
+  redraft keeps coming back end the turn honestly instead of spending the replan budget.
+- **A step redrafted after results came back may only act on what you asked for.** A
+  state-changing step the engine adds mid-turn (after files or pages have been read) is dropped
+  unless your own words asked for a workspace change and named that target — text inside a
+  file or web page can no longer add a write or a shell command to the plan (checked on the
+  generated arguments; a mid-turn steering correction counts as your words). Steps drafted up
+  front, before anything was read, are exempt.
 - `ask_user` is gated by three deterministic rules before it interrupts you: one question per
   turn; if your request names something the agent can search itself ("search my notes…") it
   searches before asking; and a question whose answer no later step could use is reported in the

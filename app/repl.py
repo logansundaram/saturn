@@ -325,19 +325,18 @@ def run_repl() -> None:
                 expired_grants = _policy.end_task()
             except Exception as exc:
                 diag.log(f"grant lifecycle end_task failed: {exc}")
+            late_steers = [
+                r.reason for r in pause_controller.take_steers() if r is not None and r.reason
+            ]
+            late_steer = "; ".join(late_steers) if late_steers else None
             late_req = pause_controller.peek()
-            late_steer = (
-                late_req.reason
-                if late_req is not None and late_req.source == "steer" and late_req.reason
-                else None
-            )
             # A late PAUSE can't be salvaged (there is no plan left to review), but the user saw
             # the ⏸ acknowledgement — dropping it silently reads as "pause is broken". Noted
             # after the answer renders, like the late-steer note below.
             late_pause = late_req is not None and late_req.source != "steer"
-            if late_steer:
-                input_queue.push(late_steer)
-            pause_controller.clear()
+            for text in late_steers:
+                input_queue.push(text)  # each salvaged correction runs as its own next message
+            pause_controller.reset()  # the turn boundary: nothing outstanding survives it
             # Prune this turn's checkpoints. Each turn runs on a fresh thread_id and cross-turn
             # memory rides on the manually-carried `messages` (not the checkpointer), so once the
             # turn returns its checkpoints/writes are dead weight — without this they accumulate in

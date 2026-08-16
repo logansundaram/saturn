@@ -150,3 +150,87 @@ def test_vetoes_block_formats_and_empties():
     assert "deliberately out of scope" in block
     assert "- Compute 41 * 7" in block and "- Send the email" in block
     assert "-  " not in block  # blank entries drop
+
+
+# ── the pause controller's two slots (transplanted from the engine isolate) ─────────────────
+#
+# A pause is a request to INTERRUPT; a steer is a request to adjust WITHOUT interrupting.
+# With both sharing one slot, a steer typed after Esc-pause (before the next step boundary)
+# overwrote the pause: the user saw the ⏸ acknowledgement and never got the editor. Steers now
+# QUEUE and plan_gate drains them only when no pause is outstanding — the pause outranks the
+# steer, and the path to interrupt() evaluates identically on both LangGraph passes.
+
+
+def test_a_steer_does_not_overwrite_a_pending_pause():
+    from core.plan_ops import PauseController
+
+    c = PauseController()
+    c.request("user", "review requested")
+    c.request("steer", "also save it")
+    assert c.pending()
+    assert c.peek().source == "user"
+    assert c.steers_pending()
+
+
+def test_a_queued_steer_survives_the_pause_being_consumed():
+    from core.plan_ops import PauseController
+
+    c = PauseController()
+    c.request("user", "review")
+    c.request("steer", "also save it")
+    c.clear()  # the interrupt resolved
+    assert not c.pending()
+    assert [r.reason for r in c.take_steers()] == ["also save it"]
+    assert not c.steers_pending()
+
+
+def test_peek_shows_a_queued_steer_only_when_no_pause_is_pending():
+    from core.plan_ops import PauseController
+
+    c = PauseController()
+    c.request("steer", "go deeper")
+    assert c.peek().source == "steer" and not c.pending()
+    c.reset()
+    assert c.peek() is None and not c.steers_pending()
+
+
+def test_plan_gate_takes_the_pause_path_while_a_steer_is_queued(monkeypatch):
+    """The determinism contract: with a pause outstanding the node reaches interrupt() — the
+    queued steer is left for the next boundary, never applied instead of the review."""
+    from core.plan_ops import get_pause_controller
+    from nodes import plan_gate as pg
+
+    c = get_pause_controller()
+    c.reset()
+    c.request("user", "review")
+    c.request("steer", "make it shorter")
+    seen = {}
+
+    def fake_interrupt(payload):
+        seen["payload"] = payload
+        return {"action": "go", "plan": payload["plan"]}
+
+    monkeypatch.setattr(pg, "interrupt", fake_interrupt)
+    plan = [{"step_id": 1, "label": "Write the draft to out.txt", "status": "pending",
+             "intended_tool": "write_file", "result": None, "needs_resolution": False}]
+    out = pg.plan_gate_node({"messages": [HumanMessage("q")], "plan": plan, "iteration": 0})
+    assert seen["payload"]["type"] == "plan_review"
+    assert "rectify" not in out                 # the steer was NOT applied on this pass
+    assert c.steers_pending()                    # …it waits for the next boundary
+    out2 = pg.plan_gate_node({"messages": [HumanMessage("q")], "plan": plan, "iteration": 0})
+    assert out2["rectify"] is True and "make it shorter" in out2["reasoning"]
+    c.reset()
+
+
+def test_two_queued_steers_are_applied_together_oldest_first(monkeypatch):
+    from core.plan_ops import get_pause_controller
+    from nodes import plan_gate as pg
+
+    c = get_pause_controller()
+    c.reset()
+    c.request("steer", "first")
+    c.request("steer", "second")
+    out = pg.plan_gate_node({"messages": [HumanMessage("q")], "plan": [], "iteration": 0})
+    assert out["reasoning"].index("first") < out["reasoning"].index("second")
+    assert "first" in out["messages"][0].content and "second" in out["messages"][0].content
+    c.reset()

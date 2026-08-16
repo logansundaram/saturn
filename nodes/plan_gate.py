@@ -79,18 +79,24 @@ def plan_gate_node(state: AgentState):
     # in the conversation AND arm a replan with the correction as the revision instruction —
     # steering edits the running turn WITHOUT interrupting it (unlike the review pause below). No
     # interrupt() here, so the determinism caveat below doesn't apply to this branch.
-    req = controller.peek()
-    if req is not None and req.source == "steer" and req.reason:
-        controller.clear()
+    # A PAUSE OUTRANKS A STEER, and the order is the mechanism (two-slot controller, 2026-08-15):
+    # this branch returns without calling interrupt(), so taking it on a post-interrupt
+    # re-execution would consume the node and LangGraph would drop the user's resume value —
+    # their plan edit or abort. Steers are drained only when no pause is outstanding; a steer
+    # typed while a pause waits is queued and honored at the next boundary instead.
+    steers = [] if controller.pending() else controller.take_steers()
+    reasons = [str(r.reason).strip() for r in steers if r is not None and str(r.reason).strip()]
+    if reasons:
+        reason = "; ".join(reasons)  # several corrections land as one revision, oldest first
         # Built from state.STEER_PREFIX so the standalone form below is recognizable by
         # state.is_steer_message — the consumers that slice the conversation at HumanMessage
         # boundaries (_compact_history, the grounding recap) skip it.
-        note = f"\n{STEER_PREFIX} {req.reason}"
+        note = f"\n{STEER_PREFIX} {reason}"
         steer_updates = {
             "rectify": True,
             "reasoning": (
                 "Mid-task steering correction from the user: "
-                f"{req.reason}\nRedraft the remaining steps to honor this correction."
+                f"{reason}\nRedraft the remaining steps to honor this correction."
             ),
         }
         # Carry the correction on the LAST message rather than appending a fresh HumanMessage:

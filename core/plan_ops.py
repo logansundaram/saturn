@@ -295,25 +295,56 @@ class PauseController:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._request: Optional[PauseRequest] = None
+        self._steers: list = []
 
     def request(self, source: str, reason: str = "") -> None:
-        """Ask for a pause at the next step boundary. Latest request wins (cheap and harmless —
-        only the most recent reason is shown)."""
+        """Ask for a pause at the next step boundary — or, for source "steer", QUEUE a mid-turn
+        correction. Two slots, not one (transplanted from the engine isolate, 2026-08-15): a
+        pause is a request to INTERRUPT, a steer a request to adjust WITHOUT interrupting, and
+        plan_gate handles them on different paths. Sharing one slot let a steer typed after an
+        Esc-pause overwrite the pause (the user saw the ⏸ acknowledgement and never got the
+        editor), so steers queue and are drained only when no pause is outstanding — the pause
+        outranks the steer, and the path to interrupt() evaluates identically on both LangGraph
+        passes. For pauses the latest request wins (only the most recent reason is shown)."""
         with self._lock:
-            self._request = PauseRequest(source=source, reason=reason)
+            if source == "steer":
+                self._steers.append(PauseRequest(source=source, reason=reason))
+            else:
+                self._request = PauseRequest(source=source, reason=reason)
 
     def pending(self) -> bool:
+        """Whether a PAUSE is outstanding (queued steers don't count — they never interrupt)."""
         with self._lock:
             return self._request is not None
 
     def peek(self) -> Optional[PauseRequest]:
-        """Read the pending request without clearing it."""
+        """Read the pending pause without clearing it — or, when no pause is outstanding, the
+        oldest queued steer (a read-only view for callers that report what is waiting)."""
         with self._lock:
-            return self._request
+            if self._request is not None:
+                return self._request
+            return self._steers[0] if self._steers else None
 
     def clear(self) -> None:
+        """Consume the PAUSE request. Queued steers survive — they were never handled."""
         with self._lock:
             self._request = None
+
+    def steers_pending(self) -> bool:
+        with self._lock:
+            return bool(self._steers)
+
+    def take_steers(self) -> list:
+        """Drain the queued steering corrections, oldest first."""
+        with self._lock:
+            out, self._steers = self._steers, []
+            return out
+
+    def reset(self) -> None:
+        """Drop everything outstanding — the turn boundary, or a test starting clean."""
+        with self._lock:
+            self._request = None
+            self._steers = []
 
 
 # Process-level singleton — every source and the gate share this one instance.

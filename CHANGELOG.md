@@ -115,6 +115,11 @@ to learn, audit, and maintain — none removes a protection.
 
 ### Fixed
 
+- Pressing Esc to review the plan and then typing a steering correction (Esc with text) before
+  the next step boundary no longer loses the review: the pause is honored first and the
+  correction is applied at the following boundary (several corrections land together, oldest
+  first). Corrections that arrive after the turn's last boundary each run as their own next
+  message.
 - When a request names a workspace file that no plan step ever acted on and every step has
   already run, the engine now adds the missing steps deterministically (bounded by the replan
   budget) instead of answering with the work half done. Only paths YOU named count — text inside

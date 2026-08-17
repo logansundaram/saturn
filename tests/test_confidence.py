@@ -418,6 +418,38 @@ def test_default_exit_threshold_is_looser_than_enter_and_bounded():
     assert confidence.exit_threshold(0.0) == 0.0
 
 
+def test_low_runs_grades_at_the_models_CALIBRATED_exit_not_a_derived_one(monkeypatch):
+    """The calibrated pair belongs together: a model's measured `exit` is the whole point of
+    `/confidence tune` and of the shipped table. Resolving `enter` first and handing it back as an
+    override is how the table's exit column ends up decorative — `/confidence` would display one
+    number while the renderer graded at another."""
+    monkeypatch.setattr(confidence, "_configured_threshold", lambda: None)
+    monkeypatch.setattr(confidence, "calibration_for", lambda _m: {"enter": 0.20, "exit": 0.90})
+
+    text = "alpha bravo charlie delta"
+    # delta sits at p=0.50: above the DERIVED exit (0.20 * 1.5 = 0.30), below the calibrated 0.90.
+    ents = _entries(text, [("alpha", LOW), (" bravo", LOW), (" charlie", LOW),
+                           (" delta", math.log(0.50))])
+
+    assert confidence.threshold() == 0.20
+    assert confidence.exit_threshold() == 0.90
+    # The whole phrase: delta rides along on the calibrated exit. A derived 0.30 would cut at
+    # charlie and return (0, 19).
+    assert confidence.low_runs(ents, text) == [(0, len(text))]
+
+
+def test_an_explicitly_pinned_enter_threshold_still_derives_its_own_exit(monkeypatch):
+    """A caller that pins `enter` is not asking for the table's row — the pair must stay
+    self-consistent rather than mixing a typed enter with a measured exit."""
+    monkeypatch.setattr(confidence, "_configured_threshold", lambda: None)
+    monkeypatch.setattr(confidence, "calibration_for", lambda _m: {"enter": 0.20, "exit": 0.90})
+
+    text = "alpha bravo charlie delta"
+    ents = _entries(text, [("alpha", LOW), (" bravo", LOW), (" charlie", LOW),
+                           (" delta", math.log(0.50))])
+    assert confidence.low_runs(ents, text, threshold_p=0.20) == [(0, 19)]
+
+
 def test_stopwords_are_neutral_bridges():
     text = "aa the bb of cc"
     ents = _entries(text, [("aa", LOW), (" the", HIGH), (" bb", LOW), (" of", HIGH), (" cc", LOW)])

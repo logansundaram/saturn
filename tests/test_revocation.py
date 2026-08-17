@@ -121,6 +121,70 @@ def test_revoke_all_blocks_every_state_changing_tool_but_no_reads():
     assert not pc.is_revoked([pc.REVOKE_ALL], "read_file", "anything")
 
 
+def test_a_blanket_revocation_covers_file_effects_not_every_unrelated_effect():
+    """`*` is minted by a dropped filesystem/shell write that named no file, and it means exactly
+    that effect class. Dropping one vague write is not a veto of the turn's memory writes, nor of
+    an MCP call the user deliberately LEFT in the plan — those keep their own gate."""
+    for tool in pc.WRITE_TOOLS + ("run_shell",):
+        assert pc.is_revoked([pc.REVOKE_ALL], tool, "anything"), tool
+    assert not pc.is_revoked([pc.REVOKE_ALL], "remember", "Remember the user's preference")
+    assert not pc.is_revoked([pc.REVOKE_ALL], "mcp_srv_deploy", "Deploy the service")
+
+
+def test_revocation_kind_names_why_an_action_was_refused():
+    """execute stamps a REASON onto the refused step, and the three ways a target can be revoked
+    are three different statements about the user — the disclosure must be able to tell them
+    apart (one producer for the kind, so the wording can never claim more than the state knows)."""
+    assert pc.revocation_kind(["out.txt"], "write_file", "Write out.txt") == "target"
+    assert pc.revocation_kind([pc.REVOKE_ALL], "write_file", "Write anything") == "blanket"
+    assert pc.revocation_kind(["tool:remember"], "remember", "Remember it") == "tool"
+    assert pc.revocation_kind(["out.txt"], "read_file", "Read out.txt") is None
+    assert pc.revocation_kind([], "write_file", "Write out.txt") is None
+
+
+# ── the gate's `a(lways)` grant must not unlock a revoked target ────────────────────────────
+# The gate's always-allow drops a tool to read_only in the LIVE registry — that is what
+# auto-approval MEANS. The revocation lock answers a different question (the human deleted this
+# step at plan review), so it must key on the DECLARED tier: otherwise one keypress at an
+# unrelated prompt silently switches the lock off for the rest of the turn — and, under
+# `grant_scope: persist`, for every session after it.
+
+
+def test_state_changing_reads_the_declared_tier_not_the_live_one(monkeypatch):
+    from tools import registry
+
+    monkeypatch.setitem(registry.TOOL_RISK, "write_file", "read_only")
+    assert pc.state_changing("write_file")
+
+
+def test_an_always_allow_grant_does_not_unlock_a_revoked_target(monkeypatch):
+    from tools import registry
+
+    monkeypatch.setitem(registry.TOOL_RISK, "write_file", "read_only")
+    assert pc.is_revoked(["depot/alpha_total.txt"], "write_file", "Write depot/alpha_total.txt")
+
+
+def test_an_always_allow_grant_does_not_authorize_an_unrequested_effect(monkeypatch):
+    from tools import registry
+
+    monkeypatch.setitem(registry.TOOL_RISK, "write_file", "read_only")
+    st = base_state(current_query="Read vendor_terms.txt and tell me the late fee")
+    assert not pc.request_authorized(st, step(label="Write breach_marker.txt", tool="write_file",
+                                             origin="replan"))
+
+
+def test_execute_still_refuses_a_revoked_write_after_an_always_allow_grant(monkeypatch):
+    from tools import registry
+
+    monkeypatch.setitem(registry.TOOL_RISK, "write_file", "read_only")
+    _never_generate(monkeypatch)
+    out = ex.execute_node(base_state(
+        plan=[step(label="Write the total to depot/alpha_total.txt", tool="write_file")],
+        revoked_writes=["depot/alpha_total.txt"]))
+    assert out["plan"][0]["status"] == "skipped"
+    assert is_review_retirement(out["plan"][0])
+
+
 def test_no_revocations_means_no_interference():
     assert not pc.is_revoked([], "write_file", "depot/alpha_total.txt")
 
@@ -178,6 +242,24 @@ def test_a_relabeled_step_whose_effect_survives_is_not_revoked(monkeypatch):
     c.reset()
 
 
+def test_a_relabeled_vague_write_is_not_revoked_either(monkeypatch):
+    """The relabel protection has to hold for the wording that mints `*` too — a vague write the
+    user REWORDED (or sharpened into a concrete path) is the step they were refining, and
+    blanket-revoking from it would refuse the very step they kept."""
+    from core.plan_ops import get_pause_controller
+
+    for after_label in ("Save the computed total", "Save the total to depot/alpha_total.txt"):
+        c = get_pause_controller()
+        c.reset()
+        c.request("user", "review")
+        before = [step(1, "Save the computed total to disk", tool="write_file")]
+        after = [step(1, after_label, tool="write_file")]
+        monkeypatch.setattr(pg, "interrupt", lambda payload, _a=after: {"action": "go", "plan": _a})
+        out = pg.plan_gate_node(base_state(plan=before))
+        assert "revoked_writes" not in out, after_label
+        c.reset()
+
+
 # ── the guarantee: execute ──────────────────────────────────────────────────────────────────
 
 
@@ -230,6 +312,25 @@ def test_an_unrevoked_write_is_untouched(monkeypatch):
 
 
 # ── the stamp contract ──────────────────────────────────────────────────────────────────────
+
+
+def test_a_blanket_revocation_does_not_claim_the_user_removed_this_step(monkeypatch):
+    """A step killed by a blanket `*` is not a step the user deleted — it is collateral of one
+    they did. The stamp still has to read as a single-step veto (so rectify continues), but it
+    must not assert an intent the state does not record."""
+    _never_generate(monkeypatch)
+    blanket = ex.execute_node(base_state(
+        plan=[step(label="Write the summary", tool="write_file")],
+        revoked_writes=[pc.REVOKE_ALL]))["plan"][0]
+    exact = ex.execute_node(base_state(
+        plan=[step(label="Write depot/alpha_total.txt", tool="write_file")],
+        revoked_writes=["depot/alpha_total.txt"]))["plan"][0]
+
+    assert blanket["status"] == exact["status"] == "skipped"
+    assert is_review_retirement(blanket) and is_review_retirement(exact)
+    assert blanket["result"] != exact["result"]
+    assert ex._REVOKED_REASONS["target"] in exact["result"]
+    assert ex._REVOKED_REASONS["target"] not in blanket["result"]
 
 
 def test_retirement_text_with_and_without_a_reason_both_read_as_review_retirements():

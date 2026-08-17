@@ -268,16 +268,23 @@ _BODY_WIDTH = 100
 
 
 def _constrained(renderable):
-    """Bound a live-region renderable to the SAME measure the finished answer renders at —
-    `min(_term_width(), _BODY_WIDTH)`, which is exactly what `Constrain(x, _BODY_WIDTH)` yields
-    (it takes the smaller of the cap and the space available). `Live` has no per-update width, so
-    without this the streaming tail wrapped at the full terminal width and the final markdown at
-    100, and every line break in the answer moved the instant `finish()` ran on any terminal wider
-    than ~102 columns. Additive: without rich (or on any failure) the renderable passes through."""
+    """Present a live-region renderable exactly as the finished answer is presented — the same
+    2-space indent and the same measure, `min(_term_width(), _BODY_WIDTH)`, which is what
+    `Constrain(x, _BODY_WIDTH)` yields (it takes the smaller of the cap and the space available).
+    `Live` has no per-update width, so without the constraint the streaming tail wrapped at the
+    full terminal width and the final markdown at 100, and every line break moved the instant
+    `finish()` ran on any terminal wider than ~102 columns.
+
+    The `Padding` is the other half, and constraining alone did not fix the re-wrap: the finished
+    body pads every VISUAL row (`_print_markdown_body`), so its text wraps at width - 2, while the
+    tail used to prefix each PHYSICAL line with two spaces — leaving soft-wrapped continuation rows
+    unindented and 2 columns wider. Both halves have to match or the breaks still move; indenting
+    here, once, is what keeps `_tail()` free of geometry it would have to keep in step by hand.
+    Additive: without rich (or on any failure) the renderable passes through."""
     if not _RICH or Constrain is None:
         return renderable
     try:
-        return Constrain(renderable, _BODY_WIDTH)
+        return Constrain(Padding(renderable, (0, 0, 0, 2)), _BODY_WIDTH)
     except Exception:
         return renderable
 
@@ -650,10 +657,13 @@ class ResponseStream:
         The row budget is computed against `_BODY_WIDTH` because that is the measure the tail is
         actually rendered at (`_constrained`, and the same one `finish()` uses) — counting rows
         against the full terminal width would undercount them on a wide terminal and let the live
-        region outgrow the screen, which is exactly what breaks the transient erase."""
+        region outgrow the screen, which is exactly what breaks the transient erase.
+
+        Returns the text UNINDENTED: `_constrained` applies the 2-space indent to every visual row,
+        which is the only way it matches the finished body (see there)."""
         rows = max(4, (_console.size.height or 24) - 6)
         cols = min(max(20, _console.size.width or 80), _BODY_WIDTH)
-        avail = max(1, cols - 2)  # room for text after the 2-space indent below
+        avail = max(1, cols - 2)  # room for text after _constrained's 2-space indent
         joined = "".join(self._chars)
         lines = joined.split("\n")
         # Walk from the bottom up, accumulating physical lines until their WRAPPED height fills the
@@ -687,7 +697,6 @@ class ResponseStream:
         for i, ln in enumerate(chosen):
             if i:
                 t.append("\n")
-            t.append("  ")
             lt = Text(ln)
             for s, e in runs:
                 s, e = max(s, pos), min(e, pos + len(ln))

@@ -240,7 +240,18 @@ def low_runs(entries, text: str, threshold_p: "float | None" = None,
     order (every producer appends in stream order). Edges are trimmed to non-whitespace so a
     mark never starts on the space before a word."""
     th = threshold() if threshold_p is None else float(threshold_p)
-    ex = max(th, exit_threshold(th) if exit_p is None else float(exit_p))
+    if exit_p is not None:
+        ex = float(exit_p)
+    elif threshold_p is None:
+        # Resolve the pair TOGETHER: `exit_threshold()` with no argument is what consults the
+        # model's calibrated `exit`. Handing it the enter value we just resolved looks harmless but
+        # pins its `enter is None` guard shut, so it falls through to the derived 1.5x — which is
+        # how the calibrated exit column, `/confidence tune` and `/confidence set <enter> <exit>`
+        # came to feed a number no renderer ever read, while `/confidence` displayed it.
+        ex = exit_threshold()
+    else:
+        ex = exit_threshold(th)   # the caller pinned enter; its exit derives from that, not a table
+    ex = max(th, ex)
     runs: list[tuple[int, int]] = []
     cur: list[tuple[int, int]] = []  # the tokens of the run being built (enter- or exit-low)
     n_enter = 0                       # how many of them are under the ENTER threshold (the floor)

@@ -459,15 +459,18 @@ def ungrounded_figures(buf: dict, state: AgentState, query: str) -> tuple:
 def required_figures(state: AgentState) -> tuple:
     """The figures this turn COMPUTED that the answer is expected to state — only the LAST
     completed computing step counts (intermediate arithmetic legitimately stays out), and OFF
-    whenever the turn has incidents (a disclosure outranks a figure)."""
-    from nodes.rectify import COMPUTE_TOOLS
+    whenever the turn has incidents (a disclosure outranks a figure).
+
+    `DERIVED_FIGURE_TOOLS`, not rectify's wider `COMPUTE_TOOLS`: a shell step's numbers are
+    incidental output (sizes, timestamps, digest fragments), not a computation the answer owes."""
+    from core.plan_context import DERIVED_FIGURE_TOOLS
 
     plan = state.get("plan") or []
     if incidents_block(plan):
         return ()
     computed = [
         s for s in plan
-        if s.get("intended_tool") in COMPUTE_TOOLS and s.get("status") == "done"
+        if s.get("intended_tool") in DERIVED_FIGURE_TOOLS and s.get("status") == "done"
         and s.get("result") is not None
     ]
     if not computed:

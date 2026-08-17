@@ -42,6 +42,7 @@ from core.plan_context import (
     clean,
     exec_context,
     is_revoked,
+    revocation_kind,
     original_request,
     request_authorized,
     results_block,
@@ -105,7 +106,16 @@ WRITE_GATE_SKIP_PREFIX = "skipped write:"
 # core.plan_ops.retirement_text so the result ends with the review stamp — which is what tells
 # rectify this is the user's SINGLE-STEP veto ("skip this one, continue the rest") rather than a
 # guard rejection that ends the run.
-_REVOKED_REASON = "the user removed this action at the plan-review prompt"
+# One reason per `plan_context.revocation_kind`, because the disclosure must not claim more than
+# the state records: only a "target" hit is the step the user actually deleted. A "blanket" hit is
+# COLLATERAL of a vague write they removed, and saying "the user removed this action" about a step
+# they never touched puts a false statement about their intent into the run record.
+_REVOKED_REASONS = {
+    "target": "the user removed this action at the plan-review prompt",
+    "tool": "the user removed this tool's only action at the plan-review prompt",
+    "blanket": "the user removed a write that named no file at the plan-review prompt, so no file "
+               "is written this turn",
+}
 
 # The effect-authorization refusal: a step redrafted after results existed acts on something the
 # user's own words never named. `blocked` — a guarded outcome, so rectify cancels the rest.
@@ -423,10 +433,12 @@ def execute_node(state: AgentState):
     # The plan-review revocation lock, first pass: the step's own description already names a
     # target the user removed at review, so refuse before spending a generation on it.
     revoked = state.get("revoked_writes") or []
-    if is_revoked(revoked, tool_name, step.get("label")):
-        step["result"] = retirement_text("skipped", _REVOKED_REASON)
+    kind = revocation_kind(revoked, tool_name, step.get("label"))
+    if kind:
+        step["result"] = retirement_text("skipped", _REVOKED_REASONS[kind])
         step["status"] = "skipped"
-        diag.log(f"execute_node : {time.perf_counter() - start:.4f}s (revoked at review: label)")
+        diag.log(f"execute_node : {time.perf_counter() - start:.4f}s "
+                 f"(revoked at review: label, {kind})")
         return updates
 
     # An `ask_user` step faces the ask gate BEFORE a call is generated: a question the engine
@@ -466,10 +478,12 @@ def execute_node(state: AgentState):
     # call whose arguments target the revoked path. This reads the ARGUMENTS, i.e. the actual
     # effect, at the last point before it is emitted for approval and execution.
     arg_texts = [str(v) for v in (args or {}).values()]
-    if is_revoked(revoked, tool_name, step.get("label"), *arg_texts):
-        step["result"] = retirement_text("skipped", _REVOKED_REASON)
+    kind = revocation_kind(revoked, tool_name, step.get("label"), *arg_texts)
+    if kind:
+        step["result"] = retirement_text("skipped", _REVOKED_REASONS[kind])
         step["status"] = "skipped"
-        diag.log(f"execute_node : {time.perf_counter() - start:.4f}s (revoked at review: args)")
+        diag.log(f"execute_node : {time.perf_counter() - start:.4f}s "
+                 f"(revoked at review: args, {kind})")
         return updates
 
     # EFFECT AUTHORIZATION, on the arguments, at the same last-possible point: a step drafted by

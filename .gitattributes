@@ -1,4 +1,15 @@
-# Shell scripts must stay LF — a CRLF shebang line breaks `sh` / `curl | sh`,
-# even when authored on Windows.
+# Line endings are normalized to LF in the repository AND in the working tree. The index is
+# already uniformly LF; pinning the working tree here is what stops `core.autocrlf` from silently
+# rewriting a checked-out file to CRLF — which turned any tool that touched a file into a
+# whole-file diff with zero content change. Least specific rule first: the pins below override it.
+* text=auto eol=lf
+
+# Shell scripts must stay LF — a CRLF shebang line breaks `sh` / `curl | sh`, even when authored
+# on Windows. (Covered by the rule above; kept explicit so the requirement survives an edit to it.)
 *.sh text eol=lf
 install.sh text eol=lf
+
+# Windows launchers keep CRLF: cmd.exe's batch parser is the one that actually minds — the same
+# reasoning as the shell-script pin, in the other direction.
+*.cmd text eol=crlf
+*.bat text eol=crlf

@@ -141,6 +141,30 @@ def test_a_failed_correction_keeps_the_original_answer_and_discloses():
     assert buf["text"] == "The total is 515." and ungrounded == ("515",)
 
 
+def test_a_shell_step_is_not_a_derived_figure_the_answer_owes():
+    """`run_shell` counts for "did this turn compute anything?" (rectify's gap check — a shell
+    one-liner is a legitimate way to do arithmetic), but its OUTPUT is not a computation the
+    answer owes: `ls -l` gives file sizes, a digest gives hash fragments, and both parse as
+    figures. Requiring them makes the answer state them, spends a corrective regeneration
+    steering toward them, and then discloses them as "the plan's own calculation step"."""
+    shell = [step(1, "List the reports", tool="run_shell", status="done",
+                  result="-rw-r--r-- 1 u u 40960 Aug 17 09:31 report.md\n[exit code 0]")]
+    assert syn.required_figures(base_state(plan=shell)) == ()
+
+    calc = [step(1, "Compute the total", tool="calculate", status="done", result="551")]
+    assert syn.required_figures(base_state(plan=calc)) == ("551",)
+
+
+def test_rectify_still_counts_a_shell_step_as_a_computation():
+    """The narrowing above is synthesize's obligation only — the gap check must keep treating a
+    shell one-liner as a computation, or it replans a calculate step on top of one."""
+    from nodes import rectify as rc
+
+    st = base_state(current_query="what is the total size of the reports")
+    shell = [step(1, "Sum the sizes", tool="run_shell", status="done", result="40960")]
+    assert not rc.missing_computation(st, shell)
+
+
 def test_required_figures_is_the_last_computed_value_and_off_on_incidents():
     plan = [step(1, "Read", "read_file", "120 340", "done"),
             step(2, "Sum", "calculate", "460", "done"),

@@ -7,6 +7,39 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
 
 ## [Unreleased]
 
+### Fixed
+
+- **An always-allow grant no longer switches off the plan-review revocation lock.** Answering `a`
+  at the approval gate drops a tool to the auto-approved tier — which is what auto-approval means
+  — but the revocation lock and effect authorization were reading that same live tier to decide
+  whether a tool can change state at all. One keypress at an unrelated prompt therefore made a
+  step you had deleted at plan review runnable again, unprompted, for the rest of the turn (and,
+  under `grant_scope: persist`, for every session after it). Both now read the tier a tool
+  *declares*, which no grant or `/policy risk` edit can lower.
+- **Removing one vague step at plan review no longer cancels every other action.** A dropped write
+  whose wording named no file revokes writes for the turn — that part is deliberate, since a
+  redraft can just omit the filename — but it was also cancelling unrelated effects the plan
+  kept, including memory writes and MCP calls. It now covers exactly the effect class that
+  produced it (file writes and shell), and a step it stops is disclosed as collateral of the
+  removed write rather than as an action you removed yourself. Rewording such a step (or
+  sharpening it into a concrete path) is again recognized as a relabel, not a removal.
+- **Confidence coloring now grades at your model's calibrated exit threshold.** The measured value
+  from the shipped table, `/confidence tune`, and `/confidence set <enter> <exit>` was resolved,
+  displayed by `/confidence`, and then discarded by the renderer, which fell back to a derived
+  1.5× of the enter threshold. Marked spans on a calibrated model may now end slightly later,
+  which is the measured behavior the table always described.
+- **File sizes and digest fragments are no longer treated as figures the answer must state.** A
+  `run_shell` step counted as the turn's calculation, so numbers incidental to its output (an
+  `ls -l` size, a hash) became values the answer was required to report — spending a corrective
+  regeneration steering toward them and then disclosing them as "the plan's own calculation
+  step". Only `calculate` creates that obligation now; `run_shell` still counts as a computation
+  for deciding whether the plan needs one at all.
+- **The streaming answer no longer re-flows when it lands.** The live tail indented each physical
+  line while the finished answer pads every visual row, so soft-wrapped continuation lines were
+  two columns wider and every break moved at the handoff on wide terminals. Both now render
+  through one measure and one indent. (Markdown still formats at finish — that is formatting, not
+  re-flow.)
+
 ### Changed
 
 - **One model family.** Saturday.ai now binds qwen3.5 / qwen3.6 / qwen3.8 only, as six tiers

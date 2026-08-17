@@ -45,6 +45,7 @@ from langchain.messages import HumanMessage
 from config import get_config
 from core.messages import RECTIFY_SYS, RESOLVE_CHECK_SYS
 from core.plan_context import (
+    COMPUTE_TOOLS,
     SEARCH_TOOLS,
     WRITE_TOOLS,
     authorization_basis,
@@ -127,7 +128,9 @@ def _cancel_remaining(plan: list[dict], text: str) -> list[dict]:
 
 # Tools that can PRODUCE a derived number (a total can be computed by awk as easily as by
 # calculate) and tools whose call FETCHES material (a followed reference is at least two fetches).
-COMPUTE_TOOLS = ("calculate", "run_shell")
+# COMPUTE_TOOLS lives in core.plan_context (one home for the engine's tool sets) and is re-bound
+# here because this is the gap check that reads it; synthesize's narrower obligation set is
+# DERIVED_FIGURE_TOOLS — see the comment there for why they are two questions, not one.
 _FETCH_TOOLS = ("read_file", "web_extract")
 
 

@@ -488,7 +488,14 @@ def test_synthesize_keeps_its_row_for_a_gate_decision_leaf(capsys):
 
 
 @pytest.mark.parametrize("width", [80, 110, 160])
-def test_streaming_tail_and_final_body_share_one_measure(width, monkeypatch):
+def test_streaming_tail_and_final_body_break_lines_in_the_same_places(width, monkeypatch):
+    """The claim is that nothing MOVES at the handoff, so the assertion is row-by-row equality of
+    what the two production paths actually print — not a shared maximum, which both satisfy while
+    breaking in different places (the tail indented physical lines and let soft-wrapped
+    continuations run the full 100 columns; the body pads every visual row, wrapping at 98).
+
+    Plain prose on purpose: markdown syntax legitimately re-renders at finish() (`**bold**` loses
+    its asterisks), so geometry is only comparable where the text is the same text."""
     resp = importlib.import_module("tui.ui.response")
     base = importlib.import_module("tui.ui._base")
     if not resp._RICH:
@@ -500,22 +507,47 @@ def test_streaming_tail_and_final_body_share_one_measure(width, monkeypatch):
     monkeypatch.setattr(base, "_console", console)
     monkeypatch.setattr(resp, "_console", console)
 
-    expected = min(width, resp._BODY_WIDTH)
+    prose = "word " * 200
 
     stream = resp.ResponseStream()
-    stream._chars = ["word " * 200]
+    stream._chars = [prose]
+    stream._len = len(prose)
+    tail_rows = [
+        "".join(seg.text for seg in line).rstrip()
+        for line in console.render_lines(resp._constrained(stream._tail()), pad=False)
+    ]
+
+    # The finished answer through its own production function, not a hand-built stand-in.
+    with console.capture() as cap:
+        resp._print_markdown_body(prose)
+    body_rows = [ln.rstrip() for ln in cap.get().splitlines() if ln.strip()]
+
+    assert tail_rows and body_rows
+    assert tail_rows == body_rows
+    assert max(len(r) for r in tail_rows) <= min(width, resp._BODY_WIDTH)
+
+
+def test_the_streaming_tail_indents_every_visual_row_not_every_newline(monkeypatch):
+    """The mechanism behind the test above: a soft-wrapped continuation row must carry the same
+    2-space indent as the row that spilled into it. Prefixing physical lines only indents the
+    first row of each paragraph."""
+    resp = importlib.import_module("tui.ui.response")
+    base = importlib.import_module("tui.ui._base")
+    if not resp._RICH:
+        pytest.skip("rich not available")
+
+    from rich.console import Console
+
+    console = Console(width=160, highlight=False, force_terminal=False)
+    monkeypatch.setattr(base, "_console", console)
+    monkeypatch.setattr(resp, "_console", console)
+
+    stream = resp.ResponseStream()
+    stream._chars = ["word " * 120]        # one physical line, many visual rows
     stream._len = len(stream._chars[0])
-    rendered = console.render_lines(resp._constrained(stream._tail()), pad=False)
-    tail_max = max(sum(seg.cell_length for seg in line) for line in rendered)
-
-    body = console.render_lines(
-        resp.Padding(resp.Text("word " * 200), (0, 0, 0, 2)),
-        console.options.update(width=expected), pad=False,
-    )
-    body_max = max(sum(seg.cell_length for seg in line) for line in body)
-
-    assert tail_max <= expected
-    assert body_max <= expected
-    # Both actually FILL the shared measure — a clamp that silently narrowed one of them
-    # would pass the bounds above while still re-wrapping at finish().
-    assert tail_max == body_max
+    rows = [
+        "".join(seg.text for seg in line)
+        for line in console.render_lines(resp._constrained(stream._tail()), pad=False)
+    ]
+    assert len(rows) > 1
+    assert all(r.startswith("  ") for r in rows)

@@ -33,6 +33,18 @@ _CALLOUT_CAP = 4000
 WRITE_TOOLS = ("write_file", "edit_file")
 SEARCH_TOOLS = {"search_knowledge_base", "search_files", "find_files", "web_search"}
 
+# Two questions about computation, deliberately NOT one tuple:
+#   COMPUTE_TOOLS        — "did this turn compute anything?" (rectify's gap check). A shell
+#                          one-liner is a legitimate way to do arithmetic, so it counts.
+#   DERIVED_FIGURE_TOOLS — "which figures does the answer OWE?" (synthesize's computed-value
+#                          check). A shell step's output is not a computation: `ls -l` yields file
+#                          sizes, a digest yields hash fragments, and both parse as figures — so
+#                          counting run_shell here made the answer obliged to state them, spent a
+#                          corrective regeneration steering toward them, and then disclosed them
+#                          under "from the plan's own calculation step".
+COMPUTE_TOOLS = ("calculate", "run_shell")
+DERIVED_FIGURE_TOOLS = ("calculate",)
+
 
 def original_request(state) -> str:
     """The user's request as the engine's prompts see it — the current turn's query."""
@@ -65,18 +77,35 @@ def target_tokens(text) -> set:
 REVOKE_ALL = "*"
 ORIGIN_REPLAN = "replan"
 
+# The effect class that MINTS `REVOKE_ALL` — and therefore the exact class it covers. A filesystem
+# or shell write is the one effect a redraft can walk around by omitting the filename from its
+# wording, which is what the blanket sentinel is for; a non-path effect is revoked as
+# `tool:<name>` instead. Keeping the two symmetric is what stops one vague dropped write from
+# cancelling every unrelated effect left in the plan (a `remember`, a `mcp_*` call the user
+# deliberately KEPT) — those still face their own gate.
+_FS_EFFECT_TOOLS = WRITE_TOOLS + ("run_shell",)
+
 
 def state_changing(tool) -> bool:
     """Whether `tool` can change state — REGISTRY-derived: any tier above read_only (write/edit,
     run_shell, remember, every MCP tool; an unknown name fails closed to destructive). Never a
-    hand list a new tool silently escapes."""
+    hand list a new tool silently escapes.
+
+    Read from the DECLARED tiers, frozen at definition time — NEVER the live `TOOL_RISK`, which
+    the gate's always-allow grant and `/policy risk` both edit. Those answer "does this call need
+    a prompt"; this answers "can this tool change state at all", and the two must not be the same
+    question: keyed on the live tier, one `a` keypress at an unrelated gate prompt drops
+    write_file to read_only and silently switches off BOTH the revocation lock and effect
+    authorization for the rest of the turn — and, under `grant_scope: persist`, for every session
+    after it. Relaxing a prompt threshold is not a statement about what a tool does."""
     if not tool:
         return False
     try:
-        from tools.registry import risk_of  # lazy: plan_context is imported by the registry's users
+        # lazy: plan_context is imported by the registry's users
+        from tools.registry import DECLARED_RISK
     except Exception:
-        return str(tool) in WRITE_TOOLS or str(tool) == "run_shell"
-    return risk_of(str(tool)) != "read_only"
+        return str(tool) in _FS_EFFECT_TOOLS
+    return DECLARED_RISK.get(str(tool), "destructive") != "read_only"
 
 
 def revoked_targets(step) -> set:
@@ -108,16 +137,35 @@ def _same_target(revoked: str, named: str) -> bool:
     return revoked == named or named.endswith("/" + revoked) or revoked.endswith("/" + named)
 
 
+def revocation_kind(revoked, tool, *texts) -> "str | None":
+    """WHY a state-changing action with `tool` over `texts` (label, generated arguments) is
+    refused — or None when nothing the user removed covers it. Read-only tools are never revoked.
+
+    THE one producer of the distinction, because the three kinds are three different statements
+    about the user, and `execute` stamps one of them onto the refused step:
+      "target"  — they removed a step naming this path.
+      "tool"    — they removed this tool's only effect (a dropped `remember`).
+      "blanket" — they removed a filesystem/shell write that named NO file, so no file write runs
+                  this turn. This action is collateral of that veto, not the step they deleted —
+                  a disclosure claiming otherwise asserts an intent the state never recorded.
+    """
+    if not revoked or not state_changing(tool):
+        return None
+    revoked = [str(r).lower() for r in revoked]
+    if f"tool:{tool}".lower() in revoked:
+        return "tool"
+    named = target_tokens(" ".join(str(t or "") for t in texts))
+    if any(_same_target(r, n) for r in revoked if r != REVOKE_ALL for n in named):
+        return "target"
+    if REVOKE_ALL in revoked and str(tool) in _FS_EFFECT_TOOLS:
+        return "blanket"
+    return None
+
+
 def is_revoked(revoked, tool, *texts) -> bool:
     """Whether a state-changing action with `tool` over `texts` (label, generated arguments)
     lands on something the user revoked at plan review. Read-only tools are never revoked."""
-    if not revoked or not state_changing(tool):
-        return False
-    revoked = [str(r).lower() for r in revoked]
-    if REVOKE_ALL in revoked or f"tool:{tool}".lower() in revoked:
-        return True
-    named = target_tokens(" ".join(str(t or "") for t in texts))
-    return any(_same_target(r, n) for r in revoked for n in named)
+    return revocation_kind(revoked, tool, *texts) is not None
 
 
 def request_authorized(state, step, *texts) -> bool:

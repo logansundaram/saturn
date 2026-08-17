@@ -95,7 +95,13 @@ def _effect_survives(step, after: list) -> bool:
         if s.get("result") is not None:
             continue
         other_tool, other_targets = _step_effect(s)
-        if other_tool == tool and targets & other_targets:
+        if other_tool != tool:
+            continue
+        # A set intersection cannot see the blanket sentinel: `{"*"} & {"report.md"}` is empty, so
+        # the relabel protection used to fail for exactly the wording that mints `*` — a vague
+        # write the user REWORDED (or sharpened into a concrete path) read as removed, and execute
+        # then refused the very step they were refining. `*` intersects anything of the same tool.
+        if REVOKE_ALL in targets or REVOKE_ALL in other_targets or (targets & other_targets):
             return True
     return False
 

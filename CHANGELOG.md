@@ -158,6 +158,12 @@ to learn, audit, and maintain — none removes a protection.
   can't be rendered. It now prints only when the diff really is empty. The same applies to an
   edit that cannot run (missing file, no match, ambiguous match).
 
+- **Deciding per call (`s` at the approval gate) can no longer confuse two similar calls.** Each
+  prompt now names its position in the batch (`call 2/3`) and shows a much longer argument
+  summary, clamped from both ends instead of only the head — a path or a shell command carries
+  its distinguishing token in the *tail*, so two calls sharing a long prefix used to render
+  identically at the very prompt that exists to tell them apart.
+
 - **Answers are checked against what was actually gathered.** After a turn that observed
   something, every figure the answer states (three or more digits, or any decimal) is traced
   back to your words or the turn's tool results; a figure that traces to nothing gets ONE

@@ -629,22 +629,38 @@ def _always_allow(tool_calls: list, ask) -> dict:
     return decision
 
 
+# Per-call argument summary at the `s(elect)` prompt. Head+tail (textutil.head_tail), not a head
+# clamp: a path and a shell command carry their DISTINGUISHING token in the tail
+# (`.../reports/q3.csv`, `git push --force`), so a head-only cut is exactly the cut that makes two
+# different calls read identically. `_SELECT_VALUE_CAP` keeps _fmt_args' own per-value truncation
+# (which IS head-only) out of the way, so the head+tail cut below is the only one that lands.
+# Single-line elision marker: this is a prompt, not a frame body.
+_SELECT_ARG_CAP = 160
+_SELECT_VALUE_CAP = 2000
+_SELECT_ELISION = " … +{dropped} chars … "
+
+
 def _select_calls(tool_calls: list, ask) -> "bool | dict":
-    """Per-call decisions (`s(elect)`): ask y/N for each gated call. Each prompt carries a clamped
-    arg summary — two same-tool calls in one batch (exactly the mixed-trust case `s` exists for:
-    two run_shell commands, the user wants one) would otherwise read identically, forcing the
-    human to remember listing order from a frame that may have scrolled past several diffs.
-    Approving the wrong twin is a real hazard at the safety gate. The summary renders literally:
-    ask_approval hands this a markup-disabled input on the rich path, so bracketed argument text
-    is never eaten as Rich tags. Collapses to True/False when the answers were unanimous;
-    otherwise returns the partial-approval dict the gate understands."""
+    """Per-call decisions (`s(elect)`): ask y/N for each gated call. Each prompt carries its
+    position in the batch (`call 2/3`) AND a head+tail-clamped arg summary — two same-tool calls
+    in one batch (exactly the mixed-trust case `s` exists for: two run_shell commands, the user
+    wants one) would otherwise read identically, forcing the human to remember listing order from
+    a frame that may have scrolled past several diffs. Approving the wrong twin is a real hazard
+    at the safety gate, so BOTH disambiguators are present: the index is unforgeable and the
+    summary is the one that carries meaning. The summary renders literally: ask_approval hands
+    this a markup-disabled input on the rich path, so bracketed argument text is never eaten as
+    Rich tags. Collapses to True/False when the answers were unanimous; otherwise returns the
+    partial-approval dict the gate understands."""
     approved = []
-    for tc in tool_calls:
-        summary = _fmt_args(tc.get("args") or {}, 48)
-        r = ask(f"      allow {tc.get('name')}({summary})? y / N  (Enter = no) » ").strip().lower()
+    total = len(tool_calls)
+    for i, tc in enumerate(tool_calls, 1):
+        summary = head_tail(_fmt_args(tc.get("args") or {}, _SELECT_VALUE_CAP),
+                            _SELECT_ARG_CAP, marker=_SELECT_ELISION)
+        r = ask(f"      call {i}/{total}: allow {tc.get('name')}({summary})? "
+                "y / N  (Enter = no) » ").strip().lower()
         if r in ("y", "yes"):
             approved.append(tc.get("id"))
-    if len(approved) == len(tool_calls):
+    if len(approved) == total:
         return True
     if not approved:
         return False

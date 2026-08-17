@@ -349,6 +349,32 @@ def test_select_calls_prompt_disambiguates_same_tool_calls():
     assert "git status" in prompts[0]
     assert "rm -rf /" in prompts[1]
     assert prompts[0] != prompts[1]
+    # Position in the batch is the unforgeable half of the disambiguation.
+    assert "call 1/2" in prompts[0]
+    assert "call 2/2" in prompts[1]
+
+
+def test_select_prompt_keeps_the_distinguishing_tail_of_a_long_argument():
+    """A head-only clamp is exactly the cut that makes two different calls read identically: a
+    path and a shell command carry their distinguishing token in the TAIL. Two calls sharing a
+    long common prefix must still produce different prompts."""
+    shared = "cd /srv/app && ./deploy.sh --config " + "x" * 400 + " --target "
+    calls = [
+        {"id": "a", "name": "run_shell", "args": {"command": shared + "staging"}},
+        {"id": "b", "name": "run_shell", "args": {"command": shared + "production"}},
+    ]
+    prompts: list = []
+
+    def ask(p):
+        prompts.append(p)
+        return ""
+
+    assert approval._select_calls(calls, ask) is False
+    assert prompts[0] != prompts[1]
+    assert "staging" in prompts[0]
+    assert "production" in prompts[1]
+    # …and the prompt stays ONE line: the elision marker carries no newline.
+    assert all("\n" not in p for p in prompts)
 
 
 def test_gate_key_vocabulary_single_source():

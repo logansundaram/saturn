@@ -54,7 +54,9 @@ frame. Specifics:
     (`rich.live.Live`): **posture** (deviation-only: `⚠ GATE OFF` / a loosened tier / ⛓ AIRGAP;
     the calm read_only default renders nothing; leftmost so right-edge trimming sacrifices it
     last) │ **type-ahead**
-    (only while queuing input) │ **progress** (`▸node · iter · tools · elapsed · tok/s`) │
+    (only while queuing input) │ **progress** (`✓node · iter · tools · elapsed · tok/s`, the node
+    named in the PAST tense — updates arrive on node *completion*, so the bar reports the last
+    node that finished and never claims one is active) │
     **session** (`ctx NN% ▰▱` meter · `⇅` egress count, each only once it has
     something to say) │ **hardware** (bare load-colored `cpu/ram/gpu/vram NN%`, sampled
     off-thread so nvidia-smi never stalls the render) │ the dim key legend, last on purpose. It's

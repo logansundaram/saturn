@@ -110,6 +110,11 @@ _trace_started = False  # False until the turn's first node line prints (gates o
 # `_status` is the live readout the bar renders; `_turn_start` anchors the elapsed clock. (The
 # Live handle + the metrics sampler stay private to statusbar.py — only these cross submodules.)
 _turn_start = None
+# `node` names the last node that FINISHED, never the one running: show_node is fed from a node's
+# *update* event, which LangGraph emits on completion (app/turn.py). `_NODE_STARTING` is the
+# pre-first-node seed — a turn that has begun but completed nothing yet, which is not a node name
+# and must not render with a completion glyph.
+_NODE_STARTING = "starting"
 _status = {"node": "", "iteration": 0, "tools": 0, "tok_per_sec": 0.0,
            "ctx_used": 0, "ctx_window": 0, "gates": 0}
 # (The turn-start egress mark lives in receipt.py — receipt-domain state, not UI state.)

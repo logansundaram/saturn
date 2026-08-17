@@ -211,6 +211,40 @@ def test_unknown_plan_status_renders_as_unknown_never_pending(monkeypatch):
     assert row.lstrip().startswith("·")
 
 
+# ── the status bar names the last FINISHED node, never a running one ─────────────────────────
+# show_node is fed from a node's *update* event, which LangGraph emits on completion — so the bar
+# said `▸ plan` in active styling while `execute` was running, contradicting the `✓ plan` rail
+# line directly above it. No active-node signal exists to render (that needs a graph hook).
+
+
+def test_statusbar_names_the_last_finished_node_in_past_tense(monkeypatch):
+    sb = importlib.import_module("tui.ui.statusbar")
+    base = importlib.import_module("tui.ui._base")
+    if not sb._RICH:
+        pytest.skip("rich not available")
+
+    monkeypatch.setattr(base, "_status", dict(base._status, node="plan"))
+    plain = sb._StatusBar().__rich__().plain
+    assert "✓ plan" in plain          # the node that FINISHED
+    assert "▸ plan" not in plain      # never claimed as active
+
+
+def test_statusbar_seeds_a_started_turn_before_any_node_completes(monkeypatch):
+    sb = importlib.import_module("tui.ui.statusbar")
+    base = importlib.import_module("tui.ui._base")
+    if not sb._RICH:
+        pytest.skip("rich not available")
+
+    monkeypatch.setattr(sb, "_live_start", lambda: None)
+    monkeypatch.setattr(base, "_status", dict(base._status))
+    sb.reset_turn()
+    assert base._status["node"] == base._NODE_STARTING
+    plain = sb._StatusBar().__rich__().plain
+    assert base._NODE_STARTING in plain
+    # …without a completion glyph: nothing has completed yet.
+    assert f"✓ {base._NODE_STARTING}" not in plain
+
+
 # ── synthesize's rail row must not land inside the open response block ───────────────────────
 # Its update fires when the node COMPLETES — after the answer began streaming — and rich inserts
 # a console print above a live display, so the row shoved the streaming answer down mid-stream.

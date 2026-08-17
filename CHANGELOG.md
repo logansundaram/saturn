@@ -183,6 +183,11 @@ to learn, audit, and maintain — none removes a protection.
   response block and pushing the text down. The row now waits for `/trace full`; its metrics are
   unchanged in the status bar and the receipt, and a freeze or correction still gets its row.
 
+- **The status bar no longer claims the wrong node is running.** It was showing `▸ plan` in
+  active styling while `execute` was already working — the update it reads arrives when a node
+  *finishes* — directly contradicting the `✓ plan` trace line above it. It now reports the last
+  node that finished, in past tense, and says `starting` until the first one does.
+
 - **Answers are checked against what was actually gathered.** After a turn that observed
   something, every figure the answer states (three or more digits, or any decimal) is traced
   back to your words or the turn's tool results; a figure that traces to nothing gets ONE

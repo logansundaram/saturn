@@ -12,7 +12,7 @@ import time
 from . import _base
 from ._base import (
     Live, Text, _console, _RICH,
-    _ACCENT, _DIM, _RAIL, _RISK,
+    _ACCENT, _DIM, _NODE_STARTING, _RAIL, _RISK,
     _active_ctx_window, _fmt_dur, _meter_color, _mini_bar,
 )
 
@@ -155,10 +155,19 @@ class _StatusBar:
                 label = f" ({queued} queued)" if buf else f"{queued} queued"
                 bar.append(label, style=_DIM)
 
-        # ── progress ── where the turn is right now: active node, then counts · time · rate.
+        # ── progress ── how far the turn has got, then counts · time · rate. The node is named in
+        # the PAST tense: show_node is fed from a node's *update* event, which LangGraph emits
+        # when the node COMPLETES (app/turn.py), so this is the last node that FINISHED — not the
+        # one running now. Rendering it as `▸ plan` in active styling claimed the opposite, and
+        # directly contradicted the `✓ plan` rail line sitting above it while `execute` worked.
+        # There is no active-node signal to render: that would need a graph-level hook, which is
+        # deliberately out of scope here. So it says what it knows, dimly.
         zone()
-        if status["node"]:
-            bar.append(f"▸ {status['node']}", style=f"bold {_ACCENT}")
+        if status["node"] == _NODE_STARTING:
+            bar.append(_NODE_STARTING, style=_DIM)
+            dot()
+        elif status["node"]:
+            bar.append(f"✓ {status['node']}", style=_DIM)
             dot()
         for i, label in enumerate((f"iter {status['iteration']}",
                                    f"{n} tool{'' if n == 1 else 's'}",
@@ -269,7 +278,9 @@ def reset_turn() -> None:
     _base._trace_started = False  # next node line leads with a blank to part it from the prompt
     # Carry the last measured context fill across turns (it only grows; refreshed once the agent
     # runs) but re-read the window in case the model/tier changed since the last turn.
-    _base._status = {"node": "", "iteration": 0, "tools": 0, "tok_per_sec": 0.0,
+    # Seed the node zone with `starting`: the turn is underway but no node has COMPLETED yet, so
+    # there is no finished node to name and an empty zone would read as a stalled bar.
+    _base._status = {"node": _NODE_STARTING, "iteration": 0, "tools": 0, "tok_per_sec": 0.0,
                      "ctx_used": _base._status.get("ctx_used", 0), "ctx_window": _active_ctx_window(),
                      "gates": 0}
     # Mark the egress ledger so the trust receipt can summarize exactly this turn's slice.

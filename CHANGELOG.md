@@ -164,6 +164,15 @@ to learn, audit, and maintain — none removes a protection.
   its distinguishing token in the *tail*, so two calls sharing a long prefix used to render
   identically at the very prompt that exists to tell them apart.
 
+- **An approval prompt raised by the injection quarantine now shows every argument in full.** A
+  read-only call reaches the gate only when earlier tool output was flagged for embedded
+  instructions — precisely when its arguments may have been steered and are the thing you are
+  being asked to check. They were being cut to an 80-character summary under a banner telling you
+  to check them.
+- **The quarantine banner counts the flagged sources it doesn't have room to name** (`+6 more`),
+  matching the gate's secret-scan warning. Previously it listed three and silently dropped the
+  rest, understating the exposure.
+
 - **Answers are checked against what was actually gathered.** After a turn that observed
   something, every figure the answer states (three or more digits, or any decimal) is traced
   back to your words or the turn's tool results; a figure that traces to nothing gets ONE

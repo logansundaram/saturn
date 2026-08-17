@@ -67,9 +67,62 @@ def test_full_width_args_branch():
     # 2026-07-16).
     for name in ("write_file", "edit_file", "run_shell"):
         assert not approval._full_width_args(name, "destructive")
-    # read_only calls (gated only via a quarantine escalation) keep the compact repr.
+    # read_only calls keep the compact repr on an ordinary (non-escalated) batch.
     assert not approval._full_width_args("web_search", "read_only")
     assert not approval._full_width_args("mcp_x_read", "read_only")
+
+
+def test_quarantine_escalation_forces_the_full_argument_view():
+    """A read_only call reaches the gate ONLY via a quarantine escalation — i.e. exactly when its
+    arguments may have been steered by injected content and ARE what the human is being asked to
+    check. Routing that case to the truncated repr was backwards: the banner says "check these
+    arguments are what YOU intended" over arguments the frame had cut."""
+    assert approval._full_width_args("web_search", "read_only", True)
+    assert approval._full_width_args("mcp_x_read", "read_only", True)
+    # Bespoke renderers still win — their decisive argument is already shown in full.
+    for name in ("write_file", "edit_file", "run_shell"):
+        assert not approval._full_width_args(name, "read_only", True)
+        assert not approval._full_width_args(name, "destructive", True)
+
+
+def test_quarantined_read_only_call_renders_its_arguments_in_full(monkeypatch, capsys):
+    # End to end through ask_approval: the escalated batch's long argument reaches the human
+    # instead of being cut at the 80-char repr.
+    monkeypatch.setattr(approval, "_RICH", False)
+    monkeypatch.setattr(approval, "_preamble_due", lambda: False)
+    monkeypatch.setattr("builtins.input", lambda _p="": "n")
+    payload = {
+        "tool_calls": [{"id": "1", "name": "web_search", "risk": "read_only",
+                        "args": {"query": "A" * 300 + "TAIL_TOKEN"}}],
+        "quarantine": {"flags": [{"tool": "web_extract", "kinds": ["instruction"]}]},
+    }
+    assert approval.ask_approval(payload) is False
+    out = capsys.readouterr().out
+    assert "TAIL_TOKEN" in out          # the tail survived — not truncated at 80 chars
+    assert "injection quarantine" in out
+
+
+def test_quarantine_banner_counts_the_flags_it_does_not_name(monkeypatch, capsys):
+    """"3 sources flagged" and "3 of 9 flagged" are different facts, and the smaller one
+    understates the exposure — flags past the display cap are counted, never silently dropped."""
+    monkeypatch.setattr(approval, "_RICH", False)
+    flags = [{"tool": f"t{i}", "kinds": ["instruction"]} for i in range(9)]
+    approval._render_quarantine_banner({"quarantine": {"flags": flags}})
+    out = capsys.readouterr().out
+    assert "t0" in out and "t2" in out
+    assert f"+{9 - approval._MAX_BANNER_FLAGS} more" in out
+    # At or under the cap there is no overflow marker at all.
+    capsys.readouterr()
+    approval._render_quarantine_banner({"quarantine": {"flags": flags[:3]}})
+    assert "more" not in capsys.readouterr().out
+
+
+def test_quarantine_flags_is_the_one_reader(monkeypatch):
+    # The banner and the full-width decision read the SAME list, so they can never disagree
+    # about whether a batch was escalated. Garbage payloads read as "not escalated".
+    assert approval._quarantine_flags({"quarantine": {"flags": [{"tool": "x"}]}}) == [{"tool": "x"}]
+    for junk in (None, {}, {"quarantine": None}, {"quarantine": {}}, "nope", []):
+        assert approval._quarantine_flags(junk) == []
 
 
 def test_clamp_value_head_and_tail():
@@ -630,7 +683,7 @@ def test_gate_prompt_survives_rich_render_failure(isolated_paths, monkeypatch):
     N-default prompt still runs. The decision path is untouched — bare Enter rejects."""
     buf = _rich_gate(monkeypatch, [""])
 
-    def boom(tc):
+    def boom(tc, quarantined=False):
         raise RuntimeError("diff renderer exploded")
 
     monkeypatch.setattr(approval, "_render_call", boom)

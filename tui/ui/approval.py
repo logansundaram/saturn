@@ -376,14 +376,22 @@ _BESPOKE_RENDERED = tuple(_BESPOKE)
 _MAX_ARG_VALUE = 2000
 
 
-def _full_width_args(name, risk: str) -> bool:
+def _full_width_args(name, risk: str, quarantined: bool = False) -> bool:
     """Whether a gated call renders each argument full-width (wrapped + head/tail-clamped) instead
     of the compact 80-char repr. Every side_effecting/destructive call WITHOUT a bespoke renderer
     qualifies — notably all mcp_* tools, which fail closed to destructive precisely because
     they're untrusted, so hiding the tail of their arguments behind a truncated repr is exactly
-    backwards. read_only calls (reaching the gate only via a quarantine escalation) keep
-    the compact form."""
-    return risk in ("side_effecting", "destructive") and name not in _BESPOKE_RENDERED
+    backwards.
+
+    `quarantined` (the batch follows injection-flagged tool output) forces the full view for
+    EVERY tier including read_only. A read_only call reaches the gate only via that escalation —
+    i.e. precisely when the arguments may have been steered by injected content and ARE the
+    thing the human is being asked to check. Sending exactly that case to the truncated repr was
+    backwards; the banner says "check these arguments are what YOU intended" over arguments the
+    frame had cut."""
+    if name in _BESPOKE_RENDERED:
+        return False  # its decisive argument is already shown in full by the bespoke renderer
+    return quarantined or risk in ("side_effecting", "destructive")
 
 
 def _clamp_value(text: str, cap: int = _MAX_ARG_VALUE) -> str:
@@ -455,13 +463,14 @@ def _arg_repr(v) -> str:
     return _truncate(repr(v), 80)
 
 
-def _render_call(tc: dict) -> None:
+def _render_call(tc: dict, quarantined: bool = False) -> None:
     """Render one gated call inside the approval frame — the per-call body shared by the rich
     and plain prompts (the rendering IS the safety surface, so the two paths must never drift):
     the risk-tier head line, the argument view (full-width when the call has no bespoke renderer,
     compact 80-char repr otherwise — minus the keys the bespoke view shows in full), the bespoke
     safety surface itself (diff / command, from the one _BESPOKE table), the secret warning, and
-    the per-tier hint."""
+    the per-tier hint. `quarantined` (the batch follows injection-flagged output) forces the
+    full-width argument view at every tier — see `_full_width_args`."""
     risk = str(tc.get("risk", "destructive"))
     risk_style = _RISK.get(risk, "bold red")
     name = tc.get("name")
@@ -477,7 +486,7 @@ def _render_call(tc: dict) -> None:
     else:
         print(f"  ┃ [{risk}] {name}")
 
-    if _full_width_args(name, risk):
+    if _full_width_args(name, risk, quarantined):
         _render_full_args(args)
     else:
         for k, v in args.items():  # one line per argument — full clarity
@@ -509,15 +518,32 @@ def _render_call(tc: dict) -> None:
             print(f"  ┃     -> {hint}")
 
 
+# How many flagged observations the banner names before it summarizes the rest. Matching the
+# secret-warning cap (_render_secret_warnings) on purpose — one overflow vocabulary at the gate.
+_MAX_BANNER_FLAGS = 3
+
+
+def _quarantine_flags(value: dict) -> list:
+    """The injection-quarantine flags this batch carries, or []. ONE reader: the banner names
+    them and `ask_approval` decides the full-width argument view from the same list, so the
+    warning and the rendering can never disagree about whether a batch was escalated."""
+    q = value.get("quarantine") if isinstance(value, dict) else None
+    return list((q or {}).get("flags") or [])
+
+
 def _render_quarantine_banner(value: dict) -> None:
     """When the batch follows a tool result flagged for embedded instructions, say so up front —
     the calls below may have been steered by injected content, so the human should check the
-    arguments are what THEY intended, not what a web page asked for."""
-    q = value.get("quarantine") if isinstance(value, dict) else None
-    flags = (q or {}).get("flags") or []
+    arguments are what THEY intended, not what a web page asked for. Flags past the display cap
+    are COUNTED, never silently dropped: "3 sources flagged" and "3 of 9 flagged" are different
+    facts, and the smaller one understates the exposure."""
+    flags = _quarantine_flags(value)
     if not flags:
         return
-    detail = "; ".join(f"{f.get('tool')}: {', '.join(f.get('kinds') or [])}" for f in flags[:3])
+    detail = "; ".join(f"{f.get('tool')}: {', '.join(f.get('kinds') or [])}"
+                       for f in flags[:_MAX_BANNER_FLAGS])
+    if len(flags) > _MAX_BANNER_FLAGS:
+        detail += f"; +{len(flags) - _MAX_BANNER_FLAGS} more"
     _frame_note("⚠ injection quarantine: earlier tool output this turn contained "
                 f"instruction-like content ({detail}) — approve only if these calls are what "
                 "YOU intended")
@@ -735,14 +761,14 @@ def _plain_call_lines(tc) -> list:
         return [f"<unrenderable call: {type(tc).__name__}>"]
 
 
-def _render_call_safely(tc) -> None:
+def _render_call_safely(tc, quarantined: bool = False) -> None:
     """The gate's per-call render, fail-soft (transplanted from the visibility isolate): the rich
     preview (diff / command / full-width args) is the safety surface, but a renderer that raises
     — a diff over an unreadable file, a width edge case — must never end the turn with the human
     never asked. On failure the plain fallback names the call and the same N-default prompt runs;
     the decision path is untouched."""
     try:
-        _render_call(tc)
+        _render_call(tc, quarantined)
     except Exception as exc:
         diag.log(f"gate: rich preview failed for {tc!r}: {type(exc).__name__}: {exc}")
         for ln in _plain_call_lines(tc):
@@ -786,8 +812,16 @@ def ask_approval(value: dict) -> "bool | dict":
         _render_quarantine_banner(value)
     except Exception as exc:  # display only — the prompt below still asks
         _frame_note(f"quarantine banner failed to render ({type(exc).__name__}: {exc})")
+    # A quarantine escalation is the ONE way a read_only call reaches this prompt, i.e. exactly
+    # when its arguments are the attack surface — so it forces the full-width argument view for
+    # the whole batch rather than the truncated repr. Read defensively: a malformed payload must
+    # cost the wider view, never the prompt.
+    try:
+        quarantined = bool(_quarantine_flags(value))
+    except Exception:
+        quarantined = False
     for tc in tool_calls:
-        _render_call_safely(tc)
+        _render_call_safely(tc, quarantined)
 
     # The sub-prompts (_always_allow's prefix proposal, _select_calls' arg summaries) embed RAW
     # command/argument text, and rich's Console.input parses markup AND emoji codes by default:

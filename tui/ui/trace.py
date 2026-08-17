@@ -349,7 +349,11 @@ def _egress_leaf(eg: dict) -> tuple[str, str]:
     host = str(eg.get("host") or "?")
     channel = str(eg.get("channel") or "")
     if eg.get("status") == "blocked":
-        return (f"⛔ air-gap blocked {channel or 'egress'} → {host} — nothing sent", "bold red")
+        # `⊘`, not `⛔`: the latter is East-Asian Wide AND emoji-presentation, so terminals render
+        # it as a color emoji that ignores the `bold red` style and overflows the rail column.
+        # `⊘` is the palette's existing blocked glyph (_base._PLAN["blocked"]) — same semantic,
+        # one cell, and it actually takes the style.
+        return (f"⊘ air-gap blocked {channel or 'egress'} → {host} — nothing sent", "bold red")
     parts = [f"⇅ sent → {host}"]
     n = eg.get("n_bytes") or 0
     if n:

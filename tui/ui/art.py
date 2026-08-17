@@ -274,7 +274,12 @@ def splash(work=None):
         if not _RICH and not os.environ.get("SATURDAY_NO_SPLASH"):
             print(_saturn_plain())
         _run()                              # no animation: just do the work, then settle
+        # `and _console.is_terminal`: a non-tty reports the fallback width (80), which clears the
+        # _ART_C + 2 bar — so the settled ring was being printed into pipes and redirected logs,
+        # the one place a splash can only be noise. `quiet` already tests is_terminal; this branch
+        # is reached for several other reasons too, so it must test it as well.
         if _RICH and not os.environ.get("SATURDAY_NO_SPLASH") \
+                and _console.is_terminal \
                 and _console.size.width >= _ART_C + 2:
             _console.print(_saturn_text(1.0, final=True))
         return _finish()

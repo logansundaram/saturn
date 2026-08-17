@@ -13,7 +13,7 @@ colored by value). The LAST column flexes into the remaining terminal width and 
 
 from ._base import (
     Text, _console, _RICH,
-    _ACCENT, _DIM, _RAIL_GLYPH, _RISK,
+    _ACCENT, _DIM, _RAIL, _RAIL_GLYPH, _RISK,
     _term_width, _truncate,
 )
 
@@ -84,7 +84,9 @@ def table(rows, styles=None) -> None:
     for row in norm:
         if _RICH:
             line = Text()
-            line.append(f"  {_RAIL_GLYPH} ", style=_DIM)
+            # _RAIL, not _DIM: this is the same gutter glyph _base._rail() draws for the trace,
+            # and a listing sitting next to a trace block must not render it a shade off.
+            line.append(f"  {_RAIL_GLYPH} ", style=_RAIL)
             for i, (text, style) in enumerate(row):
                 if i == ncols - 1:
                     line.append(_truncate(text, flex_w), style=style)

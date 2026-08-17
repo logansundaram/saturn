@@ -82,6 +82,18 @@ def show_context(window: int, used: int, source: str, per_role: dict[str, int]) 
 
 
 # ── model picker / listing ───────────────────────────────────────────────────────
+# Fixed column widths for the model table. The NAME column is enforced in both directions (pad
+# AND truncate) — `:<26` alone only pads, so one long tag (a `hf.co/…:Q4_K_M` id) pushed the size,
+# detail and binding columns out of alignment for every row that followed it.
+#
+# The detail column is deliberately pad-only: it is the LAST fixed column, so overflowing it
+# shifts nothing but the trailing `[embed]` / `◂ roles` annotations, while truncating it would
+# drop the calibration state — the fact `/models tier` exists to show. Losing data to tidy a
+# trailing annotation is the wrong trade.
+_NAME_W = 26
+_DETAIL_W = 26
+
+
 def show_models(models, bindings: dict, active_tier: str, embedder: str,
                 *, numbered: bool = False, meta: "dict | None" = None) -> None:
     """Render the locally-installed (Ollama) models plus the live role bindings, in the
@@ -145,13 +157,14 @@ def show_models(models, bindings: dict, active_tier: str, embedder: str,
             detail = " ".join(bits) or "·"
             tail = _tail_for(m.name)
             idx = f"{i:>2}  " if numbered else ""
+            name = _truncate(m.name, _NAME_W)  # see _NAME_W: pad-only left later columns adrift
             if _RICH:
                 line = _rail()
                 if numbered:
                     line.append(f"{i:>2}  ", style=_ACCENT)
-                line.append(f"{m.name:<26}", style="default")
+                line.append(f"{name:<{_NAME_W}}", style="default")
                 line.append(f"{m.size_h:>7}  ", style=_DIM)
-                line.append(f"{detail:<26}", style=_DIM)
+                line.append(f"{detail:<{_DETAIL_W}}", style=_DIM)
                 if m.is_embedding:
                     line.append("[embed] ", style="yellow")
                 if tail:
@@ -160,7 +173,8 @@ def show_models(models, bindings: dict, active_tier: str, embedder: str,
             else:
                 emb = "[embed] " if m.is_embedding else ""
                 bound = ("◂ " + tail) if tail else ""
-                print(f"  {_RAIL_GLYPH} {idx}{m.name:<26}{m.size_h:>7}  {detail:<26}{emb}{bound}")
+                print(f"  {_RAIL_GLYPH} {idx}{name:<{_NAME_W}}{m.size_h:>7}  "
+                      f"{detail:<{_DETAIL_W}}{emb}{bound}")
 
     # Role bindings summary — the full role list, even for roles whose model isn't pulled locally
     # (a bound tag that hasn't been `ollama pull`ed won't appear in the installed list above).

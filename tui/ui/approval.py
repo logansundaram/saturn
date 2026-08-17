@@ -153,7 +153,9 @@ def _diff_lines(file_path: str, content: str, overwrite: bool) -> "tuple[list, b
 
 
 _DIFF_STYLE = {"add": "green", "del": "red", "hunk": _ACCENT, "ctx": _DIM}
-_DIFF_SIGN = {"add": "+", "del": "-", "hunk": "", "ctx": " "}
+# The sign column is ONE cell wide for every kind — an empty hunk marker put `@@ …` headers a
+# column left of the body they head, so the diff read as if it had two different indents.
+_DIFF_SIGN = {"add": "+", "del": "-", "hunk": " ", "ctx": " "}
 
 
 # The write_verdict kinds that actually PRODUCE a diff — the only ones for which an empty row
@@ -639,7 +641,14 @@ def _always_allow(tool_calls: list, ask) -> dict:
             _grant_note("run_shell: no prefix could cover this command (shell metacharacters "
                         "always face the gate) — it keeps prompting")
             continue
-        resp = ask(f'      always-allow this exact command as a prefix? "{proposal}"  '
+        # "this exact command" was a small lie: the proposal is the command WHITESPACE-NORMALIZED
+        # (_propose_shell_prefix), which is what the matcher compares, so a user checking the echo
+        # against the frame above would find them differing by runs of spaces. Say what it is.
+        # The echo is clamped head+tail — the frame above already rendered the command in full
+        # byte-faithfully, so this line is a reference, not the presentation.
+        shown = head_tail(proposal, _PROMPT_ECHO_CAP, marker=_PROMPT_ELISION)
+        resp = ask(f'      always-allow this command (whitespace-normalized) as a prefix? '
+                   f'"{shown}"  '
                    "y / N / or type a shorter prefix  (Enter = no) » ").strip()
         if resp.lower() in ("y", "yes"):
             chosen = proposal
@@ -661,9 +670,9 @@ def _always_allow(tool_calls: list, ask) -> dict:
 # different calls read identically. `_SELECT_VALUE_CAP` keeps _fmt_args' own per-value truncation
 # (which IS head-only) out of the way, so the head+tail cut below is the only one that lands.
 # Single-line elision marker: this is a prompt, not a frame body.
-_SELECT_ARG_CAP = 160
+_PROMPT_ECHO_CAP = 160
+_PROMPT_ELISION = " … +{dropped} chars … "
 _SELECT_VALUE_CAP = 2000
-_SELECT_ELISION = " … +{dropped} chars … "
 
 
 def _select_calls(tool_calls: list, ask) -> "bool | dict":
@@ -681,7 +690,7 @@ def _select_calls(tool_calls: list, ask) -> "bool | dict":
     total = len(tool_calls)
     for i, tc in enumerate(tool_calls, 1):
         summary = head_tail(_fmt_args(tc.get("args") or {}, _SELECT_VALUE_CAP),
-                            _SELECT_ARG_CAP, marker=_SELECT_ELISION)
+                            _PROMPT_ECHO_CAP, marker=_PROMPT_ELISION)
         r = ask(f"      call {i}/{total}: allow {tc.get('name')}({summary})? "
                 "y / N  (Enter = no) » ").strip().lower()
         if r in ("y", "yes"):

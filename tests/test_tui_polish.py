@@ -211,6 +211,66 @@ def test_unknown_plan_status_renders_as_unknown_never_pending(monkeypatch):
     assert row.lstrip().startswith("·")
 
 
+# ── Tier-2 instrument surfaces ───────────────────────────────────────────────────────────────
+
+
+def test_meter_color_never_wears_the_risk_vocabulary():
+    """`bold red` is the posture/risk voice — `⚠ GATE OFF` sits on the same bar and the
+    destructive tier wears it at the gate. A busy CPU is load, not risk."""
+    base = importlib.import_module("tui.ui._base")
+    assert base._meter_color(10) == "green"
+    assert base._meter_color(70) == "yellow"
+    assert base._meter_color(99) == "red"
+    assert "bold" not in base._meter_color(100)
+
+
+def test_model_rows_stay_aligned_when_a_name_overflows(capsys):
+    """`:<26` only pads. One long tag (a `hf.co/…:Q4_K_M` id) pushed the size, detail and
+    binding columns out of alignment for every row after it."""
+    from tui import ui
+
+    class _Local:
+        def __init__(self, name):
+            self.name = name
+            self.size_h = "3.4G"
+            self.parameter_size = "4.7B"
+            self.quantization = "Q4_K_M"
+            self.is_embedding = False
+
+    ui.show_models(
+        [_Local("hf.co/someorg/a-very-long-model-repository-name:Q4_K_M"), _Local("qwen3.5:4b")],
+        {}, "4b", "qwen3-embedding:8b",
+    )
+    rows = [ln for ln in capsys.readouterr().out.splitlines() if "3.4G" in ln]
+    assert len(rows) == 2
+    # The size column starts at the same offset on both rows — that is the whole point.
+    assert len({ln.index("3.4G") for ln in rows}) == 1
+
+
+def test_air_gap_glyph_is_one_cell_and_shared_by_rail_and_receipt():
+    """`⛔` is East-Asian Wide AND emoji-presentation: terminals paint it as a color emoji that
+    ignores the `bold red` style and overflows the rail column. `⊘` is the palette's existing
+    blocked glyph — one cell, and it takes the style. The rail and the receipt must name the same
+    fact with the same glyph."""
+    import unicodedata
+
+    from trust import receipt, egress
+
+    trace = importlib.import_module("tui.ui.trace")
+    base = importlib.import_module("tui.ui._base")
+
+    text, style = trace._egress_leaf({"channel": "web_search", "host": "h", "status": "blocked"})
+    glyph = text[0]
+    assert glyph == base._PLAN["blocked"][0]          # the one blocked glyph in the palette
+    assert unicodedata.east_asian_width(glyph) != "W"  # one cell, so the rail stays aligned
+    assert style == "bold red"                         # …and the style is what carries the alarm
+
+    parts = receipt.trust_parts(
+        [egress.EgressEvent(ts="t", channel="web_search", host="h", n_bytes=0,
+                            status=egress.BLOCKED)], 0)
+    assert any(p.startswith(glyph) for p in parts)
+
+
 # ── the status bar names the last FINISHED node, never a running one ─────────────────────────
 # show_node is fed from a node's *update* event, which LangGraph emits on completion — so the bar
 # said `▸ plan` in active styling while `execute` was running, contradicting the `✓ plan` rail

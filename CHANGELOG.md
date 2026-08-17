@@ -207,6 +207,13 @@ to learn, audit, and maintain — none removes a protection.
   fallback is the only way to see the text, the body still prints — at the same indent and width
   as the streamed answer.
 
+- Assorted readability fixes: a hot CPU/RAM gauge no longer shouts in the same bold red as
+  `⚠ GATE OFF` (load is not risk); the air-gap "blocked" marker uses a glyph that actually takes
+  its colour and fits the trace rail, in both the trace and the receipt; a long model tag in
+  `/models` no longer pushes every later column out of line; diff hunk headers line up with the
+  diff body; the always-allow prompt says the command it echoes is whitespace-normalized rather
+  than calling it "this exact command"; and the startup splash no longer prints into pipes.
+
 - **Answers are checked against what was actually gathered.** After a turn that observed
   something, every figure the answer states (three or more digits, or any decimal) is traced
   back to your words or the turn's tool results; a figure that traces to nothing gets ONE

@@ -194,7 +194,7 @@ def test_egress_leaf_text_and_styles():
 
     text, style = tr._egress_leaf(
         {"channel": "web_search", "host": "duckduckgo.com", "status": "blocked"})
-    assert text.startswith("⛔ air-gap blocked web_search → duckduckgo.com")
+    assert text.startswith("⊘ air-gap blocked web_search → duckduckgo.com")
     assert style == "bold red"
 
     text, style = tr._egress_leaf({"more": 2})

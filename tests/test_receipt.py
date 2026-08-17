@@ -22,7 +22,7 @@ def test_silent_when_nothing_sent():
 
 
 def test_blocked_only_shows_just_the_block():
-    assert receipt.trust_parts([_ev(status=egress.BLOCKED)], 0) == ["⛔ 1 blocked"]
+    assert receipt.trust_parts([_ev(status=egress.BLOCKED)], 0) == ["⊘ 1 blocked"]
 
 
 def test_send_summary_bytes_and_host():

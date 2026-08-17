@@ -131,12 +131,15 @@ def _human_tokens(n: int) -> str:
 
 def _meter_color(pct: float) -> str:
     """Load -> semantic color. Used for every gauge (context fill, cpu/ram/gpu) so a hot meter
-    reads the same way everywhere: green ok, yellow warm, red hot."""
+    reads the same way everywhere: green ok, yellow warm, red hot. Plain red, never BOLD red:
+    bold red is the posture/risk vocabulary (`⚠ GATE OFF` sits on this same bar, and the
+    destructive tier wears it at the gate). A busy CPU is load, not risk — they must not shout
+    with the same voice."""
     if pct < 60:
         return "green"
     if pct < 85:
         return "yellow"
-    return "bold red"
+    return "red"
 
 
 def _mini_bar(pct: float, width: int = 6) -> str:

@@ -91,7 +91,11 @@ def trust_spans(events: list, gated_calls: int = 0) -> list[tuple[str, str]]:
                 label += f" +{len(hosts) - 1}"
         spans.append((label, "sent"))
     if agg["blocked"]:
-        spans.append((f"⛔ {agg['blocked']} blocked", "blocked"))
+        # `⊘` (the palette's blocked glyph), not `⛔`: the latter is East-Asian Wide AND
+        # emoji-presentation, so terminals paint it as a color emoji that ignores the `blocked`
+        # span's bold-red style. Kept in step with the rail's air-gap leaf (tui/ui/trace.
+        # _egress_leaf) — the receipt and the trace must name the same fact with the same glyph.
+        spans.append((f"⊘ {agg['blocked']} blocked", "blocked"))
     if gated_calls:
         spans.append(_gated_span(gated_calls))
     return spans

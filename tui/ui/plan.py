@@ -78,6 +78,35 @@ def _fingerprint(plan) -> list[tuple]:
     ]
 
 
+def _finished(plan) -> int:
+    """How many steps have reached a terminal status. Reads the engine's own vocabulary
+    (core.state.TERMINAL_STATUSES) rather than re-listing it here — a hand copy would drift the
+    moment a status is added. Lazily imported like `_review_help`'s plan_ops so the TUI stays a
+    leaf; any failure just costs the count, never the render."""
+    try:
+        from core.state import TERMINAL_STATUSES
+
+        return sum(1 for s in plan if s.get("status") in TERMINAL_STATUSES)
+    except Exception:
+        return 0
+
+
+def _plan_header(plan) -> None:
+    """One dim `│ plan · 4/12` row above each full re-render. show_plan re-prints the whole plan
+    on every material change — 8-12 times in a normal turn — and the rows were bare, interleaved
+    with trace rows, with nothing marking where one rendering ended and the next began. The
+    header is the delimiter, and the count doubles as the progress the repetition is there to
+    show."""
+    total = len(plan)
+    label = f"plan · {_finished(plan)}/{total}"
+    if _RICH:
+        row = _rail()
+        row.append(label, style=_DIM)
+        _emit(row)
+    else:
+        _emit(f"  {_RAIL_GLYPH} {label}")
+
+
 def show_plan(plan) -> None:
     """Render the live plan — the FULL step list, every row carrying its status glyph and
     intended tool — each time it materially changes (2026-07-06 faithful-rendering rework):
@@ -105,6 +134,7 @@ def show_plan(plan) -> None:
             _base._plan_seen = fp  # record it so the terminal render still diffs as a change
             return
     _base._plan_seen = fp
+    _plan_header(plan)
     for step in plan:
         _emit(_plan_line(step, show_tool=True))
 

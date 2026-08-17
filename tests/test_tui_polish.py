@@ -214,6 +214,35 @@ def test_unknown_plan_status_renders_as_unknown_never_pending(monkeypatch):
 # ── Tier-2 instrument surfaces ───────────────────────────────────────────────────────────────
 
 
+def test_each_plan_rerender_is_delimited_by_a_progress_header(fresh_plan_display, capsys):
+    """show_plan re-prints the WHOLE plan on every material change — 8-12 times in a normal turn
+    — and the rows were bare, interleaved with trace rows, with nothing marking where one
+    rendering ended and the next began."""
+    from tui import ui
+
+    plan = [{"step_id": i, "label": f"step {i}", "status": "pending", "intended_tool": None}
+            for i in range(1, 5)]
+    ui.show_plan(plan)
+    assert "plan · 0/4" in capsys.readouterr().out
+
+    plan[0]["status"] = "done"
+    plan[1]["status"] = "error"      # an incident is finished too — the count is progress, not success
+    ui.show_plan(plan)
+    out = capsys.readouterr().out
+    assert "plan · 2/4" in out
+    assert out.count("plan · ") == 1  # exactly one header per re-render
+
+
+def test_plan_header_reads_the_engine_status_vocabulary():
+    # A hand-copied status list would drift the moment a status is added.
+    from core.state import TERMINAL_STATUSES
+
+    plan_ui = importlib.import_module("tui.ui.plan")
+    plan = [{"step_id": i, "status": s} for i, s in enumerate(TERMINAL_STATUSES, 1)]
+    assert plan_ui._finished(plan) == len(TERMINAL_STATUSES)
+    assert plan_ui._finished([{"status": "pending"}, {"status": "active"}]) == 0
+
+
 def test_meter_color_never_wears_the_risk_vocabulary():
     """`bold red` is the posture/risk voice — `⚠ GATE OFF` sits on the same bar and the
     destructive tier wears it at the gate. A busy CPU is load, not risk."""

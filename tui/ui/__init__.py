@@ -34,7 +34,9 @@ frame. Specifics:
     cancellation, a review edit. (The old one-line status diff hid tools after the first print
     and missed a redraft that kept ids/statuses.) The one fold: a step flipping to bare
     `active` — the execute rail line + reasoning leaf in the same delta already name the step
-    being worked, so that flip rides silently into the next material render.
+    being worked, so that flip rides silently into the next material render. Each re-render opens
+    with a dim `│ plan · 4/12` row: it delimits one rendering from the next (they interleave with
+    trace rows 8-12 times a turn) and the count is the progress the repetition exists to show.
   - The `tools` node renders a **tool-I/O sub-tree** under its header: one `├─ name(args)  dur`
     branch per call, the call repr sized to the terminal width and durations column-aligned. Raw
     result previews are **hidden** by default (noisy JSON) — a failed call still shows its error

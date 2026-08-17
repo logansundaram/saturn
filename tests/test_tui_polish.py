@@ -209,3 +209,43 @@ def test_unknown_plan_status_renders_as_unknown_never_pending(monkeypatch):
     # a step carrying no status at all is still pending (the producer's default)
     row = plan_ui._plan_line_bare({"step_id": 1, "label": "x"}, show_tool=False)
     assert row.lstrip().startswith("·")
+
+
+# ── streaming vs finished measure: the answer must not re-wrap when it lands ─────────────────
+# The live tail and the finished markdown rendered at different widths (full terminal vs
+# min(term, _BODY_WIDTH)), so on any terminal wider than ~102 columns every line break in the
+# answer moved the instant finish() ran. Both now render at min(term, _BODY_WIDTH).
+
+
+@pytest.mark.parametrize("width", [80, 110, 160])
+def test_streaming_tail_and_final_body_share_one_measure(width, monkeypatch):
+    resp = importlib.import_module("tui.ui.response")
+    base = importlib.import_module("tui.ui._base")
+    if not resp._RICH:
+        pytest.skip("rich not available")
+
+    from rich.console import Console
+
+    console = Console(width=width, highlight=False, force_terminal=False)
+    monkeypatch.setattr(base, "_console", console)
+    monkeypatch.setattr(resp, "_console", console)
+
+    expected = min(width, resp._BODY_WIDTH)
+
+    stream = resp.ResponseStream()
+    stream._chars = ["word " * 200]
+    stream._len = len(stream._chars[0])
+    rendered = console.render_lines(resp._constrained(stream._tail()), pad=False)
+    tail_max = max(sum(seg.cell_length for seg in line) for line in rendered)
+
+    body = console.render_lines(
+        resp.Padding(resp.Text("word " * 200), (0, 0, 0, 2)),
+        console.options.update(width=expected), pad=False,
+    )
+    body_max = max(sum(seg.cell_length for seg in line) for line in body)
+
+    assert tail_max <= expected
+    assert body_max <= expected
+    # Both actually FILL the shared measure — a clamp that silently narrowed one of them
+    # would pass the bounds above while still re-wrapping at finish().
+    assert tail_max == body_max

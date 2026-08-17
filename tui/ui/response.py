@@ -10,7 +10,7 @@ import time
 
 from . import _base
 from ._base import (
-    Live, Markdown, Padding, Text, _console, _RICH,
+    Constrain, Live, Markdown, Padding, Text, _console, _RICH,
     _DIM, _fmt_dur, _term_width,
 )
 from .statusbar import _live_stop
@@ -271,6 +271,21 @@ def _first_answer_hint() -> None:
 # The answer's measure: indented to the app's 2-space rhythm and capped so prose stays readable
 # on a wide terminal (a full-bleed 200-column paragraph is harder to read than a ~100-column one).
 _BODY_WIDTH = 100
+
+
+def _constrained(renderable):
+    """Bound a live-region renderable to the SAME measure the finished answer renders at —
+    `min(_term_width(), _BODY_WIDTH)`, which is exactly what `Constrain(x, _BODY_WIDTH)` yields
+    (it takes the smaller of the cap and the space available). `Live` has no per-update width, so
+    without this the streaming tail wrapped at the full terminal width and the final markdown at
+    100, and every line break in the answer moved the instant `finish()` ran on any terminal wider
+    than ~102 columns. Additive: without rich (or on any failure) the renderable passes through."""
+    if not _RICH or Constrain is None:
+        return renderable
+    try:
+        return Constrain(renderable, _BODY_WIDTH)
+    except Exception:
+        return renderable
 
 
 def _print_markdown_body(body: str) -> None:
@@ -538,7 +553,7 @@ class ResponseStream:
         if self._live is not None:
             now = time.perf_counter()
             if now - self._last >= 0.06:  # throttle (~16/s) so granular tokens don't thrash the live
-                self._live.update(self._tail(), refresh=True)
+                self._live.update(_constrained(self._tail()), refresh=True)
                 self._last = now
         else:  # plain (no-rich) path: just type it out (no styling to carry the marks)
             print(text, end="", flush=True)
@@ -592,9 +607,14 @@ class ResponseStream:
         the first lines of the answer (the data is fine; only the on-screen handoff breaks).
 
         Low-confidence runs (the live ledger, graded here per repaint) render red inside the
-        tail — best-effort, and only over the visible slice."""
+        tail — best-effort, and only over the visible slice.
+
+        The row budget is computed against `_BODY_WIDTH` because that is the measure the tail is
+        actually rendered at (`_constrained`, and the same one `finish()` uses) — counting rows
+        against the full terminal width would undercount them on a wide terminal and let the live
+        region outgrow the screen, which is exactly what breaks the transient erase."""
         rows = max(4, (_console.size.height or 24) - 6)
-        cols = max(20, _console.size.width or 80)
+        cols = min(max(20, _console.size.width or 80), _BODY_WIDTH)
         avail = max(1, cols - 2)  # room for text after the 2-space indent below
         joined = "".join(self._chars)
         lines = joined.split("\n")

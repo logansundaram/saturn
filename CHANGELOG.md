@@ -173,6 +173,11 @@ to learn, audit, and maintain — none removes a protection.
   matching the gate's secret-scan warning. Previously it listed three and silently dropped the
   rest, understating the exposure.
 
+- **The streaming answer no longer re-wraps the moment it finishes.** The live tail wrapped at
+  the full terminal width while the finished answer renders at a readable ~100-column measure, so
+  on any terminal wider than about 102 columns every line break in the answer moved at the
+  hand-off. Both now use the same measure: the text stays put and only picks up its formatting.
+
 - **Answers are checked against what was actually gathered.** After a turn that observed
   something, every figure the answer states (three or more digits, or any decimal) is traced
   back to your words or the turn's tool results; a figure that traces to nothing gets ONE

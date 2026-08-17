@@ -19,13 +19,14 @@ try:
     from rich.live import Live
     from rich.markdown import Markdown
     from rich.padding import Padding
+    from rich.constrain import Constrain
 
     _console = Console(highlight=False)
     _RICH = True
 except Exception:  # pragma: no cover - fallback path
     # Define the names unconditionally so `from ._base import Text` resolves even without rich;
     # they're only ever *used* under an `if _RICH:` guard, so the None values are never called.
-    Console = Text = Live = Markdown = Padding = None
+    Console = Text = Live = Markdown = Padding = Constrain = None
     _console = None
     _RICH = False
 

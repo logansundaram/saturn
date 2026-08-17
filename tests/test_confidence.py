@@ -296,14 +296,34 @@ def test_redden_segments_preserves_style_and_marks_by_content():
 
 
 def test_frozen_tail_render_survives_confidence(capsys):
-    # The freeze editor's tail print with an overlay present — smoke both paths' tolerance.
+    # The freeze editor's print with an overlay present — smoke both paths' tolerance.
     from tui.ui.correction import _print_frozen
 
     text = "aa bb cc"
     conf = confidence.align_chunk(text, [_lp("aa", LOW), _lp(" bb", LOW), _lp(" cc", LOW)])
+
+    # Default: the one-line summary only — the pre-filled editor is the single presentation of
+    # the frozen text, so re-printing the body here just made the answer move again.
     _print_frozen(text, [], conf)
     out = capsys.readouterr().out
-    assert "aa bb cc" in out
+    assert "✂ frozen" in out and "8 chars" in out
+    assert "low-confidence run" in out
+    assert "aa bb cc" not in out
+
+    # The wizard floor has no editor, so it still gets the body.
+    _print_frozen(text, [], conf, show_tail=True)
+    assert "aa bb cc" in capsys.readouterr().out
+
+
+def test_frozen_summary_counts_earlier_corrections():
+    from tui.ui.correction import _frozen_summary
+
+    spans = [{"start": 0, "end": 2, "author": "model"},
+             {"start": 2, "end": 5, "author": "human"}]
+    line = _frozen_summary("abcdefgh", spans, None)
+    assert "8 chars" in line and "1 earlier correction" in line
+    # Garbage spans are tolerated — the summary is additive, never the freeze's problem.
+    assert "8 chars" in _frozen_summary("abcdefgh", ["nope", None], None)
 
 
 def test_answer_gate_payload_carries_the_overlay(monkeypatch):

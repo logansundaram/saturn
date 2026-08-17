@@ -198,6 +198,15 @@ to learn, audit, and maintain — none removes a protection.
   frozen screen — right after the most interactive moment in the product. The bar is re-pinned on
   the way out, exactly as the approval gate and plan-review editor already did.
 
+- **Freezing an answer no longer makes it jump around before you can type.** Pressing Esc used
+  to re-render the same answer three more times in three different layouts — a gutter-indented
+  tail, then the editor's pre-filled copy at column 0, then the final markdown — so the text
+  moved under the cursor twice on the way to the edit. The freeze now prints one line saying what
+  it captured (`✂ frozen — 412 chars, 3 low-confidence runs`) and hands straight to the editor,
+  which is indented to match everything else on screen. Without prompt_toolkit, where the wizard
+  fallback is the only way to see the text, the body still prints — at the same indent and width
+  as the streamed answer.
+
 - **Answers are checked against what was actually gathered.** After a turn that observed
   something, every figure the answer states (three or more digits, or any decimal) is traced
   back to your words or the turn's tool results; a figure that traces to nothing gets ONE

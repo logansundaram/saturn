@@ -23,18 +23,16 @@ diffing and the audit record are the gate's job (core/provenance.apply_edit); th
 collects text.
 """
 
-from ._base import Padding, Text, _console, _RICH, _ACCENT, _DIM, _term_width
+from ._base import (
+    Padding, Text, _console, _RICH, _ACCENT, _DIM,
+    _HUMAN_STYLE, _LOW_CONF_STYLE, _term_width,
+)
 from .listing import section
 from .prompt import ask
 from .statusbar import _live_start
 
-# Human-authored characters render in the answer's correction style everywhere (here, the final
-# answer body, the rail echo): cyan is the palette's "the human is acting" color.
-_HUMAN_STYLE = "bold cyan underline"
-
-# Low-confidence runs (the model's own logprobs — core/confidence.py) render plain red, same as
-# the live streaming tail: they mark WHERE the model was unsure, i.e. where to aim the edit.
-_LOW_CONF_STYLE = "red"
+# `_HUMAN_STYLE` / `_LOW_CONF_STYLE` come from _base: this surface, the live streaming tail and
+# the final answer body must mark the same characters identically, and duplicated literals drift.
 
 _TAIL_LINES = 8
 
@@ -48,7 +46,7 @@ def _tail_offset(text: str, max_lines: int = _TAIL_LINES) -> int:
 
 
 def _low_runs(text: str, confidence) -> list:
-    """The low-confidence character runs to mark red, or [] (absent overlay, any failure —
+    """The low-confidence character runs to mark, or [] (absent overlay, any failure —
     the marking is additive, never the editor's problem)."""
     if not confidence:
         return []

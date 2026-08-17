@@ -11,7 +11,7 @@ import time
 from . import _base
 from ._base import (
     Constrain, Live, Markdown, Padding, Text, _console, _RICH,
-    _DIM, _fmt_dur, _term_width,
+    _DIM, _HUMAN_STYLE, _LOW_CONF_STYLE, _fmt_dur, _term_width,
 )
 from .statusbar import _live_stop
 from .listing import section
@@ -79,14 +79,8 @@ _turn_glass = None
 # the HUMAN and the audit trail only — the model saw clean text.
 _turn_buffer = None
 
-# What human-authored characters render as — the one correction style, shared with the freeze
-# editor's tail (tui/ui/correction.py) and semantically cyan: the human acted here.
-_HUMAN_STYLE = "bold cyan underline"
-
-# What low-confidence runs render as — plain red foreground (never bold: bold red is the
-# blocked/air-gap vocabulary; this is a caution, not a violation). Shared with the freeze
-# editor's tail (tui/ui/correction.py) and the live streaming tail below.
-_LOW_CONF_STYLE = "red"
+# The answer-marking styles live in _base (`_HUMAN_STYLE`, `_LOW_CONF_STYLE`) — imported above,
+# and re-exported by name here because trace.py's replay marking reads them from this module.
 
 
 def set_turn_buffer(state) -> None:
@@ -315,7 +309,8 @@ def response(text: str) -> None:
 
 def _print_marked_body(body: str, buf: dict) -> bool:
     """The offset-faithful marked render for a CORRECTED answer: human-corrected characters cyan
-    and any surviving low-confidence runs red (cyan layered ON TOP — an already-reviewed region
+    and any surviving low-confidence runs marked (`_LOW_CONF_STYLE`; human cyan layered ON TOP —
+    an already-reviewed region
     never re-alarms). Markdown is traded for exact character-position fidelity, because the
     human's edit must be visible precisely where it landed and a markdown re-flow would lose
     those offsets (the deliberate interrupt-and-correct choice — an uncorrected-but-uncertain
@@ -336,7 +331,7 @@ def _print_marked_body(body: str, buf: dict) -> bool:
             s, e = min(s, len(prose)), min(e, len(prose))
             if e > s:
                 t.stylize(_LOW_CONF_STYLE, s, e)
-        for s, e in human:  # after the red: the later stylize wins, human cyan on top
+        for s, e in human:  # after the mark: the later stylize wins, human cyan on top
             s, e = min(s, len(prose)), min(e, len(prose))
             if e > s:
                 t.stylize(_HUMAN_STYLE, s, e)
@@ -347,17 +342,20 @@ def _print_marked_body(body: str, buf: dict) -> bool:
         return False  # marking is additive — never lose the answer over it
 
 
-def _redden_segments(segments, phrases: list, style: str):
-    """Yield a Rich Segment stream with `phrases` reddened WHERE THEY OCCUR, combining the red
-    into each segment's existing style (so a bold low-confidence phrase renders bold-red). This
+def _mark_segments(segments, phrases: list, style: str):
+    """Yield a Rich Segment stream with `phrases` marked WHERE THEY OCCUR, combining `style` into
+    each segment's existing style (so a bold low-confidence phrase stays bold AND marked). This
     marks by CONTENT, not source offset — which is what lets markdown survive: Rich's markdown
     reflow destroys source character offsets, but a phrase's text stays intact within a rendered
     segment. A phrase split across a markdown style boundary or a soft-wrap simply isn't found in
-    any one segment and goes unmarked — an honest additive miss, never a mangled render."""
+    any one segment and goes unmarked — an honest additive miss, never a mangled render.
+
+    (Named `_redden_segments` until the low-confidence mark stopped being red — see
+    `_base._LOW_CONF_STYLE`. It was always style-agnostic; only the name said otherwise.)"""
     from rich.segment import Segment
     from rich.style import Style
 
-    red = Style.parse(style)
+    mark = Style.parse(style)
     for seg in segments:
         t = seg.text
         if seg.control or not t or not phrases:
@@ -386,7 +384,7 @@ def _redden_segments(segments, phrases: list, style: str):
         for s, e in merged:
             if s > pos:
                 yield Segment(t[pos:s], base)
-            yield Segment(t[s:e], base + red)
+            yield Segment(t[s:e], base + mark)
             pos = e
         if pos < len(t):
             yield Segment(t[pos:], base)
@@ -394,9 +392,9 @@ def _redden_segments(segments, phrases: list, style: str):
 
 class _ConfidenceMarkdown:
     """A Markdown renderable whose low-confidence phrases render red with the markdown formatting
-    (headings, bold, lists, fenced code) fully preserved — because the reddening happens on the
-    rendered SEGMENT stream by content (see _redden_segments), not on the source text by offset.
-    This is what lets an uncertain answer keep its markdown AND show its red, unlike the
+    (headings, bold, lists, fenced code) fully preserved — because the marking happens on the
+    rendered SEGMENT stream by content (see _mark_segments), not on the source text by offset.
+    This is what lets an uncertain answer keep its markdown AND show its marks, unlike the
     offset-faithful `_print_marked_body` (which a human correction still needs for exact edit
     positions)."""
 
@@ -406,11 +404,11 @@ class _ConfidenceMarkdown:
         self._style = style
 
     def __rich_console__(self, console, options):
-        yield from _redden_segments(console.render(self._md, options), self._phrases, self._style)
+        yield from _mark_segments(console.render(self._md, options), self._phrases, self._style)
 
 
 def _print_markdown_confidence(body: str, buf: dict) -> bool:
-    """Render `body` as real markdown with its low-confidence runs reddened (markdown preserved —
+    """Render `body` as real markdown with its low-confidence runs marked (markdown preserved —
     the common uncorrected-but-uncertain case). Returns False (caller falls back to plain
     markdown) when the buffer doesn't prefix the body or there is nothing to mark."""
     try:
@@ -441,7 +439,7 @@ def _render_answer_body(body: str, buf) -> None:
     """Render the answer body, choosing how to mark it: a CORRECTED answer keeps the
     offset-faithful plain-text render (markdown traded for exact edit-position fidelity — the
     deliberate interrupt-and-correct choice); an uncorrected-but-UNCERTAIN answer keeps its
-    markdown and reddens the low-confidence runs by content; a plain confident answer renders as
+    markdown and marks the low-confidence runs by content; a plain confident answer renders as
     markdown. All marking is additive — any failure falls through to plain markdown."""
     if buf is not None:
         try:
@@ -465,7 +463,7 @@ def _final_render(text: str, *, plain_body: "str | None") -> None:
     no-rich path prints as the body — the whole text for `response()`, only the trailer beyond
     the already-typed stream for `finish()` (None = nothing left to print). Body marking is
     dispatched by `_render_answer_body`: a corrected answer renders offset-faithfully, an
-    uncertain answer keeps markdown with its low-confidence runs reddened, a plain answer is
+    uncertain answer keeps markdown with its low-confidence runs marked, a plain answer is
     markdown (the receipt counts corrections + uncertain spans) — see set_turn_buffer."""
     gb = _pop_turn_provenance()
     buf = _pop_turn_buffer()

@@ -64,6 +64,22 @@ _RISK_HINT = {
     "destructive": "irreversible — review carefully",
 }
 
+# ── answer-marking styles (interrupt-and-correct + token confidence) ──────────
+# Hoisted here because three surfaces must agree character-for-character: the live streaming
+# tail, the freeze editor, and the final answer body (plus the /trace replay's re-marking).
+# They used to be duplicated literals in response.py and correction.py.
+#
+# Human-authored characters — semantically cyan: the human acted here.
+_HUMAN_STYLE = "bold cyan underline"
+# Low-confidence runs (the model's own logprobs — core/confidence.py). NOT red:
+#   - red is already "this failed" in five other places (error rows, rejected gate decisions,
+#     the del side of a diff); an uncertain phrase is a caution, not a failure;
+#   - it is a PURE HUE, so `NO_COLOR=1` erases the marking outright — the receipt would say
+#     `◌ 3 uncertain spans` with nothing marked in the body to look at. `dim underline` carries
+#     no color at all, so it survives NO_COLOR, monochrome terminals and GIF color compression.
+# Markers carry state; color only reinforces it (see the package docstring).
+_LOW_CONF_STYLE = "dim underline"
+
 _RAIL_GLYPH = "│"
 _NODE_W = 12  # node-name column width, keeps timings aligned
 

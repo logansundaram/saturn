@@ -23,7 +23,11 @@ frame. Specifics:
     the bar (and the receipt), and a freeze/correction/bounded-record leaf keeps its row so no
     annotation is ever orphaned.
   - Color is **semantic only**: green = done, cyan = active, yellow/red = risk tier. Structure
-    is dim. Nothing is colored just to look nice — if it has color, it means something.
+    is dim. Nothing is colored just to look nice — if it has color, it means something. And
+    because color is the first thing a terminal drops, the MARKER carries the state and color only
+    reinforces it: everything must still read under `NO_COLOR=1`. (Hence `_base._LOW_CONF_STYLE`
+    is `dim underline`, not a hue — an uncertain phrase is a caution, not a failure, and a pure
+    color would leave the receipt counting spans the body no longer shows.)
   - The plan re-renders **in full** — every row carrying its status glyph AND intended tool —
     each time it materially changes (2026-07-06 faithful-rendering rework): the first draft,
     each completed step of the execute → update_plan loop, a replan's redraft, a rectify

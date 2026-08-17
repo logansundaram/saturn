@@ -214,6 +214,12 @@ to learn, audit, and maintain — none removes a protection.
   diff body; the always-allow prompt says the command it echoes is whitespace-normalized rather
   than calling it "this exact command"; and the startup splash no longer prints into pipes.
 
+- **Low-confidence phrases in an answer are marked with dim underline instead of red.** Red
+  already means "this failed" everywhere else in the interface, and being a pure colour it
+  disappeared entirely under `NO_COLOR=1` and on monochrome terminals — leaving the receipt
+  reporting `◌ 3 uncertain spans` with nothing marked to look at. The new marking carries no
+  colour, so it survives, and stays distinct from the cyan used for your own edits.
+
 - **Answers are checked against what was actually gathered.** After a turn that observed
   something, every figure the answer states (three or more digits, or any decimal) is traced
   back to your words or the turn's tool results; a figure that traces to nothing gets ONE

@@ -10,7 +10,7 @@ This module owns the two pure halves of that:
     rides the checkpointer). When the daemon's token strings don't reassemble the chunk text
     exactly (rare), the whole chunk gets ONE mean-logprob entry — an honest coarse reading,
     never mis-attributed character offsets.
-  - `low_runs(entries, text)` — the display question: which character ranges should render red?
+  - `low_runs(entries, text)` — the display question: which character ranges should be marked?
     A token is LOW when its sampled probability sits under `runtime.confidence_threshold`;
     a run is >= `_MIN_RUN` consecutive low tokens (neutral tokens — whitespace/punctuation,
     whose probabilities say nothing about content, and since 2026-08-15 the closed-class
@@ -232,7 +232,8 @@ def align_chunk(text: str, logprobs, offset: int = 0) -> list[dict]:
 
 def low_runs(entries, text: str, threshold_p: "float | None" = None,
              min_run: int = _MIN_RUN, exit_p: "float | None" = None) -> list[tuple[int, int]]:
-    """The character ranges to mark red: runs of >= `min_run` consecutive low-probability
+    """The character ranges to mark (the renderers use tui.ui._base._LOW_CONF_STYLE): runs of
+    >= `min_run` consecutive low-probability
     tokens over `text`, per the module docstring's rules — a run opens on tokens under
     `threshold_p` (the enter threshold) and, once building, extends through tokens under
     `exit_p` (hysteresis; derived from the enter threshold when None). Entries must be in text

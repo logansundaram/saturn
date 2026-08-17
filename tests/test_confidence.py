@@ -22,6 +22,15 @@ def _lp(token: str, logprob: float) -> dict:
     return {"token": token, "logprob": logprob}
 
 
+def _sgr(style: str) -> str:
+    """The opening SGR sequence a rich style renders as — DERIVED from the palette constant, never
+    a hard-coded escape. A palette change then updates these assertions instead of breaking them,
+    which is the point: the tests care that the run is marked, not what color it is."""
+    from rich.style import Style
+
+    return Style.parse(style).render("X").split("X")[0]
+
+
 # --- align_chunk ----------------------------------------------------------------------------------
 
 
@@ -229,9 +238,11 @@ def test_final_body_marks_uncertain_runs_without_a_correction():
     finally:
         base._console = saved
         R._console = saved
+    from tui.ui._base import _LOW_CONF_STYLE
+
     out = cap.getvalue()
-    assert "\x1b[31m" in out          # red foreground for the low-confidence run
-    assert "uncertain" in out          # …and the receipt still counts it
+    assert _sgr(_LOW_CONF_STYLE) in out  # the low-confidence run is marked on the PERMANENT body
+    assert "uncertain" in out            # …and the receipt still counts it
 
 
 def test_uncertain_answer_keeps_markdown_and_shows_red():
@@ -267,12 +278,40 @@ def test_uncertain_answer_keeps_markdown_and_shows_red():
     finally:
         base._console = saved
         R._console = saved
+    from tui.ui._base import _LOW_CONF_STYLE
+
     out = cap.getvalue()
-    assert "\x1b[31m" in out   # the low-confidence run is red …
-    assert "\x1b[1m" in out    # … and the markdown bold ("Canberra") survived
+    assert _sgr(_LOW_CONF_STYLE) in out  # the low-confidence run is marked …
+    assert "\x1b[1m" in out              # … and the markdown bold ("Canberra") survived
 
 
-def test_redden_segments_preserves_style_and_marks_by_content():
+def test_low_confidence_marking_survives_no_color():
+    """The point of moving off plain red. `NO_COLOR=1` (and monochrome terminals, and GIF color
+    compression) erases a pure hue completely — the receipt would say `◌ 3 uncertain spans` with
+    nothing marked in the body to look at. The marking must carry a non-color attribute, and must
+    stay distinguishable from the human-correction style, which also survives."""
+    import io
+
+    from rich.console import Console
+    from rich.text import Text
+
+    from tui.ui._base import _HUMAN_STYLE, _LOW_CONF_STYLE
+
+    for style in (_LOW_CONF_STYLE, _HUMAN_STYLE):
+        buf = io.StringIO()
+        Console(file=buf, force_terminal=True, no_color=True, width=40).print(
+            Text("marked", style=style))
+        assert "\x1b[" in buf.getvalue(), style   # still marked with no color at all
+
+    # …and the two remain telling apart without color: red-vs-cyan alone would not.
+    stripped = [_sgr(s).replace("\x1b[", "").rstrip("m")
+                for s in (_LOW_CONF_STYLE, _HUMAN_STYLE)]
+    assert stripped[0] != stripped[1]
+    # Low confidence is a caution, not a failure: it must not borrow the risk vocabulary.
+    assert "red" not in _LOW_CONF_STYLE
+
+
+def test_mark_segments_preserves_style_and_marks_by_content():
     # The mechanism: reddening a Segment stream by phrase, combining red into the existing style
     # (a bold phrase stays bold-red), and leaving non-matching segments untouched.
     import importlib
@@ -284,14 +323,14 @@ def test_redden_segments_preserves_style_and_marks_by_content():
     segs = [Segment("plain ", Style()),
             Segment("roughly four million", Style(bold=True)),
             Segment(" tail", Style())]
-    out = list(R._redden_segments(segs, ["roughly four million"], "red"))
+    out = list(R._mark_segments(segs, ["roughly four million"], "red"))
     red = [s for s in out if s.style and s.style.color and s.style.color.name == "red"]
     assert red and red[0].text == "roughly four million"
     assert red[0].style.bold  # existing bold combined with the red
     # A phrase absent from any single segment (here split by a boundary) is simply not marked.
     split = [Segment("roughly ", Style()), Segment("four", Style(bold=True)),
              Segment(" million", Style())]
-    out2 = list(R._redden_segments(split, ["roughly four million"], "red"))
+    out2 = list(R._mark_segments(split, ["roughly four million"], "red"))
     assert not any(s.style and s.style.color and s.style.color.name == "red" for s in out2)
 
 

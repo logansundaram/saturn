@@ -524,6 +524,12 @@ class ResponseStream:
         # (The buffer on state carries the canonical copy; this one only paints the live tail.)
         self._conf: list[dict] = []
         self._len = 0  # running char count of _chars (the ledger's offset base)
+        # Interrupt-and-correct bookkeeping. `_froze` is sticky for the whole turn (the answer
+        # needs its rule back at finish() whether or not tokens resumed — a `done` decision
+        # produces none); `_reopen_pending` is the one-shot "the next token reopens the tail"
+        # latch, which must NOT be inferred from `_live is None` (on the plain path it always is).
+        self._froze = False
+        self._reopen_pending = False
 
     @property
     def started(self) -> bool:
@@ -538,9 +544,9 @@ class ResponseStream:
             return
         if not self._started:
             self._begin()
-        elif self._live is None and _RICH:
-            self._live = Live(console=_console, transient=True, auto_refresh=False)
-            self._live.start()
+        elif self._reopen_pending:
+            self._reopen_pending = False
+            self._reopen()
         self._chars.append(text)
         if logprobs:
             try:
@@ -579,6 +585,40 @@ class ResponseStream:
             _console.print(t)
         else:
             print(f"  . {msg}")
+
+    def _reopen(self) -> None:
+        """Reopen the live tail after a freeze. The freeze editor owned the screen in between and
+        printed its own block, so the resumed tokens need parting from it — one blank line, the
+        same beat `_begin()` puts under the `── response` rule. (Before this the tail simply
+        reappeared flush against the editor's output, unheaded and unparted.) Rich only: the plain
+        path has no live region, just the blank line.
+
+        Stops the status bar first: the freeze editor restarts it on the way out (correction.
+        edit_answer) so the re-prime gap isn't a dead screen, and rich allows exactly one live
+        region at a time."""
+        _live_stop()
+        if _RICH:
+            _console.print()
+            self._live = Live(console=_console, transient=True, auto_refresh=False)
+            self._live.start()
+        else:
+            print()
+
+    def _resumed_header(self) -> None:
+        """Reopen the `── response` rule for an answer that was frozen. `_begin()`'s rule scrolled
+        up above the freeze editor's own `── answer frozen` block, so without this the final
+        answer lands bare, directly under the editor's output and indistinguishable from it. The
+        subtitle says what actually happened, read from the buffer's own edit record — never
+        "resumed after your edit" over a resume that changed nothing."""
+        if not self._froze:
+            return
+        try:
+            edited = bool(_turn_buffer and _turn_buffer.get("edits"))
+        except Exception:
+            edited = False
+        section("response", "resumed after your edit" if edited
+                            else "resumed — you kept the text unchanged")
+        _console.print() if _RICH else print()
 
     def _begin(self) -> None:
         self._started = True
@@ -666,13 +706,20 @@ class ResponseStream:
         `final_text`, when given, is rendered instead of the streamed chars — the loop passes the
         RECORDED final message, which may carry mechanically-appended trailers the token stream
         never saw (the citations Sources footer from synthesize). Falls back to the streamed text
-        when absent/empty so a caller without the final message loses nothing."""
+        when absent/empty so a caller without the final message loses nothing.
+
+        An answer that was FROZEN reopens its `── response` rule first (`_resumed_header`): the
+        original scrolled up above the freeze editor's block, so the answer would otherwise land
+        bare underneath the editor's output. The status bar is dropped here too, because the
+        freeze editor restarts it on exit and it must not be live across the final render."""
         text = final_text if isinstance(final_text, str) and final_text else "".join(self._chars)
         if self._live is not None:
             self._live.stop()  # transient: erases the streaming tail
             self._live = None
+        _live_stop()  # …and the status bar, if the freeze editor restarted it (see edit_answer)
         if not _RICH:
             print()  # close the typed-out line
+        self._resumed_header()  # a frozen answer gets its `── response` rule back
         # The plain path typed the streamed tokens out already — its body is only what the
         # recorded final text appends beyond them (e.g. the Sources footer), never the whole
         # thing twice. The rich path re-renders the full text (the live tail was transient).
@@ -691,7 +738,14 @@ class ResponseStream:
     def freeze_display(self) -> None:
         """A freeze (interrupt-and-correct): tear down the live tail so the freeze editor owns
         the screen, KEEPING the streamed chars — feed() reopens a live region on the first
-        resumed token. The transient Live erases cleanly; the editor shows the frozen text."""
+        resumed token. The transient Live erases cleanly; the editor shows the frozen text.
+
+        Latches both interrupt-and-correct flags: `_reopen_pending` (one-shot — the next token
+        reopens the tail, parted from the editor's block) and `_froze` (sticky for the turn — the
+        final answer needs its `── response` rule back even when the user chose `done` and no
+        token ever resumes)."""
+        self._froze = True
+        self._reopen_pending = True
         if self._live is not None:
             try:
                 self._live.stop()

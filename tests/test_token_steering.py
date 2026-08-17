@@ -363,6 +363,81 @@ def test_edit_answer_returns_the_resume_contract(monkeypatch, capsys):
     assert out == {"action": "resume", "text": "the streamed text"}
 
 
+def test_edit_answer_repins_the_status_bar_on_the_way_out(monkeypatch):
+    """The graph resumes the moment the editor returns and the model re-primes its context before
+    the first continued token — seconds of a completely static screen, right after the most
+    interactive moment in the product. The sibling blocking editors (approval.ask_approval,
+    plan.review_plan) both restart the bar on exit; this one never did (it did not even import
+    _live_start)."""
+    import importlib
+
+    correction = importlib.import_module("tui.ui.correction")
+    started: list = []
+    monkeypatch.setattr(correction, "_live_start", lambda: started.append(True))
+    monkeypatch.setattr(correction, "_edit_inline", lambda text: text)
+    monkeypatch.setattr(correction, "ask", lambda _q: "")
+    correction.edit_answer({"text": "frozen", "spans": []})
+    assert started == [True]
+
+
+def test_resumed_stream_stops_the_bar_before_reopening_its_live(monkeypatch):
+    """Rich allows exactly one live region. The freeze editor leaves the status bar up, so the
+    resumed answer tail must drop it before opening its own — and finish() must too, for the
+    `done` path where no token ever resumes."""
+    import importlib
+
+    response = importlib.import_module("tui.ui.response")
+    stops: list = []
+    monkeypatch.setattr(response, "_live_stop", lambda: stops.append(True))
+    monkeypatch.setattr(response, "_RICH", False)  # no real Live in the test
+
+    stream = response.ResponseStream()
+    stream._started = True
+    stream.freeze_display()
+    assert stream._froze and stream._reopen_pending
+
+    stream.feed("resumed tokens")
+    assert stops == [True]
+    assert not stream._reopen_pending  # one-shot: a later token must not re-part the block
+
+
+def test_a_frozen_answer_gets_its_response_rule_back(monkeypatch, capsys):
+    """`_begin()`'s `── response` rule scrolled up above the freeze editor's own block, so the
+    final answer landed bare, directly under the editor's output. The reopened rule names what
+    happened — and never claims an edit over a resume that changed nothing."""
+    import importlib
+
+    response = importlib.import_module("tui.ui.response")
+    monkeypatch.setattr(response, "_RICH", False)
+    monkeypatch.setattr(response, "_live_stop", lambda: None)
+    monkeypatch.setattr(response, "_trust_spans", lambda: [])
+
+    def _finish_with(buffer):
+        monkeypatch.setattr(response, "_turn_buffer", buffer)
+        stream = response.ResponseStream()
+        stream._started = True
+        stream._chars = ["the answer"]
+        stream.freeze_display()
+        stream.finish("the answer")
+        return capsys.readouterr().out
+
+    out = _finish_with({"text": "the answer", "edits": [{"at": 3, "cut": "x", "typed": "y"}]})
+    assert "── response" in out and "resumed after your edit" in out
+
+    out = _finish_with({"text": "the answer", "edits": []})
+    assert "── response" in out
+    assert "resumed after your edit" not in out   # nothing was edited — don't claim it was
+    assert "kept the text unchanged" in out
+
+    # A turn that never froze keeps exactly one header (the one _begin printed).
+    monkeypatch.setattr(response, "_turn_buffer", None)
+    stream = response.ResponseStream()
+    stream._started = True
+    stream._chars = ["the answer"]
+    stream.finish("the answer")
+    assert "── response" not in capsys.readouterr().out
+
+
 # --- word-boundary freeze grace (transplanted from the token_steering isolate) ------------------------
 #
 # Esc mid-word used to cut the prefix inside a word — a tail that retokenizes onto boundaries the

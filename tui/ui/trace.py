@@ -53,6 +53,23 @@ def _node_line(node: str, dur: float, delta: dict) -> "Text | str":
     return f"  {_RAIL_GLYPH} ✓ {node:<{_NODE_W}}{_fmt_dur(dur):>7}{tail}"
 
 
+# The delta keys `_render_trust_annotations` can draw a leaf from. synthesize's rail row is
+# suppressed only when NONE of them is present — a leaf must never hang under a row that was
+# folded away.
+_ANNOTATION_KEYS = ("truncated", "answer_buffer", "gate_events")
+
+
+def _synthesize_row_is_quiet(node: str, delta: dict) -> bool:
+    """Whether synthesize's rail row can be skipped this pass (see the call site): only at normal
+    verbosity, and only when the delta carries nothing `_render_trust_annotations` would draw
+    under it. A freeze, a correction, or a bounded record keeps the row so its leaf has a
+    parent."""
+    if node != "synthesize" or _base._VERBOSITY == "verbose":
+        return False
+    return not any(isinstance(delta.get(k), (dict, list)) and delta.get(k)
+                   for k in _ANNOTATION_KEYS)
+
+
 def show_node(node: str, delta: dict | None = None) -> None:
     """One trace line per node execution — `│ <node>  <elapsed>  <annotation>` — with the elapsed
     measured since the previous node emitted (htop-style). LLM nodes annotate with iter / context
@@ -98,18 +115,25 @@ def show_node(node: str, delta: dict | None = None) -> None:
         _base._status["ctx_used"] = used
     _base._status["node"] = node
 
-    # synthesize falls through to the normal rail line — its metrics (tok/s, context) are useful
-    # for transparency. Its update fires when the node COMPLETES, i.e. after the answer began
-    # streaming, so this row prints above the already-open response region (rich inserts console
-    # prints above a live display); the streamed text itself is never repeated here.
-
     # Per-node trace row: `│ ✓ node  elapsed  metrics` (metrics dim). The metric annotations are
     # built from the delta by the shared _node_line helper (the live trace + the /trace replay
     # render identical rows).
-    if not _base._trace_started:
-        _emit("")  # one blank line parting the turn's trace from the prompt above it
-        _base._trace_started = True
-    _emit(_node_line(node, dur, delta))
+    #
+    # synthesize is the exception: its update fires when the node COMPLETES, i.e. AFTER the answer
+    # has already begun streaming into the open response region. Rich inserts a console print
+    # ABOVE a live display, so emitting the row here shoves the streaming answer down mid-stream —
+    # a rail line landing inside the response block. At normal verbosity the ROW is skipped while
+    # everything else about the node still lands: its metrics were fed to the status bar above and
+    # are echoed permanently in the receipt, and `/trace full` (verbose) restores the row. Folding
+    # it through _FOLD_NODES instead would `return` before the metric feed and before
+    # _render_trust_annotations, silently costing the receipt its tok/s AND dropping the freeze /
+    # correction echo — an auditable human action. `_synthesize_row_is_quiet` keeps the row
+    # whenever a leaf will hang off it, so no annotation is ever orphaned.
+    if not _synthesize_row_is_quiet(node, delta):
+        if not _base._trace_started:
+            _emit("")  # one blank line parting the turn's trace from the prompt above it
+            _base._trace_started = True
+        _emit(_node_line(node, dur, delta))
 
     # Live reasoning: the execute node's pre-action thinking (text alongside its tool call) AND a
     # pure reasoning step's result (which otherwise surfaces only inside the final answer) both

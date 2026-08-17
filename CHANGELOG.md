@@ -178,6 +178,11 @@ to learn, audit, and maintain — none removes a protection.
   on any terminal wider than about 102 columns every line break in the answer moved at the
   hand-off. Both now use the same measure: the text stays put and only picks up its formatting.
 
+- **The answer no longer jumps down mid-stream.** The `synthesize` trace row was printed when
+  the node finished — i.e. after the answer had already started streaming — landing inside the
+  response block and pushing the text down. The row now waits for `/trace full`; its metrics are
+  unchanged in the status bar and the receipt, and a freeze or correction still gets its row.
+
 - **Answers are checked against what was actually gathered.** After a turn that observed
   something, every figure the answer states (three or more digits, or any decimal) is traced
   back to your words or the turn's tool results; a figure that traces to nothing gets ONE

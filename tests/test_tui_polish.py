@@ -211,6 +211,66 @@ def test_unknown_plan_status_renders_as_unknown_never_pending(monkeypatch):
     assert row.lstrip().startswith("·")
 
 
+# ── synthesize's rail row must not land inside the open response block ───────────────────────
+# Its update fires when the node COMPLETES — after the answer began streaming — and rich inserts
+# a console print above a live display, so the row shoved the streaming answer down mid-stream.
+# The row is skipped at normal verbosity; everything ELSE about the node must still land.
+
+
+def _fresh_trace():
+    base = importlib.import_module("tui.ui._base")
+    base._trace_started = False
+    base._t_last = None
+    base._status = dict(base._status, node="", iteration=0, tools=0, tok_per_sec=0.0)
+    return base
+
+
+def test_synthesize_rail_row_is_skipped_at_normal_verbosity(capsys):
+    from tui import ui
+
+    base = _fresh_trace()
+    ui.set_verbosity("normal")
+    ui.show_node("synthesize", {"context_tokens": 5200, "tok_per_sec": 41.0})
+    assert "synthesize" not in capsys.readouterr().out
+    # …but the metrics still reached the status bar, which is what the receipt echoes.
+    assert base._status["tok_per_sec"] == 41.0
+    assert base._status["ctx_used"] == 5200
+
+
+def test_synthesize_rail_row_returns_under_trace_full(capsys):
+    from tui import ui
+
+    _fresh_trace()
+    try:
+        ui.set_verbosity("verbose")
+        ui.show_node("synthesize", {"context_tokens": 5200, "tok_per_sec": 41.0})
+        assert "synthesize" in capsys.readouterr().out
+    finally:
+        ui.set_verbosity("normal")
+
+
+def test_synthesize_keeps_its_row_when_a_trust_leaf_hangs_off_it(capsys):
+    """Folding synthesize through _FOLD_NODES would `return` before the metric feed AND before
+    the trust annotations — silently costing the receipt its tok/s and dropping the freeze echo,
+    an auditable human action. The row is kept whenever a leaf would otherwise be orphaned."""
+    from tui import ui
+
+    base = _fresh_trace()
+    ui.set_verbosity("normal")
+    ui.show_node("synthesize", {"tok_per_sec": 12.0,
+                                "answer_buffer": {"state": "frozen", "text": "x"}})
+    out = capsys.readouterr().out
+    assert "synthesize" in out            # the row is back — the leaf has a parent
+    assert "you froze the answer" in out  # …and the auditable event still prints
+    assert base._status["tok_per_sec"] == 12.0
+
+    # A bounded record is the same case: the disclosure keeps its row.
+    _fresh_trace()
+    ui.show_node("synthesize", {"truncated": {"original_chars": 9999, "dropped": ["messages"]}})
+    out = capsys.readouterr().out
+    assert "synthesize" in out and "record bounded at write time" in out
+
+
 # ── streaming vs finished measure: the answer must not re-wrap when it lands ─────────────────
 # The live tail and the finished markdown rendered at different widths (full terminal vs
 # min(term, _BODY_WIDTH)), so on any terminal wider than ~102 columns every line break in the

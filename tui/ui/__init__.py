@@ -17,6 +17,11 @@ frame. Specifics:
     fold out of the rail — their *output* still prints and the trace DB keeps every node — so a
     turn reads as the user's mental model, `plan → agent → tools → … → synthesize`;
     `set_verbosity("verbose")` (via `/trace full`) restores every node line and full timings.
+    `synthesize`'s ROW is suppressed the same way but for a different reason: its update fires
+    after the answer has already begun streaming, and rich prints above a live region, so drawing
+    it would shove the streaming answer down. Only the row goes — the node's metrics still feed
+    the bar (and the receipt), and a freeze/correction/bounded-record leaf keeps its row so no
+    annotation is ever orphaned.
   - Color is **semantic only**: green = done, cyan = active, yellow/red = risk tier. Structure
     is dim. Nothing is colored just to look nice — if it has color, it means something.
   - The plan re-renders **in full** — every row carrying its status glyph AND intended tool —

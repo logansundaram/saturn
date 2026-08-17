@@ -228,6 +228,14 @@ to learn, audit, and maintain — none removes a protection.
   and `s` splits a batch, and neither should be discovered by accident. The header names the
   batch size and each call carries its position (`2/3`), matching the per-call prompts.
 
+- **`/trace invoke` and `/trace context` sit in the trace rail** like every other view, instead
+  of starting at a bare indent of their own.
+- **A message the trace had to cap now says so accurately, and says it where you can see it.**
+  The `(+N chars)` marker was computed against the wrong constant (reporting a number that was
+  simply wrong), was appended to the message body and then clipped off along with it — for
+  exactly the long messages it described — and was suppressed under `--full`, where a silently
+  capped message matters most. It is now its own line, always shown, with the right number.
+
 - **Answers are checked against what was actually gathered.** After a turn that observed
   something, every figure the answer states (three or more digits, or any decimal) is traced
   back to your words or the turn's tool results; a figure that traces to nothing gets ONE

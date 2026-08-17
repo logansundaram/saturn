@@ -300,6 +300,40 @@ def test_air_gap_glyph_is_one_cell_and_shared_by_rail_and_receipt():
     assert any(p.startswith(glyph) for p in parts)
 
 
+def test_llm_leaf_draws_the_rail_like_every_other_leaf(capsys):
+    """The one leaf that opened at a bare 4-space indent, so `/trace invoke` and `/trace context`
+    fell out of the gutter every other view sits in. Its `avail` arithmetic already subtracted 4
+    for the rail — drawing it makes the existing budget correct."""
+    trace = importlib.import_module("tui.ui.trace")
+    base = importlib.import_module("tui.ui._base")
+    trace._llm_leaf("sys", "a message body", base._DIM, None)
+    out = capsys.readouterr().out
+    assert base._RAIL_GLYPH in out
+    assert out.lstrip("\n").startswith(f"  {base._RAIL_GLYPH} ") or not trace._RICH
+
+
+def test_recording_cut_reports_the_right_number_and_survives_the_clip(capsys):
+    """Two bugs: the delta was computed against the DISPLAY preview constant (a different number
+    entirely), and the marker was appended to a body that was then clipped to that same length —
+    so it was cut off for exactly the long messages it described, and suppressed under `--full`
+    where a silently capped message matters most."""
+    trace = importlib.import_module("tui.ui.trace")
+
+    recorded = "x" * 8000            # stores.trace caps content at _LLM_MSG_CAP
+    msg = {"content": recorded, "truncated": 9500}
+    assert trace._recording_cut(msg) == "… (+1500 chars not recorded)"   # 9500 - 8000, not - 240
+
+    # Nothing dropped / garbage / a cap that recorded everything -> no claim.
+    assert trace._recording_cut({"content": "abc"}) is None
+    assert trace._recording_cut({"content": "abc", "truncated": "junk"}) is None
+    assert trace._recording_cut({"content": "abc", "truncated": 3}) is None
+
+    # Emitted as its own leaf, so a preview clip can't eat the disclosure with the body.
+    trace._llm_leaf("sys", recorded, "dim", trace._LLM_PREVIEW_CHARS)
+    trace._llm_leaf("", trace._recording_cut(msg), "dim", None)
+    assert "+1500 chars not recorded" in capsys.readouterr().out
+
+
 # ── the status bar names the last FINISHED node, never a running one ─────────────────────────
 # show_node is fed from a node's *update* event, which LangGraph emits on completion — so the bar
 # said `▸ plan` in active styling while `execute` was running, contradicting the `✓ plan` rail

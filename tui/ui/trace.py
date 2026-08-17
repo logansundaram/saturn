@@ -587,24 +587,51 @@ _LLM_ROLE = {"system": "sys", "human": "usr", "ai": "ai", "tool": "tool", "funct
 
 
 def _llm_leaf(tag: str, text: str, style: str, clip: int | None) -> None:
-    """One input/output message under an LLM-call header: `tag  <wrapped text>`, hanging-indented to
-    align continuation lines, in the trace palette. `clip` bounds the preview (None = full)."""
+    """One input/output message under an LLM-call header: `│ tag  <wrapped text>`,
+    hanging-indented to align continuation lines, in the trace palette. `clip` bounds the preview
+    (None = full).
+
+    Draws the `  │ ` rail like every other renderer in this module (`_node_leaf`,
+    `_emit_result_leaf`, `_emit_message_leaf`): this was the one leaf that opened at a bare
+    4-space indent, so `/trace invoke` and `/trace context` fell out of the gutter every other
+    view sits in. The `avail` arithmetic already subtracted 4 for the rail — drawing it makes the
+    existing budget correct rather than changing it."""
     import textwrap
 
     text = " ".join(str(text).split())
     if clip:
         text = _truncate(text, clip)
-    head = f"    {tag:<4} "
+    head = f"  {tag:<4} "
     rest = " " * len(head)
     avail = max(20, _term_width() - (4 + len(head)))
     for i, ln in enumerate(textwrap.wrap(text, width=avail) or [""]):
         if _RICH:
-            row = Text()
+            row = _rail()
             row.append(head if i == 0 else rest, style=_RAIL)
             row.append(ln, style=style)
             _console.print(row)
         else:
-            print(f"{head if i == 0 else rest}{ln}")
+            print(f"  {_RAIL_GLYPH} {head if i == 0 else rest}{ln}")
+
+
+def _recording_cut(m: dict) -> "str | None":
+    """The disclosure for a message the TRACE capped at write time (stores.trace._LLM_MSG_CAP),
+    or None when nothing was dropped.
+
+    Two bugs this replaces. The delta was computed against `_LLM_PREVIEW_CHARS` — the DISPLAY
+    preview constant, a different number entirely — so the figure it reported was simply wrong.
+    And it was appended to the message body, which `_llm_leaf` then clipped to that same preview
+    length: the marker was cut off for exactly the long messages it described, and suppressed
+    outright under `--full`, where a silently capped message matters most. Callers emit it as its
+    own un-clipped leaf."""
+    try:
+        original = int(m.get("truncated") or 0)
+    except (TypeError, ValueError):
+        return None
+    if not original:
+        return None
+    extra = original - len(str(m.get("content", "")))
+    return f"… (+{extra} chars not recorded)" if extra > 0 else None
 
 
 def show_llm_calls(run, calls, full: bool = False) -> None:
@@ -665,9 +692,10 @@ def show_llm_calls(run, calls, full: bool = False) -> None:
             if tc:
                 names = ", ".join(str(c.get("name")) for c in tc)
                 body = (body + " " if body else "") + f"[tool_calls: {names}]"
-            if m.get("truncated"):
-                body += f"  (+{m['truncated'] - _LLM_PREVIEW_CHARS} chars)" if not full else ""
             _llm_leaf(tag, body or "(empty)", _DIM, clip)
+            cut = _recording_cut(m)
+            if cut:  # its own leaf: never clipped away with the body it describes
+                _llm_leaf("", cut, _DIM, None)
 
         out = decode_json(outp, {})
         out_body = out.get("content", "")
@@ -751,11 +779,11 @@ def show_llm_context(run, calls, *, node_filter: str | None = None, preview: boo
             if tc:
                 names = ", ".join(str(c.get("name")) for c in tc)
                 body = (body + " " if body else "") + f"[tool_calls: {names}]"
-            # Disclose the recording cut (_LLM_MSG_CAP in stores/trace) so a capped message is
-            # never presented as the whole context the model received.
-            if m.get("truncated"):
-                extra = m["truncated"] - len(str(m.get("content", "")))
-                if extra > 0:
-                    body += f"  … (+{extra} chars not recorded)"
             _llm_leaf(tag, body or "(empty)", _DIM, clip)
+            # Disclose the recording cut (_LLM_MSG_CAP in stores/trace) so a capped message is
+            # never presented as the whole context the model received — as its own leaf, so
+            # `--preview`'s clip can't cut the disclosure off the message it describes.
+            cut = _recording_cut(m)
+            if cut:
+                _llm_leaf("", cut, _DIM, None)
         _emit("")

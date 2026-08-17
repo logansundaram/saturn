@@ -334,6 +334,21 @@ def test_recording_cut_reports_the_right_number_and_survives_the_clip(capsys):
     assert "+1500 chars not recorded" in capsys.readouterr().out
 
 
+def test_recording_cut_is_disclosed_on_the_output_side_too(capsys):
+    """stores.trace._msg_out stamps `truncated` on the OUTPUT message as well, but /trace invoke
+    disclosed it only for inputs — so a synthesize/plan reply longer than _LLM_MSG_CAP was
+    presented under `--full` as the model's complete output."""
+    import json
+
+    trace = importlib.import_module("tui.ui.trace")
+    call = (1, 0, "synthesize", "qwen3.5:9b", 0.4, 100, 2400,
+            json.dumps([{"role": "system", "content": "be brief"}]),
+            json.dumps({"content": "y" * 8000, "truncated": 9500, "tool_calls": []}),
+            "ok")
+    trace.show_llm_calls((7, "the query", 0, 0, "ok", "an answer"), [call], full=True)
+    assert "+1500 chars not recorded" in capsys.readouterr().out
+
+
 # ── the status bar names the last FINISHED node, never a running one ─────────────────────────
 # show_node is fed from a node's *update* event, which LangGraph emits on completion — so the bar
 # said `▸ plan` in active styling while `execute` was running, contradicting the `✓ plan` rail
@@ -426,6 +441,44 @@ def test_synthesize_keeps_its_row_when_a_trust_leaf_hangs_off_it(capsys):
     ui.show_node("synthesize", {"truncated": {"original_chars": 9999, "dropped": ["messages"]}})
     out = capsys.readouterr().out
     assert "synthesize" in out and "record bounded at write time" in out
+
+
+def test_synthesize_row_still_folds_on_a_normally_completed_turn(capsys):
+    """The shape a REAL turn emits: synthesize returns `answer_buffer` with state `complete` on
+    every completion (nodes.synthesize._final_updates), so keying the row on the mere PRESENCE of
+    the key resurrected it for every answer — the row landed inside the open response block again,
+    to parent a leaf that is only ever drawn for a `frozen` buffer. The row must fold on what will
+    actually be DRAWN, not on which keys the delta happens to carry."""
+    from tui import ui
+
+    base = _fresh_trace()
+    ui.set_verbosity("normal")
+    ui.show_node("synthesize", {"tok_per_sec": 41.0, "context_tokens": 5200,
+                                "answer_buffer": {"state": "complete", "text": "the answer",
+                                                  "spans": [], "edits": [], "confidence": []}})
+    out = capsys.readouterr().out
+    assert "synthesize" not in out          # nothing to parent — the row folds
+    assert base._status["tok_per_sec"] == 41.0   # …and the metrics still reached the bar
+    assert base._status["ctx_used"] == 5200
+
+    # An `edited` buffer is answer_gate's leaf, not synthesize's: still nothing to parent here.
+    _fresh_trace()
+    ui.show_node("synthesize", {"answer_buffer": {"state": "complete", "edited": True,
+                                                  "edits": [{"cut": "x", "typed": "y"}]}})
+    assert "synthesize" not in capsys.readouterr().out
+
+
+def test_synthesize_keeps_its_row_for_a_gate_decision_leaf(capsys):
+    """The third leaf `_render_trust_annotations` can draw under any node — a human gate decision
+    is auditable, so its row is kept exactly like the freeze echo's."""
+    from tui import ui
+
+    _fresh_trace()
+    ui.set_verbosity("normal")
+    ui.show_node("synthesize", {"gate_events": [{"calls": [{"name": "write_file",
+                                                            "approved": True}]}]})
+    out = capsys.readouterr().out
+    assert "synthesize" in out and "you approved write_file" in out
 
 
 # ── streaming vs finished measure: the answer must not re-wrap when it lands ─────────────────

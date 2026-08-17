@@ -363,6 +363,29 @@ def test_edit_answer_returns_the_resume_contract(monkeypatch, capsys):
     assert out == {"action": "resume", "text": "the streamed text"}
 
 
+def test_edit_answer_shows_the_tail_when_the_editor_fails_at_runtime(monkeypatch, capsys):
+    """`show_tail` is decided up front from `_PTK`, but `_edit_inline` ALSO drops to the wizard
+    from its generic except (a PromptSession/_make_ptk_input failure on an odd terminal). In that
+    path the wizard asked "cut from (a fragment of the text…)" for text that was never printed —
+    exactly the case the tail exists to cover. Predicted-unavailable stays a single print."""
+    import importlib
+
+    correction = importlib.import_module("tui.ui.correction")
+    monkeypatch.setattr(correction, "_live_start", lambda: None)
+    monkeypatch.setattr(correction, "ask", lambda _q: "")
+
+    # prompt_toolkit LOOKS available, then the editor blows up on the way in.
+    monkeypatch.setattr(correction, "_inline_available", lambda: True)
+    monkeypatch.setattr(correction, "_edit_inline", lambda text: None)
+    correction.edit_answer({"text": "the frozen answer body", "spans": []})
+    assert "the frozen answer body" in capsys.readouterr().out
+
+    # Predicted unavailable: _print_frozen already showed it — the tail must not print twice.
+    monkeypatch.setattr(correction, "_inline_available", lambda: False)
+    correction.edit_answer({"text": "the frozen answer body", "spans": []})
+    assert capsys.readouterr().out.count("the frozen answer body") == 1
+
+
 def test_edit_answer_repins_the_status_bar_on_the_way_out(monkeypatch):
     """The graph resumes the moment the editor returns and the model re-primes its context before
     the first continued token — seconds of a completely static screen, right after the most

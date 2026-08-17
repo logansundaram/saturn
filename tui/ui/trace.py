@@ -53,21 +53,19 @@ def _node_line(node: str, dur: float, delta: dict) -> "Text | str":
     return f"  {_RAIL_GLYPH} ✓ {node:<{_NODE_W}}{_fmt_dur(dur):>7}{tail}"
 
 
-# The delta keys `_render_trust_annotations` can draw a leaf from. synthesize's rail row is
-# suppressed only when NONE of them is present — a leaf must never hang under a row that was
-# folded away.
-_ANNOTATION_KEYS = ("truncated", "answer_buffer", "gate_events")
-
-
 def _synthesize_row_is_quiet(node: str, delta: dict) -> bool:
     """Whether synthesize's rail row can be skipped this pass (see the call site): only at normal
-    verbosity, and only when the delta carries nothing `_render_trust_annotations` would draw
-    under it. A freeze, a correction, or a bounded record keeps the row so its leaf has a
-    parent."""
+    verbosity, and only when `_render_trust_annotations` will draw NOTHING under it. A freeze, a
+    correction, or a bounded record keeps the row so its leaf has a parent.
+
+    The question is answered by running the real annotator with its output discarded — never by a
+    second list of delta keys. That list said "any truthy `answer_buffer`", but synthesize returns
+    a `complete` buffer on EVERY finished turn while its leaf is drawn only for a `frozen` one, so
+    the row came back for every answer — landing inside the open response block, to parent a leaf
+    that never printed. One producer of the condition, no drift."""
     if node != "synthesize" or _base._VERBOSITY == "verbose":
         return False
-    return not any(isinstance(delta.get(k), (dict, list)) and delta.get(k)
-                   for k in _ANNOTATION_KEYS)
+    return _render_trust_annotations(node, delta, emit=lambda _text, _style: None) == 0
 
 
 def show_node(node: str, delta: dict | None = None) -> None:
@@ -185,7 +183,7 @@ def _render_execute_reasoning(messages: list) -> None:
     _node_leaf(_truncate(text, _REASONING_CAP), _DIM)
 
 
-def _render_trust_annotations(node: str, delta: dict) -> None:
+def _render_trust_annotations(node: str, delta: dict, *, emit=None) -> int:
     """The trust-stack annotations a node's delta carries, rendered identically in the live rail
     and the /trace replay — the moments that used to be invisible without a command:
 
@@ -201,7 +199,19 @@ def _render_trust_annotations(node: str, delta: dict) -> None:
       - under `synthesize`/`answer_gate`, interrupt-and-correct: the freeze (the user stopped
         the streaming answer) and the correction they typed (from the buffer's edit records) —
         a human edit mid-generation is a first-class auditable event, echoed permanently here
-        exactly like a gate decision."""
+        exactly like a gate decision.
+
+    Returns the number of leaves drawn, and takes an `emit` override so a caller can ask what
+    WOULD be drawn without drawing it (`_synthesize_row_is_quiet`) — the conditions below stay the
+    single producer of that answer."""
+    drawn = 0
+    _emit_leaf = emit or _node_leaf
+
+    def leaf(text: str, style: str) -> None:
+        nonlocal drawn
+        drawn += 1
+        _emit_leaf(text, style)
+
     # A delta the tracer had to bound at write time says so (stores/trace._bound_delta): what
     # was dropped is NAMED, never silently absent from the record the user is reading.
     tr = delta.get("truncated")
@@ -210,12 +220,12 @@ def _render_trust_annotations(node: str, delta: dict) -> None:
         what = ("everything" if dropped == ["*"] else
                 ", ".join(str(k) for k in dropped) if dropped else "no keys (leaves clipped)")
         size = tr.get("original_chars")
-        _node_leaf("record bounded at write time"
-                   + (f" ({size} chars)" if size is not None else "")
-                   + f" — dropped: {what}", "yellow")
+        leaf("record bounded at write time"
+             + (f" ({size} chars)" if size is not None else "")
+             + f" — dropped: {what}", "yellow")
     buf = delta.get("answer_buffer")
     if node == "synthesize" and isinstance(buf, dict) and buf.get("state") == "frozen":
-        _node_leaf("✂ you froze the answer mid-generation — editing", "cyan")
+        leaf("✂ you froze the answer mid-generation — editing", "cyan")
     if node == "answer_gate" and isinstance(buf, dict):
         edits = [e for e in buf.get("edits") or [] if isinstance(e, dict)]
         if buf.get("edited") and edits:
@@ -226,23 +236,23 @@ def _render_trust_annotations(node: str, delta: dict) -> None:
             if e.get("typed"):
                 parts.append(f'typed "{e["typed"]}"')
             what = " · ".join(parts) or "edited the text"
-            _node_leaf(_truncate(f"✎ you corrected the answer — {what}", _REASONING_CAP), "cyan")
+            leaf(_truncate(f"✎ you corrected the answer — {what}", _REASONING_CAP), "cyan")
         else:
-            _node_leaf("↩ answer resumed unchanged", _DIM)
+            leaf("↩ answer resumed unchanged", _DIM)
         if buf.get("state") == "done":
-            _node_leaf("✓ you accepted the text as the final answer", "cyan")
+            leaf("✓ you accepted the text as the final answer", "cyan")
     if node == "rectify":
         reason = " ".join(str(delta.get("reasoning") or "").split())
         if delta.get("rectify"):
-            _node_leaf(_truncate(f"rectify: plan must change — {reason}", _REASONING_CAP), "yellow")
+            leaf(_truncate(f"rectify: plan must change — {reason}", _REASONING_CAP), "yellow")
         elif delta.get("plan"):
-            _node_leaf(_truncate(f"rectify: retired the remaining steps — {reason}",
-                                 _REASONING_CAP), "yellow")
+            leaf(_truncate(f"rectify: retired the remaining steps — {reason}",
+                           _REASONING_CAP), "yellow")
     if node == "replan":
         if delta.get("plan"):
-            _node_leaf("replan: remaining steps redrafted", "yellow")
+            leaf("replan: remaining steps redrafted", "yellow")
         else:
-            _node_leaf("replan: redraft came back empty — plan kept as-is", _DIM)
+            leaf("replan: redraft came back empty — plan kept as-is", _DIM)
     for ev in delta.get("gate_events") or []:
         if not isinstance(ev, dict):
             continue
@@ -254,9 +264,10 @@ def _render_trust_annotations(node: str, delta: dict) -> None:
             why.append("quarantine escalation")
         suffix = f" ({', '.join(why)})" if why else ""
         if approved:
-            _node_leaf("✓ you approved " + ", ".join(approved) + suffix, "green")
+            leaf("✓ you approved " + ", ".join(approved) + suffix, "green")
         if rejected:
-            _node_leaf("✗ you rejected " + ", ".join(rejected) + suffix, "red")
+            leaf("✗ you rejected " + ", ".join(rejected) + suffix, "red")
+    return drawn
 
 
 def _emit_result_leaf(cont: str, text: str, style: str) -> None:
@@ -705,6 +716,12 @@ def show_llm_calls(run, calls, full: bool = False) -> None:
         if out.get("error"):
             out_body = f"ERROR: {out['error']}"
         _llm_leaf("out", out_body or "(no output)", "default" if status == "ok" else "red", clip)
+        # The output side is capped at write time too (stores.trace._msg_out), so it carries the
+        # same disclosure as the inputs above — without it, `--full` presents a capped reply as
+        # the model's complete output.
+        cut = _recording_cut(out)
+        if cut:
+            _llm_leaf("", cut, _DIM, None)
         _emit("")
 
 

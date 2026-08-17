@@ -222,6 +222,12 @@ def edit_answer(value: dict) -> dict:
 
     edited = _edit_inline(text)
     if edited is None:
+        # The editor was expected to open and didn't (its generic except: a PromptSession or
+        # _make_ptk_input failure on an odd terminal). `_inline_available` only tests _PTK, so the
+        # tail was skipped up front and the wizard would ask the user to name a fragment of text
+        # they were never shown. Print it now — the tail's whole reason for existing.
+        if inline:
+            _print_frozen_tail(text, spans, value.get("confidence"))
         edited = _edit_wizard(text)
 
     what = "your edit" if edited != text else "here (unchanged)"

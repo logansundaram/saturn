@@ -203,9 +203,10 @@ to learn, audit, and maintain — none removes a protection.
   tail, then the editor's pre-filled copy at column 0, then the final markdown — so the text
   moved under the cursor twice on the way to the edit. The freeze now prints one line saying what
   it captured (`✂ frozen — 412 chars, 3 low-confidence runs`) and hands straight to the editor,
-  which is indented to match everything else on screen. Without prompt_toolkit, where the wizard
-  fallback is the only way to see the text, the body still prints — at the same indent and width
-  as the streamed answer.
+  which is indented to match everything else on screen. Whenever the wizard fallback runs instead
+  — no prompt_toolkit, or an editor that failed to open — the body still prints, at the same
+  indent and width as the streamed answer, since there it is the only way to see the text you are
+  being asked to cut from.
 
 - Assorted readability fixes: a hot CPU/RAM gauge no longer shouts in the same bold red as
   `⚠ GATE OFF` (load is not risk); the air-gap "blocked" marker uses a glyph that actually takes
@@ -234,7 +235,9 @@ to learn, audit, and maintain — none removes a protection.
   The `(+N chars)` marker was computed against the wrong constant (reporting a number that was
   simply wrong), was appended to the message body and then clipped off along with it — for
   exactly the long messages it described — and was suppressed under `--full`, where a silently
-  capped message matters most. It is now its own line, always shown, with the right number.
+  capped message matters most. It is now its own line, always shown, with the right number — on
+  the model's reply as well as its inputs, so a long answer is never presented as the whole of
+  what the model said.
 
 - **Answers are checked against what was actually gathered.** After a turn that observed
   something, every figure the answer states (three or more digits, or any decimal) is traced

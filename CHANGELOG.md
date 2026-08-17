@@ -151,6 +151,13 @@ to learn, audit, and maintain — none removes a protection.
   logical line; continuation rows carry a dim `↳` at the same width, so the count of `$ ` is the
   count of commands.
 
+- **A write the sandbox will refuse, or one over a binary file, no longer reads as "(no textual
+  change)" at the approval gate.** Every non-diffable verdict — refused, binary, unreadable,
+  no-op — printed the same dim caption as a genuinely empty diff, over the top of its own
+  warning. For a refused or binary write that caption is false: a change *is* pending, it just
+  can't be rendered. It now prints only when the diff really is empty. The same applies to an
+  edit that cannot run (missing file, no match, ambiguous match).
+
 - **Answers are checked against what was actually gathered.** After a turn that observed
   something, every figure the answer states (three or more digits, or any decimal) is traced
   back to your words or the turn's tool results; a figure that traces to nothing gets ONE

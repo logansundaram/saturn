@@ -156,26 +156,40 @@ _DIFF_STYLE = {"add": "green", "del": "red", "hunk": _ACCENT, "ctx": _DIM}
 _DIFF_SIGN = {"add": "+", "del": "-", "hunk": "", "ctx": " "}
 
 
-def _render_diff_rows(mode: str, file_path: str, rows: list, hidden: int) -> None:
+# The write_verdict kinds that actually PRODUCE a diff — the only ones for which an empty row
+# list truthfully means "nothing changes". refused / binary / unreadable / no_change each carry
+# their own explicit note from the caller, and for refused and binary the dim `(no textual
+# change)` marker is a flat lie: a change IS pending (or the write will be refused outright), it
+# just isn't renderable. It is also the most skimmable phrase in the frame, which is exactly why
+# it must never appear over a call the human is about to approve blind.
+_REAL_DIFF_KINDS = ("new file", "overwrite", "append", "edit")
+
+
+def _render_diff_rows(mode: str, file_path: str, rows: list, hidden: int,
+                      *, kind: "str | None" = None) -> None:
     """Print pre-built diff rows inside the approval frame (rich or plain). Shared by the
-    write_file and edit_file previews — the diff IS the safety surface for both."""
+    write_file and edit_file previews — the diff IS the safety surface for both.
+
+    `kind` is the caller's verdict (see `_REAL_DIFF_KINDS`): the `(no textual change)` marker
+    prints only for a verdict that genuinely produced an empty diff. None means "a real diff"
+    (the historical behavior), so a caller without a verdict is unchanged."""
     if _RICH:
         head = Text()
         head.append("  ┃ ", style="bold")
         head.append(f"    ↳ diff ({mode}) ", style=_DIM)
         head.append(file_path, style="default")
         _console.print(head)
-        if not rows:
+        if not rows and (kind is None or kind in _REAL_DIFF_KINDS):
             empty = Text()
             empty.append("  ┃ ", style="bold")
             empty.append("        (no textual change)", style=_DIM)
             _console.print(empty)
         width = max(20, _term_width() - 12)  # loop-invariant — compute once
-        for kind, text in rows:
+        for sign, text in rows:  # `sign`, not `kind`: the parameter above must not be shadowed
             row = Text()
             row.append("  ┃ ", style="bold")
-            row.append(f"      {_DIFF_SIGN[kind]} ", style=_DIFF_STYLE[kind])
-            row.append(_truncate(text, width), style=_DIFF_STYLE[kind])
+            row.append(f"      {_DIFF_SIGN[sign]} ", style=_DIFF_STYLE[sign])
+            row.append(_truncate(text, width), style=_DIFF_STYLE[sign])
             _console.print(row)
         if hidden:
             more = Text()
@@ -184,8 +198,8 @@ def _render_diff_rows(mode: str, file_path: str, rows: list, hidden: int) -> Non
             _console.print(more)
     else:
         print(f"  ┃     -> diff ({mode}) {file_path}")
-        for kind, text in rows:
-            print(f"  ┃       {_DIFF_SIGN[kind]} {text}")
+        for sign, text in rows:
+            print(f"  ┃       {_DIFF_SIGN[sign]} {text}")
         if hidden:
             print(f"  ┃        … {hidden} more diff line(s)")
 
@@ -201,20 +215,24 @@ def _render_write_diff(args: dict) -> None:
 
     v = write_verdict(file_path, content, overwrite)
     kind = v["kind"]
+    mode = "overwrite" if overwrite else "append"
+    # Each non-diffable verdict passes its own `kind` so the empty row list is NOT captioned
+    # "(no textual change)" — false for refused and binary (a change is pending; it merely can't
+    # be rendered), and redundant for no_change, which states the fact in its own note below.
     if kind == "refused":
-        _render_diff_rows("overwrite" if overwrite else "append", file_path, [], 0)
+        _render_diff_rows(mode, file_path, [], 0, kind=kind)
         _frame_note(f"REFUSED by the workspace jail: {v['note']} — this write will not happen",
                     style="bold red")
         return
     if kind in ("binary", "unreadable"):
-        _render_diff_rows("overwrite" if overwrite else "append", file_path, [], 0)
+        _render_diff_rows(mode, file_path, [], 0, kind=kind)
         _frame_note(f"⚠ {v['note']}", style="yellow")
         return
     if kind == "no_change":
-        _render_diff_rows("overwrite" if overwrite else "append", file_path, [], 0)
+        _render_diff_rows(mode, file_path, [], 0, kind=kind)
         _frame_note(v["note"], style=_DIM)
         return
-    _render_diff_rows(kind, file_path, v["rows"], v["hidden"])
+    _render_diff_rows(kind, file_path, v["rows"], v["hidden"], kind=kind)
 
 
 def _render_edit_diff(args: dict) -> None:
@@ -247,7 +265,10 @@ def _render_edit_diff(args: dict) -> None:
                 old_string, new_string, 1
             )
             rows, hidden = _unified_rows(old, new)
-    _render_diff_rows("edit", file_path, rows, hidden)
+    # Same rule as the write preview: when the edit CANNOT run (refused / missing / binary / no
+    # match / ambiguous match), its empty row list is not "no textual change" — the explicit note
+    # below is the truth, and the dim marker would read as a harmless no-op.
+    _render_diff_rows("edit", file_path, rows, hidden, kind="edit" if note is None else "blocked")
     if note:
         if _RICH:
             warn = Text()

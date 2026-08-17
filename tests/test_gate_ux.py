@@ -692,6 +692,39 @@ def test_write_preview_renders_the_verdict(isolated_paths, monkeypatch, capsys):
     assert "REFUSED" in capsys.readouterr().out
 
 
+def test_non_diffable_verdicts_never_claim_no_textual_change(isolated_paths, capsys):
+    """`(no textual change)` is the most skimmable phrase in the frame, and for a REFUSED or
+    BINARY write it is a lie: a change IS pending (or the write will be refused outright), it
+    merely isn't renderable. Only a verdict that genuinely produced an empty diff may caption
+    its empty row list that way."""
+    if not approval._RICH:  # pragma: no cover - the plain path never emitted the marker
+        return
+    (_ws() / "blob.bin").write_bytes(b"\x00\x01\x02PNG\x00garbage")
+    with open(_ws() / "same3.txt", "w", encoding="utf-8") as fh:
+        fh.write("hello\n")
+
+    for args, expected in (
+        ({"file_path": "../nope.txt", "content": "x"}, "REFUSED"),
+        ({"file_path": "blob.bin", "content": "x"}, "binary"),
+        ({"file_path": "same3.txt", "content": "hello\n"}, "no change"),
+    ):
+        approval._render_write_diff(args)
+        out = capsys.readouterr().out
+        assert expected in out                    # the verdict's own note still speaks
+        assert "no textual change" not in out     # …and the false caption is gone
+
+    # An edit that cannot run is the same case: the explicit failure note is the truth.
+    approval._render_edit_diff({"file_path": "same3.txt", "old_string": "absent",
+                                "new_string": "x"})
+    out = capsys.readouterr().out
+    assert "not found in the file" in out
+    assert "no textual change" not in out
+
+    # …but a verdict that really did produce an empty diff still says so.
+    approval._render_diff_rows("new file", "empty.txt", [], 0, kind="new file")
+    assert "no textual change" in capsys.readouterr().out
+
+
 def test_always_allow_note_names_the_lifetime(isolated_paths, monkeypatch, capsys):
     """The `a` disclosure says how long the grant lives — the lifetime IS the security property
     (transplanted from the gating isolate; default task scope = the rest of this turn)."""

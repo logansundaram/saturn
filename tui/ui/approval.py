@@ -270,23 +270,36 @@ def _wrap_exact(line: str, width: int) -> "list[str]":
     return [line[i:i + width] for i in range(0, len(line), width)]
 
 
+def _continuation_prefix(prefix: str) -> str:
+    """The marker a WRAPPED fragment carries instead of repeating `prefix`, at exactly the same
+    width so the body column never shifts. Repeating the prefix on every fragment (the pre-2026-08
+    shape) made one long command render as several: a 200-char one-liner and a 3-line script looked
+    identical, and the destructive tail of a wrapped command read as its own innocuous `$ ` line."""
+    return ("↳" + " " * (len(prefix) - 1)) if prefix else ""
+
+
 def _frame_wrapped(lines: "list[str]", prefix: str, width: "int | None" = None) -> None:
     """Print logical lines inside the approval frame, hard-wrapped byte-faithfully via
     `_wrap_exact` — no whitespace rewriting: tabs, space runs, and indentation reach the human
     exactly as the tool would receive them (textwrap.wrap would rewrite the safety surface
-    itself). THE one home of the framed wrap loop: the shell-command, http-request, and
-    full-width-arg views all render their bodies through it, so the contract can't drift between
-    them. The plain fallback prints each logical line unwrapped (the terminal wraps;
-    byte-faithfulness still holds). `width` lets a caller hoist the _term_width() read out of a
-    per-key loop (loop-invariant — compute once)."""
+    itself). THE one home of the framed wrap loop: the shell-command and full-width-arg views all
+    render their bodies through it, so the contract can't drift between them.
+
+    `prefix` marks a LOGICAL line and appears exactly once per logical line: continuation
+    fragments carry the equal-width dim `↳` from `_continuation_prefix`, so the number of `$ `
+    markers is the number of commands, never the number of screen rows. The plain fallback prints
+    each logical line unwrapped (the terminal wraps; byte-faithfulness still holds), so it already
+    emits one prefix per logical line and needs no continuation marker. `width` lets a caller
+    hoist the _term_width() read out of a per-key loop (loop-invariant — compute once)."""
     if width is None:
         width = max(20, _term_width() - 12)
+    cont = _continuation_prefix(prefix)
     if _RICH:
         for line in lines:
-            for chunk in _wrap_exact(line, width):
+            for i, chunk in enumerate(_wrap_exact(line, width)):
                 row = Text()
                 row.append("  ┃ ", style="bold")
-                row.append(f"      {prefix}", style=_DIM)
+                row.append(f"      {prefix if i == 0 else cont}", style=_DIM)
                 row.append(chunk, style="default")
                 _console.print(row)
     else:

@@ -144,6 +144,13 @@ to learn, audit, and maintain — none removes a protection.
 
 ### Fixed
 
+- **A long shell command at the approval gate no longer reads as several commands.** When a
+  command wrapped, the `$ ` marker was repeated on every wrapped fragment — a 200-character
+  one-liner and a three-line script looked identical, and the destructive tail of a wrapped
+  command read as its own separate, innocuous command. The marker now appears exactly once per
+  logical line; continuation rows carry a dim `↳` at the same width, so the count of `$ ` is the
+  count of commands.
+
 - **Answers are checked against what was actually gathered.** After a turn that observed
   something, every figure the answer states (three or more digits, or any decimal) is traced
   back to your words or the turn's tool results; a figure that traces to nothing gets ONE

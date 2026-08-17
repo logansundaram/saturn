@@ -400,6 +400,35 @@ def test_frame_wrapped_plain_is_unwrapped_and_prefixed(monkeypatch, capsys):
     assert lines[1] == "  ┃       $ "  # an empty line is still a row
 
 
+def test_frame_wrapped_prefixes_only_the_first_chunk_of_a_logical_line(monkeypatch, capsys):
+    # THE count that matters at the gate: `$ ` marks a COMMAND, so it must appear once per
+    # logical line, never once per screen row. With the prefix repeated on every wrapped
+    # fragment, a 200-char one-liner and a 3-line script rendered identically — and the
+    # destructive tail of a wrapped command read as its own separate innocuous `$ ` command.
+    if not approval._RICH:  # pragma: no cover - the plain path has its own test above
+        return
+    approval._frame_wrapped(["A" * 100, "B" * 100], "$ ", width=40)
+    rows = capsys.readouterr().out.splitlines()
+
+    # 100 chars at width 40 -> 3 fragments per logical line, 2 logical lines.
+    assert len(rows) == 6
+    starts = [r[:12] for r in rows]
+    assert starts == ["  ┃       $ ", "  ┃       ↳ ", "  ┃       ↳ "] * 2
+    assert sum(s.endswith("$ ") for s in starts) == 2  # exactly one prefix per logical line
+    # The continuation marker is the SAME width as the prefix, so the body column never shifts.
+    assert len({len(s) for s in starts}) == 1
+    # Byte-faithful still: joining a logical line's fragments reproduces the input exactly.
+    assert "".join(r[12:] for r in rows[:3]) == "A" * 100
+    assert "".join(r[12:] for r in rows[3:]) == "B" * 100
+
+
+def test_continuation_prefix_matches_prefix_width():
+    # An empty prefix (the full-width argument view) gets no marker — there is no column to hold.
+    assert approval._continuation_prefix("") == ""
+    for prefix in ("$ ", "> ", "x"):
+        assert len(approval._continuation_prefix(prefix)) == len(prefix)
+
+
 def test_render_call_plain_skips_bespoke_keys(isolated_paths, monkeypatch, capsys):
     # The keys a bespoke renderer shows in full must never ALSO render as the 80-char repr —
     # and the bespoke surface itself (diff / command) must actually appear. Pre-refactor this

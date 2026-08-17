@@ -193,6 +193,11 @@ to learn, audit, and maintain — none removes a protection.
   the original heading had scrolled away. The heading reopens and says what happened (`resumed
   after your edit`, or that you kept the text unchanged).
 
+- **The screen no longer goes dead after you resume an edited answer.** Leaving the freeze editor
+  left no status bar running, so the seconds while the model re-primes its context showed a
+  frozen screen — right after the most interactive moment in the product. The bar is re-pinned on
+  the way out, exactly as the approval gate and plan-review editor already did.
+
 - **Answers are checked against what was actually gathered.** After a turn that observed
   something, every figure the answer states (three or more digits, or any decimal) is traced
   back to your words or the turn's tool results; a figure that traces to nothing gets ONE

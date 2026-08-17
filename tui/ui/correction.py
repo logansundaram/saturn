@@ -21,6 +21,7 @@ collects text.
 from ._base import Text, _console, _RICH, _ACCENT, _DIM, _term_width
 from .listing import section
 from .prompt import ask
+from .statusbar import _live_start
 
 # Human-authored characters render in the answer's correction style everywhere (here, the final
 # answer body, the rail echo): cyan is the palette's "the human is acting" color.
@@ -163,4 +164,12 @@ def edit_answer(value: dict) -> dict:
     resp = ask(f"resume generation from {what}? [Y]es / [d]one — accept as the final answer  "
                f"(Enter = resume) » ").lower()
     action = "done" if resp.startswith("d") else "resume"
+    # Re-pin the status bar, exactly as the other blocking editors do on the way out
+    # (approval.ask_approval, plan.review_plan). The graph now resumes and the model re-primes
+    # its context before the first continued token arrives — seconds of a completely static
+    # screen otherwise, right after the most interactive moment in the product. The bar was
+    # already down (ResponseStream._begin stopped it when the answer started streaming), and
+    # response.ResponseStream._reopen / .finish stop it again before touching the screen, so only
+    # one Live is ever active.
+    _live_start()
     return {"action": action, "text": edited}

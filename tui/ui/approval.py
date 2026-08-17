@@ -465,28 +465,33 @@ def _arg_repr(v) -> str:
     return _truncate(repr(v), 80)
 
 
-def _render_call(tc: dict, quarantined: bool = False) -> None:
+def _render_call(tc: dict, quarantined: bool = False, position=None) -> None:
     """Render one gated call inside the approval frame — the per-call body shared by the rich
     and plain prompts (the rendering IS the safety surface, so the two paths must never drift):
     the risk-tier head line, the argument view (full-width when the call has no bespoke renderer,
     compact 80-char repr otherwise — minus the keys the bespoke view shows in full), the bespoke
     safety surface itself (diff / command, from the one _BESPOKE table), the secret warning, and
     the per-tier hint. `quarantined` (the batch follows injection-flagged output) forces the
-    full-width argument view at every tier — see `_full_width_args`."""
+    full-width argument view at every tier — see `_full_width_args`. `position` is this call's
+    `(n, total)` in a multi-call batch — `s(elect)` walks them in this order, and its prompts
+    carry the same `n/total`, so the two can be matched up without counting frame rows."""
     risk = str(tc.get("risk", "destructive"))
     risk_style = _RISK.get(risk, "bold red")
     name = tc.get("name")
     args = tc.get("args") or {}
     skip_keys, bespoke = _BESPOKE.get(name, ((), None))
+    idx = f"{position[0]}/{position[1]}  " if position else ""
 
     if _RICH:
         head = Text()
         head.append("  ┃ ", style="bold")
+        if idx:
+            head.append(idx, style=_DIM)
         head.append(f"{risk:<14} ", style=risk_style)  # tier chip, risk-colored
         head.append(f"{name}", style="default")
         _console.print(head)
     else:
-        print(f"  ┃ [{risk}] {name}")
+        print(f"  ┃ {idx}[{risk}] {name}")
 
     if _full_width_args(name, risk, quarantined):
         _render_full_args(args)
@@ -770,20 +775,52 @@ def _plain_call_lines(tc) -> list:
         return [f"<unrenderable call: {type(tc).__name__}>"]
 
 
-def _render_call_safely(tc, quarantined: bool = False) -> None:
+def _render_call_safely(tc, quarantined: bool = False, position=None) -> None:
     """The gate's per-call render, fail-soft (transplanted from the visibility isolate): the rich
     preview (diff / command / full-width args) is the safety surface, but a renderer that raises
     — a diff over an unreadable file, a width edge case — must never end the turn with the human
     never asked. On failure the plain fallback names the call and the same N-default prompt runs;
     the decision path is untouched."""
     try:
-        _render_call(tc, quarantined)
+        _render_call(tc, quarantined, position=position)
     except Exception as exc:
         diag.log(f"gate: rich preview failed for {tc!r}: {type(exc).__name__}: {exc}")
         for ln in _plain_call_lines(tc):
             _frame_note(ln, style="bold")
         _frame_note(f"rich preview failed ({type(exc).__name__}: {exc}) — plain view above; "
                     "N (Enter) rejects", style="yellow")
+
+
+def _decision_label(decision, n_calls: int) -> "tuple[str, str]":
+    """(text, style) naming what the human just decided, for the frame's closing row. Says only
+    what the decision records — a partial batch is named as a partial batch, never rounded to
+    "approved". Green/red match the rail's permanent echo of the same fact (`✓ you approved …` /
+    `✗ you rejected …`, tui/ui/trace._render_trust_annotations)."""
+    if isinstance(decision, dict) and isinstance(decision.get("approved_ids"), list):
+        n = len(decision["approved_ids"])
+        return f"{n} of {n_calls} approved", "green" if n else "red"
+    approved = decision.get("approved", False) if isinstance(decision, dict) else bool(decision)
+    if not approved:
+        return "rejected", "red"
+    if n_calls > 1:
+        return f"approved — all {n_calls} calls", "green"
+    return "approved", "green"
+
+
+def _close_frame(decision, n_calls: int) -> None:
+    """Close the approval frame — ONCE, after every row the decision could produce. The `┗━` used
+    to be part of the prompt string itself, so `e(xplain)`, the unrecognized-answer note, the
+    always-allow disclosures and the per-call `s(elect)` prompts all printed BELOW the closing
+    corner: pressing `e` visibly broke the box open. Names the decision, like the plan-review
+    frame's `┗━ running the plan`."""
+    text, style = _decision_label(decision, n_calls)
+    if _RICH:
+        tail = Text()
+        tail.append("  ┗━ ", style="bold")
+        tail.append(text, style=style)
+        _console.print(tail)
+    else:
+        print(f"  ┗━ {text}")
 
 
 def ask_approval(value: dict) -> "bool | dict":
@@ -810,13 +847,19 @@ def ask_approval(value: dict) -> "bool | dict":
     # (receipt.py) is the permanent echo of this prompt having happened.
     _base._status["gates"] = _base._status.get("gates", 0) + len(tool_calls)
 
+    # The batch SIZE on the header, and `n/total` on each call below: `s(elect)` walks the calls
+    # in listing order, so the human needs to know how many there are and which one they are
+    # looking at without counting frame rows that may have scrolled.
+    n_calls = len(tool_calls)
+    count = f" · {n_calls} call{'' if n_calls == 1 else 's'}" if n_calls else ""
     if _RICH:
         top = Text()
         top.append("  ┏━ ", style="bold")
         top.append("approval required", style=f"bold {_ACCENT}")
+        top.append(count, style=_DIM)
         _console.print(top)
     else:
-        print("  ┏━ approval required")
+        print(f"  ┏━ approval required{count}")
     try:
         _render_quarantine_banner(value)
     except Exception as exc:  # display only — the prompt below still asks
@@ -829,8 +872,8 @@ def ask_approval(value: dict) -> "bool | dict":
         quarantined = bool(_quarantine_flags(value))
     except Exception:
         quarantined = False
-    for tc in tool_calls:
-        _render_call_safely(tc, quarantined)
+    for i, tc in enumerate(tool_calls, 1):
+        _render_call_safely(tc, quarantined, position=(i, n_calls) if n_calls > 1 else None)
 
     # The sub-prompts (_always_allow's prefix proposal, _select_calls' arg summaries) embed RAW
     # command/argument text, and rich's Console.input parses markup AND emoji codes by default:
@@ -846,13 +889,21 @@ def ask_approval(value: dict) -> "bool | dict":
     # table, like the legends.
     _choices_rich = " / ".join("[bold]N[/]" if k == "N" else k for k, *_ in _GATE_KEYS)
     while True:
+        # The key legend rides ABOVE the prompt, always — not only after an unrecognized answer.
+        # `a` permanently widens the gate and `s` is the only way to split a mixed-trust batch;
+        # neither should be discovered by mistyping.
+        _frame_note(_KEY_LEGEND, style=_DIM)
+        # The prompt sits on a `┠` row, not the closing `┗━`: explain, the unrecognized note,
+        # the always-allow disclosures and the per-call select prompts all emit MORE rows after
+        # this line, so closing the frame here made pressing `e` visibly break the box. The frame
+        # closes exactly once, past the decision (below).
         if _RICH:
             resp = _console.input(
-                f"  [bold]┗━[/] approve? {_choices_rich}  (Enter = no) » "
+                f"  [bold]┠[/] approve? {_choices_rich}  (Enter = no) » "
             ).strip().lower()
         else:
             resp = input(
-                f"  ┗━ approve? {_KEY_CHOICES}  (Enter = no) » "
+                f"  ┠ approve? {_KEY_CHOICES}  (Enter = no) » "
             ).strip().lower()
         if resp in _ANSWER["e"]:
             try:
@@ -867,6 +918,8 @@ def ask_approval(value: dict) -> "bool | dict":
             _frame_note(note, style=_DIM)
         decision = _resolve_decision(resp, tool_calls, ask)
         break
+
+    _close_frame(decision, len(tool_calls))
 
     _base._t_last = time.perf_counter()  # don't bill the human's decision time to the next node
     _live_start()  # the turn continues (tools -> agent -> …); re-pin the bar

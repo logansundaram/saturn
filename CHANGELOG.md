@@ -220,6 +220,14 @@ to learn, audit, and maintain — none removes a protection.
   reporting `◌ 3 uncertain spans` with nothing marked to look at. The new marking carries no
   colour, so it survives, and stays distinct from the cyan used for your own edits.
 
+- **The approval frame stays intact when you press `e`, `a` or `s`.** The closing `┗━` was part
+  of the prompt line, so the explanation, the always-allow disclosures and the per-call prompts
+  all printed *below* the corner and visibly broke the box open. The frame now closes once, after
+  the decision, and names it (`┗━ 1 of 3 approved`).
+- **The gate's key legend is always visible**, not just after you mistype — `a` widens the gate
+  and `s` splits a batch, and neither should be discovered by accident. The header names the
+  batch size and each call carries its position (`2/3`), matching the per-call prompts.
+
 - **Answers are checked against what was actually gathered.** After a turn that observed
   something, every figure the answer states (three or more digits, or any decimal) is traced
   back to your words or the turn's tool results; a figure that traces to nothing gets ONE

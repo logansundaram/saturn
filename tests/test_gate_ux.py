@@ -677,13 +677,59 @@ def _rich_gate(monkeypatch, answers):
     return buf
 
 
+def test_frame_closes_once_and_after_every_row_the_decision_produces(isolated_paths, monkeypatch):
+    """`┗━` used to BE the prompt string, so `e(xplain)`, the unrecognized-answer note, the
+    always-allow disclosures and the per-call `s` prompts all printed below the closing corner —
+    pressing `e` visibly broke the box open. The corner is now drawn exactly once, past the
+    decision, and names it."""
+    # `e` (explain, re-prompts) -> a typo (note) -> `s` (per-call prompts) -> reject the one call.
+    buf = _rich_gate(monkeypatch, ["e", "wat", "s", "n"])
+    value = {"tool_calls": [{"id": "1", "name": "web_search", "risk": "read_only",
+                             "args": {"query": "x"}}],
+             "step": {"step_id": 1, "label": "look it up", "intended_tool": "web_search"}}
+    assert approval.ask_approval(value) is False
+
+    out = buf.getvalue()
+    assert out.count("┗━") == 1                     # drawn once, however many sub-prompts ran
+    lines = out.splitlines()
+    closing = next(i for i, ln in enumerate(lines) if "┗━" in ln)
+    # Everything explain / the note produced sits ABOVE the corner.
+    assert any("look it up" in ln for ln in lines[:closing])
+    assert any("unrecognized" in ln for ln in lines[:closing])
+    assert not [ln for ln in lines[closing + 1:] if ln.strip()]
+    assert "rejected" in lines[closing]              # the corner names the decision
+
+
+def test_frame_names_a_partial_batch_as_partial(isolated_paths, monkeypatch):
+    # A partial approval must never round to "approved" on the closing row.
+    buf = _rich_gate(monkeypatch, ["s", "y", "n"])
+    value = {"tool_calls": [{"id": "a", "name": "web_search", "risk": "read_only", "args": {}},
+                            {"id": "b", "name": "web_search", "risk": "read_only", "args": {}}]}
+    assert approval.ask_approval(value) == {"approved_ids": ["a"]}
+    out = buf.getvalue()
+    assert "1 of 2 approved" in out
+    assert "approval required · 2 calls" in out     # batch size on the header …
+    assert "1/2" in out and "2/2" in out            # … and each call's position in it
+
+
+def test_key_legend_shows_before_the_prompt_not_only_after_a_typo(isolated_paths, monkeypatch):
+    """`a` permanently widens the gate and `s` is the only way to split a mixed-trust batch.
+    Neither should be discovered by mistyping, which is what the legend-on-error-only did."""
+    buf = _rich_gate(monkeypatch, [""])   # bare Enter — no unrecognized answer at all
+    approval.ask_approval({"tool_calls": [{"id": "1", "name": "web_search",
+                                           "risk": "read_only", "args": {}}]})
+    out = buf.getvalue()
+    assert approval._KEY_LEGEND in out
+    assert "unrecognized" not in out     # …and it is not the error note that carried it
+
+
 def test_gate_prompt_survives_rich_render_failure(isolated_paths, monkeypatch):
     """A preview renderer that raises (a diff over an unreadable file, a width edge case) must
     not kill the turn with the human never asked: a plain fallback names the call and the same
     N-default prompt still runs. The decision path is untouched — bare Enter rejects."""
     buf = _rich_gate(monkeypatch, [""])
 
-    def boom(tc, quarantined=False):
+    def boom(tc, quarantined=False, position=None):
         raise RuntimeError("diff renderer exploded")
 
     monkeypatch.setattr(approval, "_render_call", boom)

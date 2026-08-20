@@ -95,7 +95,8 @@ _DETAIL_W = 26
 
 
 def show_models(models, bindings: dict, active_tier: str, embedder: str,
-                *, numbered: bool = False, meta: "dict | None" = None) -> None:
+                *, numbered: bool = False, meta: "dict | None" = None,
+                hidden: int = 0) -> None:
     """Render the locally-installed (Ollama) models plus the live role bindings, in the
     trace-rail style. `models` is a list of `llms.LocalModel`; `bindings` maps role -> model id;
     `embedder` is the active embedder tag. With `numbered=True` each installed row gets a 1-based
@@ -104,7 +105,9 @@ def show_models(models, bindings: dict, active_tier: str, embedder: str,
     `{"ctx": int, "max_ctx": int, "calibrated": bool}`, appending its runtime/max context window
     and confidence-calibration state to the detail column — the same metrics `/models tier`
     shows, so a tag reads identically in both listings. Windows render compactly (`32k/256k`):
-    the raw token counts pushed the bindings tail off the line."""
+    the raw token counts pushed the bindings tail off the line. `hidden` is how many installed
+    models the CALLER filtered out of `models` — with it nonzero, an empty table means "nothing
+    offerable", not "daemon down", and the empty-state hint says so instead of misdiagnosing."""
     # role(s) / embedder each installed tag currently serves -> shown as a tail marker.
     serves: dict[str, list[str]] = {}
     for role, mid in (bindings or {}).items():
@@ -149,7 +152,15 @@ def show_models(models, bindings: dict, active_tier: str, embedder: str,
     section("models", f"tier {active_tier} · embedder {embedder or '—'}")
 
     if not models:
-        _emit("  (no local models — is the Ollama daemon running? `ollama list`)")
+        # Two distinct empty states: the daemon has nothing (or is down), vs. the daemon HAS
+        # models but the caller filtered every one out (`hidden`). The daemon-down hint on the
+        # second would misdiagnose — the caller's hidden-count note follows, so contradicting it
+        # here ("no local models" over a nonzero hidden count) is worse than saying nothing.
+        if hidden > 0:
+            _emit("  (none of the installed models can be offered here — bind one by name with")
+            _emit("   `/models all <tag>` / `/models embedder <tag>`, or switch tiers: /models tier)")
+        else:
+            _emit("  (no local models — is the Ollama daemon running? `ollama list`)")
     else:
         for i, m in enumerate(models, start=1):
             bits = [p for p in (m.parameter_size, m.quantization) if p]

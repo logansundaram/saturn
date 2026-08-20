@@ -125,6 +125,86 @@ def _bind(cfg, target: str, model: str, *, session: bool = False) -> None:
     _resync_rag_after_model_change()
 
 
+def _selectable(local, bindings, embedder, declared=()) -> tuple[list, int]:
+    """What `/models` offers to bind, out of everything the daemon has pulled: the LADDER TAGS
+    (core/model_family.SIZE_LADDER — one per size class, the most advanced family tag at that
+    size) plus embedding models, which are exempt from the family gate (this listing is the only
+    one that surfaces them — `/models embedder <id>` still binds one by name).
+
+    Two reasons the filter is the ladder and not the whole family. A listing of every pulled tag
+    offered rows `_bind` refuses (2026-08-16's family gate) — the picker's numbers pointed at a
+    refusal. And a family-wide listing shows the SAME size twice once a version bump lands
+    (qwen3.6:27b beside qwen3.8:27b), which is a choice with no answer: they are the same
+    hardware cost and one is simply older. The ladder already declares the winner per size, so
+    reading it here means there is ONE ranking in the repo, not a second one hand-rolled over
+    tag names — and a superseded tag stays bindable by name for anyone who wants it.
+
+    Anything CURRENTLY bound stays visible whatever its name, so the `◂ all roles` tail can never
+    sit on a hidden row. `bindings` carries what is RUNNING (model_id — already family-substituted
+    at the model_for_role seam, so a non-family chat tag can never appear in it); `declared` is the
+    ids config.yaml LITERALLY names, pre-substitution — a pulled legacy binding (gemma4:12b under a
+    pre-lock config) has to be visible to be understood, and only the declared set can hold it.
+    Matching is case-insensitive like is_ladder_tag's own convention (the daemon's reported casing
+    and the config's may drift).
+    Returns (shown, hidden_count) — the count is disclosed, never a silent truncation."""
+    bound = {mid for mid in (bindings or {}).values() if mid}
+    bound.update(d for d in (declared or ()) if d)
+    if embedder:
+        bound.add(embedder)
+    bound = {str(b).lower() for b in bound}
+    shown = [
+        m for m in (local or [])
+        if model_family.is_ladder_tag(m.name) or m.is_embedding or m.name.lower() in bound
+    ]
+    return shown, len(local or []) - len(shown)
+
+
+def _declared_role_ids(cfg) -> set:
+    """The chat-role model ids config.yaml literally names on the active tier, PRE-substitution
+    (dict access like _tier_model, never the dotted path — a legacy tier name may contain a dot).
+    model_id() reports what RUNS, which _enforce_family has already substituted; the declared ids
+    are what the user's file says, and /models must show a pulled one rather than hide it."""
+    tier = (cfg.get("tiers", {}) or {}).get(cfg.active_tier) or {}
+    out = set()
+    for entry in (tier.get("roles", {}) or {}).values():
+        if isinstance(entry, dict):
+            entry = entry.get("model")
+        if entry:
+            out.add(str(entry))
+    return out
+
+
+def _print_hidden_note(hidden: int) -> None:
+    """Disclose what the filter dropped — the listing must not read as `ollama list`."""
+    if hidden > 0:
+        _print(f"  ({hidden} other installed model{'s' if hidden != 1 else ''} hidden — the table"
+               " shows one tag per size class, the newest of the qwen3.5-3.8 family;"
+               " hidden tags stay bindable by name.)")
+
+
+def _print_migration_notes() -> None:
+    """Name this session's family substitutions, so a listing never claims the file's value is
+    what is running (one printer — the tier listing and the model table share it)."""
+    for original, replacement in _config_migrations().items():
+        _print(f"  note: '{original}' in config.yaml is running as '{replacement}'.")
+
+
+def _show_selectable(cfg, bindings, *, numbered: bool) -> list:
+    """The one `/models` table render (bare + `list` share it, so the two views can't drift):
+    filter the daemon inventory, render, disclose the hidden count and any family substitutions.
+    Returns the SHOWN list — exactly what the picker indexes."""
+    from core.llms import list_local_models
+    from tui import ui
+
+    local, hidden = _selectable(list_local_models(), bindings, cfg.embedder_model,
+                                declared=_declared_role_ids(cfg))
+    ui.show_models(local, bindings, cfg.active_tier, cfg.embedder_model, numbered=numbered,
+                   meta=_model_meta(local, cfg), hidden=hidden)
+    _print_hidden_note(hidden)
+    _print_migration_notes()
+    return local
+
+
 def _models_picker(ctx, cfg, local, *, session: bool = False) -> None:
     from tui import ui
 
@@ -255,9 +335,9 @@ def _config_migrations() -> dict:
     aliases=("model",),
     usage="/models [list] | /models <role|all|embedder> <id> [--session] | /models tier <name> [--session]",
     details="""
-With no args, pings the local Ollama daemon, renders every installed model (size, params,
-quantization, and what each currently drives) as a numbered table, then drops into an interactive
-picker: choose a model by number, then choose what it should drive. Picking a chat model defaults
+With no args, pings the local Ollama daemon, renders the installed models it can actually bind
+(size, params, quantization, and what each currently drives) as a numbered table, then drops into
+an interactive picker: choose a model by number, then choose what it should drive. Picking a chat model defaults
 to 'all' roles (the common 'run everything locally on this model' case); picking an embed-only
 model defaults to the embedder. Blank input cancels at either step; the target prompt accepts a
 trailing --session like the direct forms below.
@@ -270,6 +350,12 @@ You can also bind directly, without the picker:
   /models tier <name> [--session]       switch the whole hardware tier
 
 Roles: planner, tool_caller, synthesizer, utility, judge.
+
+The listing shows ONE TAG PER SIZE CLASS — the most recent of the supported qwen3.5-3.8 family
+at that size, i.e. the ladder in core/model_family.py — plus embedding models, which are exempt
+from the family gate. Anything else you have pulled (another family, or a tag superseded at its
+size, like qwen3.6:27b under qwen3.8:27b) is counted as hidden under the table, never silently
+dropped, and stays bindable by name: `/models all qwen3.6:27b` still works.
 
 Every switch PERSISTS to config.yaml by default (a model switch should survive the next launch)
 and rebuilds the cached models on next use — the change writes the same dotted key(s) the session
@@ -284,8 +370,7 @@ legacy {provider, model} cloud mapping (a pre-shelve config.yaml) replaces it wi
 )
 def _models(ctx, args):
     from config import get_config
-    from core.llms import model_id, reset_models, list_local_models
-    from tui import ui
+    from core.llms import model_id, reset_models
 
     cfg = get_config()
     bindings = {role: model_id(role) for role in _ROLES}
@@ -300,19 +385,15 @@ def _models(ctx, args):
         return
 
     if not args:
-        local = list_local_models()
-        ui.show_models(local, bindings, cfg.active_tier, cfg.embedder_model, numbered=True,
-                       meta=_model_meta(local, cfg))
+        local = _show_selectable(cfg, bindings, numbered=True)
         _models_picker(ctx, cfg, local, session=session)
         return
 
     sub = args[0].lower()
 
     if is_list_verb(sub):
-        # The non-interactive view (`ollama list`-style): the same table, no picker.
-        local = list_local_models()
-        ui.show_models(local, bindings, cfg.active_tier, cfg.embedder_model,
-                       meta=_model_meta(local, cfg))
+        # The non-interactive view: the same table (same family filter), no picker.
+        _show_selectable(cfg, bindings, numbered=False)
         return
 
     if sub == "tier":
@@ -339,9 +420,7 @@ def _models(ctx, args):
                 _print("  models in place with `/models all <tag>`:")
                 for key, tag in model_family.SIZE_LADDER:
                     _print(f"    {key:<6} {tag}")
-            migrated = _config_migrations()
-            for original, replacement in migrated.items():
-                _print(f"  note: '{original}' in config.yaml is running as '{replacement}'.")
+            _print_migration_notes()
             return
         tier = args[1]
         # Dict membership, not the dotted cfg.get("tiers.<tier>") path lookup — a tier key

@@ -7,6 +7,21 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
 
 ## [Unreleased]
 
+### Changed
+
+- **`/models` lists one model per size, not your whole `ollama list`.** The table (and the
+  numbered picker behind it) was a verbatim daemon inventory — every tag you had ever pulled,
+  most of which the family gate refuses, so the picker offered numbers that led straight to a
+  refusal. It now shows one tag per size class — the most recent of the supported qwen3.5-3.8
+  family at that size, so a version bump like `qwen3.8:27b` supersedes `qwen3.6:27b` instead of
+  sitting beside it — plus embedding models, which are exempt from that gate (this is the only
+  listing that surfaces them; `/models embedder <id>` still binds one by name), plus anything
+  currently bound or literally named in your config.yaml (a pulled legacy binding stays visible
+  so it can be understood). Everything else is counted and disclosed under the
+  table (`(16 other installed models hidden …)`), never silently dropped, and a superseded tag is
+  still bindable by name (`/models all qwen3.6:27b`). If nothing at all is offerable, the table
+  says so honestly and points at the by-name binds instead of asking whether the daemon is down.
+
 ### Fixed
 
 - **An always-allow grant no longer switches off the plan-review revocation lock.** Answering `a`

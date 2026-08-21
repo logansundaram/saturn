@@ -100,7 +100,13 @@ def _apply_always_grants(decision: dict) -> None:
         name = str(name)
         prior = registry.TOOL_RISK.get(name)
         registry.TOOL_RISK[name] = "read_only"
-        if scope == "task":
+        # Only a tier that actually DROPPED registers an undo. A tool already at read_only is
+        # either declared that way (nothing to restore) or already granted earlier this turn —
+        # and in the second case `prior` is the read_only THIS grant's predecessor wrote, so a
+        # second restorer would re-drop the tier the first one just restored and leave the grant
+        # standing for the rest of the process while end_task() reported it expired (fail-open
+        # plus a false disclosure). One `a` per tool per turn owns the undo; the rest are no-ops.
+        if scope == "task" and prior != "read_only":
             def restore(_n=name, _t=prior):
                 if _t is None:
                     registry.TOOL_RISK.pop(_n, None)

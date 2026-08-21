@@ -130,7 +130,34 @@ _STATE_CHANGE_RE = re.compile(
     r"|delete|deletes|deleted|deleting|remove|removes|removed|removing"
     r"|edit|edits|edited|editing|update|updates|updated|updating"
     r"|rename|renames|renamed|renaming|move|moves|moved|moving|copy|copies|copied|copying"
-    r"|record|records|recorded|recording|run|runs|ran|running|execute|executes|executed)\b"
+    r"|record|records|recorded|recording|run|runs|ran|running|execute|executes|executed"
+    # Memory is a state change too. `remember` is side_effecting, so `state_changing("remember")`
+    # is True and every replan-drafted remember step faced this gate — while the vocabulary that
+    # authorizes it was missing, so "search the web for the rate and remember it" refused its own
+    # remember as "unauthorized": a claim about the user's intent that their words contradict,
+    # and (as the sole new step) one that lands the turn early with nothing remembered. Only
+    # unambiguous verb forms are added; bare "note" stays out — "note that the file is stale" is
+    # a discourse marker, not a request to persist anything, and the multi-word forms below cover
+    # the real ones.
+    r"|memorize|memorizes|memorized|memorizing|jot|jots|jotted|jotting)\b"
+)
+
+# `remember` needs its own rule: it is BOTH the memory tool's write verb ("remember that I prefer
+# terse answers") and the query verb for reading memory back ("what do you remember about my
+# preferences?"). Counting the query form would authorize an injected effect on a request that
+# asked for no change at all — the direction of error this module exists to avoid — so it counts
+# only as an imperative carrying an object, and never after an interrogative auxiliary + "you".
+_REMEMBER_RE = re.compile(
+    r"\bremember(?:ed|ing|s)?\s+(?:that|this|it|them|to|my|our|the|i|we|us)\b"
+)
+_REMEMBER_QUERY_RE = re.compile(
+    r"\b(?:do|does|did|can|could|would|will)\s+you\s+remember\b|\bwhat\s+do\s+you\s+remember\b"
+)
+
+# "note it down", "make a note of the total", "take note of" — the unambiguous "note" forms.
+_NOTE_DOWN_RE = re.compile(
+    r"\bnotes?\s+(?:it|this|that|them|these|those)?\s*down\b"
+    r"|\b(?:make|take|leave)\s+(?:a\s+)?note\s+(?:of|that)\b"
 )
 
 # "add the total to notes.md" — the one multi-word form.
@@ -159,7 +186,9 @@ def _reads_as_noun(text: str, start: int) -> bool:
 def wants_state_change(request) -> bool:
     """Whether the request asks for the WORKSPACE to change."""
     text = str(request or "").lower()
-    if _ADD_TO_RE.search(text):
+    if _ADD_TO_RE.search(text) or _NOTE_DOWN_RE.search(text):
+        return True
+    if _REMEMBER_RE.search(text) and not _REMEMBER_QUERY_RE.search(text):
         return True
     return any(
         m.group(0) not in _AMBIGUOUS_TERMS or not _reads_as_noun(text, m.start())

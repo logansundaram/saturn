@@ -28,6 +28,9 @@ from core.plan_context import (
     vetoes_block,
 )
 from core.state import AgentState
+# One vocabulary for the refusal: execute stamps this same prefix when it re-checks the
+# generated ARGUMENTS (one producer, as with update_plan's DECLINE_TEXT import from approval).
+from nodes.execute import UNAUTHORIZED_PREFIX
 from nodes.rectify import MAX_REPLANS, retryable_dead_end
 from core.structured import (
     _PlanOut,
@@ -82,6 +85,12 @@ def _revision_instruction(state: AgentState) -> str:
     )
 
 
+def _renumber(steps: list) -> list:
+    for i, s in enumerate(steps, 1):
+        s["step_id"] = i
+    return steps
+
+
 def replan_node(state: AgentState):
     start = time.perf_counter()
     plan = state.get("plan") or []
@@ -134,20 +143,45 @@ def replan_node(state: AgentState):
     # RESULTS — anything a file or a web page says can appear here as a proposed step. Every
     # step drafted while results exist is stamped origin=replan, and a state-changing one is
     # dropped unless the USER'S words name its target (execute re-checks on the arguments).
+    refused: list = []
     if done:
         for s in new_steps:
             s["origin"] = ORIGIN_REPLAN
-        new_steps = [s for s in new_steps if request_authorized(state, s)]
+        authorized = []
+        for s in new_steps:
+            (authorized if request_authorized(state, s) else refused).append(s)
+        new_steps = authorized
+    # A refused step is RECORDED, never silently dropped. Filtering it out of the redraft with no
+    # trace left synthesize composing a completed turn whose effect never happened: incidents_block
+    # was empty, so the answer had nothing to disclose and said the work was done. (A REVOKED drop
+    # above needs no record of its own — the plan-review veto already rides state["plan_vetoes"]
+    # into the answer as work removed at the user's request.) Stamped terminal here, so the step
+    # is never the execution pointer; appended LAST so it cannot cancel work in front of it —
+    # rectify's guarded branch reaches it only once everything else has run, with nothing left to
+    # cancel, and lands the turn at an honest synthesize.
+    for s in refused:
+        s["status"] = "blocked"
+        s["result"] = (
+            f"{UNAUTHORIZED_PREFIX} this step was added after the results came back and it acts "
+            "on something the request never named. Results may inform HOW the request is "
+            "carried out, never WHAT is done to the workspace."
+        )
 
     if fresh and not new_steps:
         # The redraft was ENTIRELY revoked/unauthorized work: another cycle can only produce it
         # again (rectify sees the same plan and asks for the same missing write). Consuming the
-        # budget lands the turn at an honest synthesize NOW — the refused step is already a
-        # disclosed incident, and the plan-review note tells the answer to describe it as
-        # removed at the user's request.
+        # budget lands the turn at an honest synthesize NOW. A REVOKED redraft needs no record
+        # here — the plan-review note already tells the answer to describe it as removed at the
+        # user's request — but an UNAUTHORIZED one is a refusal the user never asked for, so the
+        # blocked steps ride onto the plan as disclosed incidents rather than vanishing.
         diag.log(f"replan_node : {time.perf_counter() - start:.4f}s (redraft wholly revoked)")
-        return {"replans": MAX_REPLANS, "rectify": False,
-                "reasoning": "remaining work revoked or unauthorized"}
+        out = {"replans": MAX_REPLANS, "rectify": False,
+               "reasoning": "remaining work revoked or unauthorized"}
+        if refused:
+            # `done` is already the completed prefix, so the record is exactly
+            # `what ran` + `what was refused`; nothing pretends to be still pending.
+            out["plan"] = _renumber(done + refused)
+        return out
 
     if not new_steps:
         # A failed/empty redraft keeps the pending steps as they were — degrading to the old
@@ -159,12 +193,14 @@ def replan_node(state: AgentState):
             "reasoning": "",
         }
 
-    merged = done + new_steps[:_MAX_NEW_STEPS]
-    for i, s in enumerate(merged, 1):
-        s["step_id"] = i
+    # Refused steps land AFTER the surviving work: terminal already, so never the execution
+    # pointer, and reached by rectify's guarded branch only once everything in front of them has
+    # run — with nothing left to cancel.
+    merged = _renumber(done + new_steps[:_MAX_NEW_STEPS] + refused)
     diag.log(
         f"replan_node : {time.perf_counter() - start:.4f}s "
-        f"({len(done)} kept + {len(merged) - len(done)} redrafted)"
+        f"({len(done)} kept + {len(merged) - len(done) - len(refused)} redrafted"
+        + (f" + {len(refused)} refused)" if refused else ")")
     )
     return {
         "plan": merged,

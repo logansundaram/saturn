@@ -275,7 +275,13 @@ def _tier_rows(active: "str | None" = None, cfg=None) -> list:
     rows = []
     for key in tiers or classes:
         ladder = key in classes
-        declared = model_family.tag_for(key) if ladder else _tier_model(cfg, key)
+        # What the CONFIG binds, always — for a size-class tier too. Reading the ladder's tag for
+        # those showed a row the file contradicts: binding qwen3.6:27b on tier 27b runs
+        # qwen3.6:27b and /models says so, while this table claimed qwen3.8:27b; a legacy
+        # gemma4:12b on 27b claimed "qwen3.8:27b · 27.3B" directly above a migration note saying
+        # it runs as qwen3.5:9b. The ladder is only the fallback for a class this config never
+        # declared (the `tiers or classes` listing below).
+        declared = _tier_model(cfg, key) or (model_family.tag_for(key) if ladder else "")
         # What selecting this tier actually RUNS: a non-family binding is substituted at the
         # model_for_role seam, so showing the file's value here would put a window and a
         # calibration verdict against a model that never loads (the substitution itself is

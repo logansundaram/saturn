@@ -24,6 +24,76 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
 
 ### Fixed
 
+- **A second `a` at the gate no longer makes an always-allow grant permanent.** Granting the same
+  tool twice in one turn — reachable without an adversary, since an injection-flagged observation
+  re-arms the quarantine escalation and gates the tool again — registered a second undo that
+  captured the already-granted tier. It then re-dropped the tier the first undo had just restored,
+  so the grant stood for the rest of the process while the closing note said "always-allow grants
+  expired with this turn". The grant now expires as promised, and the note counts it once.
+
+- **A step the engine adds after reading results is no longer silently dropped.** Effect
+  authorization matched only *path* tokens, so a state-changing step naming none — a `remember`,
+  an MCP call, or a write whose description says "into the report" rather than a filename — was
+  refused whenever the request happened to mention any path at all. The refusal then removed the
+  step with no record, and the answer described a finished turn whose file was never written.
+  Effects that name no target now fall through to the same residual that already applied when the
+  request named no path, and a step that IS refused is recorded as a disclosed incident instead of
+  vanishing. The guarantee is unchanged where it matters: a request asking for no change still
+  authorizes nothing, and a real file write always names its path in the call it generates.
+
+- **"Remember that I prefer terse answers" is no longer refused as an unauthorized effect.** The
+  vocabulary that decides whether you asked for something to change had no word for memory, while
+  `remember` is a state-changing tool — so a remember step added mid-turn was blocked, and the
+  record claimed you had never asked for it. Asking what Saturn remembers is still a read.
+
+- **Removing a read step at plan review no longer cancels the write you kept.** A dropped step
+  whose wording merely contained a write word ("Read the current notes.md before appending")
+  revoked that path for the rest of the turn, and the write step you deliberately left in the plan
+  was refused with a message saying you had removed it. Only an actual destination ("…and save it
+  to notes.md") counts now.
+
+- **A figure the model made up can no longer vouch for itself by being written to a file.** The
+  groundedness check treated the arguments of a tool call as gathered evidence, so an invented
+  number passed to `write_file` became "traceable" the moment the call was echoed back.
+
+- **The two answer-correction passes no longer undo each other.** When an answer both stated an
+  untraceable figure and omitted one the plan computed, the second rewrite regenerated from the
+  original draft — throwing away the first correction — and its result was never re-checked, so a
+  fabricated figure could ship with no disclosure at all. Both passes now revise the current
+  answer and the check follows the text being shipped.
+
+- **`/trace` and exports keep the answer's provenance history again.** A record larger than the
+  write-time cap was shrunk by clipping text, which cannot shrink the per-token confidence
+  ledger — so past roughly 320 words the whole answer buffer was dropped, taking the edit history
+  and provenance spans with it. Long lists are now trimmed with the loss named, and a record that
+  lost anything is reported as INCOMPLETE in `/trace answer` instead of rendering as complete.
+
+- **`/models tier` shows the model your config actually binds.** For a size-named tier the table
+  printed the newest tag at that size regardless of what you had bound, so binding
+  `qwen3.6:27b` on tier `27b` ran `qwen3.6:27b` while the table said `qwen3.8:27b` — directly above
+  a migration note contradicting it.
+
+- **An errored search no longer cancels the rest of the plan.** A failed search still counted as
+  evidence gathered, so the engine asked whether the error text contained the file a later step
+  referred to, concluded the item was missing, and cancelled everything remaining. With no search
+  at all the same plan ran fine.
+
+- **A malformed exported record no longer crashes `saturn --replay`.** A hand-edited or corrupt
+  export raised a traceback instead of reporting that the file could not be rendered.
+
+- **Hostnames and email addresses are no longer mistaken for files in your workspace.** Asking
+  Saturn to email a summary to `jo.smith@corp.com`, or to look at `anthropic.com`, made it decide
+  the request named a file no step had touched — and spend a re-plan trying to read it, failing,
+  and disclosing the failure on a request that was already complete.
+
+- **`/docs add` blames the right file.** A loader error from an unrelated document whose name
+  merely ended with the same text ("my-notes.md" for "notes.md") was reported against the file you
+  just added, hiding the fact that it was ingested fine.
+
+- **Running out of re-plans no longer abandons steps that are ready to run.** The re-plan budget
+  bounds *redrafting*; steps already drafted and concrete now execute instead of being reported as
+  never run.
+
 - **An always-allow grant no longer switches off the plan-review revocation lock.** Answering `a`
   at the approval gate drops a tool to the auto-approved tier — which is what auto-approval means
   — but the revocation lock and effect authorization were reading that same live tier to decide

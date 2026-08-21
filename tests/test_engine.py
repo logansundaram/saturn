@@ -512,7 +512,13 @@ def test_route_after_rectify_bounds_and_routes():
     assert rc.route_after_rectify(
         _state([_step(1, result="x", status="done")], rectify=False)) == "synthesize"
     assert rc.route_after_rectify(_state([_step(1)], iteration=999)) == "synthesize"
-    assert rc.route_after_rectify(_state([_step(1)], replans=rc.MAX_REPLANS)) == "synthesize"
+    # The replan budget bounds REDRAFTING: it refuses a rectify=True revision...
+    assert rc.route_after_rectify(
+        _state([_step(1)], rectify=True, replans=rc.MAX_REPLANS)) == "synthesize"
+    # ...but concrete pending steps still run. Landing them as "never ran" incidents threw away
+    # ready work the budget was never about; execution stays bounded by max_iterations.
+    assert rc.route_after_rectify(
+        _state([_step(1)], rectify=False, replans=rc.MAX_REPLANS)) == "plan_gate"
 
 
 # ── nodes/replan: done steps kept, pending redrafted ──────────────────────────────────────────

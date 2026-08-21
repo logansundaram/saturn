@@ -59,9 +59,76 @@ def original_request(state) -> str:
 _PATH_RE = re.compile(r"[A-Za-z0-9_.\-]*(?:/[A-Za-z0-9_.\-]+)+|[A-Za-z0-9_\-]+\.[A-Za-z]{2,8}")
 
 
+# A dotted word is only a workspace path if it is not an INTERNET NAME. `_PATH_RE`'s second
+# alternative matches any `word.word`, so "email them to jo.smith@corp.com" yielded
+# {jo.smith, corp.com} and "the pricing page on anthropic.com" yielded {anthropic.com} — and
+# rectify's coverage branch then reported the request named a path "no step has acted on",
+# burning a replan on a read_file against an email address, failing, and landing an incident the
+# answer had to disclose, on a request that was already complete.
+#
+# Only TLDs that are not also plausible file extensions are listed: `.md`, `.sh`, `.py`, `.rs`,
+# `.pl`, `.io`-style collisions are exactly how a denylist starts refusing real files, so a
+# country code that doubles as an extension is deliberately absent. A miss here costs nothing —
+# the token is simply treated as a path, which is the behaviour that already stood.
+_HOST_TLDS = frozenset(
+    "com org net edu gov mil int info biz dev app xyz online site cloud "
+    "io ai co tv me us uk eu fr de jp cn au ca".split()
+)
+
+
+def _is_internet_name(token: str) -> bool:
+    """Whether this token's leading segment reads as a hostname (`anthropic.com`, and the same
+    host carrying a URL path: `anthropic.com/pricing`)."""
+    # The first NON-EMPTY segment: a URL loses its scheme to the path pattern, so
+    # "https://anthropic.com/pricing" arrives here as "/anthropic.com/pricing" and splitting on
+    # the leading slash would hand back an empty head that no TLD can match.
+    head = next((seg for seg in token.split("/") if seg), "")
+    return "." in head and head.rsplit(".", 1)[-1] in _HOST_TLDS
+
+
 def target_tokens(text) -> set:
-    """The workspace paths named anywhere in `text`, lowercased."""
-    return {m.group(0).strip(".").lower() for m in _PATH_RE.finditer(str(text or ""))}
+    """The workspace paths named anywhere in `text`, lowercased. Email addresses and hostnames
+    are NOT workspace targets."""
+    text = str(text or "")
+    out: set = set()
+    for m in _PATH_RE.finditer(text):
+        token = m.group(0).strip(".").lower()
+        if not token:
+            continue
+        # An email address: the local part is followed by "@", the domain preceded by one.
+        if text[m.end():m.end() + 1] == "@" or text[max(0, m.start() - 1):m.start()] == "@":
+            continue
+        if _is_internet_name(token):
+            continue
+        out.add(token)
+    return out
+
+
+# A write folded into a READ-ONLY step's description ("…and save it to out.txt"). It must be a
+# DESTINATION phrase — a write verb pointing at a path — not merely a step whose prose happens to
+# contain a write word. Asking `wants_state_change(label)` instead read ordinary planner wording
+# as an effect: dropping the read_file step "Read the current notes.md before appending" revoked
+# notes.md and refused the write step the user deliberately KEPT, under a disclosure claiming
+# they had removed it. `to|into|onto` only — "in" would make "add up the values in data.csv"
+# (a calculate step) revoke data.csv the same way. Missing a folded write is the cheap direction:
+# the real write step still faces its own revocation check and the gate.
+_FOLDED_WRITE_RE = re.compile(
+    r"\b(?:save|saves|saved|saving|write|writes|wrote|writing|store|stores|stored|storing"
+    r"|append|appends|appended|appending|add|adds|added|adding|record|records|recorded|recording"
+    r"|output|outputs|dump|dumps|export|exports|copy|copies|copied|copying)\b"
+    # A dot is allowed only mid-token (`notes.md`), never as a sentence end — excluding it
+    # outright clipped the tail to "notes" and lost every extension-bearing target.
+    r"(?P<tail>(?:[^.?!;\n]|\.(?=\S)){0,80}?\b(?:to|into|onto)\b(?:[^.?!;\n]|\.(?=\S)){0,80})",
+    re.I,
+)
+
+
+def _folded_write_targets(text) -> set:
+    """The paths a read-only step's description commits to WRITING, if any."""
+    out: set = set()
+    for m in _FOLDED_WRITE_RE.finditer(str(text or "")):
+        out |= target_tokens(m.group("tail"))
+    return out
 
 
 # --- the plan-review revocation lock + effect authorization (from the engine isolate) ---------
@@ -116,8 +183,6 @@ def revoked_targets(step) -> set:
     for a non-path effect (a dropped `remember` revokes further memory writes, not every write).
     A write folded into a read-only step's DESCRIPTION ("…and save it to x.txt") is trusted for
     the paths it names and nothing more."""
-    from core.request_intent import wants_state_change
-
     tool = step.get("intended_tool")
     label = str(step.get("label") or "")
     if state_changing(tool):
@@ -125,9 +190,7 @@ def revoked_targets(step) -> set:
         if named:
             return named
         return {REVOKE_ALL} if (tool in WRITE_TOOLS or tool == "run_shell") else {f"tool:{tool}"}
-    if wants_state_change(label):
-        return target_tokens(label)
-    return set()
+    return _folded_write_targets(label)
 
 
 def _same_target(revoked: str, named: str) -> bool:
@@ -188,6 +251,18 @@ def request_authorized(state, step, *texts) -> bool:
     if not requested:
         return True
     named = target_tokens(" ".join([str(step.get("label") or "")] + [str(t or "") for t in texts]))
+    # The residual is SYMMETRIC. An action that names no target EITHER — a non-path effect
+    # (`remember`, an `mcp_*` call), or a write whose label describes its destination in prose
+    # ("write the total into the report") — has nothing to compare against the requested paths,
+    # so it falls through to the residual instead of failing an any() over an empty set. Denying
+    # it made this check answer "did the user name a path ANYWHERE in the request", which is not
+    # the question, and silently dropped legitimate work at replan's filter: the same path /
+    # non-path asymmetry `revoked_targets` was given `tool:<name>` for. Where the check bites is
+    # unchanged — `wants_state_change` above still refuses every effect on a read-only request,
+    # and a filesystem write always names its path in the GENERATED ARGUMENTS, so execute's
+    # re-check still holds it to a target the user asked for.
+    if not named:
+        return True
     return any(_same_target(r, n) for r in requested for n in named)
 
 

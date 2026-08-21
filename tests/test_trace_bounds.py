@@ -47,7 +47,10 @@ def test_huge_plan_delta_keeps_what_fits_and_names_what_it_dropped():
     delta = decode_json(data, None)
     assert isinstance(delta, dict)
     assert delta["iteration"] == 3
-    assert delta["truncated"]["dropped"] == ["plan"]
+    # The plan is THINNED (entries dropped from the tail, the loss named) rather than the
+    # whole key discarded — the salvage rung below it is the last resort, not the first.
+    assert delta["truncated"]["dropped"] == ["plan[349 of 399 entries]"]
+    assert len(delta["plan"]) == 50
     assert delta["truncated"]["original_chars"] > trace_mod._DATA_CAP
 
 

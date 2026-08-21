@@ -427,9 +427,18 @@ def observation_pool(state: AgentState, query: str) -> str:
     """Everything a figure in the answer may legitimately have come from: the human's words and
     the OBSERVATIONS this turn gathered. Reasoning-step results are deliberately excluded — a
     "none" step's text is model text, and admitting it would let a fabricated figure launder
-    itself (the reasoning step invents 515, the answer repeats it, 515 is now "traceable")."""
+    itself (the reasoning step invents 515, the answer repeats it, 515 is now "traceable").
+
+    `tool_results` entries are the `name(args) -> observation` mirror, so only their OBSERVATION
+    half is admitted: the arguments are model-authored by the same rule, and taking them whole
+    let a figure vouch for itself simply by being written to a file — the model invents
+    "Estimated cost: 12500 USD", passes it as `write_file(content=...)`, and the echoed call
+    makes 12500 traceable. On a mechanical read-then-write plan the semantic write gate is never
+    armed, so nothing else stood between that figure and the user. (One known edge rides in from
+    `split_call_result`: an argument value containing the separator splits early. It costs a
+    prefix of one call's arguments, not the general case.)"""
     parts = [str(query or "")]
-    parts += [str(r) for r in state.get("tool_results") or []]
+    parts += [split_call_result(r)[1] for r in state.get("tool_results") or []]
     parts += [str(d) for d in state.get("documents_retrieved") or []]
     parts += [
         str(s.get("result") or "")
@@ -486,11 +495,19 @@ def unstated_computed_figures(buf: dict, state: AgentState) -> tuple:
     return tuple(untraceable_figures(" ".join(required), buf.get("text", "")))
 
 
-def _regenerate(model, llm_input, corrective: str) -> str:
+def _regenerate(model, llm_input, corrective: str, draft: str = "") -> str:
     """ONE corrective regeneration — a plain resample reproduces the same arithmetic, so the retry
-    carries the specific complaint. '' when the model errors (the ladder falls back to disclosing)."""
+    carries the specific complaint. '' when the model errors (the ladder falls back to disclosing).
+
+    The DRAFT rides along: both correctives are written as revisions ("keep every other claim
+    exactly as it was"), which is an instruction about a text the model could not see — and when
+    the second ladder fires after the first, regenerating from `llm_input` alone silently threw
+    away the rewrite the first one had just made."""
+    msgs = list(llm_input)
+    if draft.strip():
+        msgs.append(HumanMessage(content="Your draft answer, in full:\n" + draft))
     try:
-        resp = generate(model, list(llm_input) + [HumanMessage(content=corrective)],
+        resp = generate(model, msgs + [HumanMessage(content=corrective)],
                         tag=_model_tag("synthesizer"),
                         **_invoke_kwargs("synthesizer", None, 0.7, task="correction"))
         text = getattr(resp, "content", "")
@@ -514,23 +531,35 @@ def _ground_answer(buf: dict, model, llm_input, state: AgentState, query: str):
     untraceable = ungrounded_figures(buf, state, query)
     if not untraceable:
         return buf, ()
-    text = _regenerate(model, llm_input, GROUNDING_CORRECTIVE.format(bad=", ".join(untraceable)))
+    text = _regenerate(model, llm_input, GROUNDING_CORRECTIVE.format(bad=", ".join(untraceable)),
+                       draft=buf.get("text", ""))
     if text.strip():
         still = untraceable_figures(text, observation_pool(state, query))
         return _rewritten(buf, text), tuple(still)
     return buf, tuple(untraceable)
 
 
-def _state_computed(buf: dict, model, llm_input, state: AgentState):
-    """The inverse ladder: the answer must state what the turn computed; correct once, disclose."""
+def _state_computed(buf: dict, model, llm_input, state: AgentState, query: str, ungrounded=()):
+    """The inverse ladder: the answer must state what the turn computed; correct once, disclose.
+
+    Returns (buffer, missing_literals, ungrounded_literals). The third value is why this takes
+    `ungrounded` in: a rewrite here REPLACES the answer the groundedness ladder just checked, so
+    its verdict no longer describes the text being shipped. Returning the stale `()` is how an
+    answer that had a fabricated figure rewritten out of it, then rewritten again to state the
+    computed value, shipped with the fabrication back and no GROUNDING_NOTE_HEADER — the
+    fail-closed-by-marking guarantee defeated exactly when both ladders fired."""
     missing = unstated_computed_figures(buf, state)
     if not missing:
-        return buf, ()
-    text = _regenerate(model, llm_input, COMPUTED_CORRECTIVE.format(missing=", ".join(missing)))
+        return buf, (), tuple(ungrounded)
+    text = _regenerate(model, llm_input, COMPUTED_CORRECTIVE.format(missing=", ".join(missing)),
+                       draft=buf.get("text", ""))
     if text.strip():
         still = untraceable_figures(" ".join(required_figures(state)), text)
-        return _rewritten(buf, text), tuple(still)
-    return buf, tuple(missing)
+        regrounded = ()
+        if gate_applies(state):
+            regrounded = tuple(untraceable_figures(text, observation_pool(state, query)))
+        return _rewritten(buf, text), tuple(still), regrounded
+    return buf, tuple(missing), tuple(ungrounded)
 
 
 def synthesize_node(state: AgentState):
@@ -697,7 +726,11 @@ def synthesize_node(state: AgentState):
     else:
         model = get_model("synthesizer")
         buf, ungrounded = _ground_answer(buf, model, llm_input, state, basis)
-        buf, dropped = _state_computed(buf, model, llm_input, state)
+        # `ungrounded` rides IN because a computed-value rewrite replaces the very text the
+        # grounding pass verified — the check has to follow the answer, not the pass.
+        buf, dropped, ungrounded = _state_computed(
+            buf, model, llm_input, state, basis, ungrounded
+        )
 
     return _final_updates(
         buf, incidents, sources, cancelled,

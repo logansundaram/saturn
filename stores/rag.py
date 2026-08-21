@@ -606,10 +606,14 @@ def ingest_file(src_path: str) -> dict:
 def forget_document(name: str) -> bool:
     """Remove a document from the corpus by relative source or basename. `sync()` then drops its
     vectors + manifest entry. Returns False if no matching file exists."""
-    root = documents_dir()
-    target = root / name
-    if not target.exists():
-        matches = [p for p in iter_documents() if p.name == name]
+    root = documents_dir().resolve()
+    target = (root / name).resolve()
+    # The corpus is the jail. This is the only file-DELETING path in the repo that did not route
+    # through a sandbox resolver: `root / "../secret.txt"` resolved outside and was unlinked.
+    # Not reachable from /docs remove (the handler basenames its input first), but the guard
+    # belongs in the primitive, not in the one caller that happens to be careful.
+    if not target.is_relative_to(root) or not target.exists():
+        matches = [p for p in iter_documents() if p.name == Path(str(name)).name]
         if not matches:
             return False
         target = matches[0]

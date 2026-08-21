@@ -133,8 +133,11 @@ def _add(rest: list) -> None:
             return
     s = ingest_file(str(path))
     failed = dict(s.get("failed") or [])
-    if any(src == path.name or src.endswith(path.name) for src in failed):
-        err = next(e for src, e in failed.items() if src == path.name or src.endswith(path.name))
+    # Compare BASENAMES, never an unanchored suffix: "my-notes.md".endswith("notes.md") is True,
+    # so a pre-existing corrupt file in the corpus reported its loader error against the file
+    # just added — and suppressed the success line for a document that embedded fine.
+    err = next((e for src, e in failed.items() if Path(str(src)).name == path.name), None)
+    if err is not None:
         _print(f"  could not load {path.name}: {err}")
     elif s["added"] or s["updated"]:
         _print(f"  added {path.name} — +{s['added']} ~{s['updated']} (cache updated).")

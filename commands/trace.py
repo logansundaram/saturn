@@ -269,18 +269,28 @@ def _export(ctx, args):
 def export_rows(payload: dict):
     """Rebuild (run_tuple, event_rows) from an export payload, in the shapes ui.show_run expects
     (event `data` re-encoded to JSON — the export stores it decoded). Pure, for tests."""
-    run = payload.get("run") or {}
+    # Every shape is CHECKED, not assumed. An export is the attach-it-to-a-bug-report path, so
+    # the payload is untrusted by design: a "run" that decodes to a list, or an event whose
+    # "data" is a list, used to raise AttributeError straight out of render_export — past its
+    # documented "returns False on a file that can't be rendered" and, via saturn --replay,
+    # out of main() as a traceback. A malformed record renders as much as it can.
+    run = payload.get("run")
+    run = run if isinstance(run, dict) else {}
     run_tuple = (
         run.get("run_id"), run.get("query"), run.get("started_at"),
         run.get("ended_at"), run.get("status"), run.get("response"),
     )
-    rows = [
-        (
-            ev.get("seq"), ev.get("ts"), ev.get("node"), ev.get("summary"),
-            json.dumps(ev.get("data")) if ev.get("data") is not None else None,
-        )
-        for ev in (payload.get("events") or [])
-    ]
+    events = payload.get("events")
+    rows = []
+    for ev in events if isinstance(events, list) else []:
+        if not isinstance(ev, dict):
+            continue
+        data = ev.get("data")
+        try:
+            encoded = json.dumps(data) if data is not None else None
+        except (TypeError, ValueError):
+            encoded = None
+        rows.append((ev.get("seq"), ev.get("ts"), ev.get("node"), ev.get("summary"), encoded))
     return run_tuple, rows
 
 
@@ -303,7 +313,11 @@ def render_export(path_str: str) -> bool:
               file=sys.stderr)
         return False
 
-    run_tuple, rows = export_rows(payload)
+    try:
+        run_tuple, rows = export_rows(payload)
+    except Exception as e:  # the contract is a bool, never a traceback out of --replay
+        print(f"  {path.name} could not be rendered: {e}", file=sys.stderr)
+        return False
     _print(f"  replaying exported record: {path.name}  "
            f"(saturn {payload.get('saturn_version', '?')}, exported {payload.get('exported_at', '?')})")
     _print("")
@@ -547,6 +561,14 @@ def _answer(ctx, args):
             truncated = True
             continue
         if isinstance(d, dict):
+            # The delta DECODED — but stores.trace._bound_delta may still have dropped keys to
+            # bring it under the record cap, and it says so in an explicit `truncated` record.
+            # Reading only the undecodable case left this disclosure unreachable for every
+            # write-time truncation since bounded deltas started always emitting valid JSON:
+            # the run rendered as complete while its inputs were missing whole keys. The rail
+            # already reads this marker (tui/ui/trace._render_trust_annotations); so does this.
+            if isinstance(d.get("truncated"), dict):
+                truncated = True
             deltas.append(d)
     gb = glassbox.build_from_record(query, response, deltas, complete=not truncated)
     from tui import ui as _ui

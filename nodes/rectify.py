@@ -265,8 +265,19 @@ def rectify_node(state: AgentState):
     if nxt is not None and nxt.get("intended_tool") not in WRITE_TOOLS:
         done_before = any(s.get("result") is not None for s in plan[: plan.index(nxt)])
         if done_before and nxt.get("needs_resolution"):
+            # A search ARMS this check only when it actually produced an observation — the
+            # structural status stamp, exactly as execute._write_gate reads it. Keying on
+            # `result is not None` alone armed it on an ERRORED search, whose result is the
+            # error text: the guarded branch above handles only skipped/blocked, so the error
+            # fell through here and the judge was asked whether "Error calling search_files: …"
+            # contains the referenced item. It does not, and `found=False` cancelled the whole
+            # remaining plan as "the item was not found" — a claim about the workspace drawn
+            # from a tool failure. With no search step at all the same plan resolves
+            # mechanically and continues, so the errored case was strictly worse than none.
             searched = any(
-                s.get("intended_tool") in SEARCH_TOOLS and s.get("result") is not None
+                s.get("intended_tool") in SEARCH_TOOLS
+                and s.get("result") is not None
+                and s.get("status") == "done"
                 for s in plan
             )
             check = (
@@ -462,10 +473,13 @@ def route_after_rectify(state: AgentState) -> str:
     synthesize. The iteration cap and replan budget both force an honest landing."""
     if state.get("iteration", 0) >= get_config().max_iterations:
         return "synthesize"
-    if state.get("replans", 0) >= MAX_REPLANS:
-        return "synthesize"
     if state.get("rectify"):
-        return "replan"
+        # The replan budget bounds REDRAFTING, not execution. Checking it before this line also
+        # refused the redraft, which is right; checking it before the pending-steps line below
+        # was not — a plan whose remaining steps are concrete and ready has nothing to redraft,
+        # and abandoning them as "never ran" incidents threw away work the budget was never
+        # about. Execution stays bounded by max_iterations above.
+        return "synthesize" if state.get("replans", 0) >= MAX_REPLANS else "replan"
     if any(s.get("result") is None for s in state.get("plan") or []):
         return "plan_gate"
     return "synthesize"

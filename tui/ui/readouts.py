@@ -196,41 +196,40 @@ def show_models(models, bindings: dict, active_tier: str, embedder: str,
 
 
 # ── log lines (startup notices, warnings) ────────────────────────────────────────
+# Every line below is the same shape: a glyph, a message, and an optional dim tail — rendered as
+# styled spans under rich and as plain text without it. One helper so the rich/plain fallback
+# contract lives in ONE place (it was hand-copied six times here and once in response.py, so a
+# fix to the fallback had to land seven times). The plain form is always glyph + text + tail,
+# which is exactly what each copy printed.
+def _glyph_line(glyph: str, glyph_style: str, text: str,
+                text_style: str = "default", tail: str = "", tail_style: str = "") -> None:
+    if _RICH:
+        t = Text()
+        t.append(glyph, style=glyph_style)
+        t.append(text, style=text_style)
+        if tail:
+            t.append(tail, style=tail_style or _DIM)
+        _console.print(t)
+    else:
+        print(f"{glyph}{text}{tail}")
+
+
 def note(msg: str) -> None:
     """A quiet informational line (dim) — e.g. the `@file` attachment notice. Distinct from
     `warn` (yellow), which flags a problem; a note is just neutral context."""
-    if _RICH:
-        t = Text()
-        t.append("  · ", style=_DIM)
-        t.append(msg, style=_DIM)
-        _console.print(t)
-    else:
-        print(f"  · {msg}")
+    _glyph_line("  · ", _DIM, msg, _DIM)
 
 
 def warn(msg: str) -> None:
-    if _RICH:
-        t = Text()
-        t.append("  ! ", style="yellow")
-        t.append(msg, style="yellow")
-        _console.print(t)
-    else:
-        print(f"  ! {msg}")
+    _glyph_line("  ! ", "yellow", msg, "yellow")
 
 
 def steer_note(text: str) -> None:
     """Acknowledge a mid-turn steering correction the moment it's captured (Esc with typed text).
     The correction is injected into the running turn at the next step boundary (see plan_gate); this
     is the immediate feedback that it landed, printed above the live status bar."""
-    msg = _truncate(text, 80)
-    if _RICH:
-        t = Text()
-        t.append("  ↪ ", style=f"bold {_ACCENT}")
-        t.append("steering — applies at the next step: ", style=_ACCENT)
-        t.append(msg, style=_DIM)
-        _console.print(t)
-    else:
-        print(f"  ↪ steering — applies at the next step: {msg}")
+    _glyph_line("  ↪ ", f"bold {_ACCENT}", "steering — applies at the next step: ",
+                _ACCENT, _truncate(text, 80), _DIM)
 
 
 def pause_note() -> None:
@@ -238,13 +237,7 @@ def pause_note() -> None:
     next step boundary (see plan_gate), which on a local model can be a long wait — this is the
     immediate feedback that the keypress registered, printed above the live status bar exactly
     like steer_note's steering acknowledgement."""
-    if _RICH:
-        t = Text()
-        t.append("  ⏸ ", style=f"bold {_ACCENT}")
-        t.append("pausing for plan review at the next step…", style=_ACCENT)
-        _console.print(t)
-    else:
-        print("  ⏸ pausing for plan review at the next step…")
+    _glyph_line("  ⏸ ", f"bold {_ACCENT}", "pausing for plan review at the next step…", _ACCENT)
 
 
 def freeze_note() -> None:
@@ -252,24 +245,12 @@ def freeze_note() -> None:
     it's captured — the stream stops at the next token and the freeze editor opens, but on a
     slow local model that beat can lag the keypress; this is the immediate feedback, printed
     above the live answer region exactly like steer_note/pause_note."""
-    if _RICH:
-        t = Text()
-        t.append("  ✂ ", style=f"bold {_ACCENT}")
-        t.append("freezing the answer — the editor opens when the stream stops…", style=_ACCENT)
-        _console.print(t)
-    else:
-        print("  ✂ freezing the answer — the editor opens when the stream stops…")
+    _glyph_line("  ✂ ", f"bold {_ACCENT}",
+                "freezing the answer — the editor opens when the stream stops…", _ACCENT)
 
 
 def echo_queued(line: str) -> None:
     """Echo a type-ahead line as the REPL pulls it off the queue to run, so a query/command the
     user typed while a previous turn was working shows up in the transcript just like a line typed
     live at the `»` prompt (with a quiet `queued` tag to mark where it came from)."""
-    if _RICH:
-        t = Text()
-        t.append("» ", style=f"bold {_ACCENT}")
-        t.append(line, style="default")
-        t.append("   (queued)", style=_DIM)
-        _console.print(t)
-    else:
-        print(f"» {line}   (queued)")
+    _glyph_line("» ", f"bold {_ACCENT}", line, "default", "   (queued)", _DIM)

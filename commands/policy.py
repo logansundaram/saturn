@@ -30,11 +30,19 @@ def risk_handler(ctx, args):
     args, save = split_save_flag(args)
 
     if not args:
+        from tui import ui
+
         overrides = policy.risk_overrides()
-        _print("  current risk tiers (* = persisted override):")
+        # Through the shared listing vocabulary, like /tools and /mcp: the risk tier is the
+        # semantic fact here, so it must carry the same green/yellow/red it wears at the gate —
+        # and a long mcp_<server>_<tool> name must not push the column out of alignment.
+        ui.section("risk tiers", "* = persisted override")
+        rows = []
         for t in TOOLS:
-            mark = "*" if t.name in overrides else " "
-            _print(f"    {risk_of(t.name):<14}{mark} {t.name}")
+            risk = risk_of(t.name)
+            mark = "*" if t.name in overrides else ""
+            rows.append(((risk, ui.risk_style(risk)), (mark, "accent"), t.name))
+        ui.table(rows)
         _print("  set: /policy risk <tool> <tier> [--save]   restore: /policy risk <tool> reset")
         return
 
@@ -273,11 +281,13 @@ def _policy_cmd(ctx, args):
             _print("    shell allowlist        : (none)")
         _print(f"    always-allow lifetime  : {policy.default_grant_scope()}  "
                "(runtime.grant_scope)")
-        from trust import quarantine
+        from trust import egress, quarantine, redaction
 
-        _print(f"    airgap                 : {'on' if cfg.get('runtime.airgap', False) else 'off'}")
-        _print(f"    redaction              : {cfg.get('runtime.redaction', 'off') or 'off'}")
-        # Effective mode, not the raw string — an invalid value runs as "gate" (quarantine.mode).
+        # Every facet below is the EFFECTIVE value from its owning module, never the raw
+        # config string: redaction.mode() lowercases and falls back to off on garbage, so
+        # echoing the key would let this line assert a posture nothing enforces.
+        _print(f"    airgap                 : {'on' if egress.airgap_on() else 'off'}")
+        _print(f"    redaction              : {redaction.mode()}")
         _print(f"    quarantine             : {quarantine.mode()}")
         return
 

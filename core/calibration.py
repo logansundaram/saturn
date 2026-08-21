@@ -98,8 +98,11 @@ def measure(tag: str, prompts: "list | None" = None, on_progress=None) -> dict:
     from langchain.messages import HumanMessage
     from trust import egress
 
-    if not egress.ollama_is_local() and egress.airgap_on():
-        raise RuntimeError("air-gap is ON and OLLAMA_HOST is off-machine — refusing to calibrate")
+    if not egress.ollama_is_local():
+        # Through the one gate: the hand-rolled raise this replaced recorded NO blocked event, so
+        # a refused `/confidence tune` left no trace in the ledger that exists to prove refusals.
+        egress.check_or_raise("llm", f"ollama @ {egress.ollama_endpoint()}", f"calibrate → {tag}",
+                              provider="ollama", subject=f"calibrating {tag}")
 
     prompts = list(prompts if prompts is not None else PROMPTS)
     model = llms._build("ollama", tag)

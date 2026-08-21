@@ -22,6 +22,15 @@ from textutil import head_tail
 # from re-sending every prior read in full.
 _RESULT_CAP = 800
 
+
+def _cap_result(result) -> str:
+    """One earlier-step result, stripped and capped for a prompt block. Head-only with an explicit
+    marker (NOT textutil.head_tail): the two callers below are prompt surfaces the same judge
+    reads, so they must elide identically — the idiom was written out twice and could drift on the
+    marker or the bound."""
+    r = str(result or "").strip()
+    return r if len(r) <= _RESULT_CAP else r[:_RESULT_CAP] + " …(truncated)"
+
 # The "previous step" callout carries more of its result than the block (it is the referent of
 # "the previous step's result" in step labels), but still bounded — a ~12k clamped observation
 # must not ride every per-step prompt in full.
@@ -342,10 +351,7 @@ def results_block(plan) -> str:
         return ""
     lines = ["Results from earlier steps (use these exact values):"]
     for i, s in enumerate(done, 1):
-        r = str(s.get("result") or "").strip()
-        if len(r) > _RESULT_CAP:
-            r = r[:_RESULT_CAP] + " …(truncated)"
-        lines.append(f"{i}. {s.get('label')} -> {r}")
+        lines.append(f"{i}. {s.get('label')} -> {_cap_result(s.get('result'))}")
     return "\n".join(lines)
 
 
@@ -395,9 +401,7 @@ def plan_txt(plan) -> str:
         if s.get("result") is None:
             lines.append(f"{i}. [PENDING] tool={tool} | {s.get('label')}")
         else:
-            r = str(s.get("result") or "").strip()
-            if len(r) > _RESULT_CAP:
-                r = r[:_RESULT_CAP] + " …(truncated)"
+            r = _cap_result(s.get("result"))
             lines.append(
                 f"{i}. [DONE] tool={tool} | {s.get('label')}\n   result: {r}"
             )

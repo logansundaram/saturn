@@ -5,8 +5,9 @@ stream live (a transient, screen-bounded tail that always erases cleanly) then r
 answer once on finish. Both end on the same receipt — the permanent echo of the transient status bar.
 """
 
-import re
 import time
+
+from textutil import SOURCE_ENTRY_RE, split_sources_footer
 
 from . import _base
 from ._base import (
@@ -109,10 +110,6 @@ def _pop_turn_buffer():
     buf, _turn_buffer = _turn_buffer, None
     return buf
 
-# A footer entry line as synthesize writes it: `  [n] label`.
-_SOURCE_LINE_RE = re.compile(r"^\s*\[(\d+)\]\s")
-
-
 def set_turn_provenance(state) -> None:
     """Build the live answer-provenance box for the turn that just finished (trust.glassbox.build_live
     — the same mark-guarded egress contract `/trace answer` applies) so the answer render can color the
@@ -142,16 +139,7 @@ def _split_sources(text: str) -> "tuple[str, list[str] | None]":
     Returns (text, None) for anything else, and the whole text renders exactly as before. The
     recorded message is never altered; this only routes the footer to the trust-colored renderer
     instead of the markdown one (which collapsed its lines into a single paragraph anyway)."""
-    i = text.rfind("\nSources:")
-    if i == -1:
-        return text, None
-    lines = [ln for ln in text[i + 1:].splitlines() if ln.strip()]
-    if not lines or lines[0].strip() != "Sources:":
-        return text, None
-    entries = lines[1:]
-    if not entries or not all(_SOURCE_LINE_RE.match(ln) for ln in entries):
-        return text, None
-    return text[:i].rstrip(), entries
+    return split_sources_footer(text)
 
 
 def _facet_annotation(facet) -> tuple[str, str, str]:
@@ -176,7 +164,7 @@ def _print_sources(entries: list[str], gb) -> None:
         _console.print()
         _console.print(Text("  Sources:", style=_DIM))
         for ln in entries:
-            m = _SOURCE_LINE_RE.match(ln)
+            m = SOURCE_ENTRY_RE.match(ln)
             facet = by_n.get(int(m.group(1))) if m else None
             if facet is None:
                 _console.print(Text("  " + ln, style=_DIM))
@@ -192,7 +180,7 @@ def _print_sources(entries: list[str], gb) -> None:
         print()
         print("  Sources:")
         for ln in entries:
-            m = _SOURCE_LINE_RE.match(ln)
+            m = SOURCE_ENTRY_RE.match(ln)
             facet = by_n.get(int(m.group(1))) if m else None
             if facet is None:
                 print("  " + ln)
@@ -528,6 +516,9 @@ class ResponseStream:
         # whole point: the user sees where the model is unsure while Esc can still freeze it.
         # (The buffer on state carries the canonical copy; this one only paints the live tail.)
         self._conf: list[dict] = []
+        # The (enter, exit) threshold pair, resolved once per stream by _visible_runs — each
+        # resolution otherwise stats the calibration overlay on every repaint.
+        self._conf_th: "tuple[float, float] | None" = None
         self._len = 0  # running char count of _chars (the ledger's offset base)
         # Interrupt-and-correct bookkeeping. `_froze` is sticky for the whole turn (the answer
         # needs its rule back at finish() whether or not tokens resumed — a `done` decision
@@ -582,14 +573,12 @@ class ResponseStream:
                 return
         except Exception:
             return
-        msg = "esc freezes this answer mid-stream — edit it, and the model continues from your text"
-        if _RICH:
-            t = Text()
-            t.append("  · ", style=_DIM)
-            t.append(msg, style=_DIM)
-            _console.print(t)
-        else:
-            print(f"  . {msg}")
+        # The shared note line (readouts.note): this was a seventh hand-copy of the rich/plain
+        # block, and had already drifted — its plain fallback printed an ASCII "." where every
+        # other note prints "·".
+        from .readouts import note
+
+        note("esc freezes this answer mid-stream — edit it, and the model continues from your text")
 
     def _reopen(self) -> None:
         """Reopen the live tail after a freeze. The freeze editor owned the screen in between and
@@ -681,18 +670,16 @@ class ResponseStream:
             if used >= rows:
                 break
         chosen.reverse()
-        runs: list[tuple[int, int]] = []
-        if self._conf:
-            try:
-                from core import confidence
-
-                runs = confidence.low_runs(self._conf, joined)
-            except Exception:
-                runs = []
         # The chosen lines are a SUFFIX of the joined text (a truncated lone top line keeps its
         # tail), so the tail's start offset is just the length difference — which maps each
         # low-confidence run onto per-line positions.
         pos = len(joined) - len("\n".join(chosen))
+        runs: list[tuple[int, int]] = []
+        if self._conf:
+            try:
+                runs = self._visible_runs(pos, joined)
+            except Exception:
+                runs = []
         t = Text()
         for i, ln in enumerate(chosen):
             if i:
@@ -771,11 +758,36 @@ class ResponseStream:
         self._chars = [text] if text else []
         self._len = len(text) if text else 0
         self._conf = list(confidence or [])
+        self._conf_th = None  # a freeze-edit may span a /confidence change; re-resolve
         if not _RICH:
             # The plain path already typed the pre-edit tokens to the terminal and can't erase
             # them — mark the transcript stale so finish() re-renders the corrected answer in
             # full instead of printing only the trailer beyond the (now edited) record.
             self._plain_stale = True
+
+    def _visible_runs(self, pos: int, joined: str) -> "list[tuple[int, int]]":
+        """Low-confidence runs over the VISIBLE tail only. `_tail` runs on every repaint (~16/s)
+        while the ledger grows one entry per generated token, so grading the whole ledger each
+        time is quadratic in answer length — on the same thread that pulls tokens out of the
+        graph stream. `confidence.grade_start` owns the boundary question (where can grading
+        begin without cutting a run that reaches the window — hysteresis runs have no length
+        bound, so a fixed margin would drop the red tail of a long uncertain stretch); offsets
+        stay absolute (the full `joined` text is passed), so the runs map onto the tail exactly
+        as before. Only runs entirely above the window are lost, and those were discarded by
+        the caller anyway."""
+        from core import confidence
+
+        entries = self._conf
+        if self._conf_th is None:
+            # Resolve the enter/exit PAIR once per stream: each call otherwise walks
+            # calibration_for -> confidence_store.read() -> a stat() syscall, per repaint. The
+            # pair must be resolved together (see confidence.low_runs) — a bare enter pins the
+            # derived-exit fallback shut.
+            enter = confidence.threshold()
+            self._conf_th = (enter, confidence.exit_threshold())
+        enter, exit_p = self._conf_th
+        start = confidence.grade_start(entries, joined, pos, threshold_p=enter, exit_p=exit_p)
+        return confidence.low_runs(entries[start:], joined, threshold_p=enter, exit_p=exit_p)
 
     def abort(self) -> None:
         """Tear down the live tail without a final render — a failed/cancelled turn. The transient

@@ -163,14 +163,36 @@ def blocked_message(host: str, channel: str = "") -> str:
     )
 
 
-def check(channel: str, host: str, detail: str = "") -> "str | None":
-    """Air-gap gate for a network op. Returns None when egress is allowed; when air-gap is on,
-    records a `blocked` event and returns the refusal string for the caller to hand back (tools
-    return it to the model as their observation)."""
+def check(channel: str, host: str, detail: str = "", *, provider: str = "") -> "str | None":
+    """THE refusal gate for a network op — every rung of "may this leave the machine" lives here
+    (air-gap today; any future rung — an egress budget — lands here and reaches every exit).
+    Returns None when egress is allowed; on refusal, records a `blocked` event and returns the
+    refusal string for the caller to hand back (tools return it to the model as their
+    observation)."""
     if airgap_on():
-        record(channel, host, detail, status=BLOCKED)
+        record(channel, host, detail, provider=provider, status=BLOCKED)
         return blocked_message(_host_label(host), channel)
     return None
+
+
+def check_or_raise(channel: str, host: str, detail: str = "", *, subject: str = "",
+                   provider: str = "") -> None:
+    """The raising twin of `check()`, for the exits that CANNOT hand a refusal string back: an
+    LLM role, an embedder, a raw-mode continuation. Delegates to check() — one gate, one
+    recording site, so a future rung added inside check() refuses these exits too — then raises
+    instead of returning. `subject` names what was refused ("role 'planner' (qwen3.5:9b)",
+    "embedding", "continuing the answer on <model>") so the message stays specific.
+
+    Callers must not re-implement this: an inference exit that hand-rolls the check is one the
+    ledger can silently miss (and one a future rung inside check() would never reach)."""
+    if check(channel, host, detail, provider=provider) is None:
+        return
+    what = subject or "this operation"
+    raise RuntimeError(
+        f"Air-gap is ON — {what} would cross the network to {host}. Nothing was sent. If "
+        f"OLLAMA_HOST points off this machine, unset it to use the local daemon, or turn the "
+        f"air-gap off with `/privacy airgap off`."
+    )
 
 
 def events() -> list[EgressEvent]:

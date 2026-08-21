@@ -10,7 +10,7 @@ from typing import Optional
 
 from commands._framework import command, _print
 from stores.trace import decode_json
-from textutil import clip as _clip, fmt_args
+from textutil import clip as _clip, fmt_args, split_sources_footer
 
 
 @contextmanager
@@ -419,9 +419,6 @@ def _collect_tools(events):
 
 def _render_why(ui, run, events, calls):
     run_id, query, _started, _ended, status, response = run
-    _GLYPH = {"pending": "○", "active": "▸", "done": "✓", "skipped": "—",
-              "blocked": "⊘", "error": "✗", "cancelled": "−"}
-
     ui.section(f"why · run #{run_id}", f"status: {status or '?'}")
 
     _print("  the request")
@@ -433,7 +430,7 @@ def _render_why(ui, run, events, calls):
     if plan:
         _print("  what it set out to do")
         for s in plan:
-            glyph = _GLYPH.get(s.get("status"), "○")
+            glyph = ui.status_glyph(s.get("status"))
             tool = f"  [{s['intended_tool']}]" if s.get("intended_tool") else ""
             _print(f"    {glyph} {s.get('step_id')}. {s.get('label')}{tool}")
         _print("")
@@ -492,14 +489,15 @@ def _render_why(ui, run, events, calls):
     _print("")
 
     # Provenance footer of the answer, if the synthesizer attached one (the [n] → source map).
-    if response and "Sources:" in str(response):
-        tail = str(response).split("Sources:", 1)[1].strip()
-        if tail:
-            _print("  cited sources (from the answer)")
-            for line in tail.splitlines():
-                if line.strip():
-                    _print(f"    {line.strip()}")
-            _print("")
+    # THE one parser of the footer synthesize builds. The hand-rolled split this replaced took the
+    # FIRST "Sources:" anywhere in the answer, so an answer whose prose used the word rendered the
+    # rest of its own text as if it were the citation map.
+    _, entries = split_sources_footer(response)
+    if entries:
+        _print("  cited sources (from the answer)")
+        for line in entries:
+            _print(f"    {line.strip()}")
+        _print("")
 
     _print(f"  full step-by-step record: /trace #{run_id}   ·   model I/O: /trace invoke #{run_id}")
 

@@ -2,13 +2,12 @@ import hashlib
 import json
 import re
 import shutil
+import time
 from collections import Counter
 from pathlib import Path
 
 from langchain_core.vectorstores import InMemoryVectorStore
-from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.documents import Document
-import pypdf
 
 from config import get_config
 from core.llms import get_embeddings
@@ -94,6 +93,43 @@ def _file_hash(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _stat_key(path: Path) -> "dict | None":
+    """(size, mtime_ns) for a file — the cheap "did this change?" probe stored alongside the hash.
+    None when the stat fails, which reads as "unknown, go hash it"."""
+    try:
+        st = path.stat()
+        return {"size": st.st_size, "mtime_ns": st.st_mtime_ns}
+    except OSError:
+        return None
+
+
+def _unchanged(entry: "dict | None", stat: "dict | None") -> bool:
+    """Whether a recorded index entry can be trusted as current WITHOUT re-hashing the file.
+    Content hashing stays the authority on change — this only skips reading a file whose size and
+    mtime both still match what was recorded. A legacy entry (written before these keys existed)
+    has no stat to compare, so it falls through to the hash, as does anything that moved.
+
+    Racy-clean guard (git's rule): the stat is trusted only when the file's mtime is strictly
+    OLDER than the moment its content was verified (`indexed_at_ns`). Without it, a file edited
+    within the same mtime tick as the hashing sync — same size, same recorded mtime on a
+    coarse-timestamp filesystem — would read as unchanged forever, and search_knowledge_base
+    would keep citing the stale vectors. A future-dated mtime (clock skew on a network share)
+    fails the comparison too, which degrades to a re-hash — the safe direction."""
+    if not entry or not stat:
+        return False
+    if entry.get("size") != stat["size"] or entry.get("mtime_ns") != stat["mtime_ns"]:
+        return False
+    indexed_at = entry.get("indexed_at_ns")
+    return isinstance(indexed_at, int) and stat["mtime_ns"] + _RACY_WINDOW_NS <= indexed_at
+
+
+# The coarsest mtime tick a supported filesystem stamps (FAT: 2s). A file whose mtime sits within
+# this window of its verification moment could have been rewritten inside the same tick, so it
+# re-hashes once more; the backfill re-stamps `indexed_at_ns`, and the entry settles on the
+# following sync. One extra read per fresh file, never a stale skip.
+_RACY_WINDOW_NS = 2_000_000_000
+
+
 # ── vector store (lazy, embedder-aware, disk-backed) ──────────────────────────────────────────
 # Built/loaded on first use from the active tier's `embedder` (config.yaml). `sync()` owns the
 # load-from-disk and incremental-embed logic; the bare `_build_store()` makes a fresh empty store
@@ -136,11 +172,16 @@ def get_vector_store():
 
 
 # ── document loading / chunking ───────────────────────────────────────────────────────────────
-def _get_splitter() -> RecursiveCharacterTextSplitter:
+def _get_splitter() -> "RecursiveCharacterTextSplitter":
     """The chunker, built from the `rag:` knobs in config.yaml at call time so a live `/config
     rag.chunk_size` edit is honored. The chunking params ride the index fingerprint (see
     `_chunking_fingerprint`), so a change forces a full re-embed — the stored vectors always
     match the live settings."""
+    # Lazy like the MarkdownHeaderTextSplitter below: langchain_text_splitters costs ~55ms to
+    # import (far more in a venv that also has sentence-transformers, whose submodule it pulls
+    # eagerly), and only an actual ingest needs it — never a plain launch.
+    from langchain_text_splitters import RecursiveCharacterTextSplitter
+
     cfg = get_config()
     return RecursiveCharacterTextSplitter(
         chunk_size=int(cfg.get("rag.chunk_size", 1000)),
@@ -295,6 +336,8 @@ def _load_file_docs(path: Path):
     suffix = path.suffix.lower()
     docs = []
     if suffix == ".pdf":
+        import pypdf  # lazy (~56ms): only a PDF ingest needs it, never a plain launch
+
         reader = pypdf.PdfReader(str(path))
         raw_pages = [page.extract_text() or "" for page in reader.pages]
         page_texts = [_normalize_pdf_text(t) for t in _strip_repeated_furniture(raw_pages)]
@@ -492,15 +535,32 @@ def sync(*, force: bool = False, verbose: bool = True, on_file=None) -> dict:
     # New or changed files: re-embed only those (hash-check first so the progress hook knows the
     # real total — unchanged files never count toward it).
     to_embed = []
+    backfilled = False
     for source, path in on_disk.items():
-        h = _file_hash(path)
         entry = files.get(source)
-        if entry and entry.get("hash") == h:
+        stat = _stat_key(path)
+        if _unchanged(entry, stat):
+            # Size and mtime both match what was recorded — skip reading the file at all. This is
+            # the whole-corpus common case on every launch; hashing it meant a full read of every
+            # document under the splash.
             stats["unchanged"] += 1
             continue
-        to_embed.append((source, path, h, entry))
+        h = _file_hash(path)
+        if entry and entry.get("hash") == h:
+            # Same bytes after all: a touched file, an entry written before stat keys were
+            # recorded, or one still inside the racy window. Backfill the stat so the NEXT sync
+            # can skip the read — but only when there IS a stat to record (a None stat merged
+            # nothing, yet used to flag `backfilled` and rewrite the index on every launch) AND
+            # the racy window has passed (a backfill inside it would be untrusted by _unchanged
+            # anyway, so writing it only rewrote the index on every sync until it aged).
+            if stat and stat["mtime_ns"] + _RACY_WINDOW_NS <= time.time_ns():
+                files[source] = {**entry, **stat, "indexed_at_ns": time.time_ns()}
+                backfilled = True
+            stats["unchanged"] += 1
+            continue
+        to_embed.append((source, path, h, entry, stat))
 
-    for i, (source, path, h, entry) in enumerate(to_embed, start=1):
+    for i, (source, path, h, entry, stat) in enumerate(to_embed, start=1):
         if on_file:
             on_file(source, i, len(to_embed))
         # Load BEFORE deleting the old vectors: if the loader fails (corrupt file, missing
@@ -527,8 +587,9 @@ def sync(*, force: bool = False, verbose: bool = True, on_file=None) -> dict:
             store.delete(entry["chunk_ids"])  # replace the old vectors for a changed file
         if chunks:
             store.add_documents(chunks, ids=ids)
-        register_rag_document(source, full_text)  # manifest summary (cached by hash downstream)
-        files[source] = {"hash": h, "chunk_ids": ids}
+        register_rag_document(source, full_text)  # mechanical first-line description
+        files[source] = {"hash": h, "chunk_ids": ids,
+                         **({**stat, "indexed_at_ns": time.time_ns()} if stat else {})}
         stats["updated" if entry else "added"] += 1
         kinds = _admission_flags(full_text, findings)
         if kinds:
@@ -543,6 +604,9 @@ def sync(*, force: bool = False, verbose: bool = True, on_file=None) -> dict:
     # not trigger a rewrite (it changes neither the store nor `files`).
     if full_rebuild or to_embed or removed_sources:
         store.dump(str(_store_path()))
+    # The index is small metadata (no vectors), so a stat backfill rewrites it alone — the
+    # multi-MB dump above stays untouched on an otherwise-unchanged corpus.
+    if full_rebuild or to_embed or removed_sources or backfilled:
         _write_index({"embedder": embedder, "chunking": chunking, "files": files})
 
     if verbose:

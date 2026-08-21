@@ -35,7 +35,6 @@ scanner guards whatever secrets pass through outgoing text, not just ones Saturn
 from trust import egress
 
 import httpx
-import trafilatura
 from ddgs import DDGS
 
 from config import get_config
@@ -63,6 +62,11 @@ def _ddg_search(query: str, max_results: int) -> dict:
 def _local_extract(url: str) -> str:
     """Keyless page-content extraction: fetch then pull readable text with trafilatura,
     falling back to trafilatura's own fetch if the direct GET is blocked."""
+    # Imported here, not at module scope: trafilatura costs ~160ms to import and only this one
+    # function needs it, while tools/registry pulls this module on every launch (including the
+    # -p/-q one-shots, where launch latency is most of the wall clock).
+    import trafilatura
+
     html = None
     try:
         resp = httpx.get(url, follow_redirects=True, timeout=20.0,

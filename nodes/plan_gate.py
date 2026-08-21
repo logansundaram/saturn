@@ -77,8 +77,11 @@ def _removed_steps(before: list, after: list) -> list:
 def _review_vetoes(before: list, after: list) -> list:
     """The removed steps' labels — the label view of `_removed_steps` (recorded onto
     state["plan_vetoes"] so rectify's judge, replan and synthesize can never reinstate the work;
-    the human's edit outranks the judge, the same principle as the gate's guarded outcome)."""
-    return [str(s.get("label") or "").strip() for s in _removed_steps(before, after)]
+    the human's edit outranks the judge, the same principle as the gate's guarded outcome).
+    Blank labels are dropped: a veto is matched by label downstream, so an empty one would veto
+    nothing and could only ever match a malformed step."""
+    labels = (str(s.get("label") or "").strip() for s in _removed_steps(before, after))
+    return [lbl for lbl in labels if lbl]
 
 
 def _step_effect(step) -> "tuple[str, set]":
@@ -176,8 +179,7 @@ def plan_gate_node(state: AgentState):
             # Record what the user REMOVED as vetoes (read-merge-write; only this node writes
             # the field) so rectify/replan/synthesize treat it as deliberately out of scope.
             removed = _removed_steps(plan, edited)
-            vetoes = [str(s.get("label") or "").strip() for s in removed]
-            vetoes = [v for v in vetoes if v]
+            vetoes = _review_vetoes(plan, edited)  # the label view — one home, and what tests pin
             if vetoes:
                 existing = list(state.get("plan_vetoes") or [])
                 updates["plan_vetoes"] = existing + [v for v in vetoes if v not in existing]

@@ -136,14 +136,8 @@ def continue_from(model: str, messages: list, edited_prefix: str,
     # loopback = no boundary; remote = air-gap refusal, then redaction, then the egress ledger.
     if not egress.ollama_is_local():
         host = f"ollama @ {egress.ollama_endpoint()}"
-        if egress.airgap_on():
-            egress.record("llm", host, f"continuation → {model}",
-                          provider="ollama", status=egress.BLOCKED)
-            raise RuntimeError(
-                f"Air-gap is ON — OLLAMA_HOST points off this machine ({egress.ollama_endpoint()}), "
-                f"so continuing the answer on {model} would cross the network. Unset OLLAMA_HOST "
-                f"or turn the air-gap off with `/privacy airgap off`."
-            )
+        egress.check_or_raise("llm", host, f"continuation → {model}", provider="ollama",
+                              subject=f"continuing the answer on {model}")
         n_red = 0
         if redaction.mode() == "redact":
             prompt, findings = redaction.redact(prompt)

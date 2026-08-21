@@ -122,7 +122,7 @@ from .readouts import (
 )
 
 # Shared listing vocabulary (the section rule + aligned table every readout command uses).
-from .listing import section, table, risk_style
+from .listing import section, table, risk_style, status_glyph
 
 __all__ = [
     "set_verbosity", "verbosity",
@@ -137,5 +137,5 @@ __all__ = [
     "edit_answer",
     "show_system_metrics", "show_context", "show_models",
     "note", "warn", "steer_note", "pause_note", "freeze_note", "echo_queued",
-    "section", "table", "risk_style",
+    "section", "table", "risk_style", "status_glyph",
 ]

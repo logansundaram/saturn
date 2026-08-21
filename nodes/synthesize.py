@@ -6,7 +6,7 @@ from core import confidence, continuation, provenance
 from core.plan_context import WRITE_TOOLS, authorization_basis
 from textutil import figure_literals, untraceable_figures
 from core.state import AgentState, incident_steps, unfinished_steps
-from textutil import clip, parse_doc_sources, split_call_result
+from textutil import SOURCES_HEADER, clip, parse_doc_sources, split_call_result
 from core.llms import (
     get_model,
     generate,
@@ -105,7 +105,7 @@ def sources_footer(sources) -> str:
     the tool call / document behind it. Empty string when nothing was gathered."""
     if not sources:
         return ""
-    return "Sources:\n" + "\n".join(f"  [{n}] {label}" for n, label in sources)
+    return SOURCES_HEADER + "\n" + "\n".join(f"  [{n}] {label}" for n, label in sources)
 
 
 def _gathered_section(items, numbered, citations, name):

@@ -12,6 +12,7 @@ colored by value). The LAST column flexes into the remaining terminal width and 
 """
 
 from ._base import (
+    _PLAN,
     Text, _console, _RICH,
     _ACCENT, _DIM, _RAIL, _RAIL_GLYPH, _RISK,
     _term_width, _truncate,
@@ -19,6 +20,13 @@ from ._base import (
 
 # Friendly style aliases so callers don't import palette internals.
 _STYLE_ALIAS = {"dim": _DIM, "accent": _ACCENT, None: "default", "": "default"}
+
+
+def status_glyph(status: str) -> str:
+    """The marker for a plan-step status — THE one map (`_base._PLAN`), shared with the live rail,
+    the plan-review frame and the /trace replay so the same recorded step never renders with two
+    different markers. An unknown status reads as `?`, never guessed as pending."""
+    return _PLAN.get(status, ("?", ""))[0]
 
 
 def risk_style(risk: str) -> str:

@@ -84,6 +84,12 @@ CREATE TABLE IF NOT EXISTS llm_calls (
     output        TEXT,    -- JSON: {content, tool_calls} the model returned
     status        TEXT     -- ok | error
 );
+-- Every /trace read selects `WHERE run_id = ?`, and the run listing counts events per run with a
+-- correlated subquery — both are full table scans without these. The tables only grow (runs are
+-- retained on purpose; the checkpointer's threads are what get pruned), so the scans get slower
+-- for the life of the install.
+CREATE INDEX IF NOT EXISTS ix_events_run ON events(run_id);
+CREATE INDEX IF NOT EXISTS ix_llm_calls_run ON llm_calls(run_id);
 """
 
 
@@ -244,6 +250,14 @@ class Tracer:
 
     def __init__(self, db_path: str):
         self.conn = sqlite3.connect(db_path, check_same_thread=False)
+        # The trace is a best-effort observability log, not the durable record the answer depends
+        # on — a torn tail after an OS-level crash costs one turn's events, while FULL's per-commit
+        # fsync costs ~25ms on every node delta of every turn. (journal_mode is already WAL:
+        # SqliteSaver sets it and it persists on the file.)
+        try:
+            self.conn.execute("PRAGMA synchronous=NORMAL")
+        except Exception:  # a pragma refusal must never cost the tracer its connection
+            pass
         self.conn.executescript(_SCHEMA)
         self.conn.commit()
         self._seq = 0

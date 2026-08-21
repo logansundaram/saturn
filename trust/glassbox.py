@@ -24,6 +24,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from textutil import SOURCES_HEADER, split_sources_footer
 from trust import egress
 from trust import quarantine
 
@@ -91,8 +92,17 @@ def _strip_footer(answer: str) -> str:
     display works on what the model actually wrote, not on the source labels."""
     if not answer:
         return ""
-    i = answer.rfind("\nSources:")
-    return (answer[:i].rstrip() if i != -1 else answer).strip()
+    prose, entries = split_sources_footer(answer)
+    if entries is None:
+        # The strict shared parser recognizes only the exact produced shape — but a recorded
+        # `runs.response` can be cut by end_run's write-time cap, which appends its truncation
+        # marker AFTER the cut: a footer cut mid-entry fails the strict shape and would ride
+        # into the prose. For STRIPPING, lenient is the safe direction (the pre-parser behavior):
+        # the per-source answer analysis must never run over source labels.
+        i = answer.rfind("\n" + SOURCES_HEADER)
+        if i != -1:
+            return answer[:i].strip()
+    return prose.strip()
 
 
 def _final_answer(messages) -> str:

@@ -195,16 +195,12 @@ def get_model(role: str):
     spec = get_config().model_for_role(role)
     if spec.provider != "ollama":
         raise _cloud_shelved_error(role, spec.provider, spec.model)
-    if not egress.ollama_is_local() and egress.airgap_on():
+    if not egress.ollama_is_local():
         # An off-machine OLLAMA_HOST makes the "local" model network egress — same refusal as a
-        # cloud role, with the endpoint named so the fix is obvious.
-        egress.record("llm", f"ollama @ {egress.ollama_endpoint()}", f"{role} → {spec.model}",
-                      provider="ollama", status=egress.BLOCKED)
-        raise RuntimeError(
-            f"Air-gap is ON — OLLAMA_HOST points off this machine ({egress.ollama_endpoint()}), "
-            f"so role '{role}' ({spec.model}) would cross the network. Unset OLLAMA_HOST to use "
-            f"the local daemon, or turn the air-gap off with `/privacy airgap off`."
-        )
+        # cloud role, through the one gate so the blocked attempt always reaches the ledger.
+        egress.check_or_raise("llm", f"ollama @ {egress.ollama_endpoint()}",
+                              f"{role} → {spec.model}", provider="ollama",
+                              subject=f"role '{role}' ({spec.model})")
     key = (spec.provider, spec.model)
     if key not in _MODEL_CACHE:
         _MODEL_CACHE[key] = _build(spec.provider, spec.model)
@@ -233,14 +229,8 @@ class _EmbeddingsBoundary:
         self._inner, self._model, self._host = inner, model, host
 
     def _gate(self, texts) -> None:
-        if egress.airgap_on():
-            egress.record("embedding", self._host, self._model,
-                          provider="ollama", status=egress.BLOCKED)
-            raise RuntimeError(
-                f"Air-gap is ON — OLLAMA_HOST points off this machine ({self._host}), so "
-                f"embedding would send document text across the network. Unset OLLAMA_HOST or "
-                f"turn the air-gap off with `/privacy airgap off`."
-            )
+        egress.check_or_raise("embedding", self._host, self._model, provider="ollama",
+                              subject="embedding document text")
         egress.record("embedding", self._host, self._model, provider="ollama",
                       n_bytes=sum(len(t) for t in texts if isinstance(t, str)))
 

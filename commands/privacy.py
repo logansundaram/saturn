@@ -172,7 +172,7 @@ def _egress(ctx, args):
     airgap = ""
     try:
         from config import get_config
-        if bool(get_config().get("runtime.airgap", False)):
+        if egress.airgap_on():
             airgap = "  ·  air-gap ON"
     except Exception:
         pass
@@ -240,7 +240,7 @@ def _airgap(ctx, args):
     # it mutates nothing live, so the seal can't silently flip).
     if new is None:
         if save:
-            cur = "on" if bool(cfg.get("runtime.airgap", False)) else "off"
+            cur = "on" if egress.airgap_on() else "off"
             try:
                 persist("runtime.airgap")
                 _print(f"  airgap is {cur} — saved runtime.airgap to config.yaml "
@@ -323,7 +323,7 @@ def _offmachine_roles(cfg):
 def _show_posture(ctx, cfg, ui, egress):
     from trust.egress import _inference
 
-    on = bool(cfg.get("runtime.airgap", False))
+    on = egress.airgap_on()
     inf = _inference()
     offmachine = not inf["all_local"]
     if on:

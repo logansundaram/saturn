@@ -106,19 +106,31 @@ def _apply_always_grants(decision: dict) -> None:
         # second restorer would re-drop the tier the first one just restored and leave the grant
         # standing for the rest of the process while end_task() reported it expired (fail-open
         # plus a false disclosure). One `a` per tool per turn owns the undo; the rest are no-ops.
-        if scope == "task" and prior != "read_only":
-            def restore(_n=name, _t=prior):
-                if _t is None:
-                    registry.TOOL_RISK.pop(_n, None)
-                else:
-                    registry.TOOL_RISK[_n] = _t
-                return _n
-            policy.on_task_end(restore)
-        elif scope == "persist":
+        # Persist FIRST, then log: the audit record must state the lifetime the grant actually
+        # got. Logging scope="persist" before set_risk_override could still fail (read-only
+        # install, full disk) left grant_log claiming a durable grant while the next process
+        # started from the declared tier — the record downgrades to "session" instead, which is
+        # what the surviving live drop really is.
+        effective_scope = scope
+        if scope == "persist":
             try:
                 policy.set_risk_override(name, "read_only")
             except Exception as exc:  # the live drop stands (this session's decision) — but say so
                 diag.log(f"approval_node: tier drop for {name} could not be persisted — {exc}")
+                effective_scope = "session"
+        if prior != "read_only":
+            # One audit record per ACTUAL privilege change, whatever its lifetime (a session-scoped
+            # drop used to leave no record at all). The undo is registered only for task scope —
+            # session and persist grants are meant to outlive the turn.
+            restore = None
+            if scope == "task":
+                def restore(_n=name, _t=prior):
+                    if _t is None:
+                        registry.TOOL_RISK.pop(_n, None)
+                    else:
+                        registry.TOOL_RISK[_n] = _t
+                    return _n
+            policy.grant_tool_tier(name, effective_scope, restore)
     for grant in decision.get("shell_grants") or []:
         if not isinstance(grant, dict):
             continue

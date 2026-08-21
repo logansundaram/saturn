@@ -140,6 +140,38 @@ def parse_doc_sources(text) -> "list[str]":
     return names
 
 
+# The mechanical `Sources:` block synthesize appends to a cited answer — one builder
+# (nodes/synthesize.sources_footer renders through SOURCES_HEADER) and ONE parser, the
+# CALL_RESULT_SEP treatment. Three readers (the Glass Box's answer prose, the trust-colored
+# footer render, /trace why's cited-sources view) each hand-rolled this and already disagreed:
+# two anchored on the trailing block, the third matched the first "Sources:" ANYWHERE in the
+# answer, so prose containing the word swallowed the rest of the text.
+SOURCES_HEADER = "Sources:"
+# Public: the footer entry shape `  [n] label`. The trust-colored renderer reads the
+# number back off each line, so it must be the same pattern the split validates with.
+SOURCE_ENTRY_RE = re.compile(r"^\s*\[(\d+)\]\s")
+
+
+def split_sources_footer(text) -> "tuple[str, list[str] | None]":
+    """Split a recorded answer into (prose, footer_entry_lines).
+
+    The footer is recognized only in its exact produced shape: a trailing `Sources:` line followed
+    by nothing but `  [n] label` entries. Anything else returns (text, None) — the whole text is
+    the prose, which is the fail-soft answer for every consumer (an unrecognized footer renders
+    plainly; it is never partially eaten)."""
+    s = str(text or "")
+    i = s.rfind("\n" + SOURCES_HEADER)
+    if i == -1:
+        return s, None
+    lines = [ln for ln in s[i + 1:].splitlines() if ln.strip()]
+    if not lines or lines[0].strip() != SOURCES_HEADER:
+        return s, None
+    entries = lines[1:]
+    if not entries or not all(SOURCE_ENTRY_RE.match(ln) for ln in entries):
+        return s, None
+    return s[:i].rstrip(), entries
+
+
 def mask_secret(value) -> str:
     """A display-safe preview of a secret — THE one masking rule (env_keys' key listing and
     trust/redaction's findings each hand-rolled their own, with different exposure envelopes:

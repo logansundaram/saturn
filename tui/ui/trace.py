@@ -7,7 +7,7 @@ so a turn reads the same whether it's happening now or being inspected later.
 
 import time
 
-from textutil import CALL_RESULT_SEP, human_bytes
+from textutil import clip, human_bytes, split_call_result
 
 from . import _base
 from ._base import (
@@ -177,10 +177,10 @@ def _render_execute_reasoning(messages: list) -> None:
     if msg is None:
         return
     text = msg.content if isinstance(getattr(msg, "content", ""), str) else str(getattr(msg, "content", ""))
-    text = " ".join(text.split())
+    text = clip(text, _REASONING_CAP)
     if not text:
         return
-    _node_leaf(_truncate(text, _REASONING_CAP), _DIM)
+    _node_leaf(text, _DIM)
 
 
 def _render_trust_annotations(node: str, delta: dict, *, emit=None) -> int:
@@ -451,11 +451,12 @@ def _enrich_results(events: list[dict], results: list, cap: int = 1200) -> list[
     for i, ev in enumerate(events):
         ev = dict(ev)
         if i < len(results):
-            # CALL_RESULT_SEP — the constant nodes/tools.py builds these entries with.
-            _, _, obs = str(results[i]).partition(CALL_RESULT_SEP)
-            obs = " ".join(obs.split())
+            # THE one parser of the `name(args) -> observation` serialization nodes/tools.py
+            # builds (a separator-less entry yields the whole string, never an empty drop).
+            _, obs = split_call_result(results[i])
+            obs = clip(obs, cap)
             if obs:
-                ev["result"] = _truncate(obs, cap)
+                ev["result"] = obs
         out.append(ev)
     return out
 
@@ -597,9 +598,9 @@ _LLM_PREVIEW_CHARS = 240  # per-message clip in the default (non --full) view
 _LLM_ROLE = {"system": "sys", "human": "usr", "ai": "ai", "tool": "tool", "function": "fn"}
 
 
-def _llm_leaf(tag: str, text: str, style: str, clip: int | None) -> None:
+def _llm_leaf(tag: str, text: str, style: str, cap: int | None) -> None:
     """One input/output message under an LLM-call header: `│ tag  <wrapped text>`,
-    hanging-indented to align continuation lines, in the trace palette. `clip` bounds the preview
+    hanging-indented to align continuation lines, in the trace palette. `cap` bounds the preview
     (None = full).
 
     Draws the `  │ ` rail like every other renderer in this module (`_node_leaf`,
@@ -610,8 +611,8 @@ def _llm_leaf(tag: str, text: str, style: str, clip: int | None) -> None:
     import textwrap
 
     text = " ".join(str(text).split())
-    if clip:
-        text = _truncate(text, clip)
+    if cap:
+        text = _truncate(text, cap)
     head = f"  {tag:<4} "
     rest = " " * len(head)
     avail = max(20, _term_width() - (4 + len(head)))
@@ -655,7 +656,7 @@ def show_llm_calls(run, calls, full: bool = False) -> None:
     from stores.trace import decode_json
 
     run_id, query, *_rest = run
-    clip = None if full else _LLM_PREVIEW_CHARS
+    cap = None if full else _LLM_PREVIEW_CHARS  # `cap`, not `clip` — textutil.clip is imported here
 
     section(f"run #{run_id} · llm calls")
     q = " ".join(str(query or "").split()) or "(empty)"
@@ -703,7 +704,7 @@ def show_llm_calls(run, calls, full: bool = False) -> None:
             if tc:
                 names = ", ".join(str(c.get("name")) for c in tc)
                 body = (body + " " if body else "") + f"[tool_calls: {names}]"
-            _llm_leaf(tag, body or "(empty)", _DIM, clip)
+            _llm_leaf(tag, body or "(empty)", _DIM, cap)
             cut = _recording_cut(m)
             if cut:  # its own leaf: never clipped away with the body it describes
                 _llm_leaf("", cut, _DIM, None)
@@ -715,7 +716,7 @@ def show_llm_calls(run, calls, full: bool = False) -> None:
             out_body = (out_body + " " if out_body else "") + f"[tool_calls: {names}]"
         if out.get("error"):
             out_body = f"ERROR: {out['error']}"
-        _llm_leaf("out", out_body or "(no output)", "default" if status == "ok" else "red", clip)
+        _llm_leaf("out", out_body or "(no output)", "default" if status == "ok" else "red", cap)
         # The output side is capped at write time too (stores.trace._msg_out), so it carries the
         # same disclosure as the inputs above — without it, `--full` presents a capped reply as
         # the model's complete output.
@@ -741,7 +742,7 @@ def show_llm_context(run, calls, *, node_filter: str | None = None, preview: boo
     from stores.trace import decode_json
 
     run_id, query, *_rest = run
-    clip = _LLM_PREVIEW_CHARS if preview else None
+    cap = _LLM_PREVIEW_CHARS if preview else None  # `cap`, not `clip` — textutil.clip is imported here
 
     section(f"run #{run_id} · context", "exactly what the model was told, per node")
     q = " ".join(str(query or "").split()) or "(empty)"
@@ -796,7 +797,7 @@ def show_llm_context(run, calls, *, node_filter: str | None = None, preview: boo
             if tc:
                 names = ", ".join(str(c.get("name")) for c in tc)
                 body = (body + " " if body else "") + f"[tool_calls: {names}]"
-            _llm_leaf(tag, body or "(empty)", _DIM, clip)
+            _llm_leaf(tag, body or "(empty)", _DIM, cap)
             # Disclose the recording cut (_LLM_MSG_CAP in stores/trace) so a capped message is
             # never presented as the whole context the model received — as its own leaf, so
             # `--preview`'s clip can't cut the disclosure off the message it describes.

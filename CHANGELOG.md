@@ -9,6 +9,18 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
 
 ### Changed
 
+- **Launch and sync got faster.** Startup no longer re-reads every corpus document to hash it —
+  an unchanged file is recognized from its recorded size+mtime (content hashing remains the
+  authority: any mismatch, and any file modified too close to its last verification, is
+  re-hashed — a stale document can never be skipped on a timestamp alone). Heavy libraries
+  (PDF/HTML extraction, the text chunker) now load only when an ingest or page fetch actually
+  needs them, and the trace database gained indexes so `/trace` stays fast on long-lived
+  installs.
+
+- **`/policy risk` renders as an aligned, color-coded table** (the same green/yellow/red the
+  approval gate uses), and the bare `/policy` readout reports the EFFECTIVE airgap/redaction/
+  quarantine modes from their owning modules rather than echoing raw config strings.
+
 - **`/models` lists one model per size, not your whole `ollama list`.** The table (and the
   numbered picker behind it) was a verbatim daemon inventory — every tag you had ever pulled,
   most of which the family gate refuses, so the picker offered numbers that led straight to a
@@ -23,6 +35,24 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
   says so honestly and points at the by-name binds instead of asking whether the daemon is down.
 
 ### Fixed
+
+- **`/trace why` no longer mis-renders an answer whose prose contains the word "Sources:".** The
+  cited-sources footer is now recognized only in its exact produced shape, through the one shared
+  parser every footer reader uses (the trust-colored answer footer and `/trace answer` included);
+  an answer record truncated mid-footer still has the partial footer stripped before the
+  per-source analysis rather than being analyzed as prose.
+
+- **The plan editor understands the same tool spellings as `/draft`.** A synonym (`calc`) maps to
+  the registered tool, and a no-tool marker (`none`, `reasoning`, `answer`, …) makes a genuine
+  reasoning step instead of minting a step that fails closed at execution.
+
+- **Always-allow grants leave an accurate audit trail.** Every tier drop that actually changed a
+  tool's live tier is logged with the lifetime it really got — a grant that could not be
+  persisted (read-only install) is recorded as session-scoped instead of claiming durability.
+
+- **Live confidence coloring can no longer lose the tail of a long uncertain stretch.** The
+  visible-window grading now walks back to a real run boundary instead of a fixed margin, so the
+  streaming tail and the final render mark the same spans.
 
 - **A second `a` at the gate no longer makes an always-allow grant permanent.** Granting the same
   tool twice in one turn — reachable without an adversary, since an injection-flagged observation

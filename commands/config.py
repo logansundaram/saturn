@@ -4,24 +4,15 @@ from commands._utils import (
     _resync_rag_after_model_change,
     split_persist_flags,
 )
+from config import TRUST_KEYS
 from core import model_family
 
 _MIN_NUM_CTX = 256  # below this Ollama can't fit the system prompts; reject obvious typos
 
-# Trust-posture keys are EXEMPT from the persist-by-default inversion (2026-07-07): a loosened
-# security posture must never persist silently — the same fail-closed convention that keeps the
-# canonical toggles (/policy open, /privacy airgap) on the opt-IN --save parser (runtime.redaction
-# stays a trust key with /config as its ONLY door since the /privacy redact cut, 2026-07-16). Setting
-# one through the generic /config spelling applies for the session; persisting takes an explicit
-# --save (or /config persist <key>).
-_TRUST_KEYS = frozenset({
-    "runtime.auto_approve",
-    "runtime.airgap",
-    "runtime.quarantine",
-    "runtime.redaction",
-    "shell.env_scrub",   # emptying it lets a shell child read secrets from its environment
-    "runtime.grant_scope",  # session/persist lengthen how long an always-allow grant lives
-})
+# The trust-posture key set is declared in config.py (a security classification, not a UI
+# detail — see TRUST_KEYS there). Re-exported under the historical private name so the setter
+# below and the tests that pin the classification keep one spelling.
+_TRUST_KEYS = TRUST_KEYS
 
 # Existence sentinel for cfg.get: distinguishes a key that is ABSENT from one present with an
 # explicit null value (cfg.get's None default conflates the two — exactly how a typo'd key used

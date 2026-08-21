@@ -48,6 +48,3 @@ def get(name: str) -> Optional[str]:
     """The effective value: the live process environment wins over the on-disk `.env`."""
     return os.environ.get(name) or _file_values().get(name)
 
-
-def is_set(name: str) -> bool:
-    return bool(get(name))

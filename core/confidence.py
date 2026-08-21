@@ -33,6 +33,7 @@ Leaf module: imports only config + stdlib, so the tests exercise it fully offlin
 
 from __future__ import annotations
 
+import bisect
 import math
 
 from config import get_config
@@ -230,6 +231,69 @@ def align_chunk(text: str, logprobs, offset: int = 0) -> list[dict]:
     return [{"start": offset, "end": offset + len(text), "logprob": sum(lps) / len(lps)}]
 
 
+def _resolve_pair(threshold_p: "float | None", exit_p: "float | None") -> tuple[float, float]:
+    """The (enter, exit) threshold pair — resolved TOGETHER. `exit_threshold()` with no argument
+    is what consults the model's calibrated `exit`; handing it the enter value we just resolved
+    looks harmless but pins its `enter is None` guard shut, so it falls through to the derived
+    1.5x — which is how the calibrated exit column, `/confidence tune` and `/confidence set
+    <enter> <exit>` came to feed a number no renderer ever read, while `/confidence` displayed
+    it. A caller-pinned enter derives its own exit — a typed enter never mixes with a measured
+    exit."""
+    th = threshold() if threshold_p is None else float(threshold_p)
+    if exit_p is not None:
+        ex = float(exit_p)
+    elif threshold_p is None:
+        ex = exit_threshold()
+    else:
+        ex = exit_threshold(th)
+    return th, max(th, ex)
+
+
+def grade_start(entries, text: str, pos: int, threshold_p: "float | None" = None,
+                exit_p: "float | None" = None, max_lookback: int = 4096) -> int:
+    """The earliest index in `entries` grading may start from so that every run `low_runs` would
+    mark at or beyond char offset `pos` is reproduced EXACTLY — the windowed live tail's seam
+    (grading the whole ledger per repaint is quadratic in answer length).
+
+    A fixed entry margin is not enough: a run OPENS on `_MIN_RUN` tokens under the enter
+    threshold but EXTENDS indefinitely through hysteresis, so a run longer than any margin
+    whose opening lies above the slice would lose its in-window tail. Instead, walk back from
+    the first entry reaching `pos` to the nearest run BREAKER — a ledger gap, a malformed
+    entry, or a measured non-neutral token at/above the exit threshold — since no run can
+    extend across one. Bounded by `max_lookback` (a pathological all-low answer would
+    otherwise walk the whole ledger per repaint); hitting the bound degrades to the old margin
+    behavior, never a crash."""
+    entries = entries or []
+    _th, ex = _resolve_pair(threshold_p, exit_p)
+    # First entry that reaches into the visible window (entries are in text order).
+    i = bisect.bisect_right(
+        entries, pos, key=lambda ent: ent.get("end", 0) if isinstance(ent, dict) else 0
+    )
+    floor = max(0, i - max_lookback)
+    j = i
+    while j > floor:
+        ent = entries[j - 1]
+        try:
+            s, e, lp = int(ent["start"]), int(ent["end"]), float(ent["logprob"])
+        except (KeyError, TypeError, ValueError):
+            return j  # malformed entry: low_runs closes every run here — safe boundary
+        nxt = entries[j] if j < len(entries) else None
+        if isinstance(nxt, dict) and nxt.get("start") != e:
+            return j  # ledger gap: unmeasured text is never bridged — safe boundary
+        e = min(e, len(text))
+        if e <= s or s >= len(text):
+            j -= 1
+            continue  # out-of-range entry: low_runs skips it without breaking a run
+        tok = text[s:e]
+        if not any(ch.isalnum() for ch in tok) or is_stopword(tok):
+            j -= 1
+            continue  # neutral: rides along without breaking
+        if math.exp(min(lp, 0.0)) >= ex:
+            return j  # a confident content token closes any open run — safe boundary
+        j -= 1
+    return floor
+
+
 def low_runs(entries, text: str, threshold_p: "float | None" = None,
              min_run: int = _MIN_RUN, exit_p: "float | None" = None) -> list[tuple[int, int]]:
     """The character ranges to mark (the renderers use tui.ui._base._LOW_CONF_STYLE): runs of
@@ -239,19 +303,7 @@ def low_runs(entries, text: str, threshold_p: "float | None" = None,
     `exit_p` (hysteresis; derived from the enter threshold when None). Entries must be in text
     order (every producer appends in stream order). Edges are trimmed to non-whitespace so a
     mark never starts on the space before a word."""
-    th = threshold() if threshold_p is None else float(threshold_p)
-    if exit_p is not None:
-        ex = float(exit_p)
-    elif threshold_p is None:
-        # Resolve the pair TOGETHER: `exit_threshold()` with no argument is what consults the
-        # model's calibrated `exit`. Handing it the enter value we just resolved looks harmless but
-        # pins its `enter is None` guard shut, so it falls through to the derived 1.5x — which is
-        # how the calibrated exit column, `/confidence tune` and `/confidence set <enter> <exit>`
-        # came to feed a number no renderer ever read, while `/confidence` displayed it.
-        ex = exit_threshold()
-    else:
-        ex = exit_threshold(th)   # the caller pinned enter; its exit derives from that, not a table
-    ex = max(th, ex)
+    th, ex = _resolve_pair(threshold_p, exit_p)
     runs: list[tuple[int, int]] = []
     cur: list[tuple[int, int]] = []  # the tokens of the run being built (enter- or exit-low)
     n_enter = 0                       # how many of them are under the ENTER threshold (the floor)

@@ -165,7 +165,7 @@ def posture_spans() -> list[tuple[str, str]]:
 
     # Boundary modes — shown only while active, like the status bar flags.
     try:
-        if bool(cfg.get("runtime.airgap", False)):
+        if egress.airgap_on():  # the owning accessor, like the facets around it
             spans.append(("⛓ airgap", "accent"))
     except Exception:
         pass

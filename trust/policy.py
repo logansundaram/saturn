@@ -301,6 +301,23 @@ def on_task_end(fn) -> None:
     _task_restorers.append(fn)
 
 
+def grant_tool_tier(name: str, scope: str, restore=None) -> None:
+    """Record a tool-tier always-allow grant: the audit entry, plus its task-scoped undo.
+
+    The shell half of the same gate decision goes through `grant_shell_prefix`, which logs a
+    `grant` event; the tier half logged NOTHING — only its expiry — so `grant_log()`, documented
+    as "every grant, revoke and expiry, in order", could not answer "was this tool ever granted?".
+    Both halves of one keypress now leave the same kind of record.
+
+    The REGISTRY mutation deliberately stays with the caller (nodes/approval): this module imports
+    only config + diag so it stays a leaf, which is why the undo arrives as a callback rather than
+    policy reaching into tools/. Pass `restore=None` for a grant with nothing to undo (a persisted
+    drop, or a tier that was already read_only)."""
+    _grant_log.append({"event": "grant", "at": time.time(), "tool": str(name), "scope": scope})
+    if scope == "task" and restore is not None:
+        on_task_end(restore)  # the one registration seam — never a direct list write
+
+
 def begin_task() -> None:
     """Open a task (a turn). Any task-scoped grant still standing from a previous task is expired
     here as well, so an aborted turn cannot leak authority into the next one."""

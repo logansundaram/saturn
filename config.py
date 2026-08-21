@@ -35,6 +35,24 @@ from core import model_family  # stdlib-only leaf: importing it keeps config's n
 # `runtime.auto_approve` tier.
 RISK_ORDER = ["read_only", "side_effecting", "destructive"]
 
+# The config keys that describe the TRUST POSTURE. Declared here, beside RISK_ORDER and
+# MODEL_ROLES, because it is a security classification rather than a UI detail: any layer may
+# need to ask "is this key a trust key" (the /config setter is only the first caller), and a knob
+# added without this classification silently gains persist-by-default — which is exactly the
+# footgun the set exists to close.
+#
+# The rule: a trust key is EXEMPT from the persist-by-default inversion (2026-07-07). Setting one
+# applies for the session; persisting takes an explicit --save — the same fail-closed convention
+# that keeps the canonical toggles (/policy open, /privacy airgap) on the opt-IN --save parser.
+TRUST_KEYS = frozenset({
+    "runtime.auto_approve",
+    "runtime.airgap",
+    "runtime.quarantine",
+    "runtime.redaction",
+    "shell.env_scrub",      # emptying it lets a shell child read secrets from its environment
+    "runtime.grant_scope",  # session/persist lengthen how long an always-allow grant lives
+})
+
 # Non-family chat bindings being substituted RIGHT NOW: role -> (original id, replacement id).
 # Populated by model_for_role, read by llms.check_models and /models so no readout claims the
 # file's value is what is running. In-memory only — config.yaml is NEVER rewritten by the

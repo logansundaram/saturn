@@ -84,13 +84,6 @@ def _workspace_target(file_path: str) -> "tuple[str, str, str | None]":
         return "", "unreadable", f"existing content unreadable ({type(exc).__name__})"
 
 
-def _workspace_old_text(file_path: str) -> "tuple[str, bool]":
-    """Current contents of a workspace file (for the diff previews) + whether it exists — the
-    two-tuple view over `_workspace_target`."""
-    text, state, _note = _workspace_target(file_path)
-    return text, state in ("text", "binary")
-
-
 def _norm_eol(text: str) -> str:
     """Line endings normalized before comparison. Not cosmetic: write_file writes in TEXT mode,
     so on Windows a proposed LF lands on disk as CRLF (and read_text folds it back) - comparing

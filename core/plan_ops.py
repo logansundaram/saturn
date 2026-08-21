@@ -75,15 +75,34 @@ def _index_of(plan: list[dict], step_id: int) -> int:
     raise ValueError(f"no step #{step_id} (plan has {len(plan)} step(s))")
 
 
-def known_tools() -> set[str]:
-    """Registered tool names, for validating `intended_tool`. Imported lazily so this module has
-    no import-time dependency on the registry (which pulls in the tool implementations)."""
-    try:
-        from tools.registry import tools_by_name
+def resolve_tool(raw: "Optional[str]") -> "tuple[Optional[str], str]":
+    """Map a tool spelling typed in the plan editor onto the live registry, returning
+    (tool, note). THE one tool-spelling authority is `structured.norm_tool` — the same one the
+    planner path and `/draft` use — so a synonym the user learned in one surface (`calc`) means
+    the same thing in the other. This editor used to test bare membership instead, which accepted
+    `calc` with a warning and then failed the step closed at execute.
 
-        return set(tools_by_name)
+    Parity means BOTH halves of the rule: a no-tool marker (`none`, `reasoning`, `answer`, … —
+    structured._NO_TOOL_MARKERS, the same set /draft consults) means a genuine reasoning step
+    (intended_tool None), and an unresolvable spelling that is NOT a marker is KEPT RAW (never
+    silently blanked): execute fails closed on it as an error incident rather than answering the
+    step from the model's priors. Imported lazily so this module keeps no import-time dependency
+    on the registry."""
+    raw = (raw or "").strip() or None
+    if raw is None:
+        return None, ""
+    try:
+        from core.structured import _NO_TOOL_MARKERS, norm_tool
     except Exception:
-        return set()
+        return raw, ""
+    tool = norm_tool(raw)
+    if tool is None:
+        if raw.lower() in _NO_TOOL_MARKERS:
+            return None, ""  # a spelled-out "no tool" — a genuine reasoning step, like /draft
+        return raw, f"  (note: '{raw}' is not a registered tool — the step will fail closed)"
+    if tool != raw:
+        return tool, f"  (tool '{raw}' → {tool})"
+    return tool, ""
 
 
 def add_step(
@@ -229,7 +248,7 @@ def apply_command(plan: list[dict], line: str) -> tuple[list[dict], str]:
         label = text.strip()
         if not label:
             raise ValueError("a step needs a label")
-        note = _tool_note(tool)
+        tool, note = resolve_tool(tool)
         return add_step(plan, label, tool), f"added: {label}" + note
 
     if verb == "edit":
@@ -244,7 +263,7 @@ def apply_command(plan: list[dict], line: str) -> tuple[list[dict], str]:
         sid = _parse_id(rest[0])
         raw = rest[1]
         tool = None if raw.lower() in ("none", "null", "-", "clear") else raw
-        note = _tool_note(tool)
+        tool, note = resolve_tool(tool)
         return set_tool(plan, sid, tool), f"step #{sid} tool -> {tool or 'none'}" + note
 
     if verb == "status":
@@ -267,13 +286,6 @@ def apply_command(plan: list[dict], line: str) -> tuple[list[dict], str]:
         return drop_step(plan, sid), f"dropped step #{sid}"
 
     raise ValueError(f"unknown edit verb {verb!r} — try: add, edit, tool, status, move, drop")
-
-
-def _tool_note(tool: Optional[str]) -> str:
-    """A trailing warning if a named tool isn't registered (allowed, but it won't auto-advance)."""
-    if tool and tool not in known_tools():
-        return f"  (note: '{tool}' is not a registered tool — it won't auto-advance the plan)"
-    return ""
 
 
 # ── the pause latch ──────────────────────────────────────────────────────────────────────────

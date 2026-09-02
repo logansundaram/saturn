@@ -7,7 +7,32 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
 
 ## [Unreleased]
 
+### Added
+
+- **`/models` is now the model page — the hardware scan folded in.** It probes the chip, cores,
+  RAM and NVIDIA VRAM once at launch, works out the memory the model runner can address (Apple
+  unified memory at ~75% of RAM; a card's full VRAM; half of RAM and capped at 9b with no
+  accelerator), and prices the two qwen ladders against it: the six chat tiers (the most advanced
+  tag per size) and the three qwen3-embedding sizes. Each row shows weights, the context window
+  this config gives it, the memory it needs at that window (weights + KV cache + headroom — only
+  1 in 4 layers of these hybrid models keeps a cache), whether it is pulled, and whether it fits;
+  the recommendation is marked, and the embedder recommended is the largest that fits BESIDE the
+  chat model, and each chat row says whether its confidence coloring is calibrated. Rows are
+  numbered: Enter takes the recommended tier (and asks, y/N, before also moving the embedder —
+  that re-embeds the corpus), a number picks one tier or embedder, n keeps things as they are. A
+  pick whose model isn't pulled asks (y/N) and only switches after the pull lands; an embedder
+  pick is set on every tier. Runs on the very first
+  launch right before `/config setup`; `/models list` renders without prompting, `/models rescan`
+  re-reads the hardware, `/scan` is an alias. The verbatim `ollama list` view and the two-step
+  role picker are gone — the direct binds (`/models all|<role>|embedder|tier …`) remain.
+
 ### Changed
+
+- **Context windows now step up the ladder.** `config.default.yaml` ships 32k for 800m–4b,
+  64k for 9b and 27b, and 128k for 35b (it was 32k everywhere), priced so each tier fits the
+  hardware it lands on with headroom (a 27b at 64k is ~22.5 GB; the 35b MoE's cache is so cheap
+  that 128k costs less than 27b's 64k). Existing config.yaml files keep their values —
+  `/config context` changes the window live, and `/scan` shows what each choice costs.
 
 - **Launch and sync got faster.** Startup no longer re-reads every corpus document to hash it —
   an unchanged file is recognized from its recorded size+mtime (content hashing remains the

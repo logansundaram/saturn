@@ -3,7 +3,8 @@ Runtime-inventory commands — what the agent is running on and with, in one mod
 "observability" readouts; consolidated from one-file-per-command 2026-06-11):
 
   /tools    the registered tools + risk tiers
-  /models   installed models; bind roles / the embedder / the tier
+  /models   the model page: hardware scan, the qwen ladders priced against it, pick a tier /
+            embedder (absorbed /scan 2026-09-01; `scan` stays as an alias)
   /mcp      MCP server status + remote tools; reload
 
 (/context folded into /config as `/config context` 2026-07-07 — the runtime readout + num_ctx
@@ -53,9 +54,6 @@ def _tools(ctx, args):
 
 
 # ── /models ──────────────────────────────────────────────────────────────────────────────────
-_BIND_TARGETS = ("all", *_ROLES, "embedder")
-
-
 def _persist_bindings(cfg, keys: list[str]) -> None:
     """Persist session-set binding keys to config.yaml through the one persist seam (the same
     machinery as /config <key> --save)."""
@@ -125,122 +123,401 @@ def _bind(cfg, target: str, model: str, *, session: bool = False) -> None:
     _resync_rag_after_model_change()
 
 
-def _selectable(local, bindings, embedder, declared=()) -> tuple[list, int]:
-    """What `/models` offers to bind, out of everything the daemon has pulled: the LADDER TAGS
-    (core/model_family.SIZE_LADDER — one per size class, the most advanced family tag at that
-    size) plus embedding models, which are exempt from the family gate (this listing is the only
-    one that surfaces them — `/models embedder <id>` still binds one by name).
-
-    Two reasons the filter is the ladder and not the whole family. A listing of every pulled tag
-    offered rows `_bind` refuses (2026-08-16's family gate) — the picker's numbers pointed at a
-    refusal. And a family-wide listing shows the SAME size twice once a version bump lands
-    (qwen3.6:27b beside qwen3.8:27b), which is a choice with no answer: they are the same
-    hardware cost and one is simply older. The ladder already declares the winner per size, so
-    reading it here means there is ONE ranking in the repo, not a second one hand-rolled over
-    tag names — and a superseded tag stays bindable by name for anyone who wants it.
-
-    Anything CURRENTLY bound stays visible whatever its name, so the `◂ all roles` tail can never
-    sit on a hidden row. `bindings` carries what is RUNNING (model_id — already family-substituted
-    at the model_for_role seam, so a non-family chat tag can never appear in it); `declared` is the
-    ids config.yaml LITERALLY names, pre-substitution — a pulled legacy binding (gemma4:12b under a
-    pre-lock config) has to be visible to be understood, and only the declared set can hold it.
-    Matching is case-insensitive like is_ladder_tag's own convention (the daemon's reported casing
-    and the config's may drift).
-    Returns (shown, hidden_count) — the count is disclosed, never a silent truncation."""
-    bound = {mid for mid in (bindings or {}).values() if mid}
-    bound.update(d for d in (declared or ()) if d)
-    if embedder:
-        bound.add(embedder)
-    bound = {str(b).lower() for b in bound}
-    shown = [
-        m for m in (local or [])
-        if model_family.is_ladder_tag(m.name) or m.is_embedding or m.name.lower() in bound
-    ]
-    return shown, len(local or []) - len(shown)
+# ── the /models page ─────────────────────────────────────────────────────────────────────────
+# One page (2026-09-01, the /scan fold): the machine, its memory budget, and the two ladders —
+# the six chat tiers and the three qwen3-embedding sizes — each priced against the budget at the
+# window this config gives it (core/hardware.py), marked pulled / recommended / too big, and
+# numbered so one keystroke picks a tier or an embedder. The old verbatim `ollama list` view is
+# gone: Saturn binds ONE family with the most advanced tag per size, so the ladder IS the list.
+# Bare /models prompts; `list` renders only; the probe itself is cached at startup (hardware
+# doesn't change mid-session) and `rescan` re-reads it.
 
 
-def _declared_role_ids(cfg) -> set:
-    """The chat-role model ids config.yaml literally names on the active tier, PRE-substitution
-    (dict access like _tier_model, never the dotted path — a legacy tier name may contain a dot).
-    model_id() reports what RUNS, which _enforce_family has already substituted; the declared ids
-    are what the user's file says, and /models must show a pulled one rather than hide it."""
-    tier = (cfg.get("tiers", {}) or {}).get(cfg.active_tier) or {}
-    out = set()
+def _probe():
+    """The cached machine profile (app.startup warms it). A seam the tests replace."""
+    from core.hardware import profile
+
+    return profile()
+
+
+def _rescan():
+    from core.hardware import profile
+
+    return profile(rescan=True)
+
+
+def _pull_one(model: str) -> int:
+    """Run one `ollama pull` in the foreground (live progress, Ctrl-C-able). Returns the exit
+    code; an OSError (no `ollama` binary) reads as a failure."""
+    import subprocess
+
+    try:
+        return subprocess.run(["ollama", "pull", model]).returncode
+    except OSError as exc:
+        _print(f"  could not run `ollama pull {model}`: {exc}")
+        return 1
+
+
+def _k(n: int) -> str:
+    """32768 -> "32k"; anything not a whole multiple of 1024 prints as-is."""
+    return f"{n // 1024}k" if n and n % 1024 == 0 else str(n)
+
+
+def _tier_binding(cfg, key: str) -> "tuple[str, str]":
+    """(declared, running) for a size-class tier: what config.yaml literally binds to its chat
+    roles (the synthesizer's entry; "" when the tier is not declared) and what selecting it would
+    actually RUN — a non-family declaration is substituted at the model_for_role seam, so the row
+    must show the substitute (the migration note under the table names the substitution). A class
+    this config never declared runs the ladder tag."""
+    declared = _tier_model(cfg, key)
+    if not declared:
+        return "", model_family.tag_for(key)
+    if model_family.in_family(declared):
+        return declared, declared
+    return declared, model_family.tag_for(model_family.migrate(declared))
+
+
+def _tier_chat_models(cfg, key: str) -> list[str]:
+    """The chat models a tier binds (roles only, deduplicated; the embedder is a separate,
+    machine-wide pick). Dict access, never the dotted path — a tier key may contain a dot."""
+    tier = (cfg.get("tiers", {}) or {}).get(key) or {}
+    out: list[str] = []
     for entry in (tier.get("roles", {}) or {}).values():
         if isinstance(entry, dict):
-            entry = entry.get("model")
-        if entry:
-            out.add(str(entry))
+            entry = entry.get("model", "")
+        if entry and str(entry) not in out:
+            out.append(str(entry))
     return out
 
 
-def _print_hidden_note(hidden: int) -> None:
-    """Disclose what the filter dropped — the listing must not read as `ollama list`."""
-    if hidden > 0:
-        _print(f"  ({hidden} other installed model{'s' if hidden != 1 else ''} hidden — the table"
-               " shows one tag per size class, the newest of the qwen3.5-3.8 family;"
-               " hidden tags stay bindable by name.)")
+def _class_windows(cfg) -> dict:
+    """The context window each size class would actually run at under THIS config: the tier's
+    bound model (its `capabilities.<model>.context_window`, or the `runtime.num_ctx` override
+    when set). This is the number ChatOllama is handed (config.num_ctx_for), so the fit table
+    prices the window the session would really allocate — raise num_ctx and the page re-prices."""
+    return {key: cfg.num_ctx_for(_tier_binding(cfg, key)[1]) for key in model_family.classes()}
+
+
+def _cost_classes(cfg) -> dict:
+    """The class each tier is PRICED as: that of the model it actually runs (a tier rebound to
+    another size costs what it runs, not what its name says)."""
+    return {key: model_family.class_of(_tier_binding(cfg, key)[1]) for key in model_family.classes()}
+
+
+def _legacy_tiers(cfg) -> list[str]:
+    """Tier names in config.yaml that are not size classes (laptop / workstation, from before
+    the ladder). They are what `/models tier` validates against on that config, so the page
+    names them with the bind that works there instead of pretending the ladder is selectable."""
+    return [k for k in (cfg.get("tiers", {}) or {}) if k not in model_family.classes()]
+
+
+def _switch_tier(cfg, key: str, *, session: bool) -> None:
+    """The same switch `/models tier` performs: set live, rebuild models on next use, persist
+    unless session-only, re-embed if the embedder moved."""
+    from core.llms import reset_models
+
+    cfg.set("active_tier", key)
+    reset_models()
+    tag = " (session only)" if session else ""
+    _print(f"  active tier -> {key}; models will rebuild on next use{tag}.")
+    if session:
+        _print("  omit --session to save to config.yaml.")
+    else:
+        _persist_bindings(cfg, ["active_tier"])
+    _resync_rag_after_model_change()
+
+
+def _switch_embedder(cfg, model: str, *, session: bool) -> None:
+    """Bind the embedder on EVERY declared tier: the embedder is a machine choice (what fits
+    beside the chat model), not a per-tier one, so a later tier switch must not silently bring
+    a different embedder — and a different corpus embedding — back."""
+    from core.llms import reset_models
+
+    keys = []
+    for key in (cfg.get("tiers", {}) or {}):
+        cfg.set(f"tiers.{key}.embedder", model)
+        keys.append(f"tiers.{key}.embedder")
+    reset_models()
+    tag = " (session only)" if session else ""
+    _print(f"  embedder -> {model} on every tier{tag}.")
+    if session:
+        _print("  omit --session to save to config.yaml.")
+    else:
+        _persist_bindings(cfg, keys)
+    _resync_rag_after_model_change()
+
+
+def _calibrated(tag: str) -> bool:
+    """Whether the tag has a confidence calibration behind it (the user overlay, then the
+    shipped table). A seam the tests replace."""
+    from core import confidence
+
+    return confidence.calibration_for(tag) is not None
+
+
+def _pulled_cell(models: list, up: bool, have: set) -> tuple:
+    from core.llms import _model_present
+
+    if not up:
+        return ("?", "dim")
+    if all(_model_present(m, have) for m in models):
+        return ("✓", "green")
+    return ("·", "dim")
+
+
+def _render_page(cfg, prof, rec, *, up: bool, have: set) -> None:
+    """The readout, in the app's one listing vocabulary (section / table / note — the shapes
+    /privacy and /policy render with; they own the no-rich fallback)."""
+    from core.hardware import CLASS_COSTS, EMBEDDER_WEIGHTS_GB, HEADROOM_GB
+    from tui import ui
+
+    active = cfg.active_tier
+    defined = cfg.get("tiers", {}) or {}
+    active_emb = model_family.embedder_class_of(cfg.embedder_model)
+
+    facts = [prof.chip or "unknown CPU"]
+    if prof.cores:
+        facts.append(f"{prof.cores} cores")
+    facts.append(f"{prof.ram_gb:g} GB " + ("unified memory" if prof.backend == "apple" else "RAM"))
+    if prof.vram_gb:
+        facts.append(f"{prof.vram_gb:g} GB VRAM ({prof.gpu})")
+    ui.section("models", " · ".join(facts))
+    ui.table([("budget", f"{rec.budget_gb:g} GB for models", (rec.reason, "dim"))], styles=["dim"])
+    _print("")
+
+    dim = lambda *cells: tuple((c, "dim") for c in cells)  # noqa: E731
+    rows = [dim("#", "tier", "model", "weights", "window", "need", "", "", "")]
+    n = 0
+    for key in model_family.classes():
+        n += 1
+        declared, running = _tier_binding(cfg, key)
+        if key not in defined:
+            status = ("not in config.yaml", "yellow")
+        elif key == rec.size_class:
+            status = ("▸ recommended", "accent")
+        elif rec.fits.get(key):
+            status = ("fits", "dim")
+        else:
+            status = ("too big", "yellow")
+        rows.append((
+            (str(n), "dim"),
+            ("* " if key == active else "  ") + key,
+            running,
+            (f"{CLASS_COSTS[rec.cost_classes.get(key, key)].weights_gb:>5.1f} GB", "dim"),
+            (f"{_k(rec.windows[key]):>4} ctx", "dim"),
+            f"{rec.needs[key]:>5.1f} GB",
+            _pulled_cell([running], up, have),
+            ("calibrated", "dim") if _calibrated(running) else ("uncalibrated", "yellow"),
+            status,
+        ))
+    rows.append(("",))
+    rows.append(dim("", "embedder", "model", "weights", "", "need", "", "", ""))
+    for key in model_family.embedder_classes():
+        n += 1
+        tag = model_family.embedder_tag_for(key)
+        if key == rec.embedder:
+            status = ("▸ recommended", "accent")
+        elif rec.embedder_fits.get(key):
+            status = (f"fits beside {rec.size_class}", "dim")
+        else:
+            status = (f"swaps beside {rec.size_class}", "yellow")
+        rows.append((
+            (str(n), "dim"),
+            ("* " if key == active_emb else "  ") + key,
+            tag,
+            (f"{EMBEDDER_WEIGHTS_GB[key]:>5.1f} GB", "dim"),
+            "",
+            f"{rec.embedder_needs[key]:>5.1f} GB",
+            _pulled_cell([tag], up, have),
+            "",                                   # no calibration claim rides on an embedder
+            status,
+        ))
+    ui.table(rows)
+
+    override = cfg.num_ctx_override
+    src = (f"runtime.num_ctx = {override} overrides every window" if override
+           else "windows from config.yaml context_window (/config context to change)")
+    ui.note(f"* active · ✓ pulled · need = weights + KV cache at that window + {HEADROOM_GB:g} GB headroom"
+            " · calibrated = confidence coloring measured for this model (/confidence)")
+    ui.note(src)
+    if not up:
+        ui.warn("ollama daemon not reachable — start it with `ollama serve` (pulled state unknown)")
+    if active_emb is None and cfg.get("tiers"):
+        try:
+            ui.note(f"embedder in config.yaml: {cfg.embedder_model} (not on the ladder; "
+                    "pick a row to move onto it)")
+        except Exception:
+            pass
+    if rec.cramped:
+        ui.warn(f"this machine is too small for any tier ({rec.budget_gb:g} GB budget; the smallest "
+                f"wants {rec.needs[rec.size_class]:.1f} GB) — {rec.size_class} is the best effort "
+                "and will be tight")
+    legacy = _legacy_tiers(cfg)
+    if legacy:
+        ui.warn(f"legacy tiers in config.yaml: {', '.join(legacy)} — the names predate the size-class "
+                "ladder; rebind one in place with `/models all <tag>`")
+    _print_migration_notes()
+
+
+def _pick(rec, active: str, active_emb: "str | None") -> "list[tuple[str, str]] | None":
+    """The human's say after the readout: Enter takes the recommended TIER (the embedder, whose
+    switch re-embeds the whole knowledge base, is confirmed separately — see _confirm_embedder),
+    a row number picks that one tier or embedder, n/q/cancel keeps things as they are. Anything
+    unparseable is treated as cancel — an auto-select must never land on a row nobody chose.
+    Returns [(kind, class), ...] to apply in order, or None."""
+    from tui import ui
+
+    tiers = model_family.classes()
+    embs = model_family.embedder_classes()
+    total = len(tiers) + len(embs)
+    reply = ui.ask(
+        f"[Enter] {rec.size_class} · 1-{total} pick a row · n keep {active} » "
+    ).strip().lower()
+    if not reply:
+        return [("tier", rec.size_class)]
+    if reply in ("n", "no", "q", "quit", "cancel"):
+        return None
+    try:
+        idx = int(reply)
+    except ValueError:
+        ui.warn(f"not a valid selection: {reply!r}")
+        return None
+    if not 1 <= idx <= total:
+        ui.warn(f"not a valid selection: {reply!r} (1-{total})")
+        return None
+    if idx <= len(tiers):
+        return [("tier", tiers[idx - 1])]
+    return [("embedder", embs[idx - len(tiers) - 1])]
+
+
+def _confirm_embedder(rec, active_emb: "str | None") -> bool:
+    """After an Enter, offer the recommended embedder ONLY when it differs from the active one,
+    and only on a yes: moving the embedder re-embeds every document in the knowledge base — too
+    heavy a side effect to ride on a default keypress."""
+    from tui import ui
+
+    if rec.embedder == active_emb:
+        return False
+    tag = model_family.embedder_tag_for(rec.embedder)
+    reply = ui.ask(
+        f"embedder: {tag} is the largest that fits beside {rec.size_class} — switch to it too? "
+        "(re-embeds the knowledge base)  [y/N] » "
+    ).strip().lower()
+    return reply in ("y", "yes")
+
+
+def _offer_pull(missing: list[str], what: str) -> bool:
+    """The consented `ollama pull` for a pick whose models aren't here (TTY only; the caller
+    checks). True when every pull landed."""
+    from commands.config import _stdin_is_tty
+    from tui import ui
+
+    if not _stdin_is_tty():
+        ui.note(f"{what} needs {len(missing)} model(s) not pulled yet — to switch:")
+        for m in missing:
+            _print(f"    ollama pull {m}")
+        return False
+    reply = ui.ask(
+        f"pull {len(missing)} model(s) for {what}? (sizes shown as each pull starts)  [y/N] » "
+    ).lower()
+    if reply not in ("y", "yes"):
+        ui.note("ok — to do it later:")
+        for m in missing:
+            _print(f"    ollama pull {m}")
+        return False
+    for m in missing:
+        _print(f"  pulling {m} …")
+        try:
+            rc = _pull_one(m)
+        except KeyboardInterrupt:
+            _print("")
+            ui.warn(f"pull cancelled — finish later with `ollama pull {m}`")
+            return False
+        if rc != 0:
+            ui.warn(f"`ollama pull {m}` exited with code {rc}")
+            return False
+    return True
+
+
+def _apply_pick(cfg, kind: str, key: str, rec, *, up: bool, have: set, session: bool) -> None:
+    """Land one pick. Only a row whose models are here is switched to: otherwise the pull is
+    offered first and the switch follows a successful pull; any other outcome keeps the current
+    binding working. A pick that is ALREADY active still gets its missing models pulled (a fresh
+    install with a custom pull list is exactly this case)."""
+    from core.llms import _model_present
+    from tui import ui
+
+    if kind == "tier":
+        if key not in (cfg.get("tiers", {}) or {}):
+            ui.warn(f"tier '{key}' is not defined in this config.yaml — add it from "
+                    "config.default.yaml, then re-run /models")
+            return
+        if not rec.fits.get(key, True):
+            ui.warn(f"by the numbers tier '{key}' wants {rec.needs[key]:.1f} GB against a "
+                    f"{rec.budget_gb:g} GB budget — it may fail to load, or run slowly, on this machine")
+        models = _tier_chat_models(cfg, key)
+        current = key == cfg.active_tier
+        what = f"tier {key}"
+    else:
+        tag = model_family.embedder_tag_for(key)
+        if not rec.embedder_fits.get(key, True):
+            ui.warn(f"embedder {tag} will swap in and out beside tier {rec.size_class} — "
+                    "knowledge-base lookups pay a reload")
+        models = [tag]
+        current = model_family.embedder_class_of(cfg.embedder_model) == key
+        what = f"embedder {tag}"
+
+    if not up:
+        ui.note(f"{what}: switch after `ollama serve` is up — re-run /models")
+        return
+    missing = [m for m in models if not _model_present(m, have)]
+    if missing and not _offer_pull(missing, what):
+        return
+    if current:
+        ui.note(f"already on {what}" + (" — models pulled" if missing else " — nothing to change"))
+        return
+    if kind == "tier":
+        _switch_tier(cfg, key, session=session)
+    else:
+        _switch_embedder(cfg, models[0], session=session)
+
+
+def _models_page(cfg, *, prompt: bool, session: bool = False, rescan: bool = False) -> None:
+    """Render the page; with `prompt`, ask and apply."""
+    from core.hardware import recommend
+    from core.llms import list_local_models, ollama_reachable
+    from tui import ui
+
+    prof = _rescan() if rescan else _probe()
+    rec = recommend(prof, _class_windows(cfg), _cost_classes(cfg))
+    up = ollama_reachable()
+    have = {m.name for m in list_local_models()} if up else set()
+    _render_page(cfg, prof, rec, up=up, have=have)
+    if not prompt:
+        return
+    if not up:
+        # Nothing a pick could be applied to (the models can't even be listed).
+        return
+    from commands.config import _stdin_is_tty
+
+    if not _stdin_is_tty():
+        return
+    active_emb = model_family.embedder_class_of(cfg.embedder_model)
+    picks = _pick(rec, cfg.active_tier, active_emb)
+    if picks is None:
+        ui.note(f"staying on '{cfg.active_tier}'")
+        return
+    if picks == [("tier", rec.size_class)] and _confirm_embedder(rec, active_emb):
+        picks.append(("embedder", rec.embedder))
+    for kind, key in picks:
+        _apply_pick(cfg, kind, key, rec, up=up, have=have, session=session)
 
 
 def _print_migration_notes() -> None:
     """Name this session's family substitutions, so a listing never claims the file's value is
-    what is running (one printer — the tier listing and the model table share it)."""
+    what is running."""
     for original, replacement in _config_migrations().items():
         _print(f"  note: '{original}' in config.yaml is running as '{replacement}'.")
-
-
-def _show_selectable(cfg, bindings, *, numbered: bool) -> list:
-    """The one `/models` table render (bare + `list` share it, so the two views can't drift):
-    filter the daemon inventory, render, disclose the hidden count and any family substitutions.
-    Returns the SHOWN list — exactly what the picker indexes."""
-    from core.llms import list_local_models
-    from tui import ui
-
-    local, hidden = _selectable(list_local_models(), bindings, cfg.embedder_model,
-                                declared=_declared_role_ids(cfg))
-    ui.show_models(local, bindings, cfg.active_tier, cfg.embedder_model, numbered=numbered,
-                   meta=_model_meta(local, cfg), hidden=hidden)
-    _print_hidden_note(hidden)
-    _print_migration_notes()
-    return local
-
-
-def _models_picker(ctx, cfg, local, *, session: bool = False) -> None:
-    from tui import ui
-
-    if not local:
-        return
-    sel = ui.ask("bind a model — enter # (or blank to cancel) » ")
-    if not sel:
-        _print("  (cancelled)")
-        return
-    try:
-        choice = local[int(sel) - 1]
-        if int(sel) < 1:
-            raise IndexError
-    except (ValueError, IndexError):
-        _print(f"  not a valid selection: {sel!r}")
-        return
-
-    default = "embedder" if choice.is_embedding else "all"
-    tokens = ui.ask(
-        f"drive what with {choice.name}? [{'|'.join(_BIND_TARGETS)}] (default {default}) » "
-    ).lower().split()
-    # The target prompt accepts a trailing --session too, same as the direct-bind forms.
-    tokens, picked_session, _ = split_persist_flags(tokens)
-    session = session or picked_session
-    target = tokens[0] if tokens else default
-    if target not in _BIND_TARGETS:
-        _print(f"  unknown target: {target} (choose one of {', '.join(_BIND_TARGETS)})")
-        return
-    _bind(cfg, target, choice.name, session=session)
-
-
-# Parameter counts as `ollama show` reports them — display only, so the listing reads the same
-# whether or not the tag is pulled locally. (Defined before _tier_rows, which reads it.)
-_PARAMS_BY_CLASS = {
-    "800m": "873M", "2b": "2.3B", "4b": "4.7B", "9b": "9.7B", "27b": "27.3B", "35b": "36.0B",
-}
 
 
 def _tier_model(cfg, key: str) -> str:
@@ -254,79 +531,6 @@ def _tier_model(cfg, key: str) -> str:
     return str(entry or "")
 
 
-def _tier_rows(active: "str | None" = None, cfg=None) -> list:
-    """One row per tier the CONFIG defines, carrying the metrics the listing shows instead of a
-    nickname: bound model, parameters, runtime + architectural context window, and whether the
-    model has a confidence calibration behind it.
-
-    Walks the config's OWN tiers, not the ladder (2026-08-16): `/models tier <name>` validates
-    against config.yaml, so a listing built from the ladder offered an upgrading user six rows
-    they could not select while hiding the three they had. A tier whose name is not a size class
-    is marked `legacy` and shows what it really binds."""
-    from config import get_config
-    from core import confidence
-
-    if cfg is None:
-        cfg = get_config()
-    if active is None:
-        active = cfg.active_tier
-    tiers = list(cfg.get("tiers", {}) or {})
-    classes = model_family.classes()
-    rows = []
-    for key in tiers or classes:
-        ladder = key in classes
-        # What the CONFIG binds, always — for a size-class tier too. Reading the ladder's tag for
-        # those showed a row the file contradicts: binding qwen3.6:27b on tier 27b runs
-        # qwen3.6:27b and /models says so, while this table claimed qwen3.8:27b; a legacy
-        # gemma4:12b on 27b claimed "qwen3.8:27b · 27.3B" directly above a migration note saying
-        # it runs as qwen3.5:9b. The ladder is only the fallback for a class this config never
-        # declared (the `tiers or classes` listing below).
-        declared = _tier_model(cfg, key) or (model_family.tag_for(key) if ladder else "")
-        # What selecting this tier actually RUNS: a non-family binding is substituted at the
-        # model_for_role seam, so showing the file's value here would put a window and a
-        # calibration verdict against a model that never loads (the substitution itself is
-        # named by the migration note under the table).
-        tag = declared
-        if tag and not model_family.in_family(tag):
-            tag = model_family.tag_for(model_family.migrate(tag))
-        cap = cfg.capability_of(tag)
-        rows.append({
-            "key": key,
-            "model": tag,
-            "declared": declared,
-            "params": _PARAMS_BY_CLASS.get(key, ""),
-            "ctx": cap.context_window,
-            "max_ctx": cap.max_context_window,
-            "calibrated": confidence.calibration_for(tag) is not None,
-            "legacy": not ladder,
-            "active": key == active,
-        })
-    return rows
-
-
-def _model_meta(models, cfg=None) -> dict:
-    """Per-tag metrics for the /models listing: the runtime + architectural context window, and
-    whether the tag has a confidence calibration behind it. The same facts `/models tier` shows,
-    so one tag reads identically in both listings (the readout's `meta` hook had no caller at
-    all until 2026-08-16, so the listing showed none of it).
-
-    An EMBEDDER gets no calibration verdict: it is not a chat model, produces no logprobs, and
-    'uncalibrated' would read as a defect rather than an exemption."""
-    from config import get_config
-    from core import confidence
-
-    if cfg is None:
-        cfg = get_config()
-    out = {}
-    for m in models or []:
-        cap = cfg.capability_of(m.name)
-        info = {"ctx": cap.context_window, "max_ctx": cap.max_context_window}
-        if not getattr(m, "is_embedding", False):
-            info["calibrated"] = confidence.calibration_for(m.name) is not None
-        out[m.name] = info
-    return out
-
-
 def _config_migrations() -> dict:
     """This session's family substitutions, so the listing never claims the file's value is
     what is running."""
@@ -337,50 +541,49 @@ def _config_migrations() -> dict:
 
 @command(
     "models",
-    "List installed models; pick or switch what drives each role / the embedder.",
-    aliases=("model",),
-    usage="/models [list] | /models <role|all|embedder> <id> [--session] | /models tier <name> [--session]",
+    "The model page: your hardware, the qwen ladder priced against it, pick a tier / embedder.",
+    aliases=("model", "scan"),
+    usage="/models [list|rescan] [--session] | /models tier <name> | /models <role|all|embedder> <id> [--session]",
     details="""
-With no args, pings the local Ollama daemon, renders the installed models it can actually bind
-(size, params, quantization, and what each currently drives) as a numbered table, then drops into
-an interactive picker: choose a model by number, then choose what it should drive. Picking a chat model defaults
-to 'all' roles (the common 'run everything locally on this model' case); picking an embed-only
-model defaults to the embedder. Blank input cancels at either step; the target prompt accepts a
-trailing --session like the direct forms below.
+Shows the machine (chip, cores, memory, VRAM), the memory budget the model runner can address,
+and the two ladders priced against it: the six chat tiers (one tag per size, the most advanced
+of the qwen3.5-3.8 family) and the three qwen3-embedding sizes. Each row carries its weights,
+the context window this config gives it, the memory it needs at that window, whether it is
+pulled (✓), and whether it fits — with the recommendation marked ▸.
 
-You can also bind directly, without the picker:
-  /models list                          just the table + bindings, no picker (`ls` works too)
-  /models all <id> [--session]          point every role at one model
-  /models <role> <id> [--session]       re-point one role
-  /models embedder <id> [--session]     switch the embedding model (re-embeds the corpus)
-  /models tier <name> [--session]       switch the whole hardware tier
+  budget     Apple silicon: ~75% of unified memory · NVIDIA: the card's VRAM ·
+             CPU only: 50% of RAM, capped at the 9b class
+  need       weights + KV cache at the window + 1.5 GB headroom (only 1 in 4 layers of these
+             hybrid models keeps a cache, which is why the numbers are small)
+  embedder   the largest that fits BESIDE the recommended tier, so lookups never evict it
 
-Roles: planner, tool_caller, synthesizer, utility, judge.
+The rows are numbered. Enter takes the recommended tier; a number picks that one row (a "too
+big" pick is honored with a warning); n keeps things as they are. When the recommended embedder
+differs from the active one, Enter then asks — y/N, default no — whether to switch it too,
+because an embedder switch re-embeds the whole corpus. A pick whose model isn't pulled asks
+first — y/N, default no — and only switches after the pull succeeds. An embedder pick is set
+on every tier (it is a machine choice).
 
-The listing shows ONE TAG PER SIZE CLASS — the most recent of the supported qwen3.5-3.8 family
-at that size, i.e. the ladder in core/model_family.py — plus embedding models, which are exempt
-from the family gate. Anything else you have pulled (another family, or a tag superseded at its
-size, like qwen3.6:27b under qwen3.8:27b) is counted as hidden under the table, never silently
-dropped, and stays bindable by name: `/models all qwen3.6:27b` still works.
+Each chat row also says whether the model is calibrated: confidence coloring is measured per
+model (/confidence), and an uncalibrated tier colors nothing.
 
-Every switch PERSISTS to config.yaml by default (a model switch should survive the next launch)
-and rebuilds the cached models on next use — the change writes the same dotted key(s) the session
-edit sets, via the /config persist machinery. Append --session (or --session-only) to apply a
-switch for this session only, without touching config.yaml. Any change that moves the embedder
-re-embeds the document corpus.
+  /models                    the page, then the prompt
+  /models list               the page only (`ls` / --check work too)
+  /models rescan             probe the hardware again (it is read once at startup and cached)
+  /models tier <name>        switch the tier directly
+  /models all <id>           point every role at one family tag (a hidden/superseded tag works)
+  /models <role> <id>        re-point one role — planner, tool_caller, synthesizer, utility, judge
+  /models embedder <id>      switch the embedding model by name (re-embeds the corpus)
 
-Models are local Ollama ids only — cloud model support is SHELVED (2026-07-03, local-first is
-the edge), and the old --provider grammar left with it. Rebinding a role that still carries a
-legacy {provider, model} cloud mapping (a pre-shelve config.yaml) replaces it with the local bind.
+Every switch PERSISTS to config.yaml by default; --session applies it live only. Runs on the
+very first launch (right before /config setup). Models are local Ollama ids only — cloud
+support is shelved (2026-07-03).
 """,
 )
 def _models(ctx, args):
     from config import get_config
-    from core.llms import model_id, reset_models
 
     cfg = get_config()
-    bindings = {role: model_id(role) for role in _ROLES}
-
     args, session, save = split_persist_flags(args)
 
     # The old cross-provider grammar (--provider <p> / a bare provider as 3rd arg) left with the
@@ -391,42 +594,22 @@ def _models(ctx, args):
         return
 
     if not args:
-        local = _show_selectable(cfg, bindings, numbered=True)
-        _models_picker(ctx, cfg, local, session=session)
+        _models_page(cfg, prompt=True, session=session)
         return
 
     sub = args[0].lower()
 
-    if is_list_verb(sub):
-        # The non-interactive view: the same table (same family filter), no picker.
-        _show_selectable(cfg, bindings, numbered=False)
+    if is_list_verb(sub) or sub in ("--check", "check"):
+        _models_page(cfg, prompt=False)
+        return
+
+    if sub == "rescan":
+        _models_page(cfg, prompt=True, session=session, rescan=True)
         return
 
     if sub == "tier":
         if len(args) < 2:
-            from tui import ui
-
-            ui.section("tiers", "switch with /models tier <name>")
-            tiers = _tier_rows()
-            rows = [
-                (
-                    ("* " if r["active"] else "  ") + r["key"],
-                    r["model"] or "—",
-                    ("legacy tier", "yellow") if r["legacy"] else (r["params"], "dim"),
-                    (f"{r['ctx']} / {r['max_ctx']}", "dim"),
-                    ("calibrated", "green") if r["calibrated"] else ("uncalibrated", "yellow"),
-                )
-                for r in tiers
-            ]
-            ui.table(rows)
-            if any(r["legacy"] for r in tiers):
-                # These are the tiers this config can actually switch between; the size classes
-                # are not among them, so name the bind that DOES work here.
-                _print("  legacy tier names predate the size-class ladder. Rebind a tier's")
-                _print("  models in place with `/models all <tag>`:")
-                for key, tag in model_family.SIZE_LADDER:
-                    _print(f"    {key:<6} {tag}")
-            _print_migration_notes()
+            _models_page(cfg, prompt=False)
             return
         tier = args[1]
         # Dict membership, not the dotted cfg.get("tiers.<tier>") path lookup — a tier key
@@ -436,15 +619,7 @@ def _models(ctx, args):
         if tier not in cfg.get("tiers", {}):
             _print(f"  unknown tier: {tier} (defined: {list(cfg.get('tiers', {}))})")
             return
-        cfg.set("active_tier", tier)
-        reset_models()
-        tag = " (session only)" if session else ""
-        _print(f"  active tier -> {tier}; models will rebuild on next use{tag}.")
-        if session:
-            _print("  omit --session to save to config.yaml.")
-        else:
-            _persist_bindings(cfg, ["active_tier"])
-        _resync_rag_after_model_change()
+        _switch_tier(cfg, tier, session=session)
         return
 
     if sub == "embedder":
@@ -463,7 +638,7 @@ def _models(ctx, args):
 
     role = sub
     if role not in _ROLES:
-        _print(f"  unknown target: {role} (roles: {', '.join(_ROLES)}; or 'all'/'embedder'/'tier'/'list')")
+        _print(f"  unknown target: {role} (roles: {', '.join(_ROLES)}; or 'all'/'embedder'/'tier'/'list'/'rescan')")
         return
     if len(args) < 2:
         _print(f"  usage: /models {role} <model_id> [--session]")

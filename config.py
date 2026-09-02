@@ -140,9 +140,10 @@ _REPO_ROOT = _CONFIG_PATH.parent
 # ever seeing the new binding).
 MODEL_ROLES = ("planner", "tool_caller", "synthesizer", "utility", "judge")
 
-# The window pair every ladder tag ships in config.default.yaml — the fallback for a family tag
-# a user's older config has no `capabilities:` entry for (see capability_of). Kept in step with
-# the template by tests/test_model_family.py.
+# The fallback window pair for a family tag a user's older config has no `capabilities:` entry
+# for (see capability_of): the SMALLEST runtime window the ladder ships in config.default.yaml
+# (the windows step up the ladder — 32k/64k/128k — and a fallback must never over-allocate) and
+# the shared architectural ceiling. Kept in step with the template by tests/test_model_family.py.
 FAMILY_CONTEXT_WINDOW = 32768
 FAMILY_MAX_CONTEXT_WINDOW = 262144
 

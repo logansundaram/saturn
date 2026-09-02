@@ -16,6 +16,15 @@ def startup_load(interactive: bool = True):
     `(graph, warning_or_None)`. Runs while the ring art animates in interactive mode, or
     directly (no TUI) in headless mode."""
     warn = None
+    # Read the hardware once per launch (chip / RAM / VRAM) so /models — and the first-launch
+    # tier pick — price the ladder against a cached profile instead of re-probing. Wrapped:
+    # probe() never raises, but a launch must not depend on that.
+    try:
+        from core.hardware import profile
+
+        profile()
+    except Exception:
+        pass
     # Reconcile the knowledge base against the disk cache at startup: only new/changed
     # documents are embedded, the rest load from the persisted store. Non-fatal if it fails
     # (e.g. embedding model not pulled) — search_knowledge_base just returns "no documents";

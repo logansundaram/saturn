@@ -173,14 +173,16 @@ Then open a new terminal and run `saturn`. The first run pulls a few GB of model
 minute. Prefer to read before you pipe? Both scripts are plain text at the URLs above — download
 and inspect first.
 
-The installer defaults to the lightweight **`4b`** size class (`qwen3.5:4b`); switch to a bigger
-class anytime with `/models tier`, or set `SATURDAY_TIER=9b` (or `27b`/`35b`) before installing.
+The installer defaults to the lightweight **`4b`** size class (`qwen3.5:4b`). On the first launch
+`/models` reads your hardware, prices every size against it, and asks which tier and embedder to
+run — Enter takes the recommendation, and anything not pulled yet is pulled on consent. Re-run
+`/models` anytime, or set `SATURDAY_TIER=9b` (or `27b`/`35b`) before installing.
 Other knobs: `SATURDAY_HOME` (install dir), `SATURDAY_MODELS` (models to pull), `SATURDAY_BRANCH`.
 
 Saturn runs the **qwen3.5–3.8 family only**, as one tier per parameter size. That is a
 deliberate limit, not a missing feature: confidence coloring marks what the model itself was
 least sure of, and "least sure" is calibrated per model — a threshold borrowed from a model of a
-different size is meaningless. `/models tier` shows the ladder; `/confidence` shows what your
+different size is meaningless. `/models` shows the ladder; `/confidence` shows what your
 active model is calibrated at.
 
 > Prefer to set it up by hand, or hacking on Saturn itself? Use the **Manual install** below.
@@ -221,9 +223,10 @@ saturn-agent` instead of `/update`.
   ollama pull qwen3-embedding:8b   # the embedder (RAG)
   ```
 
-  > More hardware to spare? Edit `active_tier` in `config.yaml` to a bigger size class — `9b`,
-  > `27b`, or `35b` — and pull that class's tag instead (same embedder); `/models tier` lists
-  > all six. Saturn binds the **qwen3.5–3.8 family only** — each size class is calibrated per
+  > More hardware to spare? The first launch runs `/models`, which reads your chip, RAM and VRAM
+  > and offers the largest size class that fits (pulling it first); re-run `/models` any time,
+  > or `/models list` to just see the fit table. Or edit `active_tier` in `config.yaml`
+  > yourself — `9b`, `27b`, or `35b` — and pull that class's tag instead (same embedder). Saturn binds the **qwen3.5–3.8 family only** — each size class is calibrated per
   > model for confidence coloring (see `/confidence`; the 27b tier's thresholds are estimated
   > from its measured 27.8B sibling pending daemon support for qwen3.8 logprobs), so this is a
   > closed ladder, not an open model list.
@@ -290,8 +293,10 @@ Everything lives in **`config.yaml`**:
 
 - **`active_tier`** — which size-class preset is live (`800m`, `2b`, `4b`, `9b`, `27b`, `35b`).
 - **`tiers`** — maps each role (planner / tool_caller / synthesizer / …) to a concrete model, so
-  swapping hardware is a one-line change. Every tag is qwen3.5/3.6/3.8 — `/models tier` lists the
-  ladder with params, context window, and calibration state.
+  swapping hardware is a one-line change. Every tag is qwen3.5/3.6/3.8 — `/models` lists the
+  ladder with weights, context window, and what each needs on your machine. The shipped windows
+  step up the ladder (32k for 800m–4b, 64k for 9b/27b, 128k for 35b), sized so each tier fits
+  its hardware; `/models` prices any window you set against your memory.
 - **`runtime`** — loop and safety knobs: `max_iterations`, `auto_approve` (the approval policy),
   `num_ctx` (context window), `citations` (inline source citations in answers).
 - **`web`** — web-tool knobs (`max_results`, `request_timeout`). The backend is fixed and
@@ -323,7 +328,7 @@ Type `/help` for the full list, or `/<command> --help` for details on any one. H
 | Command | What it does |
 |---|---|
 | `/help` | The grouped command list, opening with the trust-stack map (posture · activity · proof); `/help <cmd>` details one. |
-| `/models` | List installed Ollama models; switch what drives each role (`--save` persists a binding to `config.yaml`). |
+| `/models` | The model page: your hardware, the qwen ladder (six chat sizes + three embedders) priced against it, pick a row to switch — pulling what's missing on consent. |
 | `/config` | View/edit settings; `/config setup` is the health check; `/config context` is the runtime readout (context window + fill, CPU/RAM/GPU) + window resize. |
 | `/plan` | Show the plan; control review mode and the mid-run pause (bare subcommands report status). |
 | `/draft` | Write your OWN plan in the step editor — your next message executes YOUR steps instead of the agent's draft (same per-step reflection and approval gates). |

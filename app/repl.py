@@ -96,7 +96,16 @@ def run_repl() -> None:
     # query, rather than as a confusing turn failure. Non-fatal: a dispatch error mustn't
     # prevent the REPL from starting.
     if _first_run:
-        ui.note("First launch — running /config setup (won't repeat; re-run any time with /config setup).")
+        # /models FIRST: the page prices the ladder against this machine and asks which tier and
+        # embedder to run (Enter = the recommendation; missing models are pulled on consent), so
+        # the setup check below examines the tier the session will actually use. Same sentinel,
+        # same re-run story (/models any time).
+        ui.note("First launch — choose your models, then /config setup runs "
+                "(won't repeat; re-run any time with /models or /config setup).")
+        try:
+            commands.dispatch("/models", cmd_ctx)
+        except Exception as exc:
+            ui.warn(f"/models failed: {exc}")
         try:
             commands.dispatch("/config setup", cmd_ctx)
         except Exception as exc:

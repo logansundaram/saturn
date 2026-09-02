@@ -297,8 +297,11 @@ class TestShippedConfigMatchesTheLadder:
         import config
 
         caps = self._template()["capabilities"]
+        # The runtime windows step up the ladder (2026-09-01); the fallback is the SMALLEST
+        # shipped window, so a tag with no entry is never handed more cache than any tier ships.
+        shipped = [caps[tag]["context_window"] for _key, tag in self._ladder()]
+        assert config.FAMILY_CONTEXT_WINDOW == min(shipped)
         for _key, tag in self._ladder():
-            assert caps[tag]["context_window"] == config.FAMILY_CONTEXT_WINDOW, tag
             assert caps[tag]["max_context_window"] == config.FAMILY_MAX_CONTEXT_WINDOW, tag
 
     def test_a_ladder_tag_with_no_capabilities_entry_gets_the_family_defaults(self):
@@ -320,13 +323,28 @@ class TestShippedConfigMatchesTheLadder:
         return mf.SIZE_LADDER
 
     def test_capabilities_keep_the_runtime_window_off_the_architectural_max(self):
-        # Collapsing these is a latent OOM: 262144 num_ctx exhausts consumer VRAM.
+        # Collapsing these is a latent OOM: 262144 num_ctx exhausts consumer VRAM. The runtime
+        # windows step up the ladder (2026-09-01) but every one stays far below the ceiling.
         from core import model_family as mf
 
         caps = self._template()["capabilities"]
-        for _key, tag in mf.SIZE_LADDER:
-            assert caps[tag]["context_window"] == 32768, tag
+        expected = {"800m": 32768, "2b": 32768, "4b": 32768,
+                    "9b": 65536, "27b": 65536, "35b": 131072}
+        for key, tag in mf.SIZE_LADDER:
+            assert caps[tag]["context_window"] == expected[key], tag
             assert caps[tag]["max_context_window"] == 262144, tag
+
+    def test_runtime_windows_fit_each_tier_on_its_home_hardware(self):
+        """The window is a memory decision: at the template's window every class must fit the
+        machine it is meant for (core/hardware.py prices it), so a window bump here can't
+        silently push a tier off its hardware."""
+        from core import hardware, model_family as mf
+
+        caps = self._template()["capabilities"]
+        windows = {key: caps[tag]["context_window"] for key, tag in mf.SIZE_LADDER}
+        home = {"800m": 3.0, "2b": 6.0, "4b": 6.0, "9b": 12.0, "27b": 22.5, "35b": 27.0}
+        for key, budget in home.items():
+            assert hardware.need_gb(key, windows[key]) <= budget, key
 
     def test_retired_models_are_gone_from_the_template(self):
         template = self._template()

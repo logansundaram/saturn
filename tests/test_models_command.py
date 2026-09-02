@@ -104,28 +104,6 @@ def _legacy_config():
     })
 
 
-class TestTierMetrics:
-    def test_tier_rows_carry_params_context_and_calibration(self):
-        from commands.runtime import _tier_rows
-
-        rows = _tier_rows(cfg=_template_config())
-        keys = [r["key"] for r in rows]
-        assert keys == ["800m", "2b", "4b", "9b", "27b", "35b"]
-        for row in rows:
-            assert row["model"]
-            assert row["params"]              # e.g. "27.3B"
-            assert row["ctx"] == 32768
-            assert row["max_ctx"] == 262144
-            assert isinstance(row["calibrated"], bool)
-            assert row["legacy"] is False
-
-    def test_the_active_tier_is_marked(self):
-        from commands.runtime import _tier_rows
-
-        rows = _tier_rows(active="9b", cfg=_template_config())
-        assert [r["key"] for r in rows if r["active"]] == ["9b"]
-
-
 class TestLegacyTierAdviceIsActionable:
     """The migration warning's remediation must work for the population that SEES it — an
     upgrading user whose config.yaml still has laptop/workstation. The listing used to render
@@ -140,19 +118,27 @@ class TestLegacyTierAdviceIsActionable:
         yield
         config.clear_migrations()
 
-    def test_the_listing_shows_the_tiers_this_config_can_select(self):
-        from commands.runtime import _tier_rows
+    def test_the_page_names_the_legacy_tiers_and_the_bind_that_works(self, printed, monkeypatch):
+        from commands import runtime
+        from core.hardware import HardwareProfile
 
         cfg = _legacy_config()
-        rows = _tier_rows(cfg=cfg)
-        assert [r["key"] for r in rows] == ["laptop", "workstation"]
-        assert all(r["legacy"] for r in rows)
-        # Every listed row is a key /models tier validates against — no unselectable rows.
-        for row in rows:
-            assert row["key"] in cfg.get("tiers", {})
-        assert rows[1]["declared"] == "gemma4:31b"   # what the file says
-        assert rows[1]["model"] == "qwen3.8:27b"     # what selecting it would actually run
-        assert rows[1]["ctx"] == 32768               # …and that model's real window, not 8192
+        notes = []
+        monkeypatch.setattr("tui.ui.section", lambda *a, **k: None)
+        monkeypatch.setattr("tui.ui.table", lambda *a, **k: None)
+        monkeypatch.setattr("tui.ui.note", lambda m: notes.append(m))
+        monkeypatch.setattr("tui.ui.warn", lambda m: notes.append(m))
+        monkeypatch.setattr(runtime, "_probe",
+                            lambda: HardwareProfile("Darwin", "arm64", "Apple M2", 8, 16.0, "", None, "apple"))
+        monkeypatch.setattr("core.llms.ollama_reachable", lambda: False)
+
+        runtime._models_page(cfg, prompt=False)
+
+        blob = "\n".join(notes)
+        assert "laptop" in blob and "workstation" in blob
+        assert "/models all <tag>" in blob                 # the bind that works on this config
+        # …and what selecting the legacy tier would actually run, not what the file says
+        assert runtime._tier_binding(cfg, "27b") == ("", "qwen3.8:27b")
 
     def test_the_warning_points_at_a_command_that_works_here(self, monkeypatch):
         import config as config_mod
@@ -245,223 +231,3 @@ class TestConfigDoorIsGatedToo:
         self._run(["tiers.4b.embedder", "nomic-embed-text:v2"])
 
         assert cfg.get("tiers.4b.embedder") == "nomic-embed-text:v2"
-
-
-class _Local:
-    """A stand-in for `llms.LocalModel` (one stub, shared by every listing test)."""
-
-    def __init__(self, name, is_embedding=False):
-        self.name = name
-        self.is_embedding = is_embedding
-        self.size_bytes = 1
-        self.parameter_size = "4.7B"
-        self.quantization = "Q4_K_M"
-        self.family = "qwen"
-        self.size_h = "3.4G"
-
-
-class TestListingMetrics:
-    """`tui/ui/readouts.show_models` grew a `meta` hook — and until 2026-08-16 nothing passed
-    it, so /models list showed none of the metrics the spec asks for and the detail column had
-    been widened 14 -> 26 for data that never arrived."""
-
-    _Local = _Local
-
-    def test_meta_carries_windows_and_calibration_per_tag(self, isolated_paths):
-        # isolated_paths: the calibration verdict also consults the USER overlay under
-        # database/, and a real one on the developer's machine must not decide a test.
-        from commands.runtime import _model_meta
-
-        cfg = _template_config()
-        meta = _model_meta([self._Local("qwen3.5:4b"), self._Local("mystery:7b")], cfg)
-
-        assert meta["qwen3.5:4b"] == {"ctx": 32768, "max_ctx": 262144, "calibrated": True}
-        assert meta["mystery:7b"]["calibrated"] is False
-
-    def test_an_embedder_gets_no_calibration_verdict(self, isolated_paths):
-        # Not a chat model: it produces no logprobs, so "uncalibrated" would read as a defect.
-        from commands.runtime import _model_meta
-
-        meta = _model_meta([self._Local("qwen3-embedding:8b", is_embedding=True)],
-                           _template_config())
-        assert "calibrated" not in meta["qwen3-embedding:8b"]
-
-    def test_the_listing_actually_passes_it(self, cfg, monkeypatch):
-        from commands import runtime
-
-        seen = {}
-        monkeypatch.setattr("core.llms.list_local_models",
-                            lambda: [self._Local("qwen3.5:4b")])
-        monkeypatch.setattr("core.llms.model_id", lambda role: "qwen3.5:4b")
-        monkeypatch.setattr("tui.ui.show_models",
-                            lambda *a, **k: seen.update(k))
-        import config as config_mod
-
-        monkeypatch.setattr(config_mod, "_config", cfg, raising=False)
-        runtime._models(None, ["list"])
-
-        assert seen["meta"]["qwen3.5:4b"]["ctx"]
-        assert "calibrated" in seen["meta"]["qwen3.5:4b"]
-
-    def test_the_renderer_shows_them_without_crashing(self, capsys):
-        from tui import ui
-
-        ui.show_models(
-            [self._Local("qwen3.5:4b")], {"synthesizer": "qwen3.5:4b"}, "4b",
-            "qwen3-embedding:8b",
-            meta={"qwen3.5:4b": {"ctx": 32768, "max_ctx": 262144, "calibrated": True}},
-        )
-        out = capsys.readouterr().out
-        assert "32k/256k" in out          # compact, so the bindings tail still fits
-        assert "calibrated" in out
-
-
-class TestFamilyFilteredListing:
-    """`/models` used to render `ollama list` verbatim — every pulled tag, including the ones
-    `_bind` refuses at the family gate, so the picker's numbers pointed at a refusal. The filter
-    is the LADDER (one tag per size class, the most recent), not the whole family: two tags of
-    the same size are the same hardware cost and one is simply older."""
-
-    _Local = _Local
-
-    def _pulled(self):
-        return [
-            self._Local("qwen3.5:4b"),
-            self._Local("qwen3.6:27b"),         # superseded at 27b by qwen3.8:27b
-            self._Local("qwen3.6:35b"),
-            self._Local("qwen3.8:27b"),
-            self._Local("qwen3-embedding:8b", is_embedding=True),
-            self._Local("gemma4:12b"),
-            self._Local("gpt-oss:20b"),
-            self._Local("qwen2.5:3b"),          # NOT the family: anchored prefix, not a substring
-        ]
-
-    def test_only_the_ladder_tags_and_embedders_are_offered(self):
-        from commands.runtime import _selectable
-
-        shown, hidden = _selectable(self._pulled(), {"synthesizer": "qwen3.5:4b"},
-                                    "qwen3-embedding:8b")
-
-        assert [m.name for m in shown] == [
-            "qwen3.5:4b", "qwen3.6:35b", "qwen3.8:27b", "qwen3-embedding:8b",
-        ]
-        assert hidden == 4
-
-    def test_one_row_per_size_class(self):
-        # The point of the ladder filter: 27b appears ONCE, as the most recent tag at that size.
-        # (Every unbound chat row IS a ladder tag, and the ladder carries one tag per size by
-        # construction — no `migrate` round-trip, which is documented for NON-family ids only.)
-        from commands.runtime import _selectable
-        from core import model_family
-
-        shown, _ = _selectable(self._pulled(), {}, "")
-        chat = [m.name for m in shown if not m.is_embedding]
-
-        assert "qwen3.6:27b" not in chat
-        assert "qwen3.8:27b" in chat
-        assert set(chat) <= {tag for _key, tag in model_family.SIZE_LADDER}
-
-    def test_a_superseded_tag_is_still_bindable_by_name(self, cfg, printed, monkeypatch):
-        # Hidden from the table is not refused at the gate — and the bind must actually LAND
-        # (a bare model_family assertion would stay green if _bind's gate were ever tightened
-        # from in_family to the ladder, silently breaking the documented contract).
-        from commands import runtime
-        from core import model_family
-
-        assert not model_family.is_ladder_tag("qwen3.6:27b")     # hidden from the table…
-        monkeypatch.setattr("core.llms.reset_models", lambda: None)
-        monkeypatch.setattr("commands.runtime._persist_bindings", lambda *a, **k: None)
-        monkeypatch.setattr("commands.runtime._resync_rag_after_model_change", lambda: None)
-        runtime._bind(cfg, "all", "qwen3.6:27b")                 # …but binds by name
-        assert cfg.get("tiers.4b.roles.synthesizer") == "qwen3.6:27b"
-
-    def test_a_bound_tag_is_never_hidden(self):
-        # The `◂ all roles` tail must never sit on a row the filter dropped.
-        from commands.runtime import _selectable
-
-        shown, hidden = _selectable(self._pulled(), {"synthesizer": "gemma4:12b"}, "")
-
-        assert "gemma4:12b" in [m.name for m in shown]
-        assert hidden == 3
-
-    def test_bound_matching_is_case_insensitive(self):
-        # is_ladder_tag folds case; the bound/declared clauses must too — a casing drift between
-        # config.yaml and the daemon's reported tag must not hide a bound row.
-        from commands.runtime import _selectable
-
-        shown, hidden = _selectable([self._Local("MyVectors:Latest")], {}, "myvectors:latest")
-
-        assert [m.name for m in shown] == ["MyVectors:Latest"]
-        assert hidden == 0
-
-    def test_a_declared_legacy_binding_stays_visible(self, cfg, printed, monkeypatch):
-        # PRODUCTION shape: config.yaml literally names gemma4:12b, but model_id reports the
-        # FAMILY-SUBSTITUTED ladder tag (config._enforce_family), so only the DECLARED ids can
-        # keep the pulled legacy tag visible — "a legacy binding has to be visible to be
-        # understood" must hold on the real call path, not just on raw injected bindings.
-        from commands import runtime
-        import config as config_mod
-        from config import MODEL_ROLES
-
-        for role in MODEL_ROLES:
-            cfg.set(f"tiers.4b.roles.{role}", "gemma4:12b")
-        monkeypatch.setattr("core.llms.list_local_models", self._pulled)
-        monkeypatch.setattr("core.llms.model_id", lambda role: "qwen3.5:9b")   # what RUNS
-        rendered = {}
-        monkeypatch.setattr("tui.ui.show_models",
-                            lambda models, *a, **k: rendered.update(models=models))
-        monkeypatch.setattr(config_mod, "_config", cfg, raising=False)
-
-        runtime._models(None, ["list"])
-
-        assert "gemma4:12b" in [m.name for m in rendered["models"]]
-
-    def test_all_filtered_empty_state_does_not_misdiagnose(self, capsys):
-        # Daemon up, every pulled model filtered out: the old "(no local models — is the Ollama
-        # daemon running?)" hint would sit directly above a "(N other installed models hidden)"
-        # note — a contradiction. With hidden > 0 the empty state must say "nothing offerable"
-        # and point at the by-name binds instead.
-        from tui import ui
-
-        ui.show_models([], {"synthesizer": "qwen3.5:9b"}, "9b", "", hidden=2)
-        out = capsys.readouterr().out
-
-        assert "is the Ollama daemon running" not in out
-        assert "bind one by name" in out
-
-    def test_the_drop_is_disclosed_not_silent(self, cfg, printed, monkeypatch):
-        from commands import runtime
-        import config as config_mod
-
-        monkeypatch.setattr("core.llms.list_local_models", self._pulled)
-        monkeypatch.setattr("core.llms.model_id", lambda role: "qwen3.5:4b")
-        rendered = {}
-        monkeypatch.setattr("tui.ui.show_models",
-                            lambda models, *a, **k: rendered.update(models=models))
-        monkeypatch.setattr(config_mod, "_config", cfg, raising=False)
-
-        runtime._models(None, ["list"])
-
-        assert [m.name for m in rendered["models"]] == [
-            "qwen3.5:4b", "qwen3.6:35b", "qwen3.8:27b", "qwen3-embedding:8b",
-        ]
-        assert any("4 other installed models hidden" in line for line in printed)
-
-    def test_the_picker_indexes_the_filtered_list(self, cfg, printed, monkeypatch):
-        # The number the user types must select the row they SAW, not a row of the raw inventory.
-        from commands import runtime
-        import config as config_mod
-
-        monkeypatch.setattr("core.llms.list_local_models", self._pulled)
-        monkeypatch.setattr("core.llms.model_id", lambda role: "qwen3.5:4b")
-        monkeypatch.setattr("tui.ui.show_models", lambda *a, **k: None)
-        monkeypatch.setattr(config_mod, "_config", cfg, raising=False)
-        answers = iter(["3", "synthesizer"])   # the 3rd SHOWN row, not the 3rd pulled tag
-        monkeypatch.setattr("tui.ui.ask", lambda *a, **k: next(answers))
-        bound = {}
-        monkeypatch.setattr(runtime, "_bind",
-                            lambda cfg_, target, model, **k: bound.update(t=target, m=model))
-
-        runtime._models(None, [])
-
-        assert bound == {"t": "synthesizer", "m": "qwen3.8:27b"}

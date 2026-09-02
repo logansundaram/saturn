@@ -253,29 +253,6 @@ def test_meter_color_never_wears_the_risk_vocabulary():
     assert "bold" not in base._meter_color(100)
 
 
-def test_model_rows_stay_aligned_when_a_name_overflows(capsys):
-    """`:<26` only pads. One long tag (a `hf.co/…:Q4_K_M` id) pushed the size, detail and
-    binding columns out of alignment for every row after it."""
-    from tui import ui
-
-    class _Local:
-        def __init__(self, name):
-            self.name = name
-            self.size_h = "3.4G"
-            self.parameter_size = "4.7B"
-            self.quantization = "Q4_K_M"
-            self.is_embedding = False
-
-    ui.show_models(
-        [_Local("hf.co/someorg/a-very-long-model-repository-name:Q4_K_M"), _Local("qwen3.5:4b")],
-        {}, "4b", "qwen3-embedding:8b",
-    )
-    rows = [ln for ln in capsys.readouterr().out.splitlines() if "3.4G" in ln]
-    assert len(rows) == 2
-    # The size column starts at the same offset on both rows — that is the whole point.
-    assert len({ln.index("3.4G") for ln in rows}) == 1
-
-
 def test_air_gap_glyph_is_one_cell_and_shared_by_rail_and_receipt():
     """`⛔` is East-Asian Wide AND emoji-presentation: terminals paint it as a color emoji that
     ignores the `bold red` style and overflows the rail column. `⊘` is the palette's existing

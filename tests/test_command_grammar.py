@@ -299,21 +299,18 @@ def test_bare_undo_still_reverts(ctx, capsys, monkeypatch):
 
 @pytest.mark.parametrize("verb", LIST_VERBS)
 def test_models_list_verb_is_noninteractive(ctx, monkeypatch, models_env, verb):
-    """`/models list` renders the table WITHOUT dropping into the picker (`ollama list` style) —
-    bare /models keeps the interactive flow."""
-    from core import llms
+    """`/models list` renders the page WITHOUT the row prompt (`ollama list` style) — bare
+    /models keeps the interactive flow."""
     import commands.runtime as runtime_mod
-    from tui import ui
 
-    monkeypatch.setattr(llms, "list_local_models", lambda: [])
-    shown: list[bool] = []
-    monkeypatch.setattr(ui, "show_models", lambda *a, **k: shown.append(bool(k.get("numbered"))))
-    picked: list[bool] = []
-    monkeypatch.setattr(runtime_mod, "_models_picker", lambda *a, **k: picked.append(True))
+    prompted: list[bool] = []
+    monkeypatch.setattr(runtime_mod, "_models_page",
+                        lambda cfg, *, prompt, **k: prompted.append(prompt))
 
     _models(ctx, [verb])
-    assert shown == [False]  # rendered, without picker numbering
-    assert picked == []      # and never prompted
+    assert prompted == [False]  # rendered, without the prompt
+    _models(ctx, [])
+    assert prompted == [False, True]
 
 
 @pytest.mark.parametrize("verb", LIST_VERBS)

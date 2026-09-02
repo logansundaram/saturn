@@ -289,6 +289,17 @@ capabilities:
   # requesting that per call exhausts VRAM on any consumer card. max_context_window carries the
   # real ceiling for DISPLAY only (the /models metrics columns). Never collapse the two.
   #
+  # The windows step up the ladder with the hardware each tier lands on (2026-09-01). Every tag
+  # is a hybrid (3 linear-attention layers per full-attention layer), so the KV cache is cheap:
+  # 32 KB/token for 4b-9b, 64 KB/token for 27b, 20 KB/token for the 35b MoE. Priced so each tier
+  # fits its home machine with ~1.5 GB headroom (/scan shows the arithmetic):
+  #   800m-4b   32k   the 8 GB laptop / CPU-only end: 4b = 3.4 + 1.0 cache + headroom < 6 GB
+  #   9b        64k   a 16 GB Mac (12 GB budget): 6.6 + 2.0 = ~10 GB
+  #   27b       64k   a 32 GB Mac or a 24 GB card: 17 + 4.0 = ~22.5 GB (128k would need 26.5)
+  #   35b      128k   36 GB+ unified memory: 23 + 2.5 = ~27 GB - the cache is so small that the
+  #                   one big window on the ladder costs less than 27b's 64k does
+  # Raise or lower any of these live with /config context; /scan re-prices the fit table.
+  #
   # supports_vision: these models advertise a vision capability; Saturday.ai does not do vision
   # (a formal scope cut), so the descriptor says what SATURN supports, not what the weights can.
   "qwen3.5:0.8B":
@@ -312,18 +323,18 @@ capabilities:
   "qwen3.5:9b":
     supports_tools: true
     supports_structured_output: true
-    context_window: 32768
+    context_window: 65536
     max_context_window: 262144
     supports_vision: false
   "qwen3.8:27b":
     supports_tools: true
     supports_structured_output: true
-    context_window: 32768
+    context_window: 65536
     max_context_window: 262144
     supports_vision: false
   "qwen3.6:35b":
     supports_tools: true
     supports_structured_output: true
-    context_window: 32768
+    context_window: 131072
     max_context_window: 262144
     supports_vision: false

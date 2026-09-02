@@ -278,9 +278,9 @@ def test_tier_rows_report_the_binding_not_the_ladder(monkeypatch):
         def capability_of(self, tag):
             return type("C", (), {"context_window": 4096, "max_context_window": 4096})()
 
-    row = rt._tier_rows(active="27b", cfg=FakeCfg())[0]
-    assert row["declared"] == "qwen3.6:27b"
-    assert row["model"] == "qwen3.6:27b", "the table must agree with model_for_role"
+    declared, running = rt._tier_binding(FakeCfg(), "27b")
+    assert declared == "qwen3.6:27b"
+    assert running == "qwen3.6:27b", "the table must agree with model_for_role"
     assert model_family.tag_for("27b") != "qwen3.6:27b", "otherwise this test proves nothing"
 
 

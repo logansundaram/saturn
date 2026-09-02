@@ -40,6 +40,16 @@ SIZE_LADDER: tuple[tuple[str, str], ...] = (
     ("35b", "qwen3.6:35b"),
 )
 
+# The embedder ladder (2026-09-01): the qwen3-embedding family, one tag per size, smallest first.
+# RAG's embedder is exempt from the chat-family gate (no template, no logprobs, no calibration
+# claim) but /models offers exactly these — the same "one family, the best tag per size" rule
+# as the chat ladder, so the listing never reads as `ollama list`.
+EMBEDDER_LADDER: tuple[tuple[str, str], ...] = (
+    ("0.6b", "qwen3-embedding:0.6b"),
+    ("4b", "qwen3-embedding:4b"),
+    ("8b", "qwen3-embedding:8b"),
+)
+
 # The fresh-install tier, and where an unrecognizable legacy binding lands. Small on purpose:
 # the first pull should be light, and migrating DOWN never exceeds the machine's VRAM.
 DEFAULT_CLASS = "4b"
@@ -111,3 +121,39 @@ def migrate(model_id) -> str:
         if want is not None:
             return min(_CLASS_PARAMS, key=lambda key: abs(_CLASS_PARAMS[key] - want))
     return DEFAULT_CLASS
+
+
+def embedder_classes() -> tuple[str, ...]:
+    """The embedder ladder's size keys, smallest first."""
+    return tuple(key for key, _tag in EMBEDDER_LADDER)
+
+
+def embedder_tag_for(size_class) -> str:
+    """The embedding model id an embedder size class binds. Raises KeyError for an unknown one."""
+    want = str(size_class or "").strip().lower()
+    for key, tag in EMBEDDER_LADDER:
+        if key == want:
+            return tag
+    raise KeyError(
+        f"unknown embedder class {size_class!r} — defined: {', '.join(embedder_classes())}"
+    )
+
+
+def embedder_class_of(model_id) -> "str | None":
+    """The embedder ladder key a tag belongs to (case-insensitive), or None off the ladder."""
+    want = str(model_id or "").strip().lower()
+    for key, tag in EMBEDDER_LADDER:
+        if tag.lower() == want:
+            return key
+    return None
+
+
+def class_of(model_id) -> str:
+    """The size class whose hardware cost a family tag carries: its ladder key when it IS a
+    ladder tag, else the class nearest its parameter count (a superseded qwen3.6:27b bound by
+    name costs what 27b costs). Non-family ids go through migrate() the same way."""
+    want = str(model_id or "").strip().lower()
+    for key, tag in SIZE_LADDER:
+        if tag.lower() == want:
+            return key
+    return migrate(model_id)

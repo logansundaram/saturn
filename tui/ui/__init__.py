@@ -117,7 +117,7 @@ from .correction import edit_answer
 
 # On-demand readouts + log lines.
 from .readouts import (
-    show_system_metrics, show_context, show_models,
+    show_system_metrics, show_context,
     note, warn, steer_note, pause_note, freeze_note, echo_queued,
 )
 
@@ -135,7 +135,7 @@ __all__ = [
     "ask_approval",
     "response", "ResponseStream", "set_turn_provenance", "set_turn_buffer",
     "edit_answer",
-    "show_system_metrics", "show_context", "show_models",
+    "show_system_metrics", "show_context",
     "note", "warn", "steer_note", "pause_note", "freeze_note", "echo_queued",
     "section", "table", "risk_style", "status_glyph",
 ]

@@ -81,7 +81,7 @@ _OPTIONAL: dict[str, list[str]] = {
     "search_files": ["directory", "file_glob"],
     "write_file": ["overwrite"],
     "edit_file": ["replace_all"],
-    "remember": ["category"],
+    "remember": ["category", "layer", "replaces", "sensitivity"],
     "recall": ["query"],
 }
 
@@ -100,7 +100,8 @@ _SCHEMA_SHAPES: dict[str, str] = {
     "web_search": "web_search(query=<web search terms>)",
     "web_extract": "web_extract(url=<the page URL>)",
     "run_shell": "run_shell(command=<shell command line>)",
-    "remember": "remember(fact=<one concise statement>)",
+    "remember": "remember(fact=<one concise statement>, layer=<user|entities|commitments|negative|"
+    "agent|memo, optional>, replaces=<#id of the fact this corrects, optional>)",
     "recall": "recall(query=<filter text, or empty for everything>)",
     "ask_user": "ask_user(question=<the ONE question to ask the user>)",
 }

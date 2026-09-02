@@ -192,67 +192,275 @@ def _sync(*, force: bool) -> None:
 # ── /memory ──────────────────────────────────────────────────────────────────────────────────
 @command(
     "memory",
-    "List, add, or delete the agent's persistent memory (the remember/recall facts).",
+    "See, add, edit, and review the agent's persistent memory (the layered remember/recall store).",
     aliases=("mem",),
-    usage="/memory [list | add <fact> | forget <n>]",
+    usage="/memory [list [layer] | add [--layer L] [--replaces n] [--sens mark] <fact> | "
+          "edit <n> <text> | forget <n> | why <n> | review [--no-llm] | pending | stale]",
     details="""
-The transparency surface for durable memory: the facts saved via the `remember` tool (or your
-own "remember that ..." requests) are loaded into the agent's context EVERY turn, so what is
-stored here quietly shapes every answer. This command lets you see and manage that store
-without hand-editing database/memory/memory.md.
+The transparency surface for durable memory. What is stored here quietly shapes every answer:
+the user layer and open commitments load into the agent's context EVERY turn, the recent memo
+notes do too, and agent / entities / negative facts load whenever they match the request
+(/trace context shows the exact block a run got). This command shows and manages the store
+without hand-editing database/memory/memory.md (still safe to hand-edit).
 
-  /memory               numbered list of every stored fact (also: list, ls)
-  /memory add <fact>    save a fact directly (same dedup as the remember tool)
-  /memory forget <n>    delete fact n (the number shown by /memory; any removal verb works:
-                        forget/remove/rm/delete/del/drop)
+Layers:  user (identity, preferences, constraints) · commitments (open items, with a due date)
+         · memo (dated notes) · agent (operating knowledge about this machine) · entities
+         (people, projects, places, documents, your shorthand) · negative (what not to do)
 
-The store is a plain markdown file (paths.memory in config.yaml) — still safe to hand-edit;
-this is just the in-app view of it.
+  /memory                    every fact, grouped by layer, with its #id (also: list, ls)
+  /memory list <layer>       one layer
+  /memory add <fact>         save a fact (user layer; --layer <name> for another; --replaces <n>
+                             retires fact n so a correction never sits beside the old fact;
+                             --sens <mark> marks it sensitive: withheld from any prompt bound
+                             for a remote inference host, e.g. --sens health)
+  /memory edit <n> <text>    rewrite fact n in place (keeps its id and provenance)
+  /memory forget <n>         delete fact n (any removal verb: forget/remove/rm/delete/del/drop;
+                             `done <n>` reads better for a finished commitment)
+  /memory why <n>            provenance: when it was learned, who said it (you, or inferred
+                             at a review), the run it came from (→ /trace why #run), last use,
+                             confirmations
+  /memory review             the learning step: candidates this session queued — your mid-task
+                             corrections, plan-review vetoes, gate denials, unfinished steps,
+                             the compaction summary — plus the model's own proposals from the
+                             transcript, each shown as a diff line and kept only on your y.
+                             Also runs at /quit. --no-llm skips the model's proposals.
+  /memory pending            what the review would show, without deciding
+  /memory stale              by-match facts that have not matched a request in
+                             memory.stale_days (flagged, never auto-deleted)
 
 Examples:
-  /memory
   /memory add I prefer answers in metric units
-  /memory forget 3
+  /memory add --layer entities "the deck" means Q3_investor_update.pptx
+  /memory add --replaces 4 I live in Berlin now
+  /memory add --sens health I take blood-pressure medication
+  /memory review
 """,
 )
 def _memory(ctx, args):
-    from stores.memory_registry import add_memory, list_memory, remove_memory
+    from stores import memory_registry as mr
     from tui import ui
 
+    usage = ("  usage: /memory [list [layer] | add [--layer L] [--replaces n] [--sens mark] <fact> "
+             "| edit <n> <text> | forget <n> | why <n> | review [--no-llm] | pending | stale]")
+
     if not args or is_list_verb(args[0]):
-        facts = list_memory()
-        if not facts:
-            ui.note("no persistent memory yet — say `remember that ...` or use /memory add.")
-            return
-        ui.section(
-            "memory",
-            f"{len(facts)} fact(s) · loaded into context every turn · /memory forget <n> deletes",
-        )
-        ui.table([((f"{i}", "accent"), fact) for i, fact in enumerate(facts, start=1)])
+        _list_memory(mr, ui, args[1] if len(args) > 1 else None)
         return
 
     sub = args[0].lower()
     if sub == "add":
-        fact = " ".join(args[1:]).strip()
+        layer, replaces, sens, words = "user", None, None, []
+        it = iter(args[1:])
+        for a in it:
+            low = a.lower()
+            if low in ("--layer", "-l", "--in"):
+                layer = next(it, "user")
+            elif low in ("--replaces", "--replace", "-r"):
+                replaces = next(it, None)
+            elif low in ("--sens", "--sensitive", "--sensitivity", "-s"):
+                sens = next(it, None)
+            else:
+                words.append(a)
+        fact = " ".join(words).strip()
         if not fact:
-            _print("  usage: /memory add <fact>")
+            _print("  usage: /memory add [--layer <layer>] [--replaces <n>] [--sens <mark>] <fact>")
             return
-        _print(f"  {add_memory(fact)}")
+        _print(f"  {mr.add_memory(fact, layer=layer, replaces=replaces, sensitivity=sens)}")
         return
 
-    if is_remove_verb(sub):
-        if len(args) < 2 or not args[1].isdigit():
-            _print("  usage: /memory forget <n>   (the number shown by /memory)")
+    if sub == "edit":
+        if len(args) < 3 or not _fact_id(args[1]):
+            _print("  usage: /memory edit <n> <new text>   (the #id shown by /memory)")
             return
-        removed = remove_memory(int(args[1]))
-        if removed is None:
-            n = len(list_memory())
-            _print(f"  no fact #{args[1]} — /memory lists {n} fact(s).")
+        old = mr.edit_memory(_fact_id(args[1]), " ".join(args[2:]))
+        if old is None:
+            _print(f"  no fact #{args[1]} (or empty text) — /memory lists the ids.")
         else:
-            _print(f"  forgot: {removed}")
+            _print(f"  #{_fact_id(args[1])}: {old!r} → {' '.join(args[2:])!r}")
         return
 
-    _print(f"  unknown subcommand '{args[0]}' — usage: /memory [list | add <fact> | forget <n>]")
+    if is_remove_verb(sub) or sub == "done":
+        if len(args) < 2 or not _fact_id(args[1]):
+            _print("  usage: /memory forget <n>   (the #id shown by /memory)")
+            return
+        removed = mr.remove_memory(_fact_id(args[1]))
+        if removed is None:
+            _print(f"  no fact #{args[1]} — /memory lists {len(mr.entries())} fact(s).")
+        else:
+            _print(f"  {'done' if sub == 'done' else 'forgot'}: {removed}")
+        return
+
+    if sub in ("why", "show", "info"):
+        if len(args) < 2 or not _fact_id(args[1]):
+            _print("  usage: /memory why <n>")
+            return
+        _why(mr, ui, _fact_id(args[1]))
+        return
+
+    if sub == "review":
+        review_pending(ctx, use_llm=not any(a.lower() in ("--no-llm", "--mechanical") for a in args))
+        return
+
+    if sub in ("pending", "queue", "candidates"):
+        from core.memory_review import load_pending, render_line
+
+        pending = load_pending()
+        if not pending:
+            ui.note("no memory candidates pending — they queue from your corrections, vetoes, "
+                    "gate denials, unfinished steps and compaction summaries.")
+            return
+        ui.section("memory · pending review", f"{len(pending)} candidate(s) · /memory review decides")
+        for c in pending:
+            _print(f"  {render_line(c)}")
+        return
+
+    if sub == "stale":
+        stale = [e for e in mr.entries() if mr.is_stale(e)]
+        if not stale:
+            ui.note(f"nothing stale — no by-match fact has gone {mr.stale_days()} days unmatched.")
+            return
+        ui.section("memory · stale", f"{len(stale)} fact(s) unmatched for {mr.stale_days()}+ days "
+                   "· /memory forget <n> drops one (nothing is deleted on its own)")
+        ui.table([((f"#{e['id']}", "accent"), e["layer"], _display_entry(e)) for e in stale])
+        return
+
+    _print(f"  unknown subcommand '{args[0]}'\n{usage}")
+
+
+def _fact_id(token) -> int:
+    t = str(token or "").strip().lstrip("#")
+    return int(t) if t.isdigit() else 0
+
+
+def _display_entry(e: dict) -> str:
+    from stores.memory_registry import display
+
+    return display(e)
+
+
+def _list_memory(mr, ui, layer_filter=None):
+    items = mr.entries(layer_filter) if layer_filter else mr.entries()
+    if not items:
+        if layer_filter:
+            ui.note(f"nothing in the {mr.normalize_layer(layer_filter)} layer yet.")
+        else:
+            ui.note("no persistent memory yet — say `remember that ...` or use /memory add.")
+        return
+    from core.memory_review import load_pending
+
+    n_pending = len(load_pending())
+    pending_note = f" · {n_pending} candidate(s) pending review" if n_pending else ""
+    ui.section(
+        "memory",
+        f"{len(items)} fact(s) · user + commitments + recent memo load every turn, the rest by "
+        f"match · /memory why <n> for provenance{pending_note}",
+    )
+    if layer_filter:
+        layers = [mr.normalize_layer(layer_filter)]
+    else:  # the six standard layers first, then any section a hand edit / layer= introduced
+        extra = sorted({e["layer"] for e in items} - set(mr.LAYERS))
+        layers = list(mr.LAYERS) + extra
+    for layer in layers:
+        rows = [e for e in items if e["layer"] == layer]
+        if not rows:
+            continue
+        _print(f"  {layer}")
+        ui.table([
+            (
+                (f"#{e['id']}", "accent"),
+                ("inferred" if e.get("by") == "inferred" else "", "dim"),
+                ("stale" if mr.is_stale(e) else "", "dim"),
+                _display_entry(e),
+            )
+            for e in rows
+        ])
+
+
+def _why(mr, ui, fact_id: int):
+    e = mr.entry(fact_id)
+    if e is None:
+        _print(f"  no fact #{fact_id} — /memory lists the ids.")
+        return
+    ui.section(f"memory · #{fact_id}", _display_entry(e))
+    who = ("you said it" if e.get("by") == "user"
+           else "inferred (proposed at a review, accepted by you)")
+    rows = [
+        ("layer", e["layer"]),
+        ("learned", e["date"]),
+        ("said by", who),
+        ("source run", f"#{e['run']}  → /trace why #{e['run']}" if e.get("run")
+         else "none recorded (added by /memory add, or before runs were stamped)"),
+        ("last used", e.get("used") or ("always loaded" if e["layer"] in ("user", "commitments")
+                                        else "never matched a request yet")),
+        ("confirmed", f"×{e.get('n', 1)}"),
+    ]
+    if e.get("sens"):
+        rows.append(("sensitivity", f"{e['sens']} — withheld when inference is not local"))
+    if e.get("due"):
+        rows.append(("due", e["due"]))
+    ui.table([((k, "dim"), v) for k, v in rows])
+
+
+# The last transcript the model was asked to propose from (per command context): /memory review
+# followed by /quit must not send the same session to the model twice.
+_LAST_MODEL_PASS: dict = {}
+
+
+def review_pending(ctx, *, use_llm: bool = True, on_quit: bool = False) -> None:
+    """The review screen (core/memory_review.run_review) over the pending queue plus, when
+    enabled, the model's proposals from the live transcript. Shared by `/memory review` and
+    /quit. Nothing is written without a y; q leaves the remainder pending."""
+    import sys
+
+    from core import memory_review as rv
+    from tui import ui
+
+    pending = rv.load_pending()
+    if not sys.stdin.isatty():
+        # No screen, no review — and no model call spent proposing for one. The queue waits.
+        if pending and not on_quit:
+            _print(f"  {len(pending)} candidate(s) pending — the review needs an interactive "
+                   "terminal; they stay queued.")
+        return
+    use_llm = use_llm and rv.llm_enabled()
+    messages = (ctx.state or {}).get("messages") or []
+    if use_llm and messages and (not on_quit or pending):
+        # On /quit, the model pass only runs when something mechanical is already queued — a
+        # quiet session must not pay a model call on its way out. And the same transcript is
+        # never sent twice: a pass is recorded per (session, transcript length).
+        mark = (id(ctx), len(messages))
+        if mark != _LAST_MODEL_PASS.get("mark"):
+            try:
+                proposals = rv.llm_candidates(messages)
+            except KeyboardInterrupt:
+                proposals = []
+                _print("  (model proposals skipped)")
+            except Exception as exc:
+                proposals = []
+                _print(f"  (model proposals unavailable: {exc})")
+            _LAST_MODEL_PASS["mark"] = mark
+            if proposals:
+                rv.add_pending(proposals)
+                pending = rv.load_pending()
+    if not pending:
+        if not on_quit:
+            ui.note("nothing to review — no memory candidates are pending.")
+        return
+    ui.section(
+        "memory review",
+        f"{len(pending)} candidate(s) · each is a proposed line for the memory file · "
+        "y keep · n drop · e edit · a keep all · q stop (rest stay pending)",
+    )
+    # Ctrl-C / Ctrl-D at a prompt resolve to the review's own "stop" (the rest stays pending),
+    # never to the empty reply a y/N prompt would read as "drop".
+    result = rv.run_review(pending, ask=lambda prompt: ui.ask(prompt, on_interrupt=rv.INTERRUPT),
+                           emit=_print)
+    rv.save_pending(result["remaining"])
+    kept, dropped, left = len(result["accepted"]), len(result["rejected"]), len(result["remaining"])
+    summary = f"  kept {kept} · dropped {dropped}"
+    if left:
+        summary += f" · {left} still pending (/memory review)"
+    _print(summary)
 
 
 # ── /init ────────────────────────────────────────────────────────────────────────────────────

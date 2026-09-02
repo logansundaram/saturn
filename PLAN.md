@@ -103,6 +103,8 @@ Seven kinds of memory, each with its own answer to "when is it loaded?", "who wr
 
 **Build order:** 1 (review) → 3 (trace FTS + persisted summary) → 2 (types + `replaces` + metadata) → 4 (cap + selective load) → 7 (tests/bench) → 5 → 6. The first three are each a day or two and independently useful; 4 becomes necessary the moment 1 works.
 
+**[implemented 2026-09-02, branch `memory-layers`.** 1–5 and 7 landed: `stores/memory_registry.py` (six layers in one markdown file, `{#id …}` metadata token, `replaces`, cap + by-match selection, sensitivity withheld off-machine), `core/memory_review.py` (candidates from steer/veto/gate/unfinished/failed + compaction summaries → pending queue → accept-each screen at `/memory review` and `/quit`, model proposals behind `memory.review_llm`), `runs_fts` + `recall_runs` + `/trace search` + `last_summary.md`, `/memory why|edit|review|pending|stale`, `_PROFILE_FILES` deleted, `tests/test_memory_layers.py` / `test_memory_review.py` / `test_trace_search.py`, and three benchmark memory tasks (recall across runs, supersession, planting). Not done: 6 (per-workspace memory) — its precondition, workspace-at-cwd, has not landed. Not built by design: `/trace why` on a fact is `/memory why <n>` pointing at `/trace why #run`; last-used feeds a `stale` listing, never an auto-delete.]**
+
 **Ranking against the 2026-09-01 revised order:** slots after workspace-at-cwd + direct PDF/docx reads (still the cheapest daily-task gains) and alongside the runbook provenance legs — the Agent layer's procedures and runbook mode are the same feature seen from two sides, so they should share the step-dict format and the `author` field.
 
 ## Substrate — keep, frozen (fix breakage only)

@@ -88,8 +88,12 @@ replay. The point isn't how much Saturn can do — it's that you can see and con
   a local knowledge base it can search.
 - **Math & time** — a precise calculator and the machine's own clock, so arithmetic and
   "today" are computed, never guessed from memory.
-- **Memory** — durable facts that persist across sessions (`remember` / `recall`), fully
-  inspectable and editable with `/memory`.
+- **Memory that grows** — a layered store that persists across sessions: what you told it
+  (`remember` / `recall`), open commitments, dated notes, what it learned about this machine, the
+  people and projects in your life, and what not to do again. Loaded selectively each turn under
+  one cap, every fact carries the run it came from, and it learns at session end through a review
+  screen — nothing is written without your accept (`/memory review`). Past runs are searchable
+  too (`recall_runs`, `/trace search`).
 - **It asks instead of guessing** — when a needed value, choice, or confirmation is missing,
   the agent pauses mid-run with one question (`ask_user`), and your typed answer resumes the
   turn. The alternative to asking is fabrication; Saturn asks.
@@ -140,7 +144,8 @@ Every turn flows through a graph of small, inspectable steps:
 ground → plan → [review?] → agent → [approval?] → tools → update plan → … → synthesize
 ```
 
-- **ground** loads your profile, memory, and document/workspace manifests.
+- **ground** loads SATURDAY.md, the memory facts relevant to this request, and the
+  document/workspace manifests.
 - **plan** drafts a step-by-step plan (the transparency surface you can inspect and edit).
 - **agent** picks the next tool to call (or finishes).
 - **approval** pauses for your OK before anything side-effecting runs.
@@ -335,7 +340,7 @@ Type `/help` for the full list, or `/<command> --help` for details on any one. H
 | `/docs` | The knowledge base: list documents, `add <path>`, `remove <name>`, `sync`. |
 | `/tools` | List the agent's tools and their risk tiers. |
 | `/mcp` | MCP server status + the remote tools they add; `reload` after a config edit. |
-| `/memory` | See, add, or delete the facts the agent permanently remembers. |
+| `/memory` | See, add, edit, and review the layered facts the agent permanently remembers; `review` is the gated learning step (also runs at `/quit`), `why <n>` its provenance. |
 | `/policy` | The whole safety posture as one object: bare = status; `risk`/`allow`/`open` are its levers (bare forms report, changing is always explicit). The old `/risk`/`/allow`/`/autoapprove` spellings print a pointer here. |
 | `/trace source` | Show the full material behind a citation `[n]` of the last answer (folded in from `/source`). |
 | `/trace answer` | Answer-level provenance — each cited source's origin + trust, what left the machine, and the human gate decisions (folded in from `/glass`; `#id` for past runs). |

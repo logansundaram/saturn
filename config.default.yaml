@@ -133,6 +133,24 @@ rag:
   k: 6
 
 # ---------------------------------------------------------------------------
+# Persistent memory (the layered store behind remember/recall, /memory, and the grounding
+# block — stores/memory_registry.py).
+# ---------------------------------------------------------------------------
+memory:
+  # Character budget for the memory block the grounding node loads every turn (user facts +
+  # open commitments + the recent memo digest, then by-match facts, best match first). Facts
+  # that don't fit are named in the block's trailer, never silently dropped.
+  context_cap: 4000
+  # A by-match fact (agent / entities / negative / older memo) that has not matched a request
+  # in this many days is flagged stale in /memory — flagged, never auto-deleted.
+  stale_days: 90
+  # Whether /memory review (and /quit, when candidates are pending) asks the utility model to
+  # propose facts from the session transcript on top of the mechanical candidates (steer
+  # notes, plan vetoes, gate denials, unfinished steps, the compaction summary). Every
+  # candidate still faces the review screen — nothing is written without your accept.
+  review_llm: true
+
+# ---------------------------------------------------------------------------
 # MCP servers (tools/mcp_client.py) — remote Model Context Protocol tools, registered at startup
 # behind the SAME risk-tier approval gate as local tools. Check status with /mcp; apply config
 # edits with /mcp reload (or restart).

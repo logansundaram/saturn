@@ -46,8 +46,10 @@ The whole product is one loop. Reading it end to end explains 80% of the repo:
    old history and resets per-turn state; `core/mentions.py` expands `@file` attachments.
 2. **The graph runs** — `app/turn.py::run_turn` streams the compiled graph that
    `app/graph.py::build_agent` assembled from `nodes/`:
-   - `nodes/ground.py` builds `state["context"]`: profiles, workspace instructions
-     (SATURDAY.md), durable memory, document manifests, a recap of recent Q&A, attachments.
+   - `nodes/ground.py` builds `state["context"]`: workspace instructions
+     (SATURDAY.md), the memory selection for this request (`stores/memory_registry`: user
+     facts + open commitments + the memo digest always, agent/entities/negative facts by match,
+     one cap), document manifests, a recap of recent Q&A, attachments.
    - `nodes/plan.py` drafts the step list via the hardened structured-output path
      (`core/structured.py`). **The plan is the data bus**: each step is a plain dict that will
      carry its own `result`; the first step with `result: None` is the execution pointer.
@@ -96,6 +98,7 @@ The whole product is one loop. Reading it end to end explains 80% of the repo:
 | `tool_args.py` | Tool-argument recovery: alias coercion onto real schemas, text-format call parsing (small-model tolerance). |
 | `plan_ops.py` | The plan-review seam: pure plan-editor functions + the `PauseController` that `plan_gate` consults at each boundary. |
 | `compaction.py` | The heavier LLM compaction (automatic past threshold) folding old turns into a summary message. |
+| `memory_review.py` | Session-end learning, gated: collects memory candidates from each turn (steer notes, vetoes, gate denials, unfinished steps) and from compaction summaries into a pending queue, optionally asks the utility model for proposals, and runs the accept-each review screen (`/memory review`, `/quit`). Never writes without a y. |
 | `mentions.py` | `@file` expansion into clamped attachment blocks; drag-and-drop path detection. |
 
 ### `nodes/` — the graph, one file per node
@@ -114,7 +117,7 @@ is the *tool-execution node*, not the `tools/` package (see the name-collision t
 | `calculator.py` | `calculate` (whitelisted AST evaluator — never `eval`) + `current_time` (clock grounding). |
 | `web.py` | `web_search` (keyless DuckDuckGo — API-less by design since 2026-07-06), `web_extract` (local trafilatura), `http_request` (the universal REST integration — always gated, request shown in full). |
 | `files.py` | Workspace-sandboxed file tools: read/write/edit/list/search/find. Mutating tools snapshot first for `/undo`. |
-| `knowledge.py` | `search_knowledge_base` (RAG) + `remember`/`recall` (durable memory). |
+| `knowledge.py` | `search_knowledge_base` (RAG) + `remember`/`recall` (the layered memory; `remember` takes a layer and a `replaces=#id`) + `recall_runs` (FTS5 search over past runs). |
 | `shell.py` | `run_shell` — always `destructive` (the human approving the exact command is the boundary), bounded foreground runs only. |
 | `interaction.py` | `ask_user` — pauses the running graph via `interrupt()` to ask the human ONE question; the typed answer resumes as the observation. `read_only` (asking never gates); degrades honestly headless. |
 
@@ -142,8 +145,10 @@ owns every view of a feature.
 
 ### `stores/` — data + persistence
 `rag.py` (corpus sync + vector store), `document_registry.py` (workspace/doc manifests),
-`memory_registry.py` (durable memory file), `snapshots.py` (pre-write snapshots for /undo),
-`trace.py` (the run/event/LLM-call trace DB behind /trace and exports).
+`memory_registry.py` (the layered memory file: six layers, per-fact metadata token, selection
+under a cap), `snapshots.py` (pre-write snapshots for /undo), `trace.py` (the run/event/LLM-call
+trace DB behind /trace and exports, plus the `runs_fts` index behind `recall_runs` / `/trace
+search` and the current-run seam `remember` stamps provenance from).
 
 ### `tui/` — presentation only
 `typeahead.py` (the in-turn console reader: type-ahead queue, Esc steer/pause),

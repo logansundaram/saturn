@@ -8,6 +8,7 @@ the mechanical `_compact_history` that runs every turn, and the heavier LLM-summ
 
 from langchain.messages import HumanMessage, AIMessage
 
+import diag
 from config import get_config
 from core.state import AgentState
 from tui import ui
@@ -64,7 +65,7 @@ def _compact_history(messages: list, keep_recent_turns: int = 1) -> list:
     return kept + messages[boundary:]
 
 
-def _maybe_autocompact(state: AgentState) -> AgentState:
+def _maybe_autocompact(state: AgentState, run_id=None) -> AgentState:
     """If the turn that just finished left the context filled past `runtime.compact_threshold`, fold
     the older turns into an LLM summary (compaction.summarize_messages) so the NEXT turn doesn't
     re-send — and overflow — the window. This is the heavier LLM compaction; the mechanical
@@ -72,7 +73,9 @@ def _maybe_autocompact(state: AgentState) -> AgentState:
 
     Best-effort and non-fatal: disabled via `runtime.auto_compact`, skipped when the fill is unknown,
     and any summary failure leaves the history untouched (summarize_messages swallows it). Mutates +
-    returns `state` so the caller can keep its handle current."""
+    returns `state` so the caller can keep its handle current. `run_id` is the run that just
+    ended — the compaction fires after end_run, so the memory candidates the summary queues
+    carry it explicitly (stores.trace.current_run_id is already None here)."""
     cfg = get_config()
     if not cfg.get("runtime.auto_compact", True):
         return state
@@ -96,6 +99,21 @@ def _maybe_autocompact(state: AgentState) -> AgentState:
             f"({stats['before']}→{stats['after']} messages) — context was "
             f"{used / window * 100:.0f}% full ({_human_int(used)}/{_human_int(window)} tok)."
         )
+        # The summary used to die with the session. Persist it beside the memory file (the
+        # last session's brief) and queue its bullets as memory candidates — proposals for
+        # /memory review, never facts written on their own (core/memory_review).
+        try:
+            from core.compaction import is_summary
+            from core.memory_review import note_compaction
+
+            head = new_msgs[0] if new_msgs else None
+            if head is not None and is_summary(head):
+                queued = note_compaction(str(head.content).split(":", 1)[-1], run_id)
+                if queued:
+                    ui.note(f"{queued} memory candidate(s) from the summary queued — "
+                            "/memory review to keep or drop them.")
+        except Exception as exc:
+            diag.log(f"compaction: memory candidate queue failed: {exc}")
     return state
 
 

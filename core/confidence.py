@@ -59,9 +59,10 @@ _MIN_RUN = 3
 # It is a runner LOAD option, not a sampling option: a request carrying it relaunches
 # llama-server without the spec flags, and the next request WITHOUT it relaunches with them —
 # each time reloading the weights (~25s for the 27b). Sent on the logprob requests only (the
-# first cut), every qwen3.8 turn reloaded at least twice. So the decision is per PROCESS
-# (`runner_options`): grading on -> EVERY chat request carries it, whatever the role; off -> none
-# does. `core.llms` applies it at the one chokepoint all chat traffic passes; the raw
+# first cut), every qwen3.8 turn reloaded at least twice. So the decision is per TOGGLE STATE,
+# never per role (`runner_options`): grading on -> EVERY chat request carries it; off -> none
+# does. It is read live, so `/confidence on|off` mid-session costs exactly one reload (the
+# requests before and after the toggle each agree among themselves). `core.llms` applies it at the one chokepoint all chat traffic passes; the raw
 # continuation stream adds it itself. Cost: none — drafting was SLOWER on an M-series Mac with or
 # without logprobs (7-8.7 vs 12.2-12.5 tok/s in the daemon's own timings), presumably because
 # the verify pass re-scores every token anyway.
@@ -70,7 +71,8 @@ LOGPROB_OPTIONS: dict = {"draft_num_predict": 0}
 
 def runner_options() -> dict:
     """The options EVERY chat request must carry so the daemon's runner is loaded once per
-    process (LOGPROB_OPTIONS while grading is on, nothing when it is off). A new dict."""
+    toggle state (LOGPROB_OPTIONS while grading is on, nothing when it is off) — every request
+    agrees, so the only reload is the one a `/confidence on|off` costs. A new dict."""
     return dict(LOGPROB_OPTIONS) if enabled() else {}
 
 

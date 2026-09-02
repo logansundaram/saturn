@@ -116,6 +116,18 @@ def run_repl() -> None:
         except Exception as exc:
             diag.log(f"first-run sentinel write failed: {exc}")
 
+    # Memory candidates left over from an earlier session (a /quit that skipped the review, a
+    # crash, a bare Ctrl-D) — say so once; the review itself is never forced on launch.
+    try:
+        from core.memory_review import load_pending
+
+        _n_pending = len(load_pending())
+        if _n_pending:
+            ui.note(f"{_n_pending} memory candidate(s) waiting from an earlier session — "
+                    "/memory review to keep or drop them.")
+    except Exception as exc:
+        diag.log(f"memory review: pending check failed: {exc}")
+
     # One input reader for the session. While a turn runs it captures type-ahead so the user can
     # queue follow-up queries / slash commands without waiting (drained between turns below). The Esc
     # key acts on whatever is typed: with text, it's a mid-turn steering correction (injected into
@@ -363,6 +375,15 @@ def run_repl() -> None:
             commands.write_autosave(state)
 
         cmd_ctx.state = state  # keep the command context pointed at the latest state
+        # Learnable signal from this turn (steer notes, vetoes, gate denials, unfinished steps)
+        # becomes memory CANDIDATES in the pending queue — reviewed at /memory review or /quit,
+        # never written on their own (core/memory_review). Best-effort, off the answer path.
+        try:
+            from core.memory_review import add_pending, collect_turn
+
+            add_pending(collect_turn(state, run_id))
+        except Exception as exc:
+            diag.log(f"memory review: candidate collection failed: {exc}")
         # Hand the finished turn to the answer renderer as provenance (the live Glass Box slice):
         # the Sources footer renders trust-colored (local green / network yellow, injection flags
         # named) — the /glass headline facts, native on every answer. Best-effort inside ui.
@@ -418,5 +439,5 @@ def run_repl() -> None:
         # If this turn pushed the context past the compaction threshold, summarize older turns now so
         # the next turn starts with a smaller window (best-effort; see _maybe_autocompact). Runs after
         # the answer is rendered so its LLM call never delays the response the user is waiting on.
-        state = _maybe_autocompact(state)
+        state = _maybe_autocompact(state, run_id)
         cmd_ctx.state = state

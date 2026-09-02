@@ -129,7 +129,7 @@ class AgentState(TypedDict):
     current_query: str
 
     # Grounding string built by the `ground` node (document/workspace manifests
-    # + persistent memory/profiles). Sole writer: grounding_node; downstream
+    # + the persistent-memory selection). Sole writer: grounding_node; downstream
     # nodes read but never mutate it.
     context: str
 

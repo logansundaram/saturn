@@ -453,6 +453,44 @@ COMPACTION_PROMPT = (
     "terse bullet points with no preamble.\n\n=== CONVERSATION ===\n"
 )
 
+# core/memory_review.llm_candidates — the session-end review's model-proposed facts. Proposals
+# only: every item still faces the review screen (never a silent write). Layers mirror
+# stores/memory_registry.LAYERS; the constrained decoder holds the enum.
+MEMORY_REVIEW_PROMPT = (
+    "You are reviewing an assistant conversation to propose DURABLE facts worth remembering for "
+    "future sessions. Propose only what will still be true and useful next week: the user's "
+    "stated preferences, constraints and identity (layer user); people, projects, places, "
+    "documents and the user's shorthand for them (layer entities); to-dos, deadlines and "
+    "promises still open (layer commitments); things the user rejected or does not want asked "
+    "again (layer negative); operating knowledge about this machine or its tools that the "
+    "assistant learned the hard way (layer agent); a dated one-line note of a decision made "
+    "(layer memo). Each fact is one short self-contained sentence in the third person. Do NOT "
+    "propose one-off details, tool outputs, secrets, or anything the user did not say or do. "
+    "Propose nothing if nothing qualifies.\n\n=== CONVERSATION ===\n"
+)
+MEMORY_REVIEW_FORMAT = {
+    "type": "object",
+    "properties": {
+        "facts": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "layer": {"type": "string", "enum": ["user", "entities", "commitments",
+                                                          "negative", "agent", "memo"]},
+                    "text": {"type": "string"},
+                },
+                "required": ["layer", "text"],
+            },
+        }
+    },
+    "required": ["facts"],
+}
+MEMORY_REVIEW_SHAPE = (
+    'Respond with ONLY this JSON: {"facts":[{"layer":"<user|entities|commitments|negative|'
+    'agent|memo>","text":"<one durable fact>"}]} — an empty list when nothing qualifies.'
+)
+
 # (DOC_SUMMARY_PROMPT left 2026-07-16 with the manifest-summary cut: document_registry's
 # manifests carry a mechanical first-line description now, so nothing summarizes untrusted
 # document text through a model at ingest.)

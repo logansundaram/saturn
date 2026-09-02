@@ -58,7 +58,8 @@ Commit messages follow `area: what changed` in lowercase (`gate: …`, `trace: �
 ground → plan → plan_gate → execute → [approval] → tools → update_plan → rectify → (replan | plan_gate | synthesize)
 ```
 
-- `ground` assembles `state["context"]` (profile, SATURDAY.md, memory, manifests, attachments).
+- `ground` assembles `state["context"]` (SATURDAY.md, the memory selection for this request,
+  manifests, attachments).
 - `plan` drafts the step list through `core/structured.py`. `/draft` pre-seeds a user-authored plan and
   the planner call is skipped.
 - `execute` runs ONE step per pass with a curated context (`core/plan_context.py`), never raw history.
@@ -97,6 +98,21 @@ Code references model **roles** (`planner`, `tool_caller`, `synthesizer`, `utili
 template. `config.persist()` does a surgical single-line YAML edit to preserve comments — don't replace
 it with a full dump. `config.py`, `diag.py`, `textutil.py` import nothing project-side and are safe
 leaves; `diag.log()` replaces `print()` in nodes/tools (stdout collides with the rich Live TUI).
+
+### Memory (`stores/memory_registry.py`, `core/memory_review.py`)
+
+One markdown file (`paths.memory`), six `## layer` sections: `user` and `commitments` load every
+turn, the last five `memo` entries too, `agent` / `entities` / `negative` (and any other
+heading a hand edit or `layer=` introduced) only by token match against the request — all under
+`memory.context_cap`, with a trailer naming what didn't load. `sens=` facts are withheld from
+both the block and `recall` when inference is not local.
+Every bullet ends in a `{#id by=user|inferred run=N used=DATE n=K sens=… due=…}` metadata token;
+ids come from the `<!-- next-id -->` high-water mark and are never reused (`replaces=#id`
+supersedes; `/memory why <n>` points at `/trace why #run`). Learning is gated: `core/memory_review`
+queues candidates from each turn's state and from compaction summaries into
+`database/memory/pending_review.json`; `/memory review` (also `/quit`) accepts them one at a
+time. Never write a fact without a user action (a gated `remember`, `/memory add`, or a review
+accept). The benchmark's memory tasks and `tests/test_memory_*.py` pin this.
 
 ### Trust stack (`trust/`)
 

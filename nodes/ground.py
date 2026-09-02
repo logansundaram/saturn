@@ -6,7 +6,7 @@ from langchain.messages import HumanMessage, AIMessage
 from core.state import AgentState
 from config import get_config
 from textutil import clip
-from stores.memory_registry import read_memory_block
+from stores.memory_registry import memory_context, mark_used
 from stores.document_registry import (
     read_workspace_manifest,
     read_documents_manifest,
@@ -17,20 +17,20 @@ Grounding node (re-scoped from the old context_builder).
 
 Its ONLY job is to load the things that are NOT already available to the model:
   - the document + workspace manifests (so the planner knows what docs/files exist),
-  - persistent user/agent profiles (the persistent layer of memory), if present, and
-  - durable facts saved via the `remember` tool (Phase 3 working memory).
+  - the per-workspace SATURDAY.md instructions, and
+  - persistent memory (stores/memory_registry): the user layer + open commitments + the recent
+    memo digest always, agent/entities/negative facts by match against the request, all under
+    one cap. (The old user_profile.md / agent_profile.md files were folded into the user and
+    agent layers 2026-09-02 — nothing ever wrote them.)
 
 It deliberately does NOT include:
   - the tool inventory  -> tools are bound natively via bind_tools; duplicating them as text
                            hurts tool-calling on small local models.
   - the chat history    -> `messages` is already passed to the model directly.
 
-Built once per turn (manifests/profiles are static within a turn). Dynamic information —
+Built once per turn (manifests/memory are static within a turn). Dynamic information —
 tool results — flows through `messages`, never this frozen grounding string.
 """
-
-# Persistent profiles live alongside the workspace. Optional — missing files are fine.
-_PROFILE_FILES = ("user_profile.md", "agent_profile.md")
 
 # Per-workspace instructions (the CLAUDE.md/AGENTS.md equivalent): a SATURDAY.md at the workspace
 # root is loaded into context EVERY turn, so the user can durably steer how the agent treats this
@@ -44,8 +44,8 @@ def _read_instructions() -> str:
     path = get_config().path("workspace") / _INSTRUCTIONS_FILE
     if not path.exists():
         return ""
-    # errors="replace" for the same reason as the profiles: a hand-edited file with a stray
-    # non-UTF-8 byte must not fail every turn at the first node.
+    # errors="replace": a hand-edited file with a stray non-UTF-8 byte must not fail every turn
+    # at the first node.
     text = path.read_text(encoding="utf-8", errors="replace").strip()
     if len(text) > _INSTRUCTIONS_CAP:
         text = text[:_INSTRUCTIONS_CAP] + "\n… (SATURDAY.md truncated — keep it concise)"
@@ -103,28 +103,10 @@ def _recent_exchanges(messages: list) -> str:
     return "\n".join(lines)
 
 
-def _read_profiles() -> str:
-    workspace = get_config().path("workspace")
-    chunks = []
-    for name in _PROFILE_FILES:
-        path = workspace / name
-        if path.exists():
-            # errors="replace": a hand-edited cp1252 profile must not raise here — grounding is the
-            # first node, so an uncaught decode error fails every turn with no in-app recovery.
-            text = path.read_text(encoding="utf-8", errors="replace").strip()
-            if text:
-                chunks.append(text)
-    return "\n\n".join(chunks)
-
-
 def grounding_node(state: AgentState) -> dict:
     start = time.perf_counter()
 
     sections = ["## Grounding context"]
-
-    profiles = _read_profiles()
-    if profiles:
-        sections.append("### Profiles\n" + profiles)
 
     instructions = _read_instructions()
     if instructions:
@@ -133,11 +115,24 @@ def grounding_node(state: AgentState) -> dict:
             "for this workspace; follow it)\n" + instructions
         )
 
-    memory = read_memory_block()
+    # Selected against THIS request (memory_registry.select_for_context): the user layer, open
+    # commitments and the recent memo digest always; agent/entities/negative facts only when they
+    # share tokens with the query — under one cap, with a trailer naming what didn't load.
+    # /trace context shows the exact block, so selection stays auditable. The by-match facts
+    # and the memo digest that loaded get their last-used stamped (the expiry signal /memory
+    # flags stale on) — the one read-path write, and it touches no fact text; best-effort — a
+    # stamp failure must never fail the first node of every turn.
+    memory, matched_ids = memory_context(state.get("current_query", ""))
     if memory:
         sections.append(
-            "### Persistent memory (facts the user asked me to remember)\n" + memory
+            "### Persistent memory (what the user asked me to remember and what I learned; "
+            "#id lets `remember(..., replaces=<id>)` correct a fact)\n" + memory
         )
+        if matched_ids:
+            try:
+                mark_used(matched_ids)
+            except Exception as exc:
+                diag.log(f"grounding_node : memory last-used stamp failed: {exc}")
 
     recap = _recent_exchanges(state.get("messages", []))
     if recap:

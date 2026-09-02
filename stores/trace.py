@@ -92,6 +92,149 @@ CREATE INDEX IF NOT EXISTS ix_events_run ON events(run_id);
 CREATE INDEX IF NOT EXISTS ix_llm_calls_run ON llm_calls(run_id);
 """
 
+# Full-text index over the runs the agent may search (`recall_runs`, `/trace search`). SQLite's
+# FTS5 ships in every CPython wheel we target, but a distro build can omit it, so this is applied
+# separately from _SCHEMA and its absence degrades to a LIKE scan (search_runs) — never a failed
+# tracer. External-content table: the runs row stays the record; the index is rebuilt from it
+# when first created, and the triggers keep it current from then on.
+_FTS_SCHEMA = """
+CREATE VIRTUAL TABLE IF NOT EXISTS runs_fts USING fts5(
+    query, response, content='runs', content_rowid='run_id'
+);
+CREATE TRIGGER IF NOT EXISTS runs_fts_ai AFTER INSERT ON runs BEGIN
+  INSERT INTO runs_fts(rowid, query, response) VALUES (new.run_id, new.query, new.response);
+END;
+CREATE TRIGGER IF NOT EXISTS runs_fts_ad AFTER DELETE ON runs BEGIN
+  INSERT INTO runs_fts(runs_fts, rowid, query, response)
+    VALUES ('delete', old.run_id, old.query, old.response);
+END;
+CREATE TRIGGER IF NOT EXISTS runs_fts_au AFTER UPDATE ON runs BEGIN
+  INSERT INTO runs_fts(runs_fts, rowid, query, response)
+    VALUES ('delete', old.run_id, old.query, old.response);
+  INSERT INTO runs_fts(rowid, query, response) VALUES (new.run_id, new.query, new.response);
+END;
+"""
+
+
+_FTS_TRIGGERS = ("runs_fts_ai", "runs_fts_ad", "runs_fts_au")
+
+
+def ensure_fts(conn) -> bool:
+    """Create the runs full-text index (and backfill it from the existing rows when the table or
+    its triggers were missing). Returns True when FTS5 is usable on this connection. Best-effort:
+    a build without FTS5 returns False and search_runs falls back to LIKE.
+
+    The triggers are the hazard: they live in the DB file, and an INSERT on `runs` compiles them
+    — on a build WITHOUT fts5 a trigger left behind by a build WITH it fails every start_run with
+    "no such module: fts5". So when the probe fails, the triggers are dropped (plain DDL, no
+    module needed) and the tracer keeps recording; the next fts5-capable open recreates them and
+    rebuilds the index from the rows written meanwhile."""
+    try:
+        have = {row[0] for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE name IN (?, ?, ?, ?)",
+            ("runs_fts", *_FTS_TRIGGERS)).fetchall()}
+        # Probe the module before touching the schema: a virtual table whose module is missing
+        # still shows in sqlite_master, and the CREATE ... IF NOT EXISTS below would not notice.
+        conn.execute("SELECT count(*) FROM runs_fts" if "runs_fts" in have
+                     else "CREATE VIRTUAL TABLE IF NOT EXISTS runs_fts USING fts5("
+                          "query, response, content='runs', content_rowid='run_id')")
+        conn.executescript(_FTS_SCHEMA)
+        if not have.issuperset({"runs_fts", *_FTS_TRIGGERS}):
+            conn.execute("INSERT INTO runs_fts(runs_fts) VALUES ('rebuild')")
+        conn.commit()
+        return True
+    except Exception:
+        try:
+            for trig in _FTS_TRIGGERS:
+                conn.execute(f"DROP TRIGGER IF EXISTS {trig}")
+            conn.commit()
+        except Exception:
+            pass
+        return False
+
+
+# Filler the natural-language queries the tool is advertised for carry ("what did we do last
+# week"): dropped before matching so they never veto a hit. A query that is ALL filler has
+# nothing to search for and matches nothing (never a false hit on "what").
+_SEARCH_STOPWORDS = frozenset("""
+the and for with that this from what when where which who how are was were will would can
+could should did does done do into onto about after before over under then than them they
+there here have has had not but all any some our your their its his her you we us me my it
+is be been being on in at to of by or as an a if so up out no yes please make give find show
+tell let get use using run take need want like just also last week month ago yesterday today
+""".split())
+
+
+def _search_terms(text: str) -> list[str]:
+    import re
+
+    words = [t for t in re.findall(r"[\w'\-]+", str(text or "")) if len(t) > 1]
+    return [t for t in words if t.lower() not in _SEARCH_STOPWORDS][:12]
+
+
+def search_runs(db_path, text: str, limit: int = 5) -> list[dict]:
+    """Past runs whose query or recorded answer matches `text`, newest-relevant first:
+    `[{run_id, started_at, status, query, response}]`. Stopwords are dropped, then every
+    content term must match (AND); when nothing does, runs matching ANY term are returned
+    instead, best match first — so "the report we made Monday" still finds the report. FTS5
+    (bm25-ranked) when the index exists, else a LIKE scan. Terms are quoted individually so user
+    text can never inject FTS syntax, and `%`/`_` are escaped in the LIKE path. Read-side helper
+    (its own short-lived connection) — shared by the `recall_runs` tool and `/trace search`."""
+    terms = _search_terms(text)
+    if not terms:
+        return []
+    limit = max(1, min(int(limit or 5), 50))
+    conn = sqlite3.connect(str(db_path))
+    try:
+        rows = None
+        if ensure_fts(conn):
+            quoted = ['"' + t.replace('"', '""') + '"' for t in terms]
+            try:
+                for match in (" ".join(quoted), " OR ".join(quoted)):
+                    rows = conn.execute(
+                        "SELECT r.run_id, r.started_at, r.status, r.query, r.response "
+                        "FROM runs_fts f JOIN runs r ON r.run_id = f.rowid "
+                        "WHERE runs_fts MATCH ? ORDER BY bm25(runs_fts), r.run_id DESC LIMIT ?",
+                        (match, limit),
+                    ).fetchall()
+                    if rows or len(quoted) == 1:
+                        break
+            except sqlite3.Error:
+                rows = None
+        if rows is None:
+            clause = ("(LOWER(COALESCE(query,'')) LIKE ? ESCAPE '\\' "
+                      "OR LOWER(COALESCE(response,'')) LIKE ? ESCAPE '\\')")
+            params: list = []
+            for t in terms:
+                like = "%" + t.lower().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+                params += [like, like]
+            for joiner in (" AND ", " OR "):
+                rows = conn.execute(
+                    f"SELECT run_id, started_at, status, query, response FROM runs "
+                    f"WHERE {joiner.join(clause for _ in terms)} ORDER BY run_id DESC LIMIT ?",
+                    (*params, limit),
+                ).fetchall()
+                if rows or len(terms) == 1:
+                    break
+    finally:
+        conn.close()
+    return [
+        {"run_id": rid, "started_at": started, "status": status, "query": query or "",
+         "response": response or ""}
+        for rid, started, status, query, response in rows
+    ]
+
+
+# The run the live turn is recording into, for provenance stamps made from inside a tool
+# (`remember` writes `run=<id>` on the fact it stores, so `/memory why` can point at the run).
+# Set by start_run, cleared by end_run; None between turns and when the trace could not open a
+# run (the -1 sentinel never leaks as a provenance id).
+_CURRENT_RUN_ID = None
+
+
+def current_run_id():
+    return _CURRENT_RUN_ID
+
 
 # How much of each message / delta the trace retains. These bound the durable execution log the
 # /trace replay reads, so they're generous: the replay is the full-fidelity record (reasoning +
@@ -260,6 +403,7 @@ class Tracer:
             pass
         self.conn.executescript(_SCHEMA)
         self.conn.commit()
+        ensure_fts(self.conn)  # best-effort; absent FTS5 degrades to LIKE
         self._seq = 0
         self._llm_seq = 0
         self._broken = False  # one-shot circuit breaker — see _trip
@@ -285,6 +429,7 @@ class Tracer:
         self._broken = True
 
     def start_run(self, thread_id: str, query: str) -> int:
+        global _CURRENT_RUN_ID
         self._seq = 0
         self._llm_seq = 0
         self._broken = False  # re-arm the breaker: one retry per turn, never a permanently dead trace
@@ -294,9 +439,11 @@ class Tracer:
                 (thread_id, query, datetime.now().isoformat(), "running"),
             )
             self.conn.commit()
+            _CURRENT_RUN_ID = cur.lastrowid
             return cur.lastrowid
         except Exception as exc:
             self._trip("start_run", exc)
+            _CURRENT_RUN_ID = None
             # Sentinel: log_event/end_run against -1 are harmless orphan writes / no-op updates
             # (and the breaker is tripped anyway). Headless --export fails loudly on its own path.
             return -1
@@ -343,6 +490,8 @@ class Tracer:
         return LLMTraceHandler(self, run_id)
 
     def end_run(self, run_id: int, status: str, response: str = "") -> None:
+        global _CURRENT_RUN_ID
+        _CURRENT_RUN_ID = None
         text = response or ""
         # The recorded answer is capped like a delta (_DATA_CAP — it IS the headline record every
         # after-the-fact surface reads: show_run, the export, /glass #id's reconstruction).

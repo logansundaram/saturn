@@ -18,10 +18,14 @@ def test_multiline_fact_collapses_to_one_bullet(isolated_paths):
     assert mr._fact_text(facts[0]) == "prefers terse answers and bullet lists with tabs"
     # The grounding block carries the WHOLE fact, not just the first physical line.
     assert "with tabs" in mr.read_memory_block()
-    # No stray non-bullet continuation lines in the file itself.
+    # No stray non-bullet continuation lines in the file itself — every line after the header is
+    # a `## layer` heading, a layer blurb comment, or one bullet.
     raw = mr._read_raw()
     body = raw.split(mr._HEADER, 1)[-1]
-    assert all(line.startswith("- ") for line in body.splitlines() if line.strip())
+    assert all(
+        line.startswith(("- ", "## ", "<!--"))
+        for line in body.splitlines() if line.strip()
+    )
 
 
 def test_remove_memory_preserves_other_facts_byte_complete(isolated_paths):

@@ -9,6 +9,37 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
 
 ### Added
 
+- **Memory grows, gated.** The flat `remember` notepad became a layered store: `user`
+  (preferences, identity), `commitments` (open items with a due date), `memo` (dated notes),
+  `agent` (what it learned about this machine and its tools), `entities` (people, projects, your
+  shorthand), `negative` (what not to do again). User facts, open commitments and the recent
+  memo digest load every turn; the rest load only when they match the request, all under one cap
+  (`memory.context_cap`) with a trailer naming what didn't load — `/trace context` shows the exact
+  block. Every fact carries provenance (the run it came from, who said it, last use,
+  confirmations, a sensitivity mark that withholds it from remote inference); `remember` takes
+  a `layer` and a `replaces=#id` so a correction retires the old fact instead of contradicting
+  it. Learning happens at `/memory review` (and `/quit`): your mid-task corrections, plan-review
+  vetoes, gate denials, unfinished steps and each compaction summary queue as candidates, the
+  model can add proposals from the transcript, and each is shown as a diff line and kept only
+  on your y — never a silent write. `/memory` gained `list <layer>`, `add --layer/--replaces`,
+  `edit`, `why`, `review`, `pending`, `stale`, `done`. The old file format migrates on its
+  first write. The gate frame for `remember` names the session grant (`/policy risk remember
+  read_only`) instead of inviting a lower tier.
+- **Past runs are searchable.** An FTS5 index over every recorded run's request and answer
+  (no embedder): the `recall_runs` tool for the agent ("what did we do last week"), `/trace
+  search <words>` for you. The last compaction summary is persisted as
+  `database/memory/last_summary.md`.
+- **Memory knobs and escape hatches.** `memory.stale_days` (default 90) sets when an unmatched
+  by-match fact is flagged stale in `/memory`; `memory.review_llm` (default true) decides
+  whether the review also asks the utility model for proposals; `/quit --no-review` exits
+  without the review; `/memory add --sens <mark>` (and `remember(sensitivity=…)`) marks a fact
+  sensitive so it is withheld — by the grounding block AND by `recall` — whenever inference is
+  not local. `/trace search` and `recall_runs` drop stopwords and fall back to any-term matches,
+  so "the report we made Monday" finds the report.
+- **Benchmark memory tasks.** `benchmark.py` runs three tasks over an isolated memory file:
+  recall in a fresh run, supersession of a corrected fact, and a planted corpus document that
+  tries to store a memory (must face the gate).
+
 - **`/models` is now the model page — the hardware scan folded in.** It probes the chip, cores,
   RAM and NVIDIA VRAM once at launch, works out the memory the model runner can address (Apple
   unified memory at ~75% of RAM; a card's full VRAM; half of RAM and capped at 9b with no
@@ -25,6 +56,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
   launch right before `/config setup`; `/models list` renders without prompting, `/models rescan`
   re-reads the hardware, `/scan` is an alias. The verbatim `ollama list` view and the two-step
   role picker are gone — the direct binds (`/models all|<role>|embedder|tier …`) remain.
+
+### Removed
+
+- The never-written `user_profile.md` / `agent_profile.md` workspace files are no longer read
+  by the grounding node — the `user` and `agent` memory layers replace them.
 
 ### Changed
 

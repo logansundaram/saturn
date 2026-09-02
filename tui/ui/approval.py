@@ -516,6 +516,22 @@ def _render_call(tc: dict, quarantined: bool = False, position=None) -> None:
             _console.print(hrow)
         else:
             print(f"  ┃     -> {hint}")
+    if name == "remember":
+        # Memory is a persistence channel: a stored fact reads as trusted context on every
+        # future turn, which is exactly why learning faces the gate. Name what each key really
+        # does — `y` is this call only; `a` is the always-allow grant whose LIFETIME is
+        # runtime.grant_scope (the same source _always_allow discloses) — instead of tempting
+        # the user to lower the tier.
+        try:
+            from trust import policy
+
+            lifetime = {"task": "for the rest of this turn", "session": "for this session",
+                        "persist": "persistently"}[policy.default_grant_scope()]
+        except Exception:
+            lifetime = "per runtime.grant_scope"
+        _frame_note("a stored fact rides every future turn's context — keep the gate; "
+                    f"`y` approves this call only, `a` always-allows remember {lifetime} "
+                    "(undo: /policy risk remember reset)", style=_DIM)
 
 
 # How many flagged observations the banner names before it summarizes the rest. Matching the

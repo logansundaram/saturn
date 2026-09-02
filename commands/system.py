@@ -126,11 +126,32 @@ def _help(ctx, args):
 Ends the interactive session and returns you to the shell. In-process conversation
 memory is discarded; the trace DB and RAG corpus on disk are untouched.
 
+If this session queued memory candidates (corrections, vetoes, gate denials, unfinished
+steps, a compaction summary), the /memory review screen runs first: each proposed fact is
+shown as a diff against the memory file and kept only if you say so; q leaves the rest
+pending for the next launch. `/quit --no-review` skips straight to the exit.
+
 Example:
   /quit
+  /quit --no-review
 """,
 )
 def _quit(ctx, args):
+    # Session-end learning, gated: candidates the session queued (steer notes, vetoes, gate
+    # denials, unfinished steps, the compaction summary) are reviewed NOW, one accept at a
+    # time — or left pending for the next launch if the user answers q / isn't on a TTY.
+    # `/quit --no-review` skips it. Best-effort: a review failure must never block the exit.
+    if not any(a.lower() in ("--no-review", "-n", "skip") for a in args):
+        try:
+            from commands.knowledge import review_pending
+
+            review_pending(ctx, on_quit=True)
+        except KeyboardInterrupt:
+            _print("  review interrupted — candidates stay pending (/memory review next launch).")
+        except Exception as exc:
+            import diag
+
+            diag.log(f"/quit: memory review failed: {exc}")
     if write_autosave(ctx.state):
         _print("  session autosaved — type /resume next launch to continue.")
     ctx.should_quit = True

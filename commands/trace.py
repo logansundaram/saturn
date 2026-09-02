@@ -577,7 +577,7 @@ def _answer(ctx, args):
     "trace",
     "Observability hub: drill-down of recorded runs + live trace control.",
     usage="/trace [#id | -l [n] | why | answer | source | invoke | context"
-          " | export | replay | on|off|full]",
+          " | search <words> | export | replay | on|off|full]",
     details="""
 Expands one recorded run from the trace database (database/db.sqlite) into the full replay the
 live trace abbreviates: the query, every node with its step time and metrics, the plan as it
@@ -616,6 +616,11 @@ Subviews:
                        the privacy story ("see literally what your machine sent the model").
                        --node <name> focuses one node so the per-step context is diffable;
                        --preview clips; -l lists runs that have LLM calls.
+  /trace search <words> full-text search over every recorded run's request and answer (SQLite
+                       FTS5 over the runs table — no embedder): "what did we do last week",
+                       the report from Monday. Each hit names its run id for /trace #id, /trace
+                       why #id, or /trace export. The agent has the same index as the
+                       `recall_runs` tool. -l <n> caps the hits (default 8).
   /trace export [#id]  write a run's complete record (events + tool I/O + LLM calls) to a
                        self-contained replayable JSON file under logging/exports/; -o <path>
                        to choose the destination. The record you can hand to someone else
@@ -646,6 +651,8 @@ def _trace(ctx, args):
         return _show_llm_calls(ctx, args[1:])
     if args and args[0].lower() in ("context", "--context", "ctx", "prompt", "prompts"):
         return _show_llm_context(ctx, args[1:])
+    if args and args[0].lower() in ("search", "--search", "find", "grep"):
+        return _search(ctx, args[1:])
     if args and args[0].lower() in ("export", "--export"):
         return _export(ctx, args[1:])
     if args and args[0].lower() in ("replay", "--replay"):
@@ -687,6 +694,39 @@ def _trace(ctx, args):
         ).fetchall()
 
     ui.show_run(run, events)
+
+
+def _search(ctx, args):
+    """`/trace search <words>` — full-text search over recorded runs (stores/trace.search_runs:
+    FTS5 when the build has it, LIKE otherwise). Hits name their run id so every other /trace
+    view can drill in."""
+    from stores.trace import search_runs
+
+    limit = 8
+    words = []
+    it = iter(args)
+    for a in it:
+        if a.lower() in ("-l", "--limit", "-n"):
+            nxt = next(it, None)
+            if nxt and str(nxt).isdigit():
+                limit = max(1, int(nxt))
+            continue
+        words.append(a)
+    text = " ".join(words).strip()
+    if not text:
+        _print("  usage: /trace search <words>   [-l <n>]")
+        return
+    rows = search_runs(ctx.db_path, text, limit=limit)
+    if not rows:
+        _print(f"  no recorded run matches {text!r}")
+        return
+    _print(f"  {len(rows)} run(s) matching {text!r} — best match first  (/trace #<id> expands one):")
+    for r in rows:
+        when = str(r.get("started_at") or "")[:16].replace("T", " ")
+        _print(f"    #{r['run_id']:<4} {when}  {str(r.get('status')):<7} {_clip(r['query'], 60)}")
+        answer = " ".join(str(r.get("response") or "").split())
+        if answer:
+            _print(f"          ↳ {_clip(answer, 110)}")
 
 
 def _show_llm_calls(ctx, args):

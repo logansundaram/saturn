@@ -190,6 +190,18 @@ class TestMeasure:
         assert daemon["kwargs"][0]["logprobs"] is True
         assert daemon["kwargs"][0]["reasoning"] is False   # a rationale is not answer prose
 
+    def test_it_turns_speculative_decoding_off_for_the_measurement(self, daemon):
+        """Ollama 0.33 runs qwen3.8 under MTP speculative decoding and reports one logprob per
+        draft batch (~11 tokens over 55 prompts, under MIN_TOKENS — the 2026-08-16 "first chunk
+        only" reading). `draft_num_predict: 0` rides the options, and num_ctx must survive it:
+        an invoke-time options dict REPLACES the constructor's."""
+        daemon["chunks"] = self._CHUNKS
+        calibration.measure("fake:1b", ["q"])
+
+        opts = daemon["kwargs"][0]["options"]
+        assert opts["draft_num_predict"] == 0
+        assert opts.get("num_ctx", 0) > 0 and "num_predict" in opts
+
     def test_the_air_gap_refuses_an_off_machine_daemon(self, monkeypatch):
         """The measurement streams through core.llms' Ollama boundary; with the seal on and
         OLLAMA_HOST off-machine it must refuse BEFORE building a model, not leak the prompts."""

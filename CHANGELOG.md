@@ -61,6 +61,15 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
 
 ### Fixed
 
+- **Confidence coloring now measures qwen3.8:27b for real.** Ollama 0.33 runs qwen3.8 under
+  multi-token-prediction speculative decoding and reports a logprob only for the first token of
+  each draft batch, which is what the earlier "logprobs on the first chunk only" reading was: the
+  answer overlay for that model was all but empty, and the calibration utility could not measure
+  it (its shipped row was an estimate inherited from qwen3.6:27b). Every request that asks for
+  logprobs — the streamed answer, the interrupt-and-correct continuation, and calibration — now
+  turns drafting off for that request (`draft_num_predict: 0`; models without a drafter and older
+  daemons are unaffected), and the shipped table carries a measured qwen3.8:27b row. No speed
+  cost was measured: with logprobs on, drafting was slower.
 - **`/trace why` no longer mis-renders an answer whose prose contains the word "Sources:".** The
   cited-sources footer is now recognized only in its exact produced shape, through the one shared
   parser every footer reader uses (the trust-colored answer footer and `/trace answer` included);

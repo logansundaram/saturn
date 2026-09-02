@@ -115,13 +115,20 @@ class TestShippedProvenanceIsHonest:
         assert "737" in blob and "55" in blob and "2026-08-16" in blob
         assert "estimate" not in blob.lower()
 
-    def test_the_shipped_qwen38_row_is_disclosed_as_an_estimate(self, ctx, printed, store):
-        """The one shipped estimate today — pinned so a later measurement (or a careless edit)
-        has to update this test deliberately."""
+    def test_the_shipped_qwen38_row_is_a_measurement(self, ctx, printed, store):
+        """qwen3.8:27b shipped as an estimate (inherited from qwen3.6:27b) from 2026-08-16 until
+        2026-09-02, when `core.confidence.LOGPROB_OPTIONS` turned the daemon's speculative
+        decoding off per request and it measured for real. Pinned so a regression to the
+        estimate (a careless table edit, a re-run that scored too few tokens) is deliberate."""
+        from core import calibration, confidence_calibration
+
+        rec = confidence_calibration.CALIBRATION["qwen3.8:27b"]
+        assert rec.get("source") is None and rec["tokens"] >= calibration.MIN_TOKENS
         _run(ctx, [])                       # the store fixture binds qwen3.8:27b
         blob = "\n".join(printed)
-        assert "estimate" in blob.lower()
-        assert "/confidence tune" in blob
+        assert "measured" in blob.lower()
+        assert str(rec["tokens"]) in blob and rec["at"] in blob
+        assert "estimate" not in blob.lower()
 
 
 class TestToggle:

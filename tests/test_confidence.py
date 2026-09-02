@@ -605,3 +605,54 @@ class TestOverlayResolutionOrder:
         bound._reset_cache()
         shipped = confidence_calibration.CALIBRATION["qwen3.8:27b"]["enter"]
         assert confidence.threshold() == pytest.approx(shipped)
+
+
+# ── request_options: what every logprob-carrying request must add ─────────────────────────────
+
+def test_request_options_adds_draft_off_and_keeps_the_callers_keys():
+    """Speculative decoding (qwen3.8 under Ollama 0.33) yields one logprob per draft batch, so a
+    logprob request turns drafting off — WITHOUT dropping num_ctx (an invoke-time options dict
+    replaces the constructor's) and without mutating the caller's dict."""
+    from core import confidence
+
+    mine = {"temperature": 0.7, "num_ctx": 4096}
+    out = confidence.request_options(mine)
+
+    assert out == {"temperature": 0.7, "num_ctx": 4096, "draft_num_predict": 0}
+    assert mine == {"temperature": 0.7, "num_ctx": 4096}
+    assert confidence.request_options(None) == confidence.LOGPROB_OPTIONS
+    assert confidence.request_options(None) is not confidence.LOGPROB_OPTIONS
+
+
+
+def test_synthesizer_stream_turns_drafting_off_only_when_grading_is_on(monkeypatch):
+    """The first-pass answer stream is the runtime consumer of the calibrated thresholds: with
+    confidence on it asks for logprobs AND `draft_num_predict: 0` (a speculatively-decoded model
+    reports one logprob per draft batch otherwise), keeping num_ctx; with it off it adds neither."""
+    from types import SimpleNamespace
+
+    from core import confidence
+    from nodes import synthesize as sy
+
+    seen = []
+
+    def fake_stream(model, llm_input, *, tag="", **kwargs):
+        seen.append(kwargs)
+        yield SimpleNamespace(content="Paris.", response_metadata={}, usage_metadata=None)
+
+    monkeypatch.setattr(sy, "get_model", lambda role: object())
+    monkeypatch.setattr(sy, "llm_stream", fake_stream)
+    monkeypatch.setattr(sy, "_model_tag", lambda *a, **k: "tag")
+    monkeypatch.setattr(sy, "_invoke_kwargs", lambda *a, **k: {
+        "options": {"temperature": 0.7, "num_ctx": 4096, "num_predict": 64}, "reasoning": False})
+
+    monkeypatch.setattr(confidence, "enabled", lambda: True)
+    buf, frozen, _meta, _usage = sy._stream_first_pass([], None)
+    monkeypatch.setattr(confidence, "enabled", lambda: False)
+    sy._stream_first_pass([], None)
+
+    on, off = seen
+    assert buf["text"] == "Paris." and not frozen
+    assert on["logprobs"] is True and on["options"]["draft_num_predict"] == 0
+    assert on["options"]["num_ctx"] == 4096 and on["options"]["num_predict"] == 64
+    assert "logprobs" not in off and "draft_num_predict" not in off["options"]

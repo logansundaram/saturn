@@ -108,8 +108,11 @@ def measure(tag: str, prompts: "list | None" = None, on_progress=None) -> dict:
     model = llms._build("ollama", tag)
     cfg = get_config()
     kwargs = {
-        "options": {"temperature": 0.7, "num_ctx": cfg.num_ctx_for(tag),
-                    "num_predict": num_predict("answer")},
+        # request_options: drafting off, or a speculatively-decoded model (qwen3.8 under
+        # Ollama 0.33) reports one logprob per draft batch and MIN_TOKENS refuses the run.
+        "options": confidence.request_options({
+            "temperature": 0.7, "num_ctx": cfg.num_ctx_for(tag),
+            "num_predict": num_predict("answer")}),
         "reasoning": False,
         "logprobs": True,
     }

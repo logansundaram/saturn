@@ -88,9 +88,9 @@ def main(argv=None) -> int:
     ap.add_argument("--inherit", nargs="*", default=[], metavar="TAG=FROM",
                     help="record TAG with FROM's thresholds, marked as an ESTIMATE "
                          "(source: 'estimated', not a measurement — for a model the daemon "
-                         "returns no per-token logprobs for yet, e.g. qwen3.8 on Ollama 0.32, "
-                         "which emits logprobs on the first chunk only); a later measured run "
-                         "overwrites it")
+                         "returns no per-token logprobs for; qwen3.8 was one until 2026-09-02, "
+                         "when core.confidence.LOGPROB_OPTIONS turned its speculative decoding "
+                         "off per request); a later measured run overwrites it")
     args = ap.parse_args(argv)
 
     from core import confidence_calibration as current

@@ -160,8 +160,11 @@ def continue_from(model: str, messages: list, edited_prefix: str,
     if confidence.enabled():
         # Token-confidence grading: per-token logprobs ride each streamed chunk
         # (ContinuationStream.last_logprobs). Absent support the daemon just omits the field —
-        # the overlay stays empty, the answer renders unmarked.
+        # the overlay stays empty, the answer renders unmarked. Drafting off with it
+        # (confidence.LOGPROB_OPTIONS) — see there — or the daemon reports one logprob per
+        # speculative batch.
         body["logprobs"] = True
+        opts.update(confidence.LOGPROB_OPTIONS)
     t = get_config().llm_timeout
     timeout = httpx.Timeout(t, connect=min(10.0, t)) if t else None
     return ContinuationStream(f"{_endpoint()}/api/generate", body, timeout)

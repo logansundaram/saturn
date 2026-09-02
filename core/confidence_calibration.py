@@ -13,9 +13,11 @@ an order of magnitude across model sizes.
 MEASURED vs ESTIMATED. A row is normally a MEASUREMENT: `tokens`/`prompts` record the sample it
 came from and `at` when it was taken. A row may instead be an ESTIMATE, marked by
 `source: 'estimated'` plus an `estimated_from` string naming exactly what it was derived from —
-used only when the daemon cannot measure a shipped model at all (today: Ollama 0.32.13 returns
-per-token logprobs for qwen3.8 on the first chunk only, so `qwen3.8:27b` scores ~11 tokens and
-`core.calibration.MIN_TOKENS` correctly refuses to record). An estimate is a best guess, never a
+used only when the daemon cannot measure a shipped model at all (`qwen3.8:27b` was one from
+2026-08-16 to 2026-09-02: Ollama ran it under speculative decoding and reported one logprob per
+draft batch, ~11 tokens a run, so `core.calibration.MIN_TOKENS` correctly refused to record —
+until `core.confidence.LOGPROB_OPTIONS` turned drafting off per request and it measured for
+real). An estimate is a best guess, never a
 per-model claim, and every readout that shows it must say so: `/confidence` names it as estimated
 and points at `/confidence tune`, which replaces it with a real measurement (into the user overlay,
 core/confidence_store) the moment the daemon supports the model. Never present an estimated row as
@@ -56,14 +58,8 @@ CALIBRATION: dict = {'qwen3.5:0.8b': {'at': '2026-08-16',
                  'exit': 0.6369,
                  'prompts': 55,
                  'tokens': 1142},
- 'qwen3.8:27b': {'at': '2026-08-16',
-                 'enter': 0.2229,
-                 'exit': 0.4247,
-                 'estimated_from': "qwen3.6:27b, measured 2026-08-16 over 1279 tokens — a "
-                                   "27.8B sibling of this 27.3B model. Ollama 0.32.13 returns "
-                                   "per-token logprobs for qwen3.8 on the first chunk only, so "
-                                   "this model cannot be measured directly yet; /confidence tune "
-                                   "replaces this with a real measurement once it can.",
-                 'prompts': 0,
-                 'source': 'estimated',
-                 'tokens': 0}}
+ 'qwen3.8:27b': {'at': '2026-09-02',
+                 'enter': 0.257,
+                 'exit': 0.425,
+                 'prompts': 55,
+                 'tokens': 961}}

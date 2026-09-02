@@ -167,6 +167,22 @@ def test_continue_from_assembles_a_raw_request_without_touching_the_network():
     stream.close()
 
 
+def test_continue_from_asks_for_logprobs_with_drafting_off_only_when_grading_is_on(monkeypatch):
+    """With confidence on, the raw request carries `logprobs` AND `draft_num_predict: 0` (a
+    speculatively-decoded model reports one logprob per draft batch otherwise); with it off,
+    neither rides — nobody asks, the overlay stays empty at the source."""
+    from core import confidence
+
+    monkeypatch.setattr(confidence, "enabled", lambda: True)
+    on = continuation.continue_from("qwen3.6:27b", [("user", "hi")], "half")._body
+    monkeypatch.setattr(confidence, "enabled", lambda: False)
+    off = continuation.continue_from("qwen3.6:27b", [("user", "hi")], "half")._body
+
+    assert on["logprobs"] is True and on["options"]["draft_num_predict"] == 0
+    assert on["options"]["num_ctx"] > 0
+    assert "logprobs" not in off and "draft_num_predict" not in off["options"]
+
+
 def test_continue_from_refuses_unsupported_models():
     with pytest.raises(chat_template.UnsupportedModel):
         continuation.continue_from("mystery-llm:7b", [("user", "hi")], "prefix")

@@ -46,6 +46,25 @@ _DEFAULT_THRESHOLD = 0.20
 # an open word choice; three strung together is the drifting-generation signature.
 _MIN_RUN = 3
 
+# Options that must ride EVERY request that asks for logprobs (2026-09-02). Ollama 0.33.2 runs
+# qwen3.8 under multi-token-prediction speculative decoding (`llama-server --spec-type draft-mtp
+# --spec-draft-backend-sampling`, see ~/.ollama/logs/server.log), and llama-server reports a
+# logprob only for the target-sampled token of each draft batch — every draft-ACCEPTED token
+# arrives unmeasured, so a 40-token qwen3.8:27b answer carried exactly ONE entry on every API
+# surface (/api/chat, /api/generate, /v1, streamed or not), while qwen3.5 and qwen3-vl (no
+# drafter) report every token. The 2026-08-16 reading "logprobs on the first chunk only" was this.
+# `draft_num_predict: 0` turns drafting off for the request: measured 11/12 chunks with logprobs.
+# A daemon that doesn't know the option logs a WARN and ignores it; models without a drafter are
+# unaffected. Cost: none measured — with logprobs on, drafting was SLOWER (7.5 vs 12.6 tok/s on
+# an M-series Mac), presumably because the verify pass re-scores every token anyway.
+LOGPROB_OPTIONS: dict = {"draft_num_predict": 0}
+
+
+def request_options(options: "dict | None" = None) -> dict:
+    """`options` plus what a logprob-carrying request needs (LOGPROB_OPTIONS). A new dict — the
+    caller's is never mutated — and the caller's keys (num_ctx above all) are all kept."""
+    return {**(options or {}), **LOGPROB_OPTIONS}
+
 
 def enabled() -> bool:
     """Whether confidence grading is on (`runtime.confidence`, default true). Fail-open to the

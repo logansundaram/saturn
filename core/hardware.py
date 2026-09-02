@@ -1,5 +1,5 @@
 """
-Hardware probe -> size-class recommendation (2026-09-01), behind `/scan`.
+Hardware probe -> size-class recommendation (2026-09-01), behind `/models` (`/scan` is its alias).
 
 The install default is the 4b tier because the first pull should be light — but the useful
 experience lives at 27b, and until now getting there meant reading the README, guessing what
@@ -58,7 +58,7 @@ class ClassCost:
 
 
 # Architecture facts: `ollama show --verbose` for the pulled tags, the HF config.json for the
-# rest (num_key_value_heads, layer_types). tests/test_scan.py asserts this table and SIZE_LADDER
+# rest (num_key_value_heads, layer_types). tests/test_models_page.py asserts this table and SIZE_LADDER
 # carry the same classes.
 CLASS_COSTS: dict[str, ClassCost] = {
     "800m": ClassCost(weights_gb=1.0, full_layers=6, kv_heads=2),    # 24 layers
@@ -79,7 +79,7 @@ EMBEDDER_WEIGHTS_GB: dict[str, float] = {"0.6b": 0.6, "4b": 2.5, "8b": 4.7}
 EMBEDDER_HEADROOM_GB = 0.5
 
 # When the caller has no config to read windows from (config.default.yaml's family fallback,
-# config.FAMILY_CONTEXT_WINDOW — kept equal by tests/test_scan.py).
+# config.FAMILY_CONTEXT_WINDOW — kept equal by tests/test_models_page.py).
 FALLBACK_WINDOW = 32768
 
 # The share of memory the model runner can address, per backend (see the module docstring).
@@ -114,6 +114,9 @@ class HardwareProfile:
     gpu: str              # NVIDIA card name, or "" when none was found
     vram_gb: float | None
     backend: str          # apple | nvidia | cpu
+    gpu_error: str = ""   # why the NVIDIA probe failed (nvidia-smi present but timed out / [N/A]);
+                          # "" when it ran or there was nothing to run — the page names a failure
+                          # so a driver still coming up is not mistaken for "no accelerator"
 
 
 @dataclass
@@ -204,10 +207,12 @@ def probe() -> HardwareProfile:
         ram = float(_ram_gb())
     except Exception:
         ram = 0.0
+    gpu_error = ""
     try:
         gpu, vram = _nvidia_vram_gb()
-    except Exception:
+    except Exception as exc:
         gpu, vram = None, None
+        gpu_error = f"{exc.__class__.__name__}: {exc}"[:120]
     try:
         cores = _cores()
     except Exception:
@@ -222,7 +227,7 @@ def probe() -> HardwareProfile:
 
     return HardwareProfile(
         os_name=system, arch=platform.machine(), chip=chip, cores=cores, ram_gb=ram,
-        gpu=gpu or "", vram_gb=vram, backend=backend,
+        gpu=gpu or "", vram_gb=vram, backend=backend, gpu_error=gpu_error,
     )
 
 

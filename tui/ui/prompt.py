@@ -571,10 +571,14 @@ def answer_question(value: dict) -> str:
     return ask("your answer (Enter = no answer) » ")
 
 
-def ask(prompt_text: str) -> str:
+def ask(prompt_text: str, *, on_interrupt: str = "") -> str:
     """Read a single line for an interactive command prompt (e.g. the /models picker). Tears down
     any live status bar first — input() can't run under an active Live — and returns the raw,
-    stripped reply. Degrades to plain input() without rich."""
+    stripped reply. Degrades to plain input() without rich.
+
+    Ctrl-C / Ctrl-D return `on_interrupt` — "" by default, which every y/N prompt reads as no.
+    A prompt whose EMPTY reply means yes (Enter = take the default) must pass its own refusal
+    here, or an interrupt would select what a bare Enter selects."""
     _live_stop()
     try:
         if _RICH:
@@ -583,4 +587,4 @@ def ask(prompt_text: str) -> str:
             return _console.input(f"  {prompt_text}", markup=False).strip()
         return input(f"  {prompt_text}").strip()
     except (EOFError, KeyboardInterrupt):
-        return ""
+        return on_interrupt

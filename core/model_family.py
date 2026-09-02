@@ -149,11 +149,8 @@ def embedder_class_of(model_id) -> "str | None":
 
 
 def class_of(model_id) -> str:
-    """The size class whose hardware cost a family tag carries: its ladder key when it IS a
-    ladder tag, else the class nearest its parameter count (a superseded qwen3.6:27b bound by
-    name costs what 27b costs). Non-family ids go through migrate() the same way."""
-    want = str(model_id or "").strip().lower()
-    for key, tag in SIZE_LADDER:
-        if tag.lower() == want:
-            return key
+    """The size class whose hardware cost a tag carries: the class nearest its parameter count
+    (a superseded qwen3.6:27b bound by name costs what 27b costs; a ladder tag is its own class,
+    since every ladder size IS a class key). Non-family ids resolve the same way. This is
+    migrate() under the name the pricing code means by it."""
     return migrate(model_id)

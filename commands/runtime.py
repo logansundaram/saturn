@@ -14,7 +14,10 @@ setter belong under the one runtime-settings front door.)
 from __future__ import annotations
 
 from commands._framework import command, _print
-from commands._utils import _ROLES, _resync_rag_after_model_change, is_list_verb, split_persist_flags
+from commands._utils import (
+    _ROLES, _resync_rag_after_model_change, is_list_verb, pull_one as _pull_one, run_pulls,
+    split_persist_flags,
+)
 from core import model_family
 from tools.registry import tool as TOOLS, risk_of
 
@@ -94,15 +97,8 @@ def _bind(cfg, target: str, model: str, *, session: bool = False) -> None:
     tag = " (session only)" if session else ""
 
     if target == "embedder":
-        key = f"tiers.{cfg.active_tier}.embedder"
-        cfg.set(key, model)
-        reset_models()
-        _print(f"  embedder -> {model} on tier '{cfg.active_tier}'{tag}.")
-        if session:
-            _print("  omit --session to save to config.yaml.")
-        else:
-            _persist_bindings(cfg, [key])
-        _resync_rag_after_model_change()
+        # Machine-wide, like the page's pick: one embedder switch, one set of semantics.
+        _switch_embedder(cfg, model, session=session)
         return
 
     if target == "all":
@@ -146,21 +142,19 @@ def _rescan():
     return profile(rescan=True)
 
 
-def _pull_one(model: str) -> int:
-    """Run one `ollama pull` in the foreground (live progress, Ctrl-C-able). Returns the exit
-    code; an OSError (no `ollama` binary) reads as a failure."""
-    import subprocess
-
-    try:
-        return subprocess.run(["ollama", "pull", model]).returncode
-    except OSError as exc:
-        _print(f"  could not run `ollama pull {model}`: {exc}")
-        return 1
-
-
 def _k(n: int) -> str:
     """32768 -> "32k"; anything not a whole multiple of 1024 prints as-is."""
     return f"{n // 1024}k" if n and n % 1024 == 0 else str(n)
+
+
+def _active_embedder(cfg) -> "str | None":
+    """The active tier's embedder id, or None when config.yaml declares none for it (or names an
+    active tier it never declared) — Config.embedder_model raises for both, and the page must
+    still render: it is where the user fixes exactly that."""
+    try:
+        return cfg.embedder_model
+    except KeyError:
+        return None
 
 
 def _tier_binding(cfg, key: str) -> "tuple[str, str]":
@@ -177,17 +171,26 @@ def _tier_binding(cfg, key: str) -> "tuple[str, str]":
     return declared, model_family.tag_for(model_family.migrate(declared))
 
 
-def _tier_chat_models(cfg, key: str) -> list[str]:
-    """The chat models a tier binds (roles only, deduplicated; the embedder is a separate,
-    machine-wide pick). Dict access, never the dotted path — a tier key may contain a dot."""
+def _tier_running_models(cfg, key: str) -> list[str]:
+    """The chat models selecting a tier would RUN (roles only, deduplicated; the embedder is a
+    separate, machine-wide pick): each role's declared id, family-substituted the way
+    Config.model_for_role substitutes it — a non-family declaration never loads, so checking or
+    pulling IT would fetch a model the agent refuses to run while the tag that does run stays
+    missing. A tier declared without roles runs the ladder tag. Dict access, never the dotted
+    path — a tier key may contain a dot."""
     tier = (cfg.get("tiers", {}) or {}).get(key) or {}
     out: list[str] = []
     for entry in (tier.get("roles", {}) or {}).values():
         if isinstance(entry, dict):
             entry = entry.get("model", "")
-        if entry and str(entry) not in out:
-            out.append(str(entry))
-    return out
+        model = str(entry or "")
+        if not model:
+            continue
+        if not model_family.in_family(model):
+            model = model_family.tag_for(model_family.migrate(model))
+        if model not in out:
+            out.append(model)
+    return out or [model_family.tag_for(key)]
 
 
 def _class_windows(cfg) -> dict:
@@ -228,22 +231,32 @@ def _switch_tier(cfg, key: str, *, session: bool) -> None:
 
 
 def _switch_embedder(cfg, model: str, *, session: bool) -> None:
-    """Bind the embedder on EVERY declared tier: the embedder is a machine choice (what fits
-    beside the chat model), not a per-tier one, so a later tier switch must not silently bring
-    a different embedder — and a different corpus embedding — back."""
+    """Bind the embedder on EVERY declared tier — the one embedder switch, behind the page's pick
+    and `/models embedder <id>` alike: the embedder is a machine choice (what fits beside the chat
+    model), not a per-tier one, so a later tier switch must not silently bring a different
+    embedder — and a different corpus embedding — back. Tiers are written by dict access:
+    Config.set splits a dotted path, so a tier key with a dot in it (a pre-rename `0.8b`, a
+    user's own name) would land in a phantom nested tier. persist() walks the same dotted path,
+    so such a tier is set live and named as not persisted."""
     from core.llms import reset_models
 
-    keys = []
-    for key in (cfg.get("tiers", {}) or {}):
-        cfg.set(f"tiers.{key}.embedder", model)
-        keys.append(f"tiers.{key}.embedder")
+    tiers = cfg.get("tiers", {}) or {}
+    keys, unpersistable = [], []
+    for key, tier in tiers.items():
+        if not isinstance(tier, dict):
+            continue
+        tier["embedder"] = model
+        (unpersistable if "." in key else keys).append(key)
     reset_models()
     tag = " (session only)" if session else ""
     _print(f"  embedder -> {model} on every tier{tag}.")
     if session:
         _print("  omit --session to save to config.yaml.")
     else:
-        _persist_bindings(cfg, keys)
+        _persist_bindings(cfg, [f"tiers.{key}.embedder" for key in keys])
+        if unpersistable:
+            _print(f"  set for this session, but not persisted for tier(s) {', '.join(unpersistable)}: "
+                   "the name contains a dot — edit config.yaml by hand")
     _resync_rag_after_model_change()
 
 
@@ -273,7 +286,8 @@ def _render_page(cfg, prof, rec, *, up: bool, have: set) -> None:
 
     active = cfg.active_tier
     defined = cfg.get("tiers", {}) or {}
-    active_emb = model_family.embedder_class_of(cfg.embedder_model)
+    emb_model = _active_embedder(cfg)
+    active_emb = model_family.embedder_class_of(emb_model)
 
     facts = [prof.chip or "unknown CPU"]
     if prof.cores:
@@ -342,12 +356,15 @@ def _render_page(cfg, prof, rec, *, up: bool, have: set) -> None:
     ui.note(src)
     if not up:
         ui.warn("ollama daemon not reachable — start it with `ollama serve` (pulled state unknown)")
-    if active_emb is None and cfg.get("tiers"):
-        try:
-            ui.note(f"embedder in config.yaml: {cfg.embedder_model} (not on the ladder; "
-                    "pick a row to move onto it)")
-        except Exception:
-            pass
+    if prof.gpu_error:
+        ui.warn(f"GPU probe failed ({prof.gpu_error}) — budgeted as if there were no accelerator; "
+                "`/models rescan` once the driver is up")
+    if defined and emb_model is None:
+        ui.warn(f"tier '{active}' has no embedder in config.yaml — pick an embedder row to set "
+                "one on every tier")
+    elif defined and active_emb is None:
+        ui.note(f"embedder in config.yaml: {emb_model} (not on the ladder; pick a row to move "
+                "onto it)")
     if rec.cramped:
         ui.warn(f"this machine is too small for any tier ({rec.budget_gb:g} GB budget; the smallest "
                 f"wants {rec.needs[rec.size_class]:.1f} GB) — {rec.size_class} is the best effort "
@@ -356,22 +373,25 @@ def _render_page(cfg, prof, rec, *, up: bool, have: set) -> None:
     if legacy:
         ui.warn(f"legacy tiers in config.yaml: {', '.join(legacy)} — the names predate the size-class "
                 "ladder; rebind one in place with `/models all <tag>`")
-    _print_migration_notes()
+    _print_migration_notes(cfg)
 
 
-def _pick(rec, active: str, active_emb: "str | None") -> "list[tuple[str, str]] | None":
+def _pick(rec, active: str) -> "list[tuple[str, str]] | None":
     """The human's say after the readout: Enter takes the recommended TIER (the embedder, whose
     switch re-embeds the whole knowledge base, is confirmed separately — see _confirm_embedder),
     a row number picks that one tier or embedder, n/q/cancel keeps things as they are. Anything
-    unparseable is treated as cancel — an auto-select must never land on a row nobody chose.
-    Returns [(kind, class), ...] to apply in order, or None."""
+    unparseable is treated as cancel — an auto-select must never land on a row nobody chose —
+    and so is Ctrl-C / Ctrl-D: ui.ask would otherwise hand back the empty reply Enter produces,
+    and an interrupt is the one keypress that must never select. Returns [(kind, class), ...]
+    to apply in order, or None."""
     from tui import ui
 
     tiers = model_family.classes()
     embs = model_family.embedder_classes()
     total = len(tiers) + len(embs)
     reply = ui.ask(
-        f"[Enter] {rec.size_class} · 1-{total} pick a row · n keep {active} » "
+        f"[Enter] {rec.size_class} · 1-{total} pick a row · n keep {active} » ",
+        on_interrupt="n",
     ).strip().lower()
     if not reply:
         return [("tier", rec.size_class)]
@@ -407,16 +427,10 @@ def _confirm_embedder(rec, active_emb: "str | None") -> bool:
 
 
 def _offer_pull(missing: list[str], what: str) -> bool:
-    """The consented `ollama pull` for a pick whose models aren't here (TTY only; the caller
-    checks). True when every pull landed."""
-    from commands.config import _stdin_is_tty
+    """The consented `ollama pull` for a pick whose models aren't here (the caller has already
+    established a TTY). True when every pull landed."""
     from tui import ui
 
-    if not _stdin_is_tty():
-        ui.note(f"{what} needs {len(missing)} model(s) not pulled yet — to switch:")
-        for m in missing:
-            _print(f"    ollama pull {m}")
-        return False
     reply = ui.ask(
         f"pull {len(missing)} model(s) for {what}? (sizes shown as each pull starts)  [y/N] » "
     ).lower()
@@ -425,37 +439,28 @@ def _offer_pull(missing: list[str], what: str) -> bool:
         for m in missing:
             _print(f"    ollama pull {m}")
         return False
-    for m in missing:
-        _print(f"  pulling {m} …")
-        try:
-            rc = _pull_one(m)
-        except KeyboardInterrupt:
-            _print("")
-            ui.warn(f"pull cancelled — finish later with `ollama pull {m}`")
-            return False
-        if rc != 0:
-            ui.warn(f"`ollama pull {m}` exited with code {rc}")
-            return False
-    return True
+    return run_pulls(missing, pull=_pull_one)
 
 
-def _apply_pick(cfg, kind: str, key: str, rec, *, up: bool, have: set, session: bool) -> None:
-    """Land one pick. Only a row whose models are here is switched to: otherwise the pull is
-    offered first and the switch follows a successful pull; any other outcome keeps the current
-    binding working. A pick that is ALREADY active still gets its missing models pulled (a fresh
-    install with a custom pull list is exactly this case)."""
+def _apply_pick(cfg, kind: str, key: str, rec, *, have: set, session: bool) -> None:
+    """Land one pick (the caller has established a reachable daemon and a TTY). Only a row whose
+    models are here is switched to: otherwise the pull is offered first and the switch follows a
+    successful pull; any other outcome keeps the current binding working. A pick that is ALREADY
+    active still gets its missing models pulled (a fresh install with a custom pull list is
+    exactly this case)."""
     from core.llms import _model_present
     from tui import ui
 
+    tiers = cfg.get("tiers", {}) or {}
     if kind == "tier":
-        if key not in (cfg.get("tiers", {}) or {}):
+        if key not in tiers:
             ui.warn(f"tier '{key}' is not defined in this config.yaml — add it from "
                     "config.default.yaml, then re-run /models")
             return
         if not rec.fits.get(key, True):
             ui.warn(f"by the numbers tier '{key}' wants {rec.needs[key]:.1f} GB against a "
                     f"{rec.budget_gb:g} GB budget — it may fail to load, or run slowly, on this machine")
-        models = _tier_chat_models(cfg, key)
+        models = _tier_running_models(cfg, key)
         current = key == cfg.active_tier
         what = f"tier {key}"
     else:
@@ -464,12 +469,13 @@ def _apply_pick(cfg, kind: str, key: str, rec, *, up: bool, have: set, session: 
             ui.warn(f"embedder {tag} will swap in and out beside tier {rec.size_class} — "
                     "knowledge-base lookups pay a reload")
         models = [tag]
-        current = model_family.embedder_class_of(cfg.embedder_model) == key
+        # The switch is machine-wide, so "already on it" means EVERY tier binds it: an active
+        # tier that does while another does not is precisely the drift the switch removes.
+        current = bool(tiers) and all(
+            isinstance(t, dict) and str(t.get("embedder") or "") == tag for t in tiers.values()
+        )
         what = f"embedder {tag}"
 
-    if not up:
-        ui.note(f"{what}: switch after `ollama serve` is up — re-run /models")
-        return
     missing = [m for m in models if not _model_present(m, have)]
     if missing and not _offer_pull(missing, what):
         return
@@ -490,33 +496,49 @@ def _models_page(cfg, *, prompt: bool, session: bool = False, rescan: bool = Fal
 
     prof = _rescan() if rescan else _probe()
     rec = recommend(prof, _class_windows(cfg), _cost_classes(cfg))
-    up = ollama_reachable()
-    have = {m.name for m in list_local_models()} if up else set()
+    # One daemon round trip: the model list answers reachability too; the probe only has to
+    # tell "daemon down" from "nothing pulled" when the list came back empty (check_models'
+    # shape).
+    local = list_local_models()
+    up = bool(local) or ollama_reachable()
+    have = {m.name for m in local}
     _render_page(cfg, prof, rec, up=up, have=have)
-    if not prompt:
-        return
-    if not up:
-        # Nothing a pick could be applied to (the models can't even be listed).
+    if not prompt or not up:
+        # With no daemon there is nothing a pick could be applied to (the models can't even be
+        # listed).
         return
     from commands.config import _stdin_is_tty
 
     if not _stdin_is_tty():
         return
-    active_emb = model_family.embedder_class_of(cfg.embedder_model)
-    picks = _pick(rec, cfg.active_tier, active_emb)
+    picks = _pick(rec, cfg.active_tier)
     if picks is None:
         ui.note(f"staying on '{cfg.active_tier}'")
         return
+    active_emb = model_family.embedder_class_of(_active_embedder(cfg))
     if picks == [("tier", rec.size_class)] and _confirm_embedder(rec, active_emb):
-        picks.append(("embedder", rec.embedder))
+        # Embedder FIRST: every switch re-syncs the corpus against the active tier's embedder,
+        # and with the embedder already set on every tier the tier switch's re-sync sees no
+        # change — one re-embed, not one per pick (a config with per-tier embedders would
+        # otherwise embed the whole corpus twice, the first time with a model then discarded).
+        picks.insert(0, ("embedder", rec.embedder))
     for kind, key in picks:
-        _apply_pick(cfg, kind, key, rec, up=up, have=have, session=session)
+        _apply_pick(cfg, kind, key, rec, have=have, session=session)
 
 
-def _print_migration_notes() -> None:
-    """Name this session's family substitutions, so a listing never claims the file's value is
-    what is running."""
-    for original, replacement in _config_migrations().items():
+def _print_migration_notes(cfg=None) -> None:
+    """Name the family substitutions the page shows, so a listing never claims the file's value
+    is what is running: this session's ledger (config.migrated_bindings — the ACTIVE tier's
+    roles, the only ones ever resolved) plus, given the config, every ladder tier whose declared
+    model the row substitutes (a non-active tier's binding is never resolved, so the ledger alone
+    would leave that row contradicting config.yaml with nothing said)."""
+    notes = dict(_config_migrations())
+    if cfg is not None:
+        for key in model_family.classes():
+            declared, running = _tier_binding(cfg, key)
+            if declared and declared != running:
+                notes.setdefault(declared, running)
+    for original, replacement in notes.items():
         _print(f"  note: '{original}' in config.yaml is running as '{replacement}'.")
 
 

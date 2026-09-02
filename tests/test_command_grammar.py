@@ -210,12 +210,14 @@ def test_models_embedder_save_persists_and_still_resyncs(ctx, capsys, monkeypatc
     from config import get_config
 
     cfg = get_config()
-    tier = cfg._data["tiers"][cfg.active_tier]
-    monkeypatch.setitem(tier, "embedder", tier["embedder"])
+    tiers = cfg._data["tiers"]
+    for tier in tiers.values():
+        monkeypatch.setitem(tier, "embedder", tier["embedder"])
 
     _models(ctx, ["embedder", "test-embed", "--save"])
-    assert cfg.get(f"tiers.{cfg.active_tier}.embedder") == "test-embed"
-    assert recording_persist == [f"tiers.{cfg.active_tier}.embedder"]
+    # The embedder is a machine choice: the typed bind lands on EVERY tier, like the page's pick.
+    assert all(cfg.get(f"tiers.{key}.embedder") == "test-embed" for key in tiers)
+    assert recording_persist == [f"tiers.{key}.embedder" for key in tiers]
     assert models_env  # --save must not bypass the embedder→re-embed flow
 
 

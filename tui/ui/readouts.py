@@ -81,19 +81,6 @@ def show_context(window: int, used: int, source: str, per_role: dict[str, int]) 
     _emit("  set with /config context <size> (or /config context auto for per-model capability)")
 
 
-# ── model picker / listing ───────────────────────────────────────────────────────
-# Fixed column widths for the model table. The NAME column is enforced in both directions (pad
-# AND truncate) — `:<26` alone only pads, so one long tag (a `hf.co/…:Q4_K_M` id) pushed the size,
-# detail and binding columns out of alignment for every row that followed it.
-#
-# The detail column is deliberately pad-only: it is the LAST fixed column, so overflowing it
-# shifts nothing but the trailing `[embed]` / `◂ roles` annotations, while truncating it would
-# drop the calibration state — the fact `/models tier` exists to show. Losing data to tidy a
-# trailing annotation is the wrong trade.
-_NAME_W = 26
-_DETAIL_W = 26
-
-
 # ── log lines (startup notices, warnings) ────────────────────────────────────────
 # Every line below is the same shape: a glyph, a message, and an optional dim tail — rendered as
 # styled spans under rich and as plain text without it. One helper so the rich/plain fallback

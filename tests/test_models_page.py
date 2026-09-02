@@ -207,7 +207,7 @@ def test_the_profile_is_probed_once_per_process_and_rescan_reprobes(monkeypatch)
     assert len(calls) == 2
 
 
-def test_startup_warms_the_probe(monkeypatch):
+def test_startup_warms_the_probe_interactively_and_never_headless(monkeypatch):
     from app import startup
     from core import hardware
 
@@ -215,6 +215,9 @@ def test_startup_warms_the_probe(monkeypatch):
     monkeypatch.setattr(hardware, "profile", lambda **k: calls.append(1))
     monkeypatch.setattr(startup, "sync", lambda verbose=False: None)
     monkeypatch.setattr(startup, "build_agent", lambda: "graph")
+    assert startup.startup_load(interactive=True) == ("graph", None)
+    assert calls == [1]
+    # -p never renders /models: no sysctl / nvidia-smi spawn on the one-shot path.
     assert startup.startup_load(interactive=False) == ("graph", None)
     assert calls == [1]
 
@@ -293,11 +296,13 @@ def env(monkeypatch, printed):
     monkeypatch.setattr(runtime, "_probe", lambda: env["profile"])
     monkeypatch.setattr(runtime, "_rescan",
                         lambda: env.__setitem__("rescans", env["rescans"] + 1) or env["profile"])
-    monkeypatch.setattr("core.llms.list_local_models", lambda: [_Local(n) for n in env["pulled"]])
+    # Like the real one: [] when the daemon is down (reachability is then probed separately).
+    monkeypatch.setattr("core.llms.list_local_models",
+                        lambda: [_Local(n) for n in env["pulled"]] if env["daemon"] else [])
     monkeypatch.setattr("core.llms.ollama_reachable", lambda: env["daemon"])
     monkeypatch.setattr("core.llms.reset_models", lambda: env.__setitem__("reset", env["reset"] + 1))
     monkeypatch.setattr("commands.config._stdin_is_tty", lambda: env["tty"])
-    def ask(prompt):
+    def ask(prompt, **_kw):
         if prompt.startswith("pull"):
             return env["answer"]
         if prompt.startswith("embedder:"):
@@ -448,7 +453,7 @@ def test_enter_does_not_ask_about_the_embedder_when_it_already_matches(env, prin
     env["pulled"] += ["qwen3.6:35b"]
     asked = []
     real = __import__("tui.ui", fromlist=["ask"]).ask
-    monkeypatch.setattr("tui.ui.ask", lambda p: asked.append(p) or real(p))
+    monkeypatch.setattr("tui.ui.ask", lambda p, **k: asked.append(p) or real(p))
     _run()
     assert env["cfg"].active_tier == "35b"
     assert not any(p.startswith("embedder:") for p in asked)
@@ -550,6 +555,111 @@ def test_daemon_down_renders_unknown_pulled_state_and_never_prompts(env, printed
     assert env["cfg"].active_tier == "4b"
     assert "?" in _row(printed, "35b", "qwen3.6:35b")
     assert "ollama serve" in "\n".join(printed)
+
+
+def test_an_interrupt_at_the_row_prompt_never_selects(env, printed, monkeypatch):
+    """ui.ask returns its `on_interrupt` value on Ctrl-C / Ctrl-D; the row prompt must pass a
+    refusal, or an interrupt would select what a bare Enter selects and persist the tier."""
+    env["pulled"] += ["qwen3.6:35b"]
+    monkeypatch.setattr("tui.ui.ask", lambda prompt, on_interrupt="", **k: on_interrupt)
+    _run()
+    assert env["cfg"].active_tier == "4b" and env["persisted"] == []
+    assert "staying on '4b'" in "\n".join(printed)
+
+
+def test_ui_ask_hands_back_the_interrupt_value(monkeypatch):
+    import sys
+
+    import tui.ui  # noqa: F401  (the package binds `prompt` to a function; take the module)
+    prompt_mod = sys.modules["tui.ui.prompt"]
+
+    def boom(*a, **k):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(prompt_mod, "_live_stop", lambda: None)
+    monkeypatch.setattr(prompt_mod, "_RICH", False)
+    monkeypatch.setattr("builtins.input", boom)
+    assert prompt_mod.ask("x » ") == ""
+    assert prompt_mod.ask("x » ", on_interrupt="n") == "n"
+
+
+def test_a_rebound_tier_pulls_the_model_it_runs_not_the_one_the_file_names(env, printed):
+    """A non-family declaration is substituted at the model_for_role seam: the ✓ column already
+    reports the substitute, so the pick must pull the substitute — never a model the agent
+    refuses to run — and must note the substitution even for a NON-active tier."""
+    cfg = env["cfg"]
+    for role in ("planner", "tool_caller", "synthesizer", "utility", "judge"):
+        cfg.set(f"tiers.27b.roles.{role}", "gemma4:31b")
+    env["pick"] = "5"
+    env["answer"] = "y"
+    _run()
+    assert env["pull_calls"] == ["qwen3.8:27b"]
+    assert env["cfg"].active_tier == "27b"
+    assert "'gemma4:31b' in config.yaml is running as 'qwen3.8:27b'" in "\n".join(printed)
+
+
+def test_the_page_renders_when_the_active_tier_has_no_embedder(env, printed):
+    del env["cfg"].get("tiers")["4b"]["embedder"]
+    _run("list")
+    blob = "\n".join(printed)
+    assert "▸ recommended" in blob and "no embedder in config.yaml" in blob
+
+
+def test_an_embedder_pick_aligns_every_tier_even_when_the_active_one_already_matches(env, printed):
+    env["cfg"].get("tiers")["27b"]["embedder"] = "qwen3-embedding:0.6b"
+    env["pick"] = "9"                                          # the 8b embedder, active on 4b
+    _run()
+    assert all(env["cfg"].get("tiers")[k]["embedder"] == "qwen3-embedding:8b"
+               for k in model_family.classes())
+    assert "already on" not in "\n".join(printed)
+
+
+def test_an_embedder_switch_never_splits_a_dotted_tier_key(env, printed):
+    tiers = env["cfg"].get("tiers")
+    tiers["0.8b"] = {"provider": "ollama", "roles": {"planner": "qwen3.5:0.8B"},
+                     "embedder": "qwen3-embedding:8b"}
+    env["pick"] = "8"
+    env["answer"] = "y"
+    _run()
+    assert tiers["0.8b"]["embedder"] == "qwen3-embedding:4b"
+    assert "0" not in tiers or tiers.get("0") is None           # no phantom nested tier
+    assert not any(k == "tiers.0.8b.embedder" for k, _v in env["persisted"])
+    assert "not persisted for tier(s) 0.8b" in "\n".join(printed)
+
+
+def test_typed_embedder_bind_is_machine_wide_too(env, printed):
+    env["cfg"].get("tiers")["27b"]["embedder"] = "qwen3-embedding:0.6b"
+    _run("embedder qwen3-embedding:4b")
+    assert all(env["cfg"].get("tiers")[k]["embedder"] == "qwen3-embedding:4b"
+               for k in model_family.classes())
+
+
+def test_a_failed_gpu_probe_is_named_on_the_page(env, printed):
+    env["profile"] = _profile(backend="cpu", ram_gb=64.0, gpu_error="TimeoutExpired: nvidia-smi")
+    _run("list")
+    blob = "\n".join(printed)
+    assert "GPU probe failed (TimeoutExpired: nvidia-smi)" in blob and "/models rescan" in blob
+
+
+def test_probe_records_why_the_gpu_reader_failed(monkeypatch):
+    from core import hardware
+
+    def boom():
+        raise ValueError("could not convert string to float: '[N/A]'")
+
+    monkeypatch.setattr(hardware.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(hardware, "_cpu_brand", lambda: "AMD Ryzen 9")
+    monkeypatch.setattr(hardware, "_nvidia_vram_gb", boom)
+    monkeypatch.setattr(hardware, "_ram_gb", lambda: 64.0)
+    prof = hardware.probe()
+    assert prof.backend == "cpu" and prof.gpu_error.startswith("ValueError")
+
+
+def test_the_page_lists_the_daemon_once(env, printed, monkeypatch):
+    calls = []
+    monkeypatch.setattr("core.llms.ollama_reachable", lambda: calls.append(1) or True)
+    _run("list")
+    assert calls == []                                          # a non-empty list IS the probe
 
 
 def test_cramped_machine_warns(env, printed):

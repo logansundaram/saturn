@@ -85,6 +85,43 @@ def is_list_verb(token: str) -> bool:
     return token.lower() in LIST_VERBS
 
 
+def pull_one(model: str) -> int:
+    """Run one `ollama pull` in the foreground (live progress, Ctrl-C-able). Returns the exit
+    code; an OSError (no `ollama` binary) says why and reads as a failure."""
+    import subprocess
+    from commands._framework import _print
+
+    try:
+        return subprocess.run(["ollama", "pull", model]).returncode
+    except OSError as exc:
+        _print(f"  could not run `ollama pull {model}`: {exc}")
+        return 1
+
+
+def run_pulls(missing: list[str], *, pull=None, retry_hint: str = "") -> bool:
+    """THE consented pull loop, shared by /config setup's doctor and the /models page (the y/N
+    prompt that precedes it is each caller's own): pull each model in turn as an ordinary
+    foreground subprocess — ollama prints each download's size and progress, the same trust
+    boundary as the installer pulling the defaults. A Ctrl-C or a failed pull stops the batch
+    with the copy-paste command on screen. True when every pull landed. `pull` is the per-model
+    runner (a test seam); `retry_hint` trails the failure line. ASCII-only: the doctor is."""
+    from commands._framework import _print
+
+    pull = pull or pull_one
+    for m in missing:
+        _print(f"  pulling {m} ...")
+        try:
+            rc = pull(m)
+        except KeyboardInterrupt:
+            _print("")
+            _print(f"  pull cancelled - finish later with `ollama pull {m}`.")
+            return False
+        if rc != 0:
+            _print(f"  `ollama pull {m}` exited with code {rc}{retry_hint}.")
+            return False
+    return True
+
+
 def _resync_rag_after_model_change() -> None:
     """Re-embed the corpus if the embedder changed after a model/tier switch."""
     from stores.rag import sync_to_config

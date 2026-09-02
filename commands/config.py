@@ -428,25 +428,11 @@ def _offer_pull(missing: list[str]) -> None:
         _print("")
         return
 
-    import subprocess
+    from commands._utils import run_pulls
 
-    for m in missing:
-        _print(f"  pulling {m} ...")
-        try:
-            rc = subprocess.run(["ollama", "pull", m]).returncode
-        except KeyboardInterrupt:
-            _print("")
-            _print(f"  pull cancelled - finish later with `ollama pull {m}`.")
-            _print("")
-            return
-        except OSError as exc:
-            _print(f"  could not run `ollama pull {m}`: {exc}")
-            _print("")
-            return
-        if rc != 0:
-            _print(f"  `ollama pull {m}` exited with code {rc} - fix and re-run /config setup.")
-            _print("")
-            return
+    if not run_pulls(missing, retry_hint=" - fix and re-run /config setup"):
+        _print("")
+        return
 
     from core.llms import check_models
 

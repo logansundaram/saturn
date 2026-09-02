@@ -160,11 +160,11 @@ def continue_from(model: str, messages: list, edited_prefix: str,
     if confidence.enabled():
         # Token-confidence grading: per-token logprobs ride each streamed chunk
         # (ContinuationStream.last_logprobs). Absent support the daemon just omits the field —
-        # the overlay stays empty, the answer renders unmarked. Drafting off with it
-        # (confidence.LOGPROB_OPTIONS) — see there — or the daemon reports one logprob per
-        # speculative batch.
+        # the overlay stays empty, the answer renders unmarked. Drafting off with it — the
+        # same runner option every chat request carries (core.llms), so this raw /api/generate
+        # call never makes the daemon reload the runner it just served the answer with.
         body["logprobs"] = True
-        opts.update(confidence.LOGPROB_OPTIONS)
+        opts.update(confidence.runner_options())
     t = get_config().llm_timeout
     timeout = httpx.Timeout(t, connect=min(10.0, t)) if t else None
     return ContinuationStream(f"{_endpoint()}/api/generate", body, timeout)

@@ -35,6 +35,7 @@ import diag
 from trust import egress
 from trust import redaction
 from config import MODEL_ROLES, get_config
+from core import confidence
 
 
 def _approx_bytes(messages) -> int:
@@ -145,6 +146,21 @@ def _ollama_client_kwargs() -> dict:
 _MODEL_CACHE: dict[tuple[str, str], object] = {}
 
 
+class _RunnerStableChatOllama(ChatOllama):
+    """ChatOllama whose every request carries `confidence.runner_options()` — the ONE place all
+    chat traffic funnels through (`_chat_params` serves invoke/stream and the async twins, and a
+    `bind_tools` / `with_structured_output` binding still calls it on this instance). Callers
+    that pass their own full `options` (core.structured._invoke_kwargs) keep every key; callers
+    that pass none (a bare `.invoke`) get the constructor's num_ctx plus the runner option.
+    Why it must be everyone: `draft_num_predict` is a runner LOAD option to Ollama 0.33 — two
+    requests that disagree on it make the daemon reload the weights (see confidence.py)."""
+
+    def _chat_params(self, messages, stop=None, **kwargs):
+        params = super()._chat_params(messages, stop, **kwargs)
+        params["options"] = {**(params.get("options") or {}), **confidence.runner_options()}
+        return params
+
+
 def _wrap_ollama(m, model: str):
     """Loopback Ollama is handed back bare — there is no boundary to guard. A REMOTE Ollama
     (OLLAMA_HOST pointing off-machine) IS one: wrap it in the same cloud boundary proxy so every
@@ -175,7 +191,7 @@ def _build(provider: str, model: str):
     # caps at 2048, making the context-fill % lie. /config context drops the cache to rebind live.
     # client_kwargs carries the request timeout (guards a wedged daemon; see _ollama_client_kwargs).
     return _wrap_ollama(
-        ChatOllama(
+        _RunnerStableChatOllama(
             model=model,
             num_ctx=get_config().num_ctx_for(model),
             **_ollama_client_kwargs(),

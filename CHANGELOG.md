@@ -65,11 +65,15 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
   multi-token-prediction speculative decoding and reports a logprob only for the first token of
   each draft batch, which is what the earlier "logprobs on the first chunk only" reading was: the
   answer overlay for that model was all but empty, and the calibration utility could not measure
-  it (its shipped row was an estimate inherited from qwen3.6:27b). Every request that asks for
-  logprobs — the streamed answer, the interrupt-and-correct continuation, and calibration — now
-  turns drafting off for that request (`draft_num_predict: 0`; models without a drafter and older
-  daemons are unaffected), and the shipped table carries a measured qwen3.8:27b row. No speed
-  cost was measured: with logprobs on, drafting was slower.
+  it (its shipped row was an estimate inherited from qwen3.6:27b). While confidence coloring is
+  on, every request Saturn sends the daemon — planner, execute, judge, the streamed answer, the
+  interrupt-and-correct continuation, the background summaries — now turns drafting off
+  (`draft_num_predict: 0`; models without a drafter and older daemons are unaffected), and the
+  shipped table carries a measured qwen3.8:27b row. It has to be every request, not only the ones
+  that ask for logprobs: the daemon treats the option as a runner setting and reloads the weights
+  whenever two requests disagree on it, which made every qwen3.8 turn reload the model twice. No
+  speed cost: in the daemon's own timings drafting was slower for this model with or without
+  logprobs (about 8 versus 12 tokens per second on an M-series Mac).
 - **`/trace why` no longer mis-renders an answer whose prose contains the word "Sources:".** The
   cited-sources footer is now recognized only in its exact produced shape, through the one shared
   parser every footer reader uses (the trust-colored answer footer and `/trace answer` included);

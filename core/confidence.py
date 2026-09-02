@@ -46,23 +46,39 @@ _DEFAULT_THRESHOLD = 0.20
 # an open word choice; three strung together is the drifting-generation signature.
 _MIN_RUN = 3
 
-# Options that must ride EVERY request that asks for logprobs (2026-09-02). Ollama 0.33.2 runs
-# qwen3.8 under multi-token-prediction speculative decoding (`llama-server --spec-type draft-mtp
-# --spec-draft-backend-sampling`, see ~/.ollama/logs/server.log), and llama-server reports a
-# logprob only for the target-sampled token of each draft batch — every draft-ACCEPTED token
-# arrives unmeasured, so a 40-token qwen3.8:27b answer carried exactly ONE entry on every API
-# surface (/api/chat, /api/generate, /v1, streamed or not), while qwen3.5 and qwen3-vl (no
-# drafter) report every token. The 2026-08-16 reading "logprobs on the first chunk only" was this.
-# `draft_num_predict: 0` turns drafting off for the request: measured 11/12 chunks with logprobs.
-# A daemon that doesn't know the option logs a WARN and ignores it; models without a drafter are
-# unaffected. Cost: none measured — with logprobs on, drafting was SLOWER (7.5 vs 12.6 tok/s on
-# an M-series Mac), presumably because the verify pass re-scores every token anyway.
+# The runner option (2026-09-02). Ollama 0.33.2 runs qwen3.8 under multi-token-prediction
+# speculative decoding (`llama-server --spec-type draft-mtp --spec-draft-backend-sampling`, see
+# ~/.ollama/logs/server.log), and llama-server reports a logprob only for the target-sampled token
+# of each draft batch — every draft-ACCEPTED token arrives unmeasured, so a 40-token qwen3.8:27b
+# answer carried exactly ONE entry on every API surface (/api/chat, /api/generate, /v1, streamed
+# or not), while qwen3.5 and qwen3-vl (no drafter) report every token. The 2026-08-16 reading
+# "logprobs on the first chunk only" was this. `draft_num_predict: 0` turns drafting off:
+# measured 11/12 chunks with logprobs. A daemon that doesn't know the option logs a WARN and
+# ignores it; models without a drafter are unaffected.
+#
+# It is a runner LOAD option, not a sampling option: a request carrying it relaunches
+# llama-server without the spec flags, and the next request WITHOUT it relaunches with them —
+# each time reloading the weights (~25s for the 27b). Sent on the logprob requests only (the
+# first cut), every qwen3.8 turn reloaded at least twice. So the decision is per PROCESS
+# (`runner_options`): grading on -> EVERY chat request carries it, whatever the role; off -> none
+# does. `core.llms` applies it at the one chokepoint all chat traffic passes; the raw
+# continuation stream adds it itself. Cost: none — drafting was SLOWER on an M-series Mac with or
+# without logprobs (7-8.7 vs 12.2-12.5 tok/s in the daemon's own timings), presumably because
+# the verify pass re-scores every token anyway.
 LOGPROB_OPTIONS: dict = {"draft_num_predict": 0}
 
 
+def runner_options() -> dict:
+    """The options EVERY chat request must carry so the daemon's runner is loaded once per
+    process (LOGPROB_OPTIONS while grading is on, nothing when it is off). A new dict."""
+    return dict(LOGPROB_OPTIONS) if enabled() else {}
+
+
 def request_options(options: "dict | None" = None) -> dict:
-    """`options` plus what a logprob-carrying request needs (LOGPROB_OPTIONS). A new dict — the
-    caller's is never mutated — and the caller's keys (num_ctx above all) are all kept."""
+    """`options` plus what a logprob-carrying request needs REGARDLESS of the grading toggle
+    (LOGPROB_OPTIONS) — the calibration measurement, a standalone process that must read every
+    token. A new dict — the caller's is never mutated — and the caller's keys (num_ctx above
+    all) are all kept. In-process callers don't need this: core.llms adds runner_options()."""
     return {**(options or {}), **LOGPROB_OPTIONS}
 
 

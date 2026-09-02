@@ -280,11 +280,10 @@ def _stream_first_pass(llm_input, freeze):
     # a num_predict bound, num_ctx (never a partial options dict); logprobs as a per-call kwarg.
     stream_kwargs = dict(_invoke_kwargs("synthesizer", None, 0.7, task="answer"))
     if confidence.enabled():
+        # Drafting off (confidence.runner_options) rides EVERY request from core.llms, not just
+        # this one — a speculatively-decoded model reports one logprob per draft batch, and the
+        # option is a runner LOAD option, so applying it here alone reloaded the weights per turn.
         stream_kwargs["logprobs"] = True
-        if "options" in stream_kwargs:  # an Ollama role (the only kind that runs)
-            # Drafting off (confidence.LOGPROB_OPTIONS): a speculatively-decoded model reports
-            # one logprob per draft batch, which left qwen3.8's overlay all but empty.
-            stream_kwargs["options"] = confidence.request_options(stream_kwargs["options"])
     gen = llm_stream(model, llm_input, tag=_model_tag("synthesizer"), **stream_kwargs)
     try:
         for chunk in gen:

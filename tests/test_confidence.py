@@ -625,10 +625,12 @@ def test_request_options_adds_draft_off_and_keeps_the_callers_keys():
 
 
 
-def test_synthesizer_stream_turns_drafting_off_only_when_grading_is_on(monkeypatch):
+def test_synthesizer_stream_asks_for_logprobs_only_when_grading_is_on(monkeypatch):
     """The first-pass answer stream is the runtime consumer of the calibrated thresholds: with
-    confidence on it asks for logprobs AND `draft_num_predict: 0` (a speculatively-decoded model
-    reports one logprob per draft batch otherwise), keeping num_ctx; with it off it adds neither."""
+    confidence on it asks for logprobs, keeping the serving layer's options untouched; with it
+    off it asks for nothing. Drafting-off is NOT added here — it rides every request from
+    core.llms (tests/test_runner_options.py), because adding it on this site alone made the
+    daemon reload the runner on every turn."""
     from types import SimpleNamespace
 
     from core import confidence
@@ -653,6 +655,21 @@ def test_synthesizer_stream_turns_drafting_off_only_when_grading_is_on(monkeypat
 
     on, off = seen
     assert buf["text"] == "Paris." and not frozen
-    assert on["logprobs"] is True and on["options"]["draft_num_predict"] == 0
-    assert on["options"]["num_ctx"] == 4096 and on["options"]["num_predict"] == 64
-    assert "logprobs" not in off and "draft_num_predict" not in off["options"]
+    assert on["logprobs"] is True
+    assert on["options"] == {"temperature": 0.7, "num_ctx": 4096, "num_predict": 64}
+    assert "logprobs" not in off and off["options"] == on["options"]
+
+
+def test_runner_options_ride_every_request_only_while_grading_is_on(monkeypatch):
+    """`draft_num_predict` is a runner LOAD option to Ollama 0.33 (a request that flips it
+    restarts llama-server and reloads the weights), so the decision is per PROCESS, not per
+    request: grading on -> every request carries it; off -> none does. Always a fresh dict."""
+    from core import confidence
+
+    monkeypatch.setattr(confidence, "enabled", lambda: True)
+    on = confidence.runner_options()
+    monkeypatch.setattr(confidence, "enabled", lambda: False)
+    off = confidence.runner_options()
+
+    assert on == confidence.LOGPROB_OPTIONS and on is not confidence.LOGPROB_OPTIONS
+    assert off == {}

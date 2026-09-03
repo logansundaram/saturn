@@ -1039,3 +1039,29 @@ def test_rectify_no_call_guard_covers_reasoning_steps_too(monkeypatch):
     )
     plan = [_step(1, None, result="(no result produced)", status="error")]
     assert rc.rectify_node(_state(plan, tool_events=[]))["rectify"] is True
+
+
+def test_a_raising_tool_still_records_a_tool_event(monkeypatch, isolated_paths):
+    """The no-call guard reads `tool_events` as "what actually ran". That holds only if a tool
+    that RAISED still leaves an event (ok=False) — otherwise two genuine tool failures would be
+    misreported as 'could not generate a call'. Pinned here because the guard depends on it."""
+    import nodes.tools as tn
+
+    class Boom:
+        def invoke(self, args):
+            raise FileNotFoundError("File not found in the workspace: x.txt.")
+
+    monkeypatch.setitem(tn.tools_by_name, "read_file", Boom())
+    msg = AIMessage(content="", tool_calls=[{"name": "read_file", "args": {"file_path": "x.txt"},
+                                             "id": "c1"}])
+    delta = tn.tool_node({"messages": [msg]})
+    ev = delta["tool_events"][0]
+    assert ev["name"] == "read_file" and ev["ok"] is False
+    # And the guard leaves an executed-but-failed tool to the judge.
+    monkeypatch.setattr(
+        rc, "structured", lambda *a, **k: st.RectifyBool(rectify=False, reasoning="absent")
+    )
+    plan = [_step(1, "read_file", result="Error calling read_file: File not found", status="error"),
+            _step(2, "read_file", result="Error calling read_file: File not found", status="error")]
+    out = rc.rectify_node(_state(plan, tool_events=delta["tool_events"]))
+    assert out["rectify"] is False and "could not generate" not in str(out.get("plan", ""))

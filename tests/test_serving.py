@@ -4,10 +4,9 @@ repetition retry trigger; the per-family temperature ladders, the token budget a
 single-HumanMessage prompt stayed behind).
 
   - `think` is set EXPLICITLY per task, never left to the model's default (every local model
-    Saturn targets defaults to thinking ON) — and OFF for every task since 2026-09-03; the
-    planner kept its rationale until then (measured: think-off fixed `absence` 66 → 100 %,
-    `no_capability` 2/5 → 5/5; planner think-off 6.0 s → 0.8 s warm on 9b, 5.7 s → 0.8 s on
-    the floor tier, at the cost of the floor tier's plan collapsing to a one-step stub).
+    Saturn targets defaults to thinking ON) — ON for the planner only (its rationale decides
+    "answer or ask"; without it the 9b stubs open requests to a lone ask_user), OFF for every
+    other task (measured: think-off fixed `absence` 66 → 100 %, `no_capability` 2/5 → 5/5).
   - every generation carries a `num_predict` circuit breaker: a whitespace loop under a JSON
     grammar or a small model that starts repeating lands as a truncated generation, not a full
     context window.
@@ -30,10 +29,12 @@ from nodes import execute as ex
 # ── the task table ──────────────────────────────────────────────────────────────────────────
 
 
-def test_no_task_thinks():
-    # The planner thought until 2026-09-03: measured ~5 s of daemon think-path overhead per plan
-    # call for ~0 emitted rationale tokens under the plan grammar (and one 45 s empty draw).
-    for task in ("plan", "judge", "tool_args", "reasoning", "answer", "correction"):
+def test_only_the_planner_thinks():
+    # The planner's rationale is where it decides "answer directly or ask": with think off the
+    # 9b planned a lone ask_user for "write me a story" (4/4 replayed draws, 2026-09-03), which
+    # the ask gate skips and rectify cancels. Every other task measured better without.
+    assert serving.thinks("plan")
+    for task in ("judge", "tool_args", "reasoning", "answer", "correction"):
         assert not serving.thinks(task), task
     assert not serving.thinks("some-unknown-task")   # unknown → the strictest safe shape
 
@@ -66,7 +67,7 @@ def test_invoke_kwargs_carry_think_num_predict_and_num_ctx(monkeypatch):
     assert "num_ctx" in kw["options"] and kw["options"]["temperature"] == 0.0
     assert kw["format"] == {"type": "object"}
     kw = structured._invoke_kwargs("planner", None, 0.0)
-    assert kw["reasoning"] is False and "format" not in kw   # explicit, never the model default
+    assert kw["reasoning"] is True and "format" not in kw    # explicit, never the model default
 
 
 def test_invoke_kwargs_task_override_and_repetition(monkeypatch):

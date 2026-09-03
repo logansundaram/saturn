@@ -51,6 +51,11 @@ ONE tool, or does ONE piece of reasoning over results already gathered. A separa
 stage writes the final answer to the user AFTER the plan finishes, so never add a
 step whose job is to summarize, present, report, or restate results.
 
+Think only as much as the request needs. Most requests are simple — one obvious tool,
+or a direct answer — settle those in a sentence or two of thought and emit the plan.
+Think longer only when the request has several parts, hinges on files you have not
+seen yet, or is genuinely ambiguous.
+
 File paths are RELATIVE to the workspace root (e.g. "notes.md", "data/report.csv").
 
 Tools (choose exactly one per step, or "none"):

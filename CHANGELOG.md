@@ -9,11 +9,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
 
 ### Changed
 
-- **Planning is ~5 s faster per turn.** The planner no longer runs with the model's "thinking"
-  enabled: under the plan's JSON grammar it emitted essentially no rationale while the daemon
-  still spent about five seconds per call on the think path, and one draw spent its whole
-  output budget thinking and returned nothing (45 s, then a retry). Every model call now runs
-  with thinking off. Measured on the 9b tier: a warm plan call 6.0 s → 0.8 s.
+- **The planner thinks only as much as the request needs.** Every model call except the
+  planner's now runs with the model's "thinking" off. The planner keeps it: without its
+  rationale the 9b turned an open request like "write me a story" into a single "ask the user
+  what kind" step, which the ask gate refuses and the turn then ends with "action guarded"
+  instead of a story. Its prompt now tells it to decide simple requests in a sentence or two
+  and think longer only for multi-part or ambiguous ones. Measured on the 9b tier: a one-tool
+  request's warm plan call 5.9 s → 3.1 s, the story request plans correctly again, and a
+  five-step request keeps its full rationale.
 - **A step that names its target no longer pays a model call for the arguments.** A `read_file`
   or `list_directory` step whose label spells exactly one existing workspace path ("Read
   notes.md", "List data/"), a `find_files` step with exactly one glob ("Find every *.csv"),

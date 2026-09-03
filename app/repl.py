@@ -14,7 +14,7 @@ import commands
 import diag
 from app.graph import DB_PATH
 from app.session import _fresh_turn, _initial_state, _maybe_autocompact
-from app.startup import startup_load, _warn_flagged_attachments
+from app.startup import startup_load, start_warm_up, _warn_flagged_attachments
 from app.turn import run_turn, _make_on_update, _trace_warning
 from config import get_config
 from core import mentions
@@ -64,8 +64,14 @@ def run_repl() -> None:
     # surfaced now with an actionable fix, rather than as a generic turn failure on the first query.
     # Non-fatal — the REPL still starts (commands work; an affected turn fails cleanly).
     if not _first_run:
-        for problem in check_models():
+        problems = check_models()
+        for problem in problems:
             ui.warn(problem)
+        # A healthy tier gets its weights loaded NOW, on a background thread, so the first
+        # query does not pay the model load inside its planner call (app.startup.warm_model).
+        # First launch skips it: /models below may change the tier before the first query.
+        if not problems:
+            start_warm_up()
     # MCP servers connected (or failed) while registry imported — surface any problems with the
     # rest of the startup health report. /mcp shows the full status any time.
     from tools import mcp_client

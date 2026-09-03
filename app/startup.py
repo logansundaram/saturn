@@ -5,6 +5,9 @@ the splash animation interactively, or directly headless. The two warning shaper
 startup problems surface as one readable line instead of a raw exception repr.
 """
 
+import threading
+
+import diag
 from app.graph import build_agent
 
 # RAG ingest (reconciles the disk-cached vector store the search_knowledge_base tool reads).
@@ -37,6 +40,38 @@ def startup_load(interactive: bool = True):
     except Exception as exc:
         warn = _ingest_warning(exc, interactive=interactive)
     return build_agent(), warn
+
+
+def warm_model(role: str = "tool_caller") -> bool:
+    """Load `role`'s model into the daemon with ONE minimal request, so the session's first turn
+    does not pay the weight load inside its planner call (measured 2026-09-02: 50 s and 37 s
+    for a cold "hello" against 15 s warm — the difference between an agent that looks hung and
+    one that answers). The request rides the same `num_ctx` every turn uses: Ollama keys the
+    loaded runner on the context size, so warming at another window would load a runner the
+    first turn then evicts. Every role on a tier binds the same model, so one role suffices.
+    Never raises — a down daemon is the health check's report, not this one's."""
+    from langchain.messages import HumanMessage
+
+    from core.llms import generate, get_model
+    from core.structured import _invoke_kwargs, _model_tag
+
+    try:
+        kwargs = _invoke_kwargs(role, None, 0.0, task="judge")
+        kwargs.setdefault("options", {})["num_predict"] = 1
+        generate(get_model(role), [HumanMessage(content="ok")], tag=_model_tag(role), **kwargs)
+        return True
+    except Exception as exc:
+        diag.log(f"startup: model warm-up skipped ({exc})")
+        return False
+
+
+def start_warm_up(role: str = "tool_caller") -> threading.Thread:
+    """`warm_model` on a daemon thread: the REPL keeps starting while the weights load, and a
+    first query typed early simply queues behind the load at the daemon — as it did before,
+    minus the second load it used to pay."""
+    t = threading.Thread(target=warm_model, args=(role,), name="model-warm-up", daemon=True)
+    t.start()
+    return t
 
 
 def _ingest_warning(exc: Exception, *, reachable: "bool | None" = None,

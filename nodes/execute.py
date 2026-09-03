@@ -245,7 +245,13 @@ def _write_gate(state: AgentState, step: dict) -> "str | None":
     # observation text: a successful read of a log that begins "ERROR:" is a done step with an
     # error-looking result, and text-sniffing it armed the gate on purely mechanical plans (the
     # exact false positive the saturn_status contract removed from update_plan, 2026-07-04).
-    failed = any(s.get("status") == "error" for s in done)
+    # And only a failed PRODUCER arms it: the hazard is a value bridged over a search/read that
+    # never returned one. A prior WRITE that errored (a truncated call, a daemon timeout) left
+    # no value to bridge from, and arming on it turned a transient write failure into a
+    # permanent 'fabrication' skip on the redraft (2026-09-02).
+    failed = any(
+        s.get("status") == "error" and s.get("intended_tool") not in WRITE_TOOLS for s in done
+    )
     if not (searched or failed):
         # A purely mechanical plan (read files the user named, compute from them) never pays
         # for the gate — including its empty-looking results: a computed 0 or an empty diff is

@@ -574,6 +574,33 @@ def test_write_gate_error_status_still_arms(monkeypatch):
     assert blocked and "not present" in blocked
 
 
+def test_write_gate_failed_write_does_not_arm(monkeypatch):
+    """The gate guards a value bridged over a failed PRODUCER (a search/read that returned an
+    error). A prior WRITE that errored (a truncated call, a daemon timeout) produced no value
+    anything could bridge from — arming on it turned every transient write failure into a
+    permanent 'fabrication' skip on the redraft (run 15, 2026-09-02: 'I must not fabricate a
+    story'). With no producer failed and nothing searched, the plan is mechanical: no judge."""
+    def boom(*a, **k):
+        raise AssertionError("a plan whose only failure is a write must not consult the judge")
+
+    monkeypatch.setattr(ex, "structured", boom)
+    plan = [_step(1, "write_file", result="error: the tool call was cut off at the output limit",
+                  status="error"),
+            _step(2, "write_file")]
+    assert ex._write_gate(_state(plan), plan[1]) is None
+
+
+def test_write_gate_failed_producer_still_arms_even_after_a_failed_write(monkeypatch):
+    monkeypatch.setattr(
+        ex, "structured", lambda *a, **k: st.WriteGate(present=False, evidence="not there")
+    )
+    plan = [_step(1, "read_file", result="error: read failed", status="error"),
+            _step(2, "write_file", result="error: no tool call emitted", status="error"),
+            _step(3, "write_file")]
+    blocked = ex._write_gate(_state(plan), plan[2])
+    assert blocked and "not present" in blocked
+
+
 def test_write_gate_ignores_later_retired_steps(monkeypatch):
     """A LATER step the user retired at plan review carries a stamped result too — positional
     priors only (plan_context.steps_before): a retired later SEARCH step must not arm the gate

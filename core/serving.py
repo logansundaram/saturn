@@ -49,7 +49,9 @@ class Task:
 
 TASKS: dict = {
     "plan": Task("plan", strict=True, num_predict=1536, think=True),
-    "judge": Task("judge", strict=True, num_predict=512, think=False),
+    # 1024, not 512: a verbose-but-healthy verdict's `reasoning` field hit 512 exactly and the
+    # JSON never closed (run 16, 2026-09-02); the retry only parsed because it came out shorter.
+    "judge": Task("judge", strict=True, num_predict=1024, think=False),
     "tool_args": Task("tool_args", strict=True, num_predict=512, think=False),
     # The payload-carrying tools (write_file, edit_file): the file's CONTENT rides inside the
     # arguments, so the bound is the size of a file, not of an argument list. Still a circuit

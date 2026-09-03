@@ -336,6 +336,13 @@ def structured(role, messages, schema, fmt, shape, default=None, attempts=3):
         try:
             return schema.model_validate_json(_extract_json(content))
         except (ValidationError, ValueError):
+            from core.llms import was_truncated
+
+            if was_truncated(resp):
+                diag.log(
+                    f"structured[{role}/{schema.__name__}] attempt {i + 1} was cut off at "
+                    f"num_predict — the {role} task's bound is below this verdict's length"
+                )
             diag.log(
                 f"structured[{role}/{schema.__name__}] attempt {i + 1} did not parse: "
                 f"{content[:160]!r}"

@@ -261,3 +261,30 @@ def test_generate_tool_call_uses_the_payload_cap_for_write_file(monkeypatch):
     args, failure, _ = ex._generate_tool_call(tools_by_name["write_file"], "ctx")
     assert failure is None and args["content"] == "hi"
     assert seen[0]["options"]["num_predict"] == serving.num_predict("tool_payload")
+
+
+def test_judge_cap_clears_a_long_rationale():
+    """Run 16 (2026-09-02): the rectify judge's first attempt hit exactly 512 tokens writing its
+    `reasoning` field and the JSON never closed; the retry happened to finish in 241. The cap is
+    a breaker, not a budget — it must sit above a verbose-but-healthy verdict."""
+    assert serving.num_predict("judge") >= 1024
+    assert serving.num_predict("judge") <= serving.num_predict("plan")
+
+
+def test_structured_logs_a_truncated_draw(monkeypatch):
+    import diag
+
+    lines = []
+    monkeypatch.setattr(diag, "log", lambda s: lines.append(s))
+    monkeypatch.setattr(structured, "_role_is_ollama", lambda role: True)
+
+    class M:
+        def invoke(self, msgs, **kw):
+            return AIMessage(content='{"reasoning":"cut', response_metadata={"done_reason": "length"})
+
+    monkeypatch.setattr("core.llms.get_model", lambda role: M())
+    out = structured.structured("judge", [], structured.RectifyBool, structured.RECTIFY_FORMAT,
+                                structured.RECTIFY_SHAPE,
+                                default=structured.RectifyBool(rectify=False, reasoning="d"))
+    assert out.reasoning == "d"
+    assert any("cut off at num_predict" in l for l in lines)

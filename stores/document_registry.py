@@ -18,6 +18,7 @@ already answers. A legacy summaries.json is simply orphaned (cache/ is documente
 delete).
 """
 
+import os
 import re
 from datetime import date
 from pathlib import Path, PurePath
@@ -69,6 +70,62 @@ def remove_workspace_file(file_path: str) -> None:
     gone. Normalized with the same _workspace_key as register, so a remove always finds the entry
     the register created."""
     _remove_entry(_workspace_manifest(), _workspace_key(file_path))
+
+
+# Reconciliation caps: a huge workspace must not turn the per-turn sync into a crawl, and a
+# binary or oversized file gets no entry (its first line is not a description of anything).
+_SYNC_MAX_WALK = 2000          # directory entries examined per sync
+_SYNC_MAX_ADDS = 100           # new entries registered per sync
+_SYNC_MAX_FILE_BYTES = 1_000_000
+_SYNC_SUMMARY_BYTES = 4096     # how much of a new file is read for its first-line summary
+
+
+def sync_workspace_manifest() -> "tuple[list[str], list[str]]":
+    """Reconcile the workspace manifest with the workspace ON DISK, both directions:
+    entries whose file is gone are dropped (a file deleted in Finder, a rename) and regular
+    files nothing registered are added with a first-line summary (a CSV dropped in). Returns
+    `(removed, added)` entry keys. Hidden files/directories, the manifest itself, binaries and
+    oversized files are skipped. Called by the ground node every turn, so the "Workspace files"
+    block the planner reads never names a file that is not there, and knows the ones that are
+    (measured 2026-09-02: a turn spent 2.5 minutes reading four phantom entries). Cheap: one
+    stat per entry plus a capped walk."""
+    workspace = get_config().path("workspace")
+    manifest_path = _workspace_manifest()
+    known = {e["name"] for e in manifest_entries(_read_manifest_text(manifest_path))}
+    removed: list[str] = []
+    for name in sorted(known):
+        if not (workspace / name).is_file():
+            _remove_entry(manifest_path, name)
+            removed.append(name)
+    added: list[str] = []
+    if not workspace.is_dir():
+        return removed, added
+    seen = 0
+    for dirpath, dirnames, filenames in os.walk(workspace):
+        dirnames[:] = sorted(d for d in dirnames if not d.startswith("."))
+        for fname in sorted(filenames):
+            seen += 1
+            if seen > _SYNC_MAX_WALK or len(added) >= _SYNC_MAX_ADDS:
+                return removed, added
+            if fname.startswith("."):
+                continue
+            path = Path(dirpath) / fname
+            key = _workspace_key(path.relative_to(workspace).as_posix())
+            if key in known:
+                continue
+            try:
+                if path.stat().st_size > _SYNC_MAX_FILE_BYTES:
+                    continue
+                with open(path, "rb") as fh:
+                    head = fh.read(_SYNC_SUMMARY_BYTES)
+            except OSError:
+                continue
+            if b"\0" in head:
+                continue
+            content = head.decode("utf-8", errors="replace")
+            _upsert(manifest_path, key, content, PurePath(key).suffix)
+            added.append(key)
+    return removed, added
 
 
 def register_rag_document(source: str, content: str) -> None:

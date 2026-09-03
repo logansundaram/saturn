@@ -10,6 +10,7 @@ from stores.memory_registry import memory_context, mark_used
 from stores.document_registry import (
     read_workspace_manifest,
     read_documents_manifest,
+    sync_workspace_manifest,
 )
 
 """
@@ -147,6 +148,17 @@ def grounding_node(state: AgentState) -> dict:
         + (docs_manifest or "No ingested documents yet.")
     )
 
+    # Reconcile the manifest with the workspace on disk FIRST: a file deleted or dropped in
+    # outside the agent would otherwise leave this block naming a phantom (which the planner
+    # then reads, fails, and replans around) or missing a real file. Best-effort — a sync
+    # failure must never fail the first node of every turn.
+    try:
+        removed, added = sync_workspace_manifest()
+        if removed or added:
+            diag.log(f"grounding_node : workspace manifest synced "
+                     f"(-{len(removed)} phantom, +{len(added)} unregistered)")
+    except Exception as exc:
+        diag.log(f"grounding_node : workspace manifest sync failed: {exc}")
     ws_manifest = read_workspace_manifest().strip()
     sections.append(
         "### Workspace files (accessible via read_file / write_file / list_directory)\n"

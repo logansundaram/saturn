@@ -62,7 +62,9 @@ from core.structured import (
     structured,
     _model_tag,
 )
-from core.tool_args import coerce_args, launders_a_value, parse_text_call, schema_hint
+from core.tool_args import (
+    coerce_args, concrete_args, launders_a_value, parse_text_call, schema_hint,
+)
 
 # The steps the semantic write gate fronts (WRITE_TOOLS), and the gathering tools whose
 # presence arms it (SEARCH_TOOLS) — both from core/plan_context, THE one home for the engine's
@@ -297,6 +299,29 @@ def _write_gate(state: AgentState, step: dict) -> "str | None":
     return None
 
 
+# The pre-action "reasoning" a concrete-filled call carries (the gate's e(xplain) shows it):
+# there was no model turn to quote, and the audit trail should say so rather than show blank.
+CONCRETE_ARGS_NOTE = "arguments copied from the plan step itself (no model call)"
+
+
+def _workspace_kind(rel_path: str) -> "str | None":
+    """"file" / "dir" / None for a path INSIDE the workspace — the concrete-args predicate. Same
+    resolution rule as tools/files._resolve (per call, is_relative_to), so a label can never fill
+    a path the tool itself would refuse."""
+    try:
+        workspace = get_config().path("workspace").resolve()
+        target = (workspace / rel_path).resolve()
+        if not target.is_relative_to(workspace):
+            return None
+        if target.is_file():
+            return "file"
+        if target.is_dir():
+            return "dir"
+        return None
+    except Exception:
+        return None
+
+
 def _metrics(resp) -> dict:
     if resp is None:
         return {}
@@ -498,7 +523,16 @@ def execute_node(state: AgentState):
             diag.log(f"execute_node : {time.perf_counter() - start:.4f}s (write gate skipped)")
             return updates
 
-    args, failure, resp = _generate_tool_call(tool, context)
+    # Concrete-step fill (core/tool_args.concrete_args): a step whose only argument is already
+    # spelled in its label ("Read notes.md", current_time) gets its call COPIED, not generated —
+    # one fewer model call per such step, and the label is the plan the human reviewed. Every
+    # check below reads the arguments and runs regardless of who wrote them.
+    args = concrete_args(tool_name, step.get("label"), _workspace_kind)
+    if args is not None:
+        failure, resp = None, None
+        diag.log(f"execute_node : concrete args for {tool_name} copied from the step (no model call)")
+    else:
+        args, failure, resp = _generate_tool_call(tool, context)
     if args is None:
         step["result"] = clean(failure or "error: no tool call emitted")
         # Structural stamp, unconditional: the step's tool was never called, so this is an
@@ -552,7 +586,7 @@ def execute_node(state: AgentState):
     # from here exactly as before (policy, quarantine escalation, egress attribution, /undo
     # snapshots all unchanged). The model's own text rides along as the pre-action reasoning the
     # gate's `e(xplain)` answer shows.
-    reasoning = getattr(resp, "content", "") if resp is not None else ""
+    reasoning = getattr(resp, "content", "") if resp is not None else CONCRETE_ARGS_NOTE
     reasoning = reasoning if isinstance(reasoning, str) else str(reasoning)
     call = {
         "name": tool_name,

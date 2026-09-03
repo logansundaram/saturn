@@ -254,6 +254,74 @@ def test_execute_tool_step_emits_corrected_call_for_approval(monkeypatch):
     assert ex.route_after_execute({"messages": out["messages"]}) == "approval"
 
 
+def _kinds(files=(), dirs=()):
+    return lambda p: "file" if p in files else ("dir" if p in dirs else None)
+
+
+def test_concrete_args_copies_a_single_named_existing_target():
+    k = _kinds(files={"notes.md", "data/report.csv"}, dirs={"data", "notes/drafts"})
+    assert tool_args.concrete_args("read_file", "Read notes.md", k) == {"file_path": "notes.md"}
+    assert tool_args.concrete_args("read_file", "Read data/report.csv.", k) == {"file_path": "data/report.csv"}
+    assert tool_args.concrete_args("list_directory", "List the files in data/", k) == {"directory": "data"}
+    assert tool_args.concrete_args("list_directory", "List notes/drafts", k) == {"directory": "notes/drafts"}
+    assert tool_args.concrete_args("find_files", "Find every *.csv file", k) == {"pattern": "*.csv"}
+    assert tool_args.concrete_args("find_files", "Find files matching **/drafts/*.md", k) == {"pattern": "**/drafts/*.md"}
+    assert tool_args.concrete_args("current_time", "Get the current time", k) == {}
+
+
+def test_concrete_args_falls_through_when_the_copy_would_be_a_guess():
+    k = _kinds(files={"notes.md", "story.txt"}, dirs={"data"})
+    # two paths, a missing file, a placeholder, a folder named in words, a file where a
+    # directory is wanted, two globs, a glob plus a directory, a tool whose arg is not a path
+    assert tool_args.concrete_args("read_file", "Read notes.md and story.txt", k) is None
+    assert tool_args.concrete_args("read_file", "Read summary.txt", k) is None
+    assert tool_args.concrete_args("read_file", "Read the file the listing names", k) is None
+    assert tool_args.concrete_args("read_file", "Read data", k) is None
+    assert tool_args.concrete_args("list_directory", "List the reports folder", k) is None
+    assert tool_args.concrete_args("list_directory", "List notes.md", k) is None
+    assert tool_args.concrete_args("find_files", "Find *.csv and *.txt files", k) is None
+    assert tool_args.concrete_args("find_files", "Find *.csv under data/", k) is None
+    assert tool_args.concrete_args("find_files", "Find the report files", k) is None
+    assert tool_args.concrete_args("search_files", "Search notes.md for totals", k) is None
+    assert tool_args.concrete_args("write_file", "Write notes.md", k) is None
+    # a predicate that raises is a miss, never an exception in the execute node
+    assert tool_args.concrete_args("read_file", "Read notes.md", lambda p: 1 / 0) is None
+
+
+def test_execute_concrete_read_file_step_makes_no_model_call(monkeypatch):
+    def no_model(tool, ctx):
+        raise AssertionError("the step's arguments were in its label; no model call expected")
+    monkeypatch.setattr(ex, "_generate_tool_call", no_model)
+    monkeypatch.setattr(ex, "_workspace_kind", _kinds(files={"notes.md"}))
+    plan = [_step(1, "read_file", label="Read notes.md")]
+    out = ex.execute_node(_state(plan))
+    (msg,) = out["messages"]
+    (call,) = msg.tool_calls
+    assert call["name"] == "read_file" and call["args"] == {"file_path": "notes.md"}
+    assert msg.content == ex.CONCRETE_ARGS_NOTE
+    assert ex.route_after_execute({"messages": out["messages"]}) == "approval"
+
+
+def test_execute_concrete_fill_still_generates_when_the_file_is_missing(monkeypatch):
+    monkeypatch.setattr(ex, "_generate_tool_call", lambda tool, ctx: ({"file_path": "x.txt"}, None, None))
+    monkeypatch.setattr(ex, "_workspace_kind", lambda p: None)
+    out = ex.execute_node(_state([_step(1, "read_file", label="Read notes.md")]))
+    (msg,) = out["messages"]
+    assert msg.tool_calls[0]["args"] == {"file_path": "x.txt"}
+
+
+def test_workspace_kind_stays_inside_the_workspace(isolated_paths):
+    from config import get_config
+    ws = get_config().path("workspace")
+    (ws / "data").mkdir(parents=True, exist_ok=True)
+    (ws / "notes.md").write_text("hi", encoding="utf-8")
+    assert ex._workspace_kind("notes.md") == "file"
+    assert ex._workspace_kind("data") == "dir"
+    assert ex._workspace_kind("missing.md") is None
+    assert ex._workspace_kind("../../etc/passwd") is None
+    assert ex._workspace_kind("/etc/passwd") is None
+
+
 def test_execute_write_gate_skip_short_circuits(monkeypatch):
     monkeypatch.setattr(ex, "_write_gate", lambda state, step: "skipped write: value missing")
     called = []

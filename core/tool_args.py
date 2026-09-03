@@ -107,6 +107,73 @@ _SCHEMA_SHAPES: dict[str, str] = {
 }
 
 
+# ── concrete-step argument fill (2026-09-03) ──────────────────────────────────────────────────
+#
+# A planned step whose ONLY argument is already spelled out in its label ("Read notes.md") does
+# not need a model call to produce {"file_path": "notes.md"}: the call is a copy. Measured
+# before this: a "read all files" turn spent one ~3 s tool-call generation per read_file step
+# (15 calls, 143 s on the 9b) to emit paths the plan had already named. Deliberately narrow —
+# the fill is a copy, never a guess:
+#   - current_time takes no arguments;
+#   - read_file / list_directory only when the label names EXACTLY ONE path-like token and the
+#     caller's `kind_of` says it is a file / a directory in the workspace (the spelling is taken
+#     from the label as written, so the tool sees what the plan said);
+#   - find_files only when the label carries EXACTLY ONE glob ("*.csv", "report*",
+#     "**/drafts/*.md") and no other path, searched from the workspace root.
+# Two paths, a placeholder ("the file the listing names"), a folder named in words ("the
+# reports folder"), or a name that isn't there all fall through to the model as before.
+# Everything downstream (the review revocation lock, effect authorization, the stall detector,
+# the approval gate) reads the arguments and runs unchanged — the fill only replaces WHO wrote
+# them.
+# A slash-joined path (optionally ending in "/"), a bare name ending in "/" ("data/"), or a
+# name with an extension. Tokens keep the label's spelling; a trailing "/" is dropped.
+_LABEL_PATH_RE = re.compile(
+    r"[A-Za-z0-9_.\-]*(?:/[A-Za-z0-9_.\-]+)+/?|[A-Za-z0-9_.\-]+/|[A-Za-z0-9_\-]+\.[A-Za-z0-9]{1,8}"
+)
+_LABEL_GLOB_RE = re.compile(r"[A-Za-z0-9_.\-/*?\[\]]*[*?][A-Za-z0-9_.\-/*?\[\]]*")
+
+_CONCRETE_NO_ARG_TOOLS = ("current_time",)
+
+
+def _label_tokens(label, pattern: "re.Pattern") -> list:
+    out: list = []
+    for m in pattern.finditer(str(label or "")):
+        tok = m.group(0).strip(".,;:").rstrip("/")
+        if tok and tok not in out:
+            out.append(tok)
+    return out
+
+
+def concrete_args(tool_name: str, label, kind_of) -> Optional[dict]:
+    """Arguments copied from the step label when they are unambiguous, else None (generate them).
+    `kind_of(rel_path)` answers "file", "dir", or None for a workspace-relative path."""
+    if tool_name in _CONCRETE_NO_ARG_TOOLS:
+        return {}
+    if tool_name == "find_files":
+        globs = _label_tokens(label, _LABEL_GLOB_RE)
+        # plain paths are scanned with the globs blanked out, so "**/drafts/*.md" is one glob,
+        # not a glob plus the path "/drafts"
+        plain = _label_tokens(_LABEL_GLOB_RE.sub(" ", str(label or "")), _LABEL_PATH_RE)
+        if len(globs) == 1 and not plain:
+            return {"pattern": globs[0]}
+        return None
+    if tool_name not in ("read_file", "list_directory"):
+        return None
+    tokens = _label_tokens(label, _LABEL_PATH_RE)
+    if len(tokens) != 1:
+        return None
+    (path,) = tokens
+    try:
+        kind = kind_of(path)
+    except Exception:
+        kind = None
+    if tool_name == "read_file" and kind == "file":
+        return {"file_path": path}
+    if tool_name == "list_directory" and kind == "dir":
+        return {"directory": path}
+    return None
+
+
 def parse_text_call(content: str) -> Optional[dict]:
     """Recover key/value args from a TEXT-format tool call (gemma's `key: <|"|>value<|"|>`
     dialect, or bare JSON-ish "key": "value" pairs). None when nothing parses."""

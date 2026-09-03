@@ -25,11 +25,19 @@ from textutil import head_tail
 # third of a web_search payload and asked for another search — its recorded verdict said the
 # answer was not stated "in the truncated" results — and the execute step copied values from a
 # clipped read. One or a few results now ride whole up to _RESULT_CAP; as the plan grows the
-# per-result share shrinks toward _RESULT_FLOOR so the block never exceeds ~_BLOCK_BUDGET
-# (16k chars ≈ 4k tokens, inside every tier's window with the system prompt intact).
+# per-result share shrinks toward _RESULT_FLOOR so the block never exceeds ~_BLOCK_BUDGET.
+#
+# 8k chars ≈ 2k tokens (2026-09-03; was 16k): the block rides EVERY per-step execute prompt and
+# the rectify/replan plan text, and prompt prefill is the turn's dominant cost (~400 tokens/s on
+# the 9b — a full 16k block was ~10 s per call, re-read on every step of a long plan because
+# its content changes each step and so never hits the daemon's prefix cache; see
+# core/serving.py, "the prefix cache"). One or two results still ride whole at _RESULT_CAP;
+# the floor (400, was 800 — halved with the budget so twenty results still fit it) is reached
+# at twenty. The immediately preceding step rides separately at _CALLOUT_CAP, and synthesize
+# reads the full observations from tool_results, so the floor bounds only the OLDER results.
 _RESULT_CAP = 3000
-_RESULT_FLOOR = 800
-_BLOCK_BUDGET = 16000
+_RESULT_FLOOR = 400
+_BLOCK_BUDGET = 8000
 
 
 def _result_cap_for(n_results: int) -> int:

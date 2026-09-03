@@ -678,7 +678,10 @@ pinned by offline tests (`git log main..tool-call-output-cap` has one commit per
 - **files — the navigation tools skip hidden entries** (`.manifest.md`, `.git`, `.DS_Store`),
   so an empty workspace reads as empty (`tests/test_hidden_entries.py`).
 - **tests — a raising tool still records a `tool_event`** (the no-call guard's premise).
+- **plan_context — results share a block budget** (`_RESULT_CAP` 3000 / `_RESULT_FLOOR` 800 /
+  `_BLOCK_BUDGET` 16000 via `_result_cap_for(n)`): the rectify judge was judging a third of a
+  web_search payload and replanning for more. Closes the `_RESULT_CAP` note above.
 
 Observed but left alone (judgment calls, not engine defects): the 9b planner answers "How
 many moons does Saturn have?" from priors and the judge does not send it to web_search
-(identical on main); `core/plan_context._RESULT_CAP = 800` (noted above).
+(identical on main).

@@ -72,6 +72,17 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
   transient write failure is no longer skipped with a fabricated-value disclosure.
 - **`search_knowledge_base` works from a clean install.** `numpy` is declared; without it every
   knowledge-base search failed at query time.
+- **One dead-end retry per turn.** An empty search or listing gets one retry with a different
+  approach; when that also comes up empty the turn reports it instead of replanning again
+  (before: an empty workspace was listed three times over 90 s).
+- **The first turn no longer pays the model load.** The REPL warms the tier's model on a
+  background thread right after the startup health check (a cold "hello" took 50 s; warm, 15 s).
+- **`read_file` says where the file is not.** A missing path reports "File not found in the
+  workspace" and, when the name is an ingested knowledge-base document, points at
+  `search_knowledge_base` instead of surfacing a raw `[Errno 2]`.
+- **Write-only turns are not figure-checked.** The groundedness note fires only when the turn
+  gathered something (a read, a search, a shell run); a turn whose tools only wrote a file the
+  agent authored no longer marks the file's own numbers as untraceable.
 - The rectify judge's output bound is 1024 (a verbose verdict was being cut mid-JSON), and a
   structured draw the daemon cuts at the bound is named in `logging/diag.log`.
 

@@ -27,6 +27,7 @@ from core.plan_context import (
     request_authorized,
     vetoes_block,
 )
+from core.plan_ops import retarget_knowledge_base_reads
 from core.state import AgentState
 # One vocabulary for the refusal: execute stamps this same prefix when it re-checks the
 # generated ARGUMENTS (one producer, as with update_plan's DECLINE_TEXT import from approval).
@@ -128,7 +129,7 @@ def replan_node(state: AgentState):
     # resurrection is the prompt's job to prevent.
     vetoed = {str(v).strip().lower() for v in state.get("plan_vetoes") or []}
     fresh = [
-        s for s in to_steps(draft)
+        s for s in retarget_knowledge_base_reads(to_steps(draft))
         if str(s.get("label") or "").strip().lower() not in done_descs
         and str(s.get("label") or "").strip().lower() not in vetoed
     ]

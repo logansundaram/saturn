@@ -38,6 +38,47 @@ from core.state import TERMINAL_STATUSES
 _VALID_STATUS = ("pending", "active") + tuple(TERMINAL_STATUSES)
 
 
+def retarget_knowledge_base_reads(steps: list[dict]) -> list[dict]:
+    """The namespace guard (2026-09-02): a `read_file` step whose label names an INGESTED
+    document that has no workspace file of that name is retargeted to `search_knowledge_base`,
+    the one tool that can read it. The engine knows both namespaces exactly (the two manifests);
+    a small planner reads "read X" as read_file even when the context lists X under the
+    knowledge base (measured twice against qwen3.5:9b, prompt rule and all). Deterministic and
+    safe: both tools are read_only, the label is untouched, the swap is logged. The match is
+    the document's full manifest name (or its basename) appearing in the label,
+    case-insensitively — never a stem, so 'notes' does not claim 'notes.md'. In place on the
+    given dicts; returns the same list for chaining."""
+    reads = [s for s in steps or [] if s.get("intended_tool") == "read_file"]
+    if not reads:
+        return steps
+    try:
+        from pathlib import PurePath
+
+        from config import get_config
+        from stores.document_registry import manifest_entries, read_documents_manifest
+
+        names = [e["name"] for e in manifest_entries(read_documents_manifest()) if e.get("name")]
+        workspace = get_config().path("workspace")
+    except Exception:  # a manifest problem must never fail planning
+        return steps
+    if not names:
+        return steps
+    for s in reads:
+        label = str(s.get("label") or "").lower()
+        for name in names:
+            base = PurePath(name).name
+            if name.lower() in label or base.lower() in label:
+                if (workspace / name).is_file() or (workspace / base).is_file():
+                    break  # a same-named workspace file: read_file is right
+                s["intended_tool"] = "search_knowledge_base"
+                import diag
+
+                diag.log(f"plan: retargeted read_file -> search_knowledge_base for "
+                         f"knowledge-base document {name!r}")
+                break
+    return steps
+
+
 def normalize(plan: Optional[list[dict]]) -> list[dict]:
     """Return a clean copy of the plan with every field present and `step_id`s renumbered 1..N.
     `result` survives untouched (it is the data bus — a completed step's recorded outcome), and

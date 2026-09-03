@@ -3,6 +3,7 @@ import time
 import diag
 from langchain.messages import HumanMessage
 
+from core.plan_ops import retarget_knowledge_base_reads
 from core.state import AgentState
 from core.messages import planner_sys_msg
 from core.structured import (
@@ -93,7 +94,7 @@ def plan_node(state: AgentState):
         PLAN_SHAPE,
         default=_PlanOut(),
     )
-    plan = to_steps(draft)
+    plan = retarget_knowledge_base_reads(to_steps(draft))
 
     if not plan:
         diag.log("plan_node : planner returned nothing parseable — recording a parse-error incident")

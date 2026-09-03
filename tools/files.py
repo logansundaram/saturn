@@ -68,12 +68,39 @@ def _resolve_dir(rel_path: str):
     return workspace, target, error
 
 
+def _not_found_text(file_path: str) -> str:
+    """The read_file refusal for a path that is not a workspace file. When its basename is an
+    ingested knowledge-base document, say so and name the tool — the manifest read is one
+    mtime-validated stat (document_registry's memo), so this costs nothing on the hot path."""
+    from stores.document_registry import manifest_entries, read_documents_manifest
+
+    text = f"File not found in the workspace: {file_path}."
+    try:
+        base = Path(file_path).name.lower()
+        names = {e["name"].lower() for e in manifest_entries(read_documents_manifest())}
+    except Exception:  # a broken manifest must not turn a not-found into a crash
+        names = set()
+    if base and base in names:
+        text += (
+            " It is a knowledge base document, not a workspace file — read it with "
+            "search_knowledge_base instead."
+        )
+    return text
+
+
 @register_tool("read_only")
 def read_file(file_path: str):
     """Reads the contents of a file in the workspace and returns it as a string. file_path is relative to the workspace root."""
     _, target_path, error = _resolve(file_path)
     if error:
         return error
+    if not target_path.is_file():
+        # RAISED, not returned: a missing file is a failed step (status error, disclosed as an
+        # incident) exactly as before — only the text changed. The raw OSError told a redraft
+        # nothing; the two namespaces (workspace vs. knowledge base, one tool each) are the
+        # confusion a small planner actually has, so the refusal names the namespace and, when
+        # the name matches an ingested document, the tool that reads it (2026-09-02).
+        raise FileNotFoundError(_not_found_text(file_path))
     # Always UTF-8: the workspace holds user docs/notes that routinely carry non-cp1252
     # characters, and the default Windows encoding (cp1252) would raise UnicodeDecodeError on
     # them. errors="replace" degrades an undecodable byte to a marker rather than failing the

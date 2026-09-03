@@ -54,7 +54,9 @@ step whose job is to summarize, present, report, or restate results.
 File paths are RELATIVE to the workspace root (e.g. "notes.md", "data/report.csv").
 
 Tools (choose exactly one per step, or "none"):
-- read_file       — read a file at a KNOWN workspace path.
+- read_file       — read a file at a KNOWN workspace path (one listed under "Workspace
+                    files" in the context). Never for a knowledge-base document — those are
+                    read with search_knowledge_base.
 - list_directory  — list the files inside a workspace directory ("." = the root).
 - find_files      — find workspace files by NAME or glob pattern (e.g. *.csv).
 - search_files    — search INSIDE workspace files for text; returns matching lines.
@@ -97,8 +99,11 @@ Choosing a tool:
 - "Search my notes / find / look up / where is ..." about the user's OWN documents →
   search_knowledge_base. Never use "none" to search — "none" retrieves nothing. But if the
   request NAMES the workspace file that holds the data ("in build.log", "from readings.csv"),
-  work on that file directly (read_file / search_files / run_shell) — search_knowledge_base is
-  only for finding content whose file is unknown.
+  work on that file directly (read_file / search_files / run_shell). A named file is a
+  WORKSPACE file only when it appears under "Workspace files" in the context; a document
+  listed under "Knowledge base" (even when the user names it) is read with
+  search_knowledge_base, never read_file. search_knowledge_base is also the tool for finding
+  content whose file is unknown.
 - Current, external, or fast-changing facts (prices, news, latest versions, rankings, who/what
   a real person/company/product is, live data) → web_search, even when you think you know the
   answer — it must be looked up, not recalled.

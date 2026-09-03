@@ -672,6 +672,12 @@ pinned by offline tests (`git log main..tool-call-output-cap` has one commit per
 - **planner rule** — a named file is a workspace file only when the context lists it there.
 - **ground — workspace manifest reconciled with disk every turn**
   (`document_registry.sync_workspace_manifest`; `tests/test_workspace_sync.py`).
+- **plan / replan — the namespace guard** (`plan_ops.retarget_knowledge_base_reads`): a
+  read_file step naming an ingested document with no workspace file of that name becomes a
+  search_knowledge_base step (`tests/test_plan_retarget.py`).
+- **files — the navigation tools skip hidden entries** (`.manifest.md`, `.git`, `.DS_Store`),
+  so an empty workspace reads as empty (`tests/test_hidden_entries.py`).
+- **tests — a raising tool still records a `tool_event`** (the no-call guard's premise).
 
 Observed but left alone (judgment calls, not engine defects): the 9b planner answers "How
 many moons does Saturn have?" from priors and the judge does not send it to web_search

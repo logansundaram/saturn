@@ -189,7 +189,7 @@ def test_schema_hint_has_shape_for_known_and_generic_for_unknown():
 
 
 def test_results_block_caps_and_numbers():
-    plan = [_step(1, "read_file", result="A" * 1000, status="done"), _step(2)]
+    plan = [_step(1, "read_file", result="A" * 5000, status="done"), _step(2)]
     block = plan_context.results_block(plan)
     assert block.startswith("Results from earlier steps")
     assert "…(truncated)" in block
@@ -216,7 +216,7 @@ def test_plan_txt_caps_done_results():
     # prompts on a small window and front-truncate the system prompt.
     plan = [_step(1, "read_file", result="A" * 20000, status="done")]
     txt = plan_context.plan_txt(plan)
-    assert "…(truncated)" in txt and len(txt) < 2000
+    assert "…(truncated)" in txt and len(txt) < plan_context._RESULT_CAP + 200
 
 
 def test_exec_context_callout_is_bounded():
@@ -1065,3 +1065,33 @@ def test_a_raising_tool_still_records_a_tool_event(monkeypatch, isolated_paths):
             _step(2, "read_file", result="Error calling read_file: File not found", status="error")]
     out = rc.rectify_node(_state(plan, tool_events=delta["tool_events"]))
     assert out["rectify"] is False and "could not generate" not in str(out.get("plan", ""))
+
+
+# ── the results budget (2026-09-02): the judge must see the evidence it judges ────────────────
+
+
+def test_a_web_search_payload_reaches_the_judge_whole():
+    """At the old flat 800-char cap the rectify judge saw the first third of a web_search payload
+    and asked for another search — its own recorded verdict said the winner was not stated 'in
+    the truncated' results (run 16). One or a few results ride whole up to _RESULT_CAP."""
+    payload = "\n".join(
+        f"{i}. Result title {i} — https://example.com/{i} — " + ("snippet text " * 25)
+        for i in range(5)
+    )
+    assert 1500 < len(payload) < plan_context._RESULT_CAP
+    plan = [_step(1, "web_search", result=payload, status="done"), _step(2)]
+    assert "…(truncated)" not in plan_context.results_block(plan)
+    assert "…(truncated)" not in plan_context.plan_txt(plan)
+
+
+def test_many_results_share_one_block_budget():
+    """The per-result cap shrinks as the plan grows so the block stays bounded — but never below
+    the floor, so a long plan's results are still readable."""
+    n = 20
+    plan = [_step(i, "read_file", result="B" * 5000, status="done") for i in range(1, n + 1)]
+    block = plan_context.results_block(plan)
+    assert len(block) < plan_context._BLOCK_BUDGET + n * 120
+    assert plan_context._result_cap_for(n) == max(plan_context._RESULT_FLOOR,
+                                                 plan_context._BLOCK_BUDGET // n)
+    assert plan_context._result_cap_for(1) == plan_context._RESULT_CAP
+    assert plan_context._result_cap_for(1000) == plan_context._RESULT_FLOOR

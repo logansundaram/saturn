@@ -20,16 +20,30 @@ from textutil import head_tail
 # Cap each earlier result inside the results block. The full observation still lives on the step
 # (and in tool_results for synthesize's numbered sections); this bound keeps a per-step context
 # from re-sending every prior read in full.
-_RESULT_CAP = 800
+#
+# A BUDGET, not a flat cap (2026-09-02): at a flat 800 chars the rectify judge saw the first
+# third of a web_search payload and asked for another search — its recorded verdict said the
+# answer was not stated "in the truncated" results — and the execute step copied values from a
+# clipped read. One or a few results now ride whole up to _RESULT_CAP; as the plan grows the
+# per-result share shrinks toward _RESULT_FLOOR so the block never exceeds ~_BLOCK_BUDGET
+# (16k chars ≈ 4k tokens, inside every tier's window with the system prompt intact).
+_RESULT_CAP = 3000
+_RESULT_FLOOR = 800
+_BLOCK_BUDGET = 16000
 
 
-def _cap_result(result) -> str:
+def _result_cap_for(n_results: int) -> int:
+    """The per-result cap when `n_results` share the block budget."""
+    return max(_RESULT_FLOOR, min(_RESULT_CAP, _BLOCK_BUDGET // max(n_results, 1)))
+
+
+def _cap_result(result, cap: int = _RESULT_CAP) -> str:
     """One earlier-step result, stripped and capped for a prompt block. Head-only with an explicit
     marker (NOT textutil.head_tail): the two callers below are prompt surfaces the same judge
     reads, so they must elide identically — the idiom was written out twice and could drift on the
     marker or the bound."""
     r = str(result or "").strip()
-    return r if len(r) <= _RESULT_CAP else r[:_RESULT_CAP] + " …(truncated)"
+    return r if len(r) <= cap else r[:cap] + " …(truncated)"
 
 # The "previous step" callout carries more of its result than the block (it is the referent of
 # "the previous step's result" in step labels), but still bounded — a ~12k clamped observation
@@ -350,8 +364,9 @@ def results_block(plan) -> str:
     if not done:
         return ""
     lines = ["Results from earlier steps (use these exact values):"]
+    cap = _result_cap_for(len(done))
     for i, s in enumerate(done, 1):
-        lines.append(f"{i}. {s.get('label')} -> {_cap_result(s.get('result'))}")
+        lines.append(f"{i}. {s.get('label')} -> {_cap_result(s.get('result'), cap)}")
     return "\n".join(lines)
 
 
@@ -396,12 +411,13 @@ def plan_txt(plan) -> str:
     a small model's window and front-truncate the very system prompt the call depends on),
     PENDING steps with their intended tool."""
     lines = []
+    cap = _result_cap_for(sum(1 for s in plan or [] if s.get("result") is not None))
     for i, s in enumerate(plan or [], 1):
         tool = s.get("intended_tool") or "none"
         if s.get("result") is None:
             lines.append(f"{i}. [PENDING] tool={tool} | {s.get('label')}")
         else:
-            r = _cap_result(s.get("result"))
+            r = _cap_result(s.get("result"), cap)
             lines.append(
                 f"{i}. [DONE] tool={tool} | {s.get('label')}\n   result: {r}"
             )

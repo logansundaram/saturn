@@ -454,9 +454,19 @@ def observation_pool(state: AgentState, query: str) -> str:
 def gate_applies(state: AgentState) -> bool:
     """The gate runs only when the turn actually OBSERVED something: where nothing was gathered
     there is no ground truth to override, and a general-knowledge answer ("a 256-bit hash") draws
-    on the model's own knowledge exactly as it should."""
+    on the model's own knowledge exactly as it should.
+
+    A WRITE step's observation is a confirmation ("File created successfully"), not gathered
+    ground truth: a turn whose tools only wrote observed nothing a figure could contradict, and
+    its answer restating the file it authored is the general-knowledge case again (measured
+    2026-09-02: "1920" from "1920s Great Gatsby" marked untraceable in a write-only turn). Any
+    gathering step alongside the write — a read, a search, a shell run — still arms the gate,
+    so the read-then-write laundering path `observation_pool` guards is unchanged."""
+    from core.plan_context import WRITE_TOOLS
+
     return any(
-        s.get("intended_tool") and s.get("result") is not None
+        s.get("intended_tool") and s.get("intended_tool") not in WRITE_TOOLS
+        and s.get("result") is not None
         for s in state.get("plan") or []
     )
 

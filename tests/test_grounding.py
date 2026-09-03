@@ -234,3 +234,18 @@ def test_the_gate_does_not_fight_a_human_edit_on_resume(monkeypatch):
     assert out["answer_buffer"]["text"] == "The total is 999."   # the human's text stands
     assert "999" in out["messages"][-1].content
     assert syn.GROUNDING_NOTE_HEADER in out["messages"][-1].content   # …but it is marked
+
+
+def test_the_gate_is_off_when_the_only_observations_are_write_confirmations():
+    """A write confirmation ("File created successfully") gathers no ground truth: a turn whose
+    tools only WROTE has nothing observed for a figure to contradict, exactly like a turn that
+    ran no tool (run 21, 2026-09-02: the answer restated a file the agent had just authored and
+    "1920" from "1920s Great Gatsby" was marked untraceable). A read, search, or any other
+    gathering step still arms the gate, so the read-then-write laundering case is unchanged."""
+    st = base_state(plan=[step(1, "Write", "write_file", "File created successfully", "done")])
+    assert not syn.gate_applies(st)
+    assert syn.ungrounded_figures({"text": "a 1920s party"}, st, "q") == ()
+    st = base_state(plan=[step(1, "Read", "read_file", "amount: 120", "done"),
+                          step(2, "Write", "write_file", "File created successfully", "done")])
+    assert syn.gate_applies(st)
+    assert syn.ungrounded_figures({"text": "Estimated cost: 12500"}, st, "q") == ("12500",)

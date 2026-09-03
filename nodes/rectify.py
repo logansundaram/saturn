@@ -375,10 +375,17 @@ def rectify_node(state: AgentState):
 
     # 4. Search/list/count dead ends are retryable once (a wrong pattern or scope may be hiding
     #    real data); a read_file miss or an empty knowledge-base search is a genuine absence.
+    #    ONCE means once per turn: the retry is asked to try "one different concrete approach",
+    #    and when that also comes up empty the second dead end IS the confirmation — it goes to
+    #    the judge, never to another replan. Read structurally off the plan (two dead-end
+    #    results already recorded), not off the replan counter, which only bounded the loop
+    #    when something ELSE had replanned first (run 18, 2026-09-02: an empty root listing,
+    #    an empty find_files('*'), then a third listing of the same root).
     if (
         not pending
         and last_done is not None
         and retryable_dead_end(last_done)
+        and sum(1 for s in plan if retryable_dead_end(s)) < 2
         and state.get("replans", 0) < 2
     ):
         diag.log(f"rectify_node : {time.perf_counter() - start:.4f}s (dead end -> retry)")

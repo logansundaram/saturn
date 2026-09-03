@@ -997,3 +997,26 @@ def test_rectify_no_call_guard_is_per_tool(monkeypatch):
             _step(2, "calculate", result="error: no tool call emitted", status="error")]
     out = rc.rectify_node(_state(plan, tool_events=[]))
     assert out["rectify"] is True
+
+
+def test_rectify_dead_end_retry_is_once_per_turn(monkeypatch):
+    """Branch 4 promises ONE retry ("a wrong pattern or scope may hide real data"). Bounding it
+    only by `replans < 2` allowed a second dead-end retry when nothing else had replanned — run
+    18 (2026-09-02): an empty root listing, a retry with find_files('*') that was also empty,
+    then a THIRD listing of the same root before the turn admitted the workspace was empty.
+    The second empty result is the confirmation the first retry was asked for: it goes to the
+    judge, not to another replan."""
+    monkeypatch.setattr(rc, "structured",
+                        lambda *a, **k: st.RectifyBool(rectify=False, reasoning="absent"))
+    plan = [_step(1, "list_directory", result="[]", status="done"),
+            _step(2, "find_files", result="No files matching '*' under '.'.", status="done")]
+    out = rc.rectify_node(_state(plan, replans=1))
+    assert out["rectify"] is False and "came up empty" not in out["reasoning"]
+
+
+def test_rectify_dead_end_retry_still_fires_for_the_first_dead_end(monkeypatch):
+    _no_llm(monkeypatch)
+    plan = [_step(1, "read_file", result="header,rows", status="done"),
+            _step(2, "search_files", result="No matches for /tokn/ in '.'", status="done")]
+    out = rc.rectify_node(_state(plan, replans=0))
+    assert out["rectify"] is True and "came up empty" in out["reasoning"]

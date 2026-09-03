@@ -31,6 +31,11 @@ It deliberately does NOT include:
 
 Built once per turn (manifests/memory are static within a turn). Dynamic information —
 tool results — flows through `messages`, never this frozen grounding string.
+
+Section order is stable-first (instructions, manifests) and per-turn-last (memory's by-match
+selection, the recent-conversation recap, attachments): the block is the planner prompt's
+tail, and the daemon's prefix cache survives a turn only when the tokens that change sit at
+the very end (core/serving.py, "the prefix cache"; 2026-09-03).
 """
 
 # Per-workspace instructions (the CLAUDE.md/AGENTS.md equivalent): a SATURDAY.md at the workspace
@@ -116,32 +121,6 @@ def grounding_node(state: AgentState) -> dict:
             "for this workspace; follow it)\n" + instructions
         )
 
-    # Selected against THIS request (memory_registry.select_for_context): the user layer, open
-    # commitments and the recent memo digest always; agent/entities/negative facts only when they
-    # share tokens with the query — under one cap, with a trailer naming what didn't load.
-    # /trace context shows the exact block, so selection stays auditable. The by-match facts
-    # and the memo digest that loaded get their last-used stamped (the expiry signal /memory
-    # flags stale on) — the one read-path write, and it touches no fact text; best-effort — a
-    # stamp failure must never fail the first node of every turn.
-    memory, matched_ids = memory_context(state.get("current_query", ""))
-    if memory:
-        sections.append(
-            "### Persistent memory (what the user asked me to remember and what I learned; "
-            "#id lets `remember(..., replaces=<id>)` correct a fact)\n" + memory
-        )
-        if matched_ids:
-            try:
-                mark_used(matched_ids)
-            except Exception as exc:
-                diag.log(f"grounding_node : memory last-used stamp failed: {exc}")
-
-    recap = _recent_exchanges(state.get("messages", []))
-    if recap:
-        sections.append(
-            "### Recent conversation (this session — for resolving follow-up references)\n"
-            + recap
-        )
-
     docs_manifest = read_documents_manifest().strip()
     sections.append(
         "### Knowledge base (searchable via `search_knowledge_base`)\n"
@@ -164,6 +143,38 @@ def grounding_node(state: AgentState) -> dict:
         "### Workspace files (accessible via read_file / write_file / list_directory)\n"
         + (ws_manifest or "No workspace files yet.")
     )
+
+    # Selected against THIS request (memory_registry.select_for_context): the user layer, open
+    # commitments and the recent memo digest always; agent/entities/negative facts only when they
+    # share tokens with the query — under one cap, with a trailer naming what didn't load.
+    # /trace context shows the exact block, so selection stays auditable. The by-match facts
+    # and the memo digest that loaded get their last-used stamped (the expiry signal /memory
+    # flags stale on) — the one read-path write, and it touches no fact text; best-effort — a
+    # stamp failure must never fail the first node of every turn.
+    memory, matched_ids = memory_context(state.get("current_query", ""))
+    if memory:
+        sections.append(
+            "### Persistent memory (what the user asked me to remember and what I learned; "
+            "#id lets `remember(..., replaces=<id>)` correct a fact)\n" + memory
+        )
+        if matched_ids:
+            try:
+                mark_used(matched_ids)
+            except Exception as exc:
+                diag.log(f"grounding_node : memory last-used stamp failed: {exc}")
+
+    # Per turn: the recap changes every turn and the request follows it (the prompt's final
+    # tokens). Section ORDER is the daemon's prefix cache: llama.cpp checkpoints the plan
+    # prompt `num_batch` tokens before its end, and the next turn reuses that checkpoint only
+    # when everything before it is byte-identical — so the sections that change per turn come
+    # LAST (memory's by-match selection, this recap, attachments) and the stable ones
+    # (instructions, manifests) first. See core/serving.py ("the prefix cache").
+    recap = _recent_exchanges(state.get("messages", []))
+    if recap:
+        sections.append(
+            "### Recent conversation (this session — for resolving follow-up references)\n"
+            + recap
+        )
 
     # Files the user attached to THIS message with `@path` (resolved + read by mentions.expand in the
     # REPL loop, stashed on state). Folded in here so the planner/agent/synthesize — which read this

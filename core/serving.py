@@ -16,6 +16,10 @@ daemon's defaults:
   - `num_predict`: a circuit breaker, not a budget — every cap is well above what a healthy
     generation of that task uses; it exists so a whitespace loop under a JSON grammar or a small
     model that starts repeating lands as a truncated generation instead of a full context window.
+    The one exception to "well above healthy" was the tool-argument cap for write_file/edit_file,
+    whose healthy generation IS the file — those run under the `tool_payload` task (the execute
+    node picks it per tool), and a draw the daemon cuts at the bound (`done_reason=length`) is
+    refused there with the limit named rather than re-rolled.
 
 Also home of the repetition RETRY penalty: applied to the next rung only after a degenerate draw
 (`textutil.looks_repetitive`), never globally — a repeat penalty on every generation would corrupt
@@ -47,6 +51,12 @@ TASKS: dict = {
     "plan": Task("plan", strict=True, num_predict=1536, think=True),
     "judge": Task("judge", strict=True, num_predict=512, think=False),
     "tool_args": Task("tool_args", strict=True, num_predict=512, think=False),
+    # The payload-carrying tools (write_file, edit_file): the file's CONTENT rides inside the
+    # arguments, so the bound is the size of a file, not of an argument list. Still a circuit
+    # breaker — 4096 tokens is ~12-16 KB of text; a longer write is refused honestly by the
+    # execute node's truncation branch instead of looping (measured 2026-09-02: every write of a
+    # story/idea list cut at exactly 512 with done_reason=length and no call parsed).
+    "tool_payload": Task("tool_payload", strict=True, num_predict=4096, think=False),
     "reasoning": Task("reasoning", strict=False, num_predict=1024, think=False),
     "answer": Task("answer", strict=False, num_predict=1536, think=False),
     "correction": Task("correction", strict=False, num_predict=1536, think=False),

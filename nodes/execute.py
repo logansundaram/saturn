@@ -69,6 +69,17 @@ from core.tool_args import coerce_args, launders_a_value, parse_text_call, schem
 # sampled variety — a failed parse at 0.0 usually reproduces byte-identically.
 _ATTEMPT_TEMPS = (0.0, 0.5, 0.7)
 
+# The tools whose ARGUMENTS carry the whole payload (a file's content). Their tool-call
+# generation runs under the serving layer's `tool_payload` bound instead of `tool_args`; every
+# other tool's arguments are a path, a pattern, a query, an expression — small by construction.
+PAYLOAD_TOOLS = frozenset(WRITE_TOOLS)
+
+
+def _task_for_tool(tool_name: str) -> str:
+    """The serving task that bounds this tool's call generation."""
+    return "tool_payload" if tool_name in PAYLOAD_TOOLS else "tool_args"
+
+
 # NOTE: no numeric zeros here — "0"/"0.0" from an upstream calculate is a COMPUTED VALUE, not a
 # missing one (write "the count" when the count is 0 is a legitimate write, not a fabrication).
 _EMPTY_MARKERS = {"", "[]", "()", "{}", "none"}
@@ -329,13 +340,14 @@ def _generate_tool_call(tool, context: str):
     problem = "no tool call emitted"
     resp = None
     repetition = False  # armed by a degenerate text answer; never a global setting
+    task = _task_for_tool(tool.name)
     for temp in _ATTEMPT_TEMPS:
         try:
             resp = generate(
                 bound,
                 [EXECUTE_TOOL_SYS, HumanMessage(content=block)],
                 tag=_model_tag("tool_caller"),
-                **_invoke_kwargs("tool_caller", None, temp, task="tool_args",
+                **_invoke_kwargs("tool_caller", None, temp, task=task,
                                  repetition=repetition),
             )
         except Exception as exc:

@@ -219,3 +219,45 @@ def test_structured_arms_the_repeat_penalty_after_a_degenerate_unparseable_draw(
                         st.RECTIFY_SHAPE, default=None)
     assert out.rectify is False
     assert "repeat_penalty" not in seen[0]["options"] and seen[1]["options"]["repeat_penalty"] > 1.0
+
+
+# ── the tool_payload bound (2026-09-02): write_file/edit_file carry the file in their args ────
+
+
+def test_tool_payload_task_exists_and_is_larger_than_tool_args():
+    """write_file/edit_file carry the WHOLE payload in their arguments (measured 2026-09-02:
+    a 2,956-char story is ~690 tokens; the 512 tool_args cap cut every attempt at exactly 512
+    with done_reason=length and no call parsed). The payload cap is still a circuit breaker."""
+    assert serving.num_predict("tool_payload") >= 4096
+    assert serving.num_predict("tool_payload") > serving.num_predict("tool_args")
+    assert serving.thinks("tool_payload") is False
+    assert serving.task_of("tool_payload").strict is True
+
+
+def test_task_for_tool_routes_write_tools_to_the_payload_cap():
+    assert ex._task_for_tool("write_file") == "tool_payload"
+    assert ex._task_for_tool("edit_file") == "tool_payload"
+    assert ex._task_for_tool("calculate") == "tool_args"
+    assert ex._task_for_tool("mcp_remote_thing") == "tool_args"
+
+
+def test_generate_tool_call_uses_the_payload_cap_for_write_file(monkeypatch):
+    from tools.registry import tools_by_name
+
+    seen = []
+
+    class M:
+        def bind_tools(self, tools):
+            return self
+
+        def invoke(self, msgs, **kw):
+            seen.append(kw)
+            return AIMessage(content="", tool_calls=[{
+                "name": "write_file", "args": {"file_path": "a.txt", "content": "hi"},
+                "id": "c1", "type": "tool_call"}])
+
+    monkeypatch.setattr(ex, "get_model", lambda role: M())
+    monkeypatch.setattr(structured, "_role_is_ollama", lambda role: True)
+    args, failure, _ = ex._generate_tool_call(tools_by_name["write_file"], "ctx")
+    assert failure is None and args["content"] == "hi"
+    assert seen[0]["options"]["num_predict"] == serving.num_predict("tool_payload")

@@ -652,3 +652,27 @@ then fails to generate is not caught by 1b; the replan budget still bounds it.
   `test_rectify_no_call_guard_ignores_tools_that_actually_executed`,
   `test_rectify_no_call_guard_is_per_tool`.
 - [x] Commit: `rectify: no-call guard — a tool that fails to generate a call twice ends the run`
+
+---
+
+## Follow-ups shipped on the same branch (the `/goal` robustness pass)
+
+Each was found in the live traces after the plan above landed, fixed with a general rule, and
+pinned by offline tests (`git log main..tool-call-output-cap` has one commit per item):
+
+- **rectify 4 — one dead-end retry per turn**, read structurally off the plan (two dead-end
+  results already recorded) rather than the replan counter.
+- **synthesize — write-only turns do not arm the grounding gate** (`gate_applies` ignores
+  `WRITE_TOOLS` observations; a read/search alongside still arms it).
+- **startup — model warm-up** on a daemon thread after the health check
+  (`app/startup.warm_model`, `start_warm_up`; `tests/test_warmup.py`).
+- **files — `read_file` not-found refusal** names the workspace and, for an ingested document,
+  `search_knowledge_base` (`tests/test_read_file_missing.py`).
+- **rectify 1b — the no-call guard also counts empty reasoning steps** (key `None`).
+- **planner rule** — a named file is a workspace file only when the context lists it there.
+- **ground — workspace manifest reconciled with disk every turn**
+  (`document_registry.sync_workspace_manifest`; `tests/test_workspace_sync.py`).
+
+Observed but left alone (judgment calls, not engine defects): the 9b planner answers "How
+many moons does Saturn have?" from priors and the judge does not send it to web_search
+(identical on main); `core/plan_context._RESULT_CAP = 800` (noted above).

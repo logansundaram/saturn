@@ -80,6 +80,17 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
 - **`read_file` says where the file is not.** A missing path reports "File not found in the
   workspace" and, when the name is an ingested knowledge-base document, points at
   `search_knowledge_base` instead of surfacing a raw `[Errno 2]`.
+- **The workspace list is true every turn.** The grounding context's "Workspace files" block
+  is reconciled with the directory on disk before each turn: files deleted or renamed outside
+  the agent no longer linger as phantom entries the planner tries to read, and files dropped in
+  by hand are listed with a first-line summary.
+- **Named knowledge-base documents are searched, not read.** The planner rule now says a named
+  file is a workspace file only when the context lists it there; an ingested document the user
+  names by title goes to `search_knowledge_base` in one step instead of a failed `read_file`
+  and a replan.
+- **Empty reasoning steps are bounded too.** A reasoning step that produces nothing twice in a
+  turn ends the run with the incident disclosed, under the same guard as an un-generatable
+  tool call.
 - **Write-only turns are not figure-checked.** The groundedness note fires only when the turn
   gathered something (a read, a search, a shell run); a turn whose tools only wrote a file the
   agent authored no longer marks the file's own numbers as untraceable.

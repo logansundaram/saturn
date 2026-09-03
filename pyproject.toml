@@ -36,6 +36,7 @@ dependencies = [
     "langchain-core>=1.4.0",
     "langchain-ollama>=1.1.0",
     "langchain-text-splitters>=1.0.0",
+    "numpy>=1.26",                 # InMemoryVectorStore similarity search (stores/rag.py); langchain-core no longer pulls it in
     "langgraph-checkpoint-sqlite>=3.1.0",
     "ollama>=0.6.2",
     # --- knowledge base / documents ---

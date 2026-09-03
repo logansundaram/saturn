@@ -203,3 +203,17 @@ def test_sync_without_screen_still_loads_and_flags(corpus):
     stats = rag.sync(verbose=False)
     assert stats["added"] == 1
     assert [s for s, _k in stats["flagged"]] == ["payload.md"]
+
+
+def test_in_memory_vector_store_can_run_a_similarity_search():
+    """stores/rag.py's InMemoryVectorStore computes cosine similarity through numpy, which
+    langchain-core stopped pulling in transitively. Without it every search_knowledge_base
+    call failed at query time with 'cosine_similarity requires numpy' (run 19, 2026-09-02) —
+    a path no other test reaches. Offline: a deterministic fake embedder, no daemon."""
+    from langchain_core.embeddings import DeterministicFakeEmbedding
+    from langchain_core.vectorstores import InMemoryVectorStore
+
+    store = InMemoryVectorStore(DeterministicFakeEmbedding(size=8))
+    store.add_texts(["welcome to saturn", "unrelated"])
+    hits = store.similarity_search("welcome", k=1)
+    assert len(hits) == 1

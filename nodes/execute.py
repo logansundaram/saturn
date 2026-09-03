@@ -33,7 +33,10 @@ import diag
 from langchain.messages import AIMessage, HumanMessage
 
 from config import get_config
-from core.llms import get_model, generate, extract_tok_per_sec, extract_prompt_tokens
+from core import serving
+from core.llms import (
+    get_model, generate, extract_tok_per_sec, extract_prompt_tokens, was_truncated,
+)
 from core.messages import EXECUTE_TOOL_SYS, EXECUTE_REASONING_SYS, WRITE_GATE_SYS
 from core.plan_context import (
     SEARCH_TOOLS,
@@ -93,6 +96,10 @@ _GATE_UNAVAILABLE = "gate-unavailable (fail-closed)"
 # reader that detects a gate skip (the trust benchmark's fabrication grader) keys off a constant
 # instead of a hand-copied string. Change this and every skip return below together.
 WRITE_GATE_SKIP_PREFIX = "skipped write:"
+
+# The truncation refusal: the daemon hit the task's num_predict before the call closed. One
+# producer (here); the synthesizer discloses any `error:` result, so no parser needs the text.
+TRUNCATED_TEXT = "error: the tool call was cut off at the output limit"
 
 
 # --- the ask gate (transplanted from the engine isolate, 2026-08-15) ---------------------------
@@ -359,6 +366,18 @@ def _generate_tool_call(tool, context: str):
         content = getattr(resp, "content", "")
         content = content if isinstance(content, str) else str(content)
         calls = [{"args": tc.get("args")} for tc in (getattr(resp, "tool_calls", None) or [])]
+        if not calls and was_truncated(resp):
+            # The call was cut mid-JSON at num_predict. No temperature fixes that — the
+            # remaining rungs would reproduce the cut (measured: three identical 512-token
+            # truncations per step). Refuse now with the limit named, so the answer can say
+            # WHY and a redraft can split the write instead of retrying it whole.
+            cap = serving.num_predict(task)
+            diag.log(f"execute_node : {tool.name} call cut off at num_predict={cap}")
+            return None, (
+                f"{TRUNCATED_TEXT} ({cap} tokens) — the {tool.name} call's arguments are too "
+                "long to generate in one call; write a shorter version, or write the first part "
+                "with write_file and append the rest with edit_file"
+            ), resp
         if not calls:
             parsed = parse_text_call(content)
             if parsed:

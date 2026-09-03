@@ -18,7 +18,7 @@ import types
 import pytest
 from langchain.messages import AIMessage, HumanMessage
 
-from core import plan_context, structured as st, tool_args
+from core import llms, plan_context, serving, structured as st, tool_args
 from nodes import execute as ex
 from nodes import rectify as rc
 from nodes import replan as rp
@@ -837,3 +837,80 @@ def test_generate_tool_call_lands_an_incident_when_every_attempt_launders(monkey
     monkeypatch.setattr(ex, "get_model", lambda role: model)
     args, failure, _resp = ex._generate_tool_call(tools_by_name["calculate"], "ctx")
     assert args is None and failure.startswith("error:") and "bare value" in failure
+
+
+# ── truncation on the tool-call ladder (2026-09-02): done_reason=length ends the step ─────────
+
+
+def test_was_truncated_reads_done_reason():
+    assert llms.was_truncated(AIMessage(content="", response_metadata={"done_reason": "length"}))
+    assert not llms.was_truncated(AIMessage(content="", response_metadata={"done_reason": "stop"}))
+    assert not llms.was_truncated(AIMessage(content=""))
+    assert not llms.was_truncated(None)
+
+
+def test_generate_tool_call_stops_after_a_truncated_attempt(monkeypatch):
+    """A tool call cut off at num_predict (Ollama done_reason=length) cannot be fixed by a
+    hotter temperature — the 2026-09-02 traces show three identical 512-token truncations per
+    step, 30-45 s each. One attempt, then an honest error naming the limit."""
+    from tools.registry import tools_by_name
+
+    calls = []
+
+    class M:
+        def bind_tools(self, tools):
+            return self
+
+        def invoke(self, msgs, **kw):
+            calls.append(kw)
+            return AIMessage(content="", response_metadata={"done_reason": "length"})
+
+    monkeypatch.setattr(ex, "get_model", lambda role: M())
+    monkeypatch.setattr(st, "_role_is_ollama", lambda role: True)
+    args, failure, _ = ex._generate_tool_call(tools_by_name["write_file"], "ctx")
+    assert args is None
+    assert len(calls) == 1, "a truncated draw must not be re-rolled at a hotter temperature"
+    assert failure.startswith(ex.TRUNCATED_TEXT)
+    assert str(serving.num_predict("tool_payload")) in failure
+    assert "write_file" in failure
+
+
+def test_generate_tool_call_truncation_is_not_the_text_fallback(monkeypatch):
+    """A truncated draw that also carried some prose must NOT be recorded as 'the model answered
+    in text instead' — the prose is a cut-off generation, not an answer."""
+    from tools.registry import tools_by_name
+
+    class M:
+        def bind_tools(self, tools):
+            return self
+
+        def invoke(self, msgs, **kw):
+            return AIMessage(content="Once upon a", response_metadata={"done_reason": "length"})
+
+    monkeypatch.setattr(ex, "get_model", lambda role: M())
+    monkeypatch.setattr(st, "_role_is_ollama", lambda role: True)
+    _, failure, _ = ex._generate_tool_call(tools_by_name["write_file"], "ctx")
+    assert failure.startswith(ex.TRUNCATED_TEXT)
+    assert "answered in text" not in failure
+
+
+def test_execute_node_records_a_truncated_call_as_an_error_incident(monkeypatch):
+    """End to end through execute_node: the truncation lands as status=error with the limit in
+    the result, no tool-calling message is emitted, and routing goes to rectify."""
+    from tools.registry import tools_by_name
+
+    class M:
+        def bind_tools(self, tools):
+            return self
+
+        def invoke(self, msgs, **kw):
+            return AIMessage(content="", response_metadata={"done_reason": "length"})
+
+    monkeypatch.setattr(ex, "get_model", lambda role: M())
+    monkeypatch.setattr(st, "_role_is_ollama", lambda role: True)
+    plan = [_step(1, "write_file", label="Write the story to story.txt")]
+    out = ex.execute_node(_state(plan))
+    step = out["plan"][0]
+    assert step["status"] == "error" and step["result"].startswith(ex.TRUNCATED_TEXT)
+    assert "messages" not in out
+    assert ex.route_after_execute({"messages": []}) == "rectify"

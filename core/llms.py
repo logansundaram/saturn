@@ -589,6 +589,15 @@ def extract_prompt_tokens(response) -> int:
     return int(meta.get("prompt_eval_count", 0) or 0)
 
 
+def was_truncated(response) -> bool:
+    """Whether the daemon stopped this generation at `num_predict` rather than at a natural end
+    (Ollama's `done_reason == "length"`). A truncated TOOL CALL never parses — the JSON is cut
+    mid-argument — and re-rolling it at a hotter temperature reproduces the cut, so callers on a
+    retry ladder read this to stop instead of spending the remaining rungs."""
+    meta = getattr(response, "response_metadata", None) or {}
+    return meta.get("done_reason") == "length"
+
+
 def active_context_window(role: str = "tool_caller") -> int:
     """Effective context window (`num_ctx`) of the model serving `role` — the denominator of the
     UI's fill gauge and the /config context readout. Defaults to the agent (tool_caller) role, the one

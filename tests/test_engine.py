@@ -941,3 +941,59 @@ def test_execute_node_records_a_truncated_call_as_an_error_incident(monkeypatch)
     assert step["status"] == "error" and step["result"].startswith(ex.TRUNCATED_TEXT)
     assert "messages" not in out
     assert ex.route_after_execute({"messages": []}) == "rectify"
+
+
+# ── the no-call guard (2026-09-02): a tool the engine cannot generate a call for, twice ──────
+
+
+def test_rectify_second_no_call_failure_for_a_tool_ends_the_run(monkeypatch):
+    """Runs 10 and 15 (2026-09-02): write_file failed to GENERATE a call, rectify's judge sent
+    the identical step to replan, and the redraft failed identically — three cycles, two
+    minutes, Ctrl-C. Deterministic guard: the second error-status step for a tool that has not
+    executed once this turn (no tool_event) ends the run with the incidents disclosed. The first
+    failure still gets its one redraft (a truncated write may be split)."""
+    _no_llm(monkeypatch)
+    plan = [_step(1, "write_file", result=ex.TRUNCATED_TEXT + " (4096 tokens)", status="error"),
+            _step(2, "write_file", result="error: no tool call emitted", status="error"),
+            _step(3, "read_file")]
+    out = rc.rectify_node(_state(plan, tool_events=[]))
+    assert out["rectify"] is False
+    assert out["plan"][2]["status"] == "cancelled"
+    assert "write_file" in out["plan"][2]["result"]
+    assert "write_file" in out["reasoning"]
+    assert plan[2]["result"] is None  # the cancel works on a copy
+    assert rc.route_after_rectify({**_state(out["plan"]), "rectify": False}) == "synthesize"
+
+
+def test_rectify_first_no_call_failure_still_gets_its_redraft(monkeypatch):
+    monkeypatch.setattr(
+        rc, "structured", lambda *a, **k: st.RectifyBool(rectify=True, reasoning="retry")
+    )
+    plan = [_step(1, "write_file", result="error: no tool call emitted", status="error")]
+    out = rc.rectify_node(_state(plan, tool_events=[]))
+    assert out["rectify"] is True
+
+
+def test_rectify_no_call_guard_ignores_tools_that_actually_executed(monkeypatch):
+    """Two errored read_file steps whose tool DID run (tool_events carry them) are tool
+    failures, not generation failures — the judge, not the guard, decides."""
+    monkeypatch.setattr(
+        rc, "structured", lambda *a, **k: st.RectifyBool(rectify=True, reasoning="retry")
+    )
+    plan = [_step(1, "read_file", result="Error calling read_file: boom", status="error"),
+            _step(2, "read_file", result="Error calling read_file: boom", status="error")]
+    events = [{"name": "read_file", "args": {"file_path": "a"}, "id": "1"},
+              {"name": "read_file", "args": {"file_path": "b"}, "id": "2"}]
+    out = rc.rectify_node(_state(plan, tool_events=events))
+    assert out["rectify"] is True
+
+
+def test_rectify_no_call_guard_is_per_tool(monkeypatch):
+    """One failed write_file and one failed calculate are two different first failures."""
+    monkeypatch.setattr(
+        rc, "structured", lambda *a, **k: st.RectifyBool(rectify=True, reasoning="retry")
+    )
+    plan = [_step(1, "write_file", result="error: no tool call emitted", status="error"),
+            _step(2, "calculate", result="error: no tool call emitted", status="error")]
+    out = rc.rectify_node(_state(plan, tool_events=[]))
+    assert out["rectify"] is True

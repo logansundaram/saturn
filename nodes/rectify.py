@@ -9,6 +9,10 @@ for free, and only the leftover ambiguity pays for an LLM judgment (the `judge` 
                            approval gate, the semantic write gate, a BLOCKED refusal): CANCEL the
                            remaining steps and report. A guarded action must never be retried or
                            substituted around.
+  1b. no-call guard      — the step just recorded is the NO_CALL_LIMIT-th error for a tool that
+                           has never executed this turn (the engine cannot generate a call for
+                           it): cancel the rest and report, instead of redrafting the same step
+                           until the replan budget runs out (2026-09-02).
   2. resolution check    — the NEXT step is a needs_resolution placeholder ("the file the
                            listing names"): when a search produced the evidence, an LLM presence
                            check first verifies the referenced item actually exists in the
@@ -73,6 +77,10 @@ from core.structured import (
 # make most cycles free — but hard: a model that keeps finding "one more fix" lands at an honest
 # synthesize instead of spinning.
 MAX_REPLANS = 5
+
+# The no-call guard's bound (branch 1b): the N-th error-status step for a tool that has never
+# executed this turn ends the run. 2 = one redraft after the first generation failure, then stop.
+NO_CALL_LIMIT = 2
 
 # SEARCH_TOOLS (arms the LLM presence check) and WRITE_TOOLS (exempt from forced resolution)
 # come from core/plan_context — THE one home for the engine's tool classifications, shared with
@@ -255,6 +263,42 @@ def rectify_node(state: AgentState):
             "plan": _cancel_remaining(plan, "cancelled: a prior guarded action ended the run"),
             "reasoning": "action guarded; report it, do not retry or substitute",
         }
+
+    # 1b. THE NO-CALL GUARD (2026-09-02): the step just recorded errored for a tool that has
+    #     not EXECUTED once this turn (no tool_event names it — what actually ran, never what
+    #     was planned), and it is that tool's NO_CALL_LIMIT-th such step. The engine could not
+    #     generate a valid call for it (a truncated payload, a model that answers in prose) and
+    #     the judge's answer was to redraft the same step — measured: three identical cycles,
+    #     two minutes, Ctrl-C (runs 10 and 15). The first failure keeps its one redraft (a
+    #     truncated write may be split); the second ends the run with the incidents disclosed.
+    #     Deterministic, no model in the loop, and structural: status stamps + tool_events only.
+    if last_done is not None and last_done.get("status") == "error":
+        tool = last_done.get("intended_tool")
+        ran = {
+            str(ev.get("name")) for ev in state.get("tool_events") or [] if isinstance(ev, dict)
+        }
+        if tool and tool not in ran:
+            n = sum(
+                1 for s in plan
+                if s.get("result") is not None
+                and s.get("status") == "error"
+                and s.get("intended_tool") == tool
+            )
+            if n >= NO_CALL_LIMIT:
+                diag.log(f"rectify_node : {time.perf_counter() - start:.4f}s "
+                         f"(no-call guard: {tool} x{n} -> cancel)")
+                return {
+                    "rectify": False,
+                    "plan": _cancel_remaining(
+                        plan,
+                        f"cancelled: the engine could not generate a valid {tool} call "
+                        f"{n} times this turn, so the run ended",
+                    ),
+                    "reasoning": (
+                        f"{tool} failed to generate a call {n} times without ever executing; "
+                        "report it, do not redraft it again"
+                    ),
+                }
 
     # Replan budget spent: no further revision — route_after_rectify lands at synthesize.
     if state.get("replans", 0) >= MAX_REPLANS:

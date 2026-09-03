@@ -149,7 +149,20 @@ def list_directory(directory: str = "."):
     _, target_path, error = _resolve_dir(directory)
     if error:
         return error
-    return [item.name for item in target_path.iterdir()]
+    return [item.name for item in target_path.iterdir() if not _hidden(item.name)]
+
+
+def _hidden(name: str) -> bool:
+    """Whether a directory entry is hidden: a dot-name. One rule for the navigation tools
+    (list_directory / find_files / search_files) and the manifest sync: the registry's own
+    `.manifest.md`, `.git`, `.DS_Store` and editor droppings are not workspace CONTENT — on an
+    empty workspace the manifest was listed, read, and relayed as the user's data (2026-09-02).
+    read_file by explicit path is unchanged: a user may name a dotfile on purpose."""
+    return name.startswith(".")
+
+
+def _has_hidden_part(rel) -> bool:
+    return any(_hidden(part) for part in rel.parts)
 
 
 @register_tool("side_effecting")
@@ -231,12 +244,12 @@ def search_files(pattern: str, directory: str = ".", file_glob: str = "*"):
     for dirpath, dirnames, filenames in os.walk(target_path):
         if truncated:
             break
-        dirnames.sort()
+        dirnames[:] = sorted(d for d in dirnames if not _hidden(d))
         for fname in sorted(filenames):
             if len(matches) >= _SEARCH_MAX_MATCHES:
                 truncated = True
                 break
-            if not fnmatch.fnmatch(fname, file_glob):
+            if _hidden(fname) or not fnmatch.fnmatch(fname, file_glob):
                 continue
             path = Path(dirpath) / fname
             try:
@@ -279,6 +292,7 @@ def find_files(pattern: str, directory: str = "."):
     results = sorted(
         p.relative_to(workspace).as_posix() + ("/" if p.is_dir() else "")
         for p in paths
+        if not _has_hidden_part(p.relative_to(target_path))
     )
     if not results:
         return f"No files matching {pattern!r} under {directory!r}."

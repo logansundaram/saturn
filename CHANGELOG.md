@@ -88,6 +88,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
   description names an ingested document with no workspace file of that name is retargeted to
   `search_knowledge_base` at plan and replan time (the planner rule says so too, but the engine
   knows both manifests and does not need the model to get it right).
+- **Hidden entries are not workspace content.** `list_directory`, `find_files` and
+  `search_files` skip dot-entries (`.manifest.md`, `.git`, `.DS_Store`), so an empty workspace
+  reads as empty instead of the agent listing and relaying its own bookkeeping file.
 - **Empty reasoning steps are bounded too.** A reasoning step that produces nothing twice in a
   turn ends the run with the incident disclosed, under the same guard as an un-generatable
   tool call.

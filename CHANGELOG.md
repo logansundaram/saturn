@@ -84,10 +84,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
   is reconciled with the directory on disk before each turn: files deleted or renamed outside
   the agent no longer linger as phantom entries the planner tries to read, and files dropped in
   by hand are listed with a first-line summary.
-- **Named knowledge-base documents are searched, not read.** The planner rule now says a named
-  file is a workspace file only when the context lists it there; an ingested document the user
-  names by title goes to `search_knowledge_base` in one step instead of a failed `read_file`
-  and a replan.
+- **Named knowledge-base documents are searched, not read.** A `read_file` step whose
+  description names an ingested document with no workspace file of that name is retargeted to
+  `search_knowledge_base` at plan and replan time (the planner rule says so too, but the engine
+  knows both manifests and does not need the model to get it right).
 - **Empty reasoning steps are bounded too.** A reasoning step that produces nothing twice in a
   turn ends the run with the incident disclosed, under the same guard as an un-generatable
   tool call.

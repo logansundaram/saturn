@@ -272,12 +272,14 @@ def rectify_node(state: AgentState):
     #     two minutes, Ctrl-C (runs 10 and 15). The first failure keeps its one redraft (a
     #     truncated write may be split); the second ends the run with the incidents disclosed.
     #     Deterministic, no model in the loop, and structural: status stamps + tool_events only.
+    #     A REASONING step (no tool) whose generation came back empty is the same failure class
+    #     — the model produced nothing for that step shape — and is counted under its own key.
     if last_done is not None and last_done.get("status") == "error":
         tool = last_done.get("intended_tool")
         ran = {
             str(ev.get("name")) for ev in state.get("tool_events") or [] if isinstance(ev, dict)
         }
-        if tool and tool not in ran:
+        if not tool or tool not in ran:
             n = sum(
                 1 for s in plan
                 if s.get("result") is not None
@@ -285,18 +287,20 @@ def rectify_node(state: AgentState):
                 and s.get("intended_tool") == tool
             )
             if n >= NO_CALL_LIMIT:
+                what = f"a valid {tool} call" if tool else "a result for a reasoning step"
                 diag.log(f"rectify_node : {time.perf_counter() - start:.4f}s "
-                         f"(no-call guard: {tool} x{n} -> cancel)")
+                         f"(no-call guard: {tool or 'reasoning'} x{n} -> cancel)")
                 return {
                     "rectify": False,
                     "plan": _cancel_remaining(
                         plan,
-                        f"cancelled: the engine could not generate a valid {tool} call "
+                        f"cancelled: the engine could not generate {what} "
                         f"{n} times this turn, so the run ended",
                     ),
                     "reasoning": (
-                        f"{tool} failed to generate a call {n} times without ever executing; "
-                        "report it, do not redraft it again"
+                        f"{tool or 'a reasoning step'} failed to generate {n} times"
+                        + (" without ever executing" if tool else "")
+                        + "; report it, do not redraft it again"
                     ),
                 }
 

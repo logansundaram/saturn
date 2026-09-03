@@ -1020,3 +1020,22 @@ def test_rectify_dead_end_retry_still_fires_for_the_first_dead_end(monkeypatch):
             _step(2, "search_files", result="No matches for /tokn/ in '.'", status="done")]
     out = rc.rectify_node(_state(plan, replans=0))
     assert out["rectify"] is True and "came up empty" in out["reasoning"]
+
+
+def test_rectify_no_call_guard_covers_reasoning_steps_too(monkeypatch):
+    """A reasoning step (no tool) whose generation came back empty is the same failure class as
+    a tool call that would not generate: the model produced nothing for that step shape. The
+    second such step this turn ends the run; the first still gets its redraft."""
+    _no_llm(monkeypatch)
+    plan = [_step(1, None, result="(no result produced)", status="error"),
+            _step(2, None, result="(no result produced)", status="error"),
+            _step(3, "read_file")]
+    out = rc.rectify_node(_state(plan, tool_events=[]))
+    assert out["rectify"] is False and out["plan"][2]["status"] == "cancelled"
+    assert "reasoning" in out["reasoning"]
+
+    monkeypatch.setattr(
+        rc, "structured", lambda *a, **k: st.RectifyBool(rectify=True, reasoning="retry")
+    )
+    plan = [_step(1, None, result="(no result produced)", status="error")]
+    assert rc.rectify_node(_state(plan, tool_events=[]))["rectify"] is True

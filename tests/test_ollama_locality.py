@@ -81,6 +81,24 @@ def test_build_wraps_remote_ollama_only(monkeypatch):
     assert not isinstance(m2, llms._CloudBoundaryModel)
 
 
+def test_build_sends_keep_alive_from_config(monkeypatch):
+    """runtime.keep_alive rides the client (default 30m): the daemon's 5-minute default unloads
+    the weights between turns and the next turn pays the load again."""
+    from core import llms
+    from config import get_config
+
+    monkeypatch.delenv("OLLAMA_HOST", raising=False)
+    cfg = get_config()
+    monkeypatch.setattr(cfg, "get", lambda key, default=None: {"runtime.keep_alive": "2h"}.get(key, default))
+    assert cfg.keep_alive == "2h"
+    assert llms._build("ollama", "qwen3.5:9b").keep_alive == "2h"
+    monkeypatch.setattr(cfg, "get", lambda key, default=None: {"runtime.keep_alive": -1}.get(key, default))
+    assert llms._build("ollama", "qwen3.5:9b").keep_alive == -1
+    monkeypatch.setattr(cfg, "get", lambda key, default=None: {"runtime.keep_alive": None}.get(key, default))
+    assert cfg.keep_alive is None
+    assert llms._build("ollama", "qwen3.5:9b").keep_alive is None   # the daemon's own default
+
+
 def test_get_model_refuses_remote_ollama_under_airgap(monkeypatch, isolated_paths):
     from config import get_config
     from core import llms

@@ -342,6 +342,21 @@ class Config:
             return None
         return n if n > 0 else None
 
+    @property
+    def keep_alive(self) -> "int | str | None":
+        """How long the daemon keeps a model loaded after a request (`runtime.keep_alive`, an
+        Ollama duration such as "30m", -1 for forever, 0 to unload at once), or None to leave the
+        daemon's own default (5 minutes). Sent on every request, so the timer restarts each call;
+        it is not a runner load option (changing it never reloads the weights)."""
+        v = self.get("runtime.keep_alive", "30m")
+        if v is None or v == "":
+            return None
+        if isinstance(v, bool):
+            return None
+        if isinstance(v, (int, float)):
+            return int(v)
+        return str(v).strip() or None
+
     # --- paths (resolved against the repo root) ----------------------------
     def path(self, name: str) -> Path:
         rel = self.get(f"paths.{name}")

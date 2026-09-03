@@ -190,10 +190,15 @@ def _build(provider: str, model: str):
     # window) so it actually runs at the size the UI gauges against — Ollama otherwise silently
     # caps at 2048, making the context-fill % lie. /config context drops the cache to rebind live.
     # client_kwargs carries the request timeout (guards a wedged daemon; see _ollama_client_kwargs).
+    # keep_alive rides every request (runtime.keep_alive): the daemon's default unloads the
+    # weights after five idle minutes and the next turn pays the whole load again.
+    cfg = get_config()
+    keep = cfg.keep_alive
     return _wrap_ollama(
         _RunnerStableChatOllama(
             model=model,
-            num_ctx=get_config().num_ctx_for(model),
+            num_ctx=cfg.num_ctx_for(model),
+            **({"keep_alive": keep} if keep is not None else {}),
             **_ollama_client_kwargs(),
         ),
         model,

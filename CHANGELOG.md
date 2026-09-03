@@ -7,6 +7,38 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
 
 ## [Unreleased]
 
+### Changed
+
+- **Planning is ~5 s faster per turn.** The planner no longer runs with the model's "thinking"
+  enabled: under the plan's JSON grammar it emitted essentially no rationale while the daemon
+  still spent about five seconds per call on the think path, and one draw spent its whole
+  output budget thinking and returned nothing (45 s, then a retry). Every model call now runs
+  with thinking off. Measured on the 9b tier: a warm plan call 6.0 s → 0.8 s.
+- **A step that names its target no longer pays a model call for the arguments.** A `read_file`
+  or `list_directory` step whose label spells exactly one existing workspace path ("Read
+  notes.md", "List data/"), a `find_files` step with exactly one glob ("Find every *.csv"),
+  and `current_time`, get their call copied from the plan step instead of generated — about 3 s
+  less per such step on the 9b; a "read all files" plan drops one call per file. Anything less
+  certain (two paths, a placeholder, a folder named in words, a name that isn't there) is
+  generated as before, and every
+  later check — plan-review revocation, effect authorization, the stall detector, the approval
+  gate — still reads the arguments. The gate's explain shows "arguments copied from the plan
+  step itself".
+- **Earlier results take half the room in per-step prompts.** The shared results block that
+  rides every execute step and the plan text rectify/replan read is now budgeted at 8k
+  characters (was 16k, the per-result floor 400, was 800) — one or two results still ride
+  whole, the immediately preceding step keeps its own fuller callout, and the answer still reads
+  the full observations; a long plan's per-step prompt prefill roughly halves.
+- **The model stays loaded between turns.** Every request now carries `runtime.keep_alive`
+  (default 30 minutes; `-1` never unloads, `null` keeps Ollama's 5-minute default), so a pause
+  longer than five minutes no longer costs the whole model load on the next turn.
+- **The planner reuses the daemon's prompt cache between turns.** The grounding block now
+  lists what is stable first (workspace instructions, the knowledge-base and workspace
+  manifests) and what changes per turn last (memory's by-match facts, the recent-conversation
+  recap, attachments), so the next turn's plan call only re-reads its tail instead of the whole
+  catalog (measured: 9 s → 1.4 s on the 9b when the turn-to-turn change fits in the last 512
+  tokens).
+
 ### Added
 
 - **Memory grows, gated.** The flat `remember` notepad became a layered store: `user`

@@ -66,7 +66,8 @@ The whole product is one loop. Reading it end to end explains 80% of the repo:
    - `nodes/update_plan.py` mechanically records the observation onto the current step and
      derives its status (done / skipped / blocked / error).
    - `nodes/rectify.py` reflects after EVERY step — deterministic short-circuits first
-     (guarded outcome → cancel the rest; unresolved reference; dead-end retry), an LLM verdict
+     (guarded outcome → cancel the rest; no-call guard → a tool that fails to generate a call
+     twice ends the run; unresolved reference; dead-end retry), an LLM verdict
      last. If the plan must change, `nodes/replan.py` redrafts the remaining steps.
    - `nodes/synthesize.py` streams the final answer from the plan's recorded outcomes +
      numbered tool results, disclosing incidents and citing sources.

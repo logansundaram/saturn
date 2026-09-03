@@ -57,6 +57,24 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
   re-reads the hardware, `/scan` is an alias. The verbatim `ollama list` view and the two-step
   role picker are gone — the direct binds (`/models all|<role>|embedder|tier …`) remain.
 
+### Fixed
+
+- **Long writes actually happen.** `write_file` / `edit_file` calls now generate under a
+  file-sized output bound; before, a story or a list longer than ~500 tokens was cut off inside
+  the tool call, the step reported "no tool call emitted", and the engine retried the identical
+  truncation three times. A call that still exceeds the bound is refused once with the limit
+  named instead of looping.
+- **No more redraft loops on an un-generatable call.** A tool the engine fails to generate a
+  valid call for twice in one turn (without it ever executing) ends the run with the incidents
+  disclosed, instead of the judge redrafting the same step until the replan budget runs out.
+- **A failed write is not "fabrication".** The semantic write gate arms only on a failed
+  search/read upstream, not on a prior write attempt that errored — the redraft after a
+  transient write failure is no longer skipped with a fabricated-value disclosure.
+- **`search_knowledge_base` works from a clean install.** `numpy` is declared; without it every
+  knowledge-base search failed at query time.
+- The rectify judge's output bound is 1024 (a verbose verdict was being cut mid-JSON), and a
+  structured draw the daemon cuts at the bound is named in `logging/diag.log`.
+
 ### Removed
 
 - The never-written `user_profile.md` / `agent_profile.md` workspace files are no longer read

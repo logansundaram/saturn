@@ -70,7 +70,7 @@ ground → plan → plan_gate → execute → [approval] → tools → update_pl
 - `tools` (the node, not the package) executes, clamps the observation, records egress, fences
   injection-suspicious content (`trust/quarantine.py`).
 - `rectify` reflects after EVERY step. Its branch order is load-bearing and deterministic-first:
-  guarded outcome → resolution check → concrete pending → dead-end retry → LLM verdict. Do not reorder
+  guarded outcome → no-call guard → resolution check → concrete pending → dead-end retry → LLM verdict. Do not reorder
   without reading the module docstring; `tests/test_engine.py` pins each branch.
 - `synthesize` streams the answer from recorded step results, disclosing incidents and citing `[n]`.
 

@@ -9,6 +9,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
 
 ### Changed
 
+- **Esc is both the freeze key and the unfreeze key.** Esc still stops the streaming answer and
+  opens it in the editor; now pressing Esc (or Enter) inside the editor resumes generation at
+  once from whatever you left. The `resume? [Y]es / [d]one` confirm after the editor is gone,
+  and so is the accept-as-final path — leaving the editor always continues the answer.
 - **Prompts are laid out for the daemon's prompt cache, and an idle prime keeps it warm.**
   Measured on the 9b tier: every plan call re-read ~2,000 tokens of unchanged grounding (5 s),
   and every execute, rectify and synthesize call re-read its whole prompt (a 16-call turn spent

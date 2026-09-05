@@ -12,15 +12,18 @@ answer_gate interrupt hands the frozen, provenance-tagged text here. Two beats:
      the user could type. The exception is the wizard floor below, which has no editor to show
      the text — there the tail still prints, at the streaming tail's own indent and measure.
   2. Edit: with prompt_toolkit, the whole buffer opens PRE-FILLED in the same multiline editor
-     the `»` prompt uses (Enter submits, Shift+Enter/Ctrl+J newline) — move the cursor, delete
-     the bad span, type the correction, submit. Without it, a two-question wizard covers the
-     truncate-and-append floor: cut from a fragment's last occurrence, then type the correction.
+     the `»` prompt uses (Shift+Enter/Ctrl+J newline) — move the cursor, delete the bad span,
+     type the correction, then press Esc (or Enter) and generation resumes at once. Esc is the
+     freeze key AND the unfreeze key on purpose: one key stops the answer, the same key lets it
+     go, and there is no confirm in between. Without prompt_toolkit, a two-question wizard
+     covers the truncate-and-append floor: cut from a fragment's last occurrence, then type the
+     correction — and resumes.
 
-The decision returns to the answer_gate as `{"action": "resume"|"done", "text": <edited>}` —
-resume continues generation from the edited text; done accepts it as the final answer. Ctrl-C /
-EOF anywhere resumes unchanged (never silently aborts a turn from inside an editor). The span
-diffing and the audit record are the gate's job (core/provenance.apply_edit); this module only
-collects text.
+The decision returns to the answer_gate as `{"action": "resume", "text": <edited>}` — the gate
+still understands `"done"` (accept as final) but this editor never sends it; the only way out
+is forward. Ctrl-C / EOF inside the editor resume from whatever is in the buffer (never silently
+aborts a turn from inside an editor). The span diffing and the audit record are the gate's job
+(core/provenance.apply_edit); this module only collects text.
 """
 
 from ._base import (
@@ -154,10 +157,34 @@ def _inline_available() -> bool:
         return False
 
 
+# How long the editor waits after a bare Esc before deciding it was Esc and not the start of an
+# Alt+key / Shift+Enter sequence (prompt_toolkit's default is 0.5s — vim's ttimeoutlen). The
+# terminal delivers those multi-byte sequences in one read, so a short wait is safe, and it is
+# the difference between Esc feeling instant and feeling stuck.
+_ESC_TIMEOUT_S = 0.05
+
+
+def _freeze_key_bindings():
+    """The freeze editor's key bindings: the `»` prompt's set (Shift+Enter/Ctrl+J newline, paste
+    chips, Enter submits) plus ONE addition — a bare Esc submits the buffer, i.e. unfreezes.
+    Built as a separate merged set so the prompt's own bindings never gain a bare Esc (there,
+    Esc-then-Enter is a newline and a bare Esc binding would shadow it)."""
+    from prompt_toolkit.key_binding import KeyBindings, merge_key_bindings
+
+    _p = _prompt_module()
+    kb = KeyBindings()
+
+    @kb.add("escape")
+    def _esc_unfreeze(event):
+        event.current_buffer.validate_and_handle()  # submit = resume from this text
+
+    return merge_key_bindings([_p._PTK_KB, kb])
+
+
 def _edit_inline(text: str) -> "str | None":
     """The prompt_toolkit path: the whole buffer pre-filled in the same multiline editor as the
-    `»` prompt (shared key bindings — Enter submits, Shift+Enter/Ctrl+J insert a newline). None
-    when prompt_toolkit isn't available or the edit was cancelled — the caller falls back."""
+    `»` prompt (Shift+Enter/Ctrl+J insert a newline; Esc or Enter submits and resumes). None
+    when prompt_toolkit isn't available or the editor failed to open — the caller falls back."""
     _p = _prompt_module()
 
     if not _p._PTK:
@@ -166,6 +193,10 @@ def _edit_inline(text: str) -> "str | None":
         from prompt_toolkit import PromptSession
 
         session = PromptSession(input=_p._make_ptk_input())
+        session.app.ttimeoutlen = _ESC_TIMEOUT_S
+    except Exception:
+        return None  # editor unavailable — the wizard below still works
+    try:
         edited = session.prompt(
             # Indented to the app's 2-space rhythm: at column 0 the editor's first line sat two
             # columns left of every other line on screen, so the pre-filled text appeared to
@@ -173,13 +204,17 @@ def _edit_inline(text: str) -> "str | None":
             [("class:prompt", "  ✎ ")],
             default=text,
             multiline=True,
-            key_bindings=_p._PTK_KB,
+            key_bindings=_freeze_key_bindings(),
             style=_p._PTK_STYLE,
             prompt_continuation=_p._ptk_continuation,
         )
         return _p._expand_paste_tags(edited)
     except (KeyboardInterrupt, EOFError):
-        return text  # cancelled: resume unchanged, never lose the buffer
+        # Not a hotkey, just not a trap: resume from whatever is in the buffer right now.
+        try:
+            return _p._expand_paste_tags(session.default_buffer.text)
+        except Exception:
+            return text
     except Exception:
         return None  # editor unavailable — the wizard below still works
 
@@ -204,16 +239,17 @@ def _edit_wizard(text: str) -> str:
 
 
 def edit_answer(value: dict) -> dict:
-    """The freeze editor: show the frozen tail, collect the edit, ask resume-or-done. Returns
-    the answer_gate resume value `{"action": "resume"|"done", "text": <full edited text>}`."""
+    """The freeze editor: show the frozen tail, collect the edit, resume. Returns the answer_gate
+    resume value `{"action": "resume", "text": <full edited text>}` — no confirm step: leaving
+    the editor (Esc or Enter) IS the decision."""
     text = str(value.get("text") or "")
     spans = value.get("spans") or []
 
     # The editor, when available, IS the presentation of the frozen text — so print only the
     # one-line summary above it. The wizard floor has no editor, so it gets the tail.
     inline = _inline_available()
-    section("answer frozen", "edit the text, then resume — the model continues from exactly "
-                             "what you leave")
+    section("answer frozen", "edit the text · esc or enter resumes — the model continues from "
+                             "exactly what you leave")
     _print_frozen(text, spans, value.get("confidence"), show_tail=not inline)
     if _RICH:
         _console.print()
@@ -230,10 +266,6 @@ def edit_answer(value: dict) -> dict:
             _print_frozen_tail(text, spans, value.get("confidence"))
         edited = _edit_wizard(text)
 
-    what = "your edit" if edited != text else "here (unchanged)"
-    resp = ask(f"resume generation from {what}? [Y]es / [d]one — accept as the final answer  "
-               f"(Enter = resume) » ").lower()
-    action = "done" if resp.startswith("d") else "resume"
     # Re-pin the status bar, exactly as the other blocking editors do on the way out
     # (approval.ask_approval, plan.review_plan). The graph now resumes and the model re-primes
     # its context before the first continued token arrives — seconds of a completely static
@@ -242,4 +274,4 @@ def edit_answer(value: dict) -> dict:
     # response.ResponseStream._reopen / .finish stop it again before touching the screen, so only
     # one Live is ever active.
     _live_start()
-    return {"action": action, "text": edited}
+    return {"action": "resume", "text": edited}

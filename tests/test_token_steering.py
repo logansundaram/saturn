@@ -361,22 +361,65 @@ def test_edit_inline_resolves_the_prompt_module_not_the_function(monkeypatch):
 
 
 def test_edit_answer_returns_the_resume_contract(monkeypatch, capsys):
-    """edit_answer's return is the answer_gate resume value: the edited text rides `text`,
-    d(one) accepts, anything else resumes."""
+    """edit_answer's return is the answer_gate resume value: the edited text rides `text` and the
+    action is ALWAYS resume. There is no confirm question after the editor — Esc (or Enter)
+    inside it submits the buffer and generation continues at once. The wizard floor asks only
+    its two cut/correction questions and resumes too."""
     import importlib
 
     correction = importlib.import_module("tui.ui.correction")
+    monkeypatch.setattr(correction, "_live_start", lambda: None)
     monkeypatch.setattr(correction, "_edit_inline", lambda text: "the corrected text")
-    answers = iter(["d"])
-    monkeypatch.setattr(correction, "ask", lambda _q: next(answers))
+    asked: list = []
+    monkeypatch.setattr(correction, "ask", lambda q: asked.append(q) or "")
     out = correction.edit_answer({"text": "the streamed text", "spans": []})
-    assert out == {"action": "done", "text": "the corrected text"}
+    assert out == {"action": "resume", "text": "the corrected text"}
+    assert asked == []  # no "resume or done?" confirm after the editor
 
     monkeypatch.setattr(correction, "_edit_inline", lambda text: None)  # no prompt_toolkit
-    answers = iter(["", "", ""])  # wizard: keep everything, no correction; then Enter = resume
-    monkeypatch.setattr(correction, "ask", lambda _q: next(answers))
+    asked = []
+    monkeypatch.setattr(correction, "ask", lambda q: asked.append(q) or "")
     out = correction.edit_answer({"text": "the streamed text", "spans": []})
     assert out == {"action": "resume", "text": "the streamed text"}
+    assert len(asked) == 2  # cut-from + correction only; no confirm
+    assert not any("resume" in q.lower() and "done" in q.lower() for q in asked)
+
+
+def test_edit_answer_legend_names_esc_and_enter_only(monkeypatch, capsys):
+    """The freeze header teaches the two keys that end the edit — esc and enter — and nothing
+    else (no ctrl-d / ctrl-c hotkeys, no [Y]es/[d]one prompt)."""
+    import importlib
+
+    correction = importlib.import_module("tui.ui.correction")
+    monkeypatch.setattr(correction, "_live_start", lambda: None)
+    monkeypatch.setattr(correction, "_edit_inline", lambda text: text)
+    monkeypatch.setattr(correction, "ask", lambda _q: "")
+    correction.edit_answer({"text": "frozen", "spans": []})
+    out = capsys.readouterr().out.lower()
+    assert "esc" in out and "enter" in out
+    assert "ctrl-d" not in out and "ctrl-c" not in out and "[d]one" not in out
+
+
+def test_freeze_editor_binds_escape_to_submit():
+    """Esc inside the freeze editor submits the buffer (= resume). The binding lives in the
+    editor's OWN key bindings, merged over the prompt's, so the `»` prompt is untouched."""
+    import importlib
+
+    prompt_mod = importlib.import_module("tui.ui.prompt")
+    if not prompt_mod._PTK:
+        import pytest
+
+        pytest.skip("prompt_toolkit not installed")
+    correction = importlib.import_module("tui.ui.correction")
+    from prompt_toolkit.keys import Keys
+
+    kb = correction._freeze_key_bindings()
+    esc = [b for b in kb.bindings if tuple(b.keys) == (Keys.Escape,)]
+    assert esc, "no bare Esc binding in the freeze editor"
+    # The prompt's own bindings never gained a bare Esc (that would break Alt+Enter there).
+    assert not [b for b in prompt_mod._PTK_KB.bindings if tuple(b.keys) == (Keys.Escape,)]
+    # The Shift/Alt+Enter newline binding still rides along in the merged set.
+    assert [b for b in kb.bindings if tuple(b.keys) == (Keys.Escape, Keys.ControlM)]
 
 
 def test_edit_answer_shows_the_tail_when_the_editor_fails_at_runtime(monkeypatch, capsys):

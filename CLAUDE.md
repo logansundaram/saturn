@@ -133,6 +133,10 @@ closed to `destructive`; `run_shell` is always `destructive`. MCP tools register
 and never trust a server's self-declared tier. `tools/toolspec.py` is separate from `registry.py`
 precisely to avoid the import cycle — keep it that way.
 
+`notify/` is the scheduled-notification seam behind `schedule_notification` and `/notify`: `backend()` picks
+by `sys.platform` (macOS = one launchd LaunchAgent per one-shot, shown by `osascript`; anything else is the
+honest `Unsupported`). A new platform is one module plus one branch in `backend()`. It is not egress.
+
 ### Slash commands
 
 `commands/_framework.py` provides `@command(name, summary, aliases=, usage=, details=)`; one module owns

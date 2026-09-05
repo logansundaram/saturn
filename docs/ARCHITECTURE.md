@@ -25,6 +25,7 @@ app/        the application shell: CLI, graph assembly, turn driver, headless + 
 core/       the engine room: state, model factory, prompts, structured output, plan plumbing
 nodes/      the graph nodes, one per file (ground → plan → … → synthesize)
 tools/      the tool implementations + registry + MCP client (risk tiers declared at definition)
+notify/     scheduled desktop notifications: the platform seam + the macOS launchd/osascript backend
 trust/      the trust stack: gate policy, egress ledger, redaction, quarantine, receipt, answer provenance
 commands/   the slash-command layer (/help themes, one module each)
 stores/     data + persistence: RAG corpus, manifests, memory, snapshots, trace DB
@@ -126,6 +127,7 @@ is the *tool-execution node*, not the `tools/` package (see the name-collision t
 | `knowledge.py` | `search_knowledge_base` (RAG) + `remember`/`recall` (the layered memory; `remember` takes a layer and a `replaces=#id`) + `recall_runs` (FTS5 search over past runs). |
 | `shell.py` | `run_shell` — always `destructive` (the human approving the exact command is the boundary), bounded foreground runs only. |
 | `interaction.py` | `ask_user` — pauses the running graph via `interrupt()` to ask the human ONE question; the typed answer resumes as the observation. `read_only` (asking never gates); degrades honestly headless. |
+| `notify.py` | `schedule_notification` — a one-shot desktop reminder handed to the OS scheduler via `notify/` (launchd + osascript on macOS; other platforms refuse honestly). `side_effecting`; not egress. Human side: `/notify`. |
 
 ### `trust/` — the product's namesake
 | File | What it does |

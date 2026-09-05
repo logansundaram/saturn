@@ -7,6 +7,18 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
 
 ## [Unreleased]
 
+### Added
+
+- **Scheduled desktop notifications, delivered by the OS.** A new `schedule_notification` tool
+  (`side_effecting`, so it faces the gate) hands a one-shot reminder — "in 20 minutes",
+  "tomorrow at 09:00", or an ISO time — to the operating system's own scheduler. On macOS that
+  is one launchd LaunchAgent per notification, shown by the built-in `osascript` notifier, so it
+  fires whether or not Saturn is still running, survives a reboot, and deletes its own job after
+  firing. `/notify` lists what is pending, `/notify cancel <id>` removes one, and `/notify test`
+  sends an alert now (use it once to grant the permission macOS asks for). Nothing leaves the
+  machine. The platform seam is `notify/` — other platforms report "not supported" honestly
+  until a backend lands.
+
 ### Changed
 
 - **Esc is both the freeze key and the unfreeze key.** Esc still stops the streaming answer and

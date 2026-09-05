@@ -64,6 +64,10 @@ _ARG_ALIASES: dict[str, dict[str, list[str]]] = {
     "ask_user": {
         "question": ["question", "prompt", "query", "q", "text", "message", "ask"],
     },
+    "schedule_notification": {
+        "when": ["when", "time", "at", "datetime", "date", "delay", "in", "schedule"],
+        "title": ["title", "message", "text", "reminder", "content", "note", "subject"],
+    },
 }
 
 # Required args for which the EMPTY STRING is a legitimate value — deleting text via
@@ -83,6 +87,7 @@ _OPTIONAL: dict[str, list[str]] = {
     "edit_file": ["replace_all"],
     "remember": ["category", "layer", "replaces", "sensitivity"],
     "recall": ["query"],
+    "schedule_notification": ["body"],
 }
 
 # The exact call shape quoted back at the model when its attempt was rejected.
@@ -104,6 +109,8 @@ _SCHEMA_SHAPES: dict[str, str] = {
     "agent|memo, optional>, replaces=<#id of the fact this corrects, optional>)",
     "recall": "recall(query=<filter text, or empty for everything>)",
     "ask_user": "ask_user(question=<the ONE question to ask the user>)",
+    "schedule_notification": "schedule_notification(when=<future time: ISO 8601, 'in 20 minutes', "
+    "'tomorrow at 09:00'>, title=<short headline>, body=<optional detail>)",
 }
 
 

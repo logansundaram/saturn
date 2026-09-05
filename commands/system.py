@@ -35,7 +35,7 @@ _GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("knowledge & workspace", ("docs", "init", "memory", "undo")),
     ("trust & control", ("draft", "plan", "policy", "privacy")),
     ("observability", ("confidence", "mcp", "models", "tools", "trace")),
-    ("system", ("config", "help", "quit", "update")),
+    ("system", ("config", "help", "notify", "quit", "update")),
 )
 # (The legacy gate spellings — /risk · /allow · /autoapprove — were CUT 2026-07-06: they were
 # thin delegations to /policy's subcommands and now land on _RENAMED pointers, so the listing

@@ -19,6 +19,7 @@ import tools.files  # noqa: E402,F401
 import tools.knowledge  # noqa: E402,F401  (search_knowledge_base + remember/recall)
 import tools.shell  # noqa: E402,F401
 import tools.interaction  # noqa: E402,F401  (ask_user — the mid-run question to the human)
+import tools.notify  # noqa: E402,F401  (schedule_notification — a one-shot OS-scheduled reminder)
 
 # Remote MCP tools (roadmap #12): connect the servers declared under `mcp.servers` in config.yaml
 # and register each remote tool through toolspec.register_tool_object, so they land in the same

@@ -77,7 +77,7 @@ saturn = "agent:main"
 py-modules = ["agent", "config", "diag", "env_keys", "textutil"]
 
 [tool.setuptools.packages.find]
-include = ["app*", "commands*", "core*", "trust*", "tools*", "nodes*", "stores*", "tui*"]
+include = ["app*", "commands*", "core*", "trust*", "tools*", "nodes*", "stores*", "tui*", "notify*"]
 namespaces = true
 
 [tool.setuptools.data-files]

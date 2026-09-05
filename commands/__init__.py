@@ -30,6 +30,7 @@ _COMMAND_MODULES = [
     "config",        # /config (+ key, setup) — owns the persist seam others import
     "conversation",  # /clear, /resume
     "knowledge",     # /docs, /memory, /init, /undo
+    "notify",        # /notify — pending OS-scheduled notifications: list, cancel, test
     "plan",          # /plan
     "policy",        # /policy — the one gate front door (risk · allow · open)
     "privacy",       # /privacy

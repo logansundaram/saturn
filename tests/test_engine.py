@@ -13,6 +13,7 @@ The plan/execute engine (2026-07-03 transplant) — offline coverage of the load
 No test reaches an LLM: the `structured`/text seams are monkeypatched at each node's namespace.
 """
 
+import json
 import types
 
 import pytest
@@ -895,8 +896,8 @@ def test_launders_a_value_is_decidable():
 
 
 class _Scripted:
-    """A tool_caller stand-in for _generate_tool_call: bind_tools returns self; each invoke pops
-    the next scripted response."""
+    """A tool_caller stand-in for _generate_tool_call: each invoke pops the next scripted
+    response."""
 
     def __init__(self, responses):
         self._r = list(responses)
@@ -911,8 +912,9 @@ class _Scripted:
 
 
 def _call_resp(args):
-    return AIMessage(content="", tool_calls=[{"name": "calculate", "args": args, "id": "c1",
-                                              "type": "tool_call"}])
+    # The grammar-constrained shape (2026-09-04): the arguments ride the content as JSON under
+    # the tool's own schema — there is no native tool_calls list any more.
+    return AIMessage(content=json.dumps({"arguments": args}))
 
 
 def test_generate_tool_call_refuses_a_laundered_value_then_accepts_arithmetic(monkeypatch):
@@ -1153,13 +1155,16 @@ def test_a_web_search_payload_reaches_the_judge_whole():
 
 
 def test_many_results_share_one_block_budget():
-    """The per-result cap shrinks as the plan grows so the block stays bounded — but never below
-    the floor, so a long plan's results are still readable."""
+    """The block stays bounded as the plan grows — the budget is spent in LANDING order (an
+    earlier result's cap never changes when a later one lands, so the daemon's prompt cache
+    restores past it; tests/test_prefix_cache.py) and no result drops below the floor."""
     n = 20
     plan = [_step(i, "read_file", result="B" * 5000, status="done") for i in range(1, n + 1)]
     block = plan_context.results_block(plan)
-    assert len(block) < plan_context._BLOCK_BUDGET + n * 120
-    assert plan_context._result_cap_for(n) == max(plan_context._RESULT_FLOOR,
-                                                 plan_context._BLOCK_BUDGET // n)
-    assert plan_context._result_cap_for(1) == plan_context._RESULT_CAP
-    assert plan_context._result_cap_for(1000) == plan_context._RESULT_FLOOR
+    assert len(block) < plan_context._BLOCK_BUDGET + n * (plan_context._RESULT_FLOOR + 120)
+    caps = plan_context.landing_caps([s["result"] for s in plan])
+    assert caps[0] == plan_context._RESULT_CAP
+    assert min(caps) == plan_context._RESULT_FLOOR
+    assert sum(min(c, 5000) for c in caps[:3]) <= plan_context._BLOCK_BUDGET
+
+

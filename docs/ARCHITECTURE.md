@@ -46,10 +46,13 @@ The whole product is one loop. Reading it end to end explains 80% of the repo:
    old history and resets per-turn state; `core/mentions.py` expands `@file` attachments.
 2. **The graph runs** — `app/turn.py::run_turn` streams the compiled graph that
    `app/graph.py::build_agent` assembled from `nodes/`:
-   - `nodes/ground.py` builds `state["context"]`: workspace instructions
-     (SATURDAY.md), the memory selection for this request (`stores/memory_registry`: user
-     facts + open commitments + the memo digest always, agent/entities/negative facts by match,
-     one cap), document manifests, a recap of recent Q&A, attachments.
+   - `nodes/ground.py` builds `state["context"]` in two halves: `context_stable` (workspace
+     instructions from SATURDAY.md, document/workspace manifests, the always-loaded memory
+     layers — `stores/memory_registry`: user facts + open commitments + the memo digest) and
+     `context_dynamic` (agent/entities/negative facts matched to this request, a recap of
+     recent Q&A, attachments). Every node sends the stable half as its own message right after
+     its system prompt, and `core/prime.py` re-sends exactly that prefix between turns so the
+     daemon's prompt cache resumes there (see `core/serving.py`, "the prefix cache").
    - `nodes/plan.py` drafts the step list via the hardened structured-output path
      (`core/structured.py`). **The plan is the data bus**: each step is a plain dict that will
      carry its own `result`; the first step with `result: None` is the execution pointer.
@@ -57,8 +60,9 @@ The whole product is one loop. Reading it end to end explains 80% of the repo:
      pass-through unless the user pressed Esc (pause/steer) or `/plan review` is on.
    - `nodes/execute.py` runs ONE step per pass against a curated context
      (`core/plan_context.py`) — a reasoning step answers in text; a write step first faces the
-     semantic write gate; a tool step generates a call bound to exactly the planned tool
-     (argument recovery in `core/tool_args.py`).
+     semantic write gate; a tool step generates its arguments under the planned tool's own
+     JSON schema as a response grammar — never a native tool bind, which would render the
+     schema into the system prompt (argument recovery in `core/tool_args.py`).
    - `nodes/approval.py` is the human gate: `trust/policy.py` decides whether the call is
      auto-approved (risk tier, /policy allow prefixes) or must interrupt and ask you.
    - `nodes/tools.py` executes the call, clamps the observation, attributes egress
@@ -95,7 +99,8 @@ The whole product is one loop. Reading it end to end explains 80% of the repo:
 | `llms.py` | `get_model(role)` — the five-role model factory (planner / tool_caller / synthesizer / utility / judge) over Ollama; locality boundary wrapping for a remote `OLLAMA_HOST`; startup health check. Cloud providers are shelved (refuse actionably). |
 | `messages.py` | Every system prompt, in one place: the planner prompt (built per call from the live registry), execute/rectify/write-gate/synthesize prompts. |
 | `structured.py` | The hardened structured-output layer: flat JSON schemas, salvage parsing, temp-escalating retries, tool-name normalization (`TOOL_SYNONYMS`), `to_steps` minting the plan dicts. Exists because small local models emit near-miss output. |
-| `plan_context.py` | Curated context builders — the engine's LLM calls see request + grounding + earlier step results, never raw message history. |
+| `plan_context.py` | Curated context builders — the engine's LLM calls see request + grounding + earlier step results, never raw message history. Prefix-stable by construction: results are capped in landing order and never re-truncated; `exec_parts` lays the step context out as message-boundary parts. |
+| `prime.py` | The idle prefix primes: between turns (and once after the weights load) each node lineage's `[system][stable grounding]` prefix is re-sent with one predicted token so the next turn's calls resume from that checkpoint. Off under tests and `runtime.prime: false`. |
 | `tool_args.py` | Tool-argument recovery: alias coercion onto real schemas, text-format call parsing (small-model tolerance). |
 | `plan_ops.py` | The plan-review seam: pure plan-editor functions + the `PauseController` that `plan_gate` consults at each boundary. |
 | `compaction.py` | The heavier LLM compaction (automatic past threshold) folding old turns into a summary message. |

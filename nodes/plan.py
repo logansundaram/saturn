@@ -3,6 +3,7 @@ import time
 import diag
 from langchain.messages import HumanMessage
 
+from core.plan_context import grounding_parts
 from core.plan_ops import retarget_knowledge_base_reads
 from core.state import AgentState
 from core.messages import planner_sys_msg
@@ -76,12 +77,18 @@ def plan_node(state: AgentState):
         diag.log(f"plan_node : user-drafted plan honored ({len(seeded)} step(s)) — drafting skipped")
         return {"plan": seeded}
 
+    # Three messages, in prompt-cache order: the stable grounding is the message the idle prime
+    # re-sends between turns (core/prime.py), so the daemon holds a checkpoint at its end and
+    # this call prefills only the per-turn message. The request must NOT share a message with
+    # the stable grounding: a divergence inside a message leaves only the previous prompt's
+    # N-1024 checkpoint reachable (measured 2026-09-04: 2.7 s vs 0.2 s on the 9b).
+    stable, dynamic = grounding_parts(state)
     prompt = [
         planner_sys_msg(),  # built per call — the tool catalog tracks /mcp reload
+        HumanMessage(content="Grounding context:\n" + stable),
         HumanMessage(
-            content="Grounding context:\n"
-            + state.get("context", "")
-            + "\n\nUser request:\n"
+            content=(dynamic + "\n\n" if dynamic else "")
+            + "User request:\n"
             + state["current_query"]
         ),
     ]

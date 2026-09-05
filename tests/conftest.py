@@ -59,3 +59,13 @@ def _reset_grant_lifecycle():
     policy.reset_grants()
     yield
     policy.reset_grants()
+
+
+@pytest.fixture(autouse=True)
+def _no_prefix_priming(monkeypatch):
+    """The idle prefix primes (core/prime.py) are real model requests fired from background
+    threads at startup and after each turn — never under tests (no test may reach a model).
+    A test that exercises priming flips the flag back and stubs core.llms.get_model."""
+    from core import prime
+
+    monkeypatch.setattr(prime, "ENABLED", False)

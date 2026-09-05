@@ -65,11 +65,22 @@ def warm_model(role: str = "tool_caller") -> bool:
         return False
 
 
+def _warm_and_prime(role: str) -> None:
+    """The warm-up thread's body: load the weights, then plant the planner lineage's prefix
+    checkpoint (core/prime.py) so the first turn's plan call prefills only its request. The
+    planner lineage ONLY here: priming every lineage cold is ~15 s of prefill each, and a first
+    query typed meanwhile would queue behind all of it."""
+    warm_model(role)
+    from core import prime
+
+    prime.prime_now(only=("planner",))
+
+
 def start_warm_up(role: str = "tool_caller") -> threading.Thread:
-    """`warm_model` on a daemon thread: the REPL keeps starting while the weights load, and a
-    first query typed early simply queues behind the load at the daemon — as it did before,
-    minus the second load it used to pay."""
-    t = threading.Thread(target=warm_model, args=(role,), name="model-warm-up", daemon=True)
+    """`warm_model` + the planner prime on a daemon thread: the REPL keeps starting while the
+    weights load, and a first query typed early simply queues behind the load at the daemon —
+    as it did before, minus the second load it used to pay."""
+    t = threading.Thread(target=_warm_and_prime, args=(role,), name="model-warm-up", daemon=True)
     t.start()
     return t
 

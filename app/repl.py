@@ -15,6 +15,7 @@ import diag
 from app.graph import DB_PATH
 from app.session import _fresh_turn, _initial_state, _maybe_autocompact
 from app.startup import startup_load, start_warm_up, _warn_flagged_attachments
+from core import prime
 from app.turn import run_turn, _make_on_update, _trace_warning
 from config import get_config
 from core import mentions
@@ -298,6 +299,7 @@ def run_repl() -> None:
                 return ui.answer_question(value)
             return ui.ask_approval(value)
 
+        prime.set_busy(True)  # an idle prime sequence must not queue this turn's calls
         try:
             state = run_turn(
                 graph,
@@ -309,9 +311,14 @@ def run_repl() -> None:
                 on_token=answer.feed,
             )
             tracer.end_run(run_id, "ok", state["messages"][-1].content)
+            # The daemon is idle now: re-plant every lineage's prefix checkpoint for the next
+            # turn (core/prime.py — rebuilt from disk, so this turn's writes are in it).
+            prime.set_busy(False)
+            prime.start_priming()
         except KeyboardInterrupt:
             # Ctrl-C abandons the in-flight turn but not the session — record it and return to
             # the prompt. (KeyboardInterrupt is not an Exception, so it bypasses the catch below.)
+            prime.set_busy(False)
             answer.abort()  # tear down the live answer region (never leak it across the prompt)
             tracer.end_run(run_id, "interrupted", "turn cancelled by user (Ctrl-C)")
             ui.warn("Turn cancelled.")
@@ -325,6 +332,7 @@ def run_repl() -> None:
             # lose the session. Record it, tell the user, and drop back to the prompt with the
             # conversation intact (the unanswered query stays in `messages`; the next turn's
             # _compact_history tolerates it).
+            prime.set_busy(False)
             answer.abort()  # tear down the live answer region before the warning prints
             tracer.end_run(run_id, "error", str(exc))
             ui.warn(f"Turn failed: {exc}")

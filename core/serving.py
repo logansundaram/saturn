@@ -17,8 +17,8 @@ daemon's defaults:
     model to think briefly on a simple request (measured: a one-tool request's rationale
     108 → 49 words, 5.9 s → 3.1 s warm; a five-step request thinks longer, the plans unchanged).
     Judges, tool arguments, reasoning prose and the answer stay without (measured: think-off
-    fixed `absence` 66 → 100 %, `no_capability` 2/5 → 5/5). The planner's think template differs
-    from the other nodes', so its prompt prefix is its own cache entry (see below).
+    fixed `absence` 66 → 100 %, `no_capability` 2/5 → 5/5). The flag only changes the assistant
+    opener at the prompt's tail, so it costs nothing at the prefix cache (see below).
   - `num_predict`: a circuit breaker, not a budget — every cap is well above what a healthy
     generation of that task uses; it exists so a whitespace loop under a JSON grammar or a small
     model that starts repeating lands as a truncated generation instead of a full context window.
@@ -32,19 +32,26 @@ Also home of the repetition RETRY penalty: applied to the next rung only after a
 the outputs that legitimately repeat (a JSON schema's punctuation, an `old_string` that must
 reproduce a file's text verbatim, a path named twice).
 
-The prefix cache (measured 2026-09-03, Ollama 0.33 / qwen3.5, Apple M4 Pro at ~400 prompt
-tokens/s): the qwen35 architecture runs ONE runner slot ("does not currently support parallel
-requests" — OLLAMA_NUM_PARALLEL is ignored), and llama.cpp keeps a pool of context checkpoints,
-two per processed prompt: one `num_batch` (512) tokens before its end and one at the end. A
-later prompt skips prefill up to a checkpoint only when it is byte-identical up to that position,
-so a node's call reuses its predecessor's cache exactly when everything that changed sits in
-the prompt's LAST 512 tokens. Hence: every node keeps a byte-stable system prompt first and its
-per-call material last (the plan prompt: catalog, then grounding — stable sections first, the
-recap and request at the end); one `think` setting per node's prompt family (the flag changes
-the template's tokens, so the planner's think-on prompts and the other nodes' think-off prompts
-are two cache lineages); and the same `num_batch` on every request (a load option — it would reload
-the model, and a larger batch moves the checkpoint earlier, which only helps a node whose
-per-call tail is longer than 512). Measured on the 9b: the plan call 9 s cold → 1.4 s on a hit.
+The prefix cache (measured 2026-09-03/04, Ollama 0.33 / qwen3.5, Apple M4 Pro at ~400 prompt
+tokens/s; the earlier reading of this paragraph was wrong on three counts): llama-server keeps
+MANY past prompts in host RAM (`--cache-ram`, ~200 MiB each) and picks the one sharing the
+longest prefix with the new request; qwen35 is a hybrid/recurrent architecture, so it cannot
+reuse a partial prefix — it can only RESTORE a saved context checkpoint that lies inside the
+common prefix and reprocess from there. Checkpoints land at N-1024 (`n_batch` is 1024, not
+512) and at N-4 of every processed prompt, and at the point a prompt restored from. So a
+prompt whose predecessor differs only in its last 1024 tokens reprocesses ~1024 tokens
+(2.7 s); one that EXTENDS a cached prompt at a message boundary restores its N-4 and
+reprocesses only the extension (0.2 s); anything else reprocesses whole. Hence: every node's
+prompt is [system][user: the STABLE grounding half][per-turn messages…] with the changing
+material last and append-only (core/plan_context: results are capped in landing order and
+never re-truncated); an idle prime re-sends each lineage's first two messages between turns
+(core/prime.py) so the boundary checkpoint exists; the think flag only changes the assistant
+opener at the prompt's tail (NOT a separate lineage — but a prime must be sent think ON, or
+the empty think block lands after the boundary); and tool arguments are generated under a
+`format` grammar, never a native bind, because the chat template renders bound tools INTO the
+system message and every step then re-prefilled whole (measured: 8k tokens, 20 s). The same
+`num_ctx` and runner options ride every request (load options — a mismatch reloads the model
+and drops the whole cache).
 
 Deliberately NOT here: per-task `num_ctx` — Ollama keys the loaded runner on the context size, so
 alternating it between tasks would reload the model between nodes of one turn (config.num_ctx_for

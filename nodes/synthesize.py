@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import diag
 from config import get_config
 from core import confidence, continuation, provenance
-from core.plan_context import WRITE_TOOLS, authorization_basis
+from core.plan_context import WRITE_TOOLS, authorization_basis, grounding_parts
 from textutil import figure_literals, untraceable_figures
 from core.state import AgentState, incident_steps, unfinished_steps
 from textutil import SOURCES_HEADER, clip, parse_doc_sources, split_call_result
@@ -577,7 +577,6 @@ def _state_computed(buf: dict, model, llm_input, state: AgentState, query: str, 
 
 def synthesize_node(state: AgentState):
     query = state["current_query"]
-    context = state["context"]
     plan = state.get("plan", [])
     tool_results = state.get("tool_results", [])
     documents_retrieved = state.get("documents_retrieved", [])
@@ -593,8 +592,13 @@ def synthesize_node(state: AgentState):
 
     llm_input = [synthesize_sys_msg]
 
-    if context:
-        llm_input.append(HumanMessage(content=f"Relevant context:\n{context}"))
+    # The stable grounding as its own message (the idle prime's checkpoint sits at its end —
+    # core/prime.py), the per-turn half after it.
+    stable, dynamic = grounding_parts(state)
+    if stable:
+        llm_input.append(HumanMessage(content=f"Relevant context:\n{stable}"))
+    if dynamic:
+        llm_input.append(HumanMessage(content=f"Context for this turn:\n{dynamic}"))
 
     # The completed plan — the data bus — as a step -> outcome narrative. Reasoning-step results
     # live ONLY here; tool observations are pointed at the numbered sections below.

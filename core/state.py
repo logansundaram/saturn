@@ -132,6 +132,13 @@ class AgentState(TypedDict):
     # + the persistent-memory selection). Sole writer: grounding_node; downstream
     # nodes read but never mutate it.
     context: str
+    # The two halves of `context` (nodes/ground.py): `context_stable` is byte-identical across
+    # turns while nothing on disk changed and rides every prompt as its own message right after
+    # the system prompt (the daemon's prompt cache restores past it); `context_dynamic` is the
+    # per-turn remainder. `context` is their join. Absent on an older checkpoint — readers go
+    # through plan_context.grounding_parts, which treats the whole `context` as stable then.
+    context_stable: str
+    context_dynamic: str
 
     # Per-turn @file attachments: the contents of files the user referenced with `@path` in their
     # message, pre-formatted as a context section by `mentions.expand` and appended to `context` by

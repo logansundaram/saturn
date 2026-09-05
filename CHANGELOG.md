@@ -9,6 +9,27 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
 
 ### Changed
 
+- **Prompts are laid out for the daemon's prompt cache, and an idle prime keeps it warm.**
+  Measured on the 9b tier: every plan call re-read ~2,000 tokens of unchanged grounding (5 s),
+  and every execute, rectify and synthesize call re-read its whole prompt (a 16-call turn spent
+  ~96 s of 141 s in prefill). llama-server can only resume from a checkpoint it saved 1024 or 4
+  tokens before an earlier prompt's end, so three things now hold: the grounding is split into
+  a stable half (instructions, manifests, the always-loaded memory layers) and a per-turn half
+  (matched memory, the recap, attachments), and every node sends the stable half as its own
+  message right after its system prompt; the results block caps each result when it lands
+  (landing-order budget) instead of re-truncating every earlier result as the plan grows, and
+  the previous-step callout is bounded at 2,000 chars so a step's changing tail fits one
+  prefill batch; and between turns (plus once after the weights load) the agent re-sends each
+  node's stable prefix with one predicted token so the next turn's calls resume at that
+  boundary (`runtime.prime`, default on — measured: the plan call's prefill 5 s → 0.2 s).
+- **Tool arguments are generated under the tool's JSON schema as a grammar, not a native
+  tool bind.** Ollama's chat template renders bound tools into the system message, so every
+  tool step's prompt began differently and re-prefilled whole (8k tokens, 20 s per step). The
+  model now answers `{"arguments": …}` under the schema — or `{"refusal": "…"}` when the step's
+  tool must not be called, which lands as the same text-fallback incident as before.
+- **The rectify judge is asked for a one-or-two-sentence rationale** (it averaged 113 output
+  tokens, ~3 s per verdict on the 9b).
+
 - **The planner thinks only as much as the request needs.** Every model call except the
   planner's now runs with the model's "thinking" off. The planner keeps it: without its
   rationale the 9b turned an open request like "write me a story" into a single "ask the user

@@ -29,20 +29,36 @@ from textutil import head_tail
 #
 # 8k chars ≈ 2k tokens (2026-09-03; was 16k): the block rides EVERY per-step execute prompt and
 # the rectify/replan plan text, and prompt prefill is the turn's dominant cost (~400 tokens/s on
-# the 9b — a full 16k block was ~10 s per call, re-read on every step of a long plan because
-# its content changes each step and so never hits the daemon's prefix cache; see
-# core/serving.py, "the prefix cache"). One or two results still ride whole at _RESULT_CAP;
-# the floor (400, was 800 — halved with the budget so twenty results still fit it) is reached
-# at twenty. The immediately preceding step rides separately at _CALLOUT_CAP, and synthesize
-# reads the full observations from tool_results, so the floor bounds only the OLDER results.
+# the 9b — a full 16k block was ~10 s per call). One or two results still ride whole at
+# _RESULT_CAP; the floor (400, was 800 — halved with the budget so twenty results still fit it)
+# bounds only the OLDER results: the immediately preceding step rides separately at
+# _CALLOUT_CAP, and synthesize reads the full observations from tool_results.
+#
+# The budget is spent in LANDING ORDER (2026-09-04): a result's cap is fixed the moment it lands
+# — the cap, the budget left after every earlier result, or the floor — and never recomputed
+# from how many results followed. The old equal-share cap (`budget // n`) re-truncated every
+# earlier result each time a later one landed, so the block's bytes changed MID-PROMPT on every
+# step and the daemon's prompt cache never restored past the first result (core/serving.py,
+# "the prefix cache"; tests/test_prefix_cache.py pins the prefix property). The price: a long
+# plan's late results are squeezed to the floor where the old scheme squeezed all of them
+# evenly — the callout below carries the latest one whole regardless.
 _RESULT_CAP = 3000
 _RESULT_FLOOR = 400
 _BLOCK_BUDGET = 8000
 
 
-def _result_cap_for(n_results: int) -> int:
-    """The per-result cap when `n_results` share the block budget."""
-    return max(_RESULT_FLOOR, min(_RESULT_CAP, _BLOCK_BUDGET // max(n_results, 1)))
+def landing_caps(results) -> list:
+    """The per-result cap for each of `results` (their raw texts, in plan order), spent as a
+    running budget: what an EARLIER result rendered is what it consumed, so a short result
+    leaves its share to the next. Depends only on the results before each index — that is the
+    prefix property the prompt cache needs."""
+    caps = []
+    spent = 0
+    for r in results:
+        cap = max(_RESULT_FLOOR, min(_RESULT_CAP, _BLOCK_BUDGET - spent))
+        caps.append(cap)
+        spent += min(len(str(r or "").strip()), cap)
+    return caps
 
 
 def _cap_result(result, cap: int = _RESULT_CAP) -> str:
@@ -53,10 +69,13 @@ def _cap_result(result, cap: int = _RESULT_CAP) -> str:
     r = str(result or "").strip()
     return r if len(r) <= cap else r[:cap] + " …(truncated)"
 
-# The "previous step" callout carries more of its result than the block (it is the referent of
-# "the previous step's result" in step labels), but still bounded — a ~12k clamped observation
-# must not ride every per-step prompt in full.
-_CALLOUT_CAP = 4000
+# The "previous step" callout carries the latest result whole where the block may have squeezed
+# it (it is the referent of "the previous step's result" in step labels), but bounded: it is
+# the per-step TAIL of the execute prompt together with the step line, and that tail must stay
+# inside one prefill batch (1024 tokens ≈ 4k chars) for the previous step's N-1024 checkpoint
+# to land before the divergence — at 4000 chars (until 2026-09-04) consecutive steps of one
+# plan re-prefilled from the turn's first result.
+_CALLOUT_CAP = 2000
 
 # THE engine-wide tool classifications (one home — execute's write gate, rectify's resolution
 # exemption, and synthesize's write verification all key off these; a copy per node is how a
@@ -372,21 +391,37 @@ def results_block(plan) -> str:
     if not done:
         return ""
     lines = ["Results from earlier steps (use these exact values):"]
-    cap = _result_cap_for(len(done))
-    for i, s in enumerate(done, 1):
+    caps = landing_caps([s.get("result") for s in done])
+    for i, (s, cap) in enumerate(zip(done, caps), 1):
         lines.append(f"{i}. {s.get('label')} -> {_cap_result(s.get('result'), cap)}")
     return "\n".join(lines)
 
 
-def exec_context(state, step) -> str:
-    """The curated context for executing ONE step: request + earlier results + an explicit
-    'the previous step' callout (the referent of 'the previous step's result' in step labels)
-    + the current step. The grounding context rides along so workspace manifests / attachments /
-    memory stay visible without the raw history."""
-    parts = [f"User's overall request: {original_request(state)}"]
-    grounding = str(state.get("context") or "").strip()
-    if grounding:
-        parts.append(grounding)
+def grounding_parts(state) -> "tuple[str, str]":
+    """The grounding context as (stable, per-turn) halves — the grounding node's split
+    (`context_stable` / `context_dynamic`). A state carrying only the joined `context` (an
+    older checkpoint, a test fixture) is all-stable, the shape every prompt handled before."""
+    stable = state.get("context_stable")
+    if stable is None and state.get("context_dynamic") is None:
+        return str(state.get("context") or "").strip(), ""
+    return str(stable or "").strip(), str(state.get("context_dynamic") or "").strip()
+
+
+def exec_parts(state, step) -> list:
+    """The curated context for executing ONE step, as the bodies of consecutive user messages
+    in prompt-cache order: the stable grounding first (byte-identical across the turn and,
+    when nothing on disk changed, across turns — the idle prime plants a checkpoint at its
+    end, see core/prime.py), then the request with the per-turn grounding, then the
+    append-only results block, then the per-step tail: the explicit 'the previous step'
+    callout (the referent of 'the previous step's result' in step labels) + the current step.
+    Each part only ever gains bytes at the END as the plan advances, so every step's prompt
+    extends its predecessor's up to the tail."""
+    parts = []
+    stable, dynamic = grounding_parts(state)
+    if stable:
+        parts.append(stable)
+    request = f"User's overall request: {original_request(state)}"
+    parts.append(request + ("\n\n" + dynamic if dynamic else ""))
     plan = state.get("plan") or []
     # Only steps BEFORE the current one, in plan order: a LATER step can already carry a result
     # (the user retired it at plan review), and prior[-1] over the whole plan would present its
@@ -397,6 +432,7 @@ def exec_context(state, step) -> str:
     block = results_block(before)
     if block:
         parts.append(block)
+    tail = []
     # The callout referent is the nearest prior step that PRODUCED a result (status done): an
     # incident/review-retired step's stamp is not "the previous step's result" — and replan's
     # done-first merge can reposition a retired step directly before the redrafted ones, so
@@ -404,13 +440,19 @@ def exec_context(state, step) -> str:
     producers = [s for s in prior if s.get("status") == "done"]
     if producers:
         last = producers[-1]
-        parts.append(
+        tail.append(
             f'The immediately preceding step ("the previous step") was: '
             f"{last.get('label')}\n  its result: "
             f"{head_tail(str(last.get('result') or '').strip(), _CALLOUT_CAP)}"
         )
-    parts.append(f"Your current step: {step.get('label')}")
-    return "\n\n".join(parts)
+    tail.append(f"Your current step: {step.get('label')}")
+    parts.append("\n\n".join(tail))
+    return parts
+
+
+def exec_context(state, step) -> str:
+    """`exec_parts` as one string — the shape the trace and the tests read."""
+    return "\n\n".join(exec_parts(state, step))
 
 
 def plan_txt(plan) -> str:
@@ -419,13 +461,13 @@ def plan_txt(plan) -> str:
     a small model's window and front-truncate the very system prompt the call depends on),
     PENDING steps with their intended tool."""
     lines = []
-    cap = _result_cap_for(sum(1 for s in plan or [] if s.get("result") is not None))
+    caps = iter(landing_caps([s.get("result") for s in plan or [] if s.get("result") is not None]))
     for i, s in enumerate(plan or [], 1):
         tool = s.get("intended_tool") or "none"
         if s.get("result") is None:
             lines.append(f"{i}. [PENDING] tool={tool} | {s.get('label')}")
         else:
-            r = _cap_result(s.get("result"), cap)
+            r = _cap_result(s.get("result"), next(caps))
             lines.append(
                 f"{i}. [DONE] tool={tool} | {s.get('label')}\n   result: {r}"
             )

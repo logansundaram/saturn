@@ -631,23 +631,34 @@ def _context_line(e: dict) -> str:
     return " ".join(bits)
 
 
-def memory_context(query: str = "") -> "tuple[str, list[int]]":
-    """One selection for one turn: `(block, matched_ids)`. The block is the selected facts
-    formatted for the grounding context ("" when nothing is stored — the grounding node then
-    omits the section); the trailer names what did NOT load, so a fact that silently didn't ride
-    is never a mystery. `matched_ids` are the facts the caller stamps as used (see selected_ids)."""
+def memory_context_split(query: str = "") -> "tuple[str, str, list[int]]":
+    """One selection for one turn, in two blocks: `(always, matched, matched_ids)`. `always` is
+    the query-INDEPENDENT half (the user layer, open commitments, the memo digest — byte-stable
+    across turns while the store is unchanged, so it rides the grounding's stable half and the
+    daemon's prompt cache); `matched` is the by-match half plus the trailer naming what did NOT
+    load (so a fact that silently didn't ride is never a mystery), which changes with the
+    request. Either is "" when empty. `matched_ids` are the facts the caller stamps as used
+    (see selected_ids)."""
     sel = select_for_context(query)
-    lines = [_context_line(e) for e in sel["always"]] + [_context_line(e) for e in sel["matched"]]
-    if not lines:
-        return "", []
+    always = [_context_line(e) for e in sel["always"]]
+    matched = [_context_line(e) for e in sel["matched"]]
+    if not always and not matched:
+        return "", "", []
     trailer = []
     if sel["omitted"]:
         trailer.append(f"{sel['omitted']} fact(s) not loaded")
     if sel["sensitive_withheld"]:
         trailer.append(f"{sel['sensitive_withheld']} sensitive fact(s) withheld (remote inference)")
     if trailer:
-        lines.append("(" + "; ".join(trailer) + " — `recall` searches everything else stored)")
-    return "\n".join(lines), selected_ids(sel)
+        matched.append("(" + "; ".join(trailer) + " — `recall` searches everything else stored)")
+    return "\n".join(always), "\n".join(matched), selected_ids(sel)
+
+
+def memory_context(query: str = "") -> "tuple[str, list[int]]":
+    """`memory_context_split` as one block: `(block, matched_ids)` — the always half first,
+    then the by-match half ("" when nothing is stored)."""
+    always, matched, ids = memory_context_split(query)
+    return "\n".join(b for b in (always, matched) if b), ids
 
 
 def read_memory_block(query: str = "") -> str:

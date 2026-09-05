@@ -17,7 +17,8 @@ Three step shapes:
     gathered results). A blocked write marks the step `skipped` without generating a call. The
     human approval gate still fronts the actual filesystem action downstream.
   - a tool step: ONE constrained tool call is generated against exactly that tool
-    (`_generate_tool_call`: single-tool bind, alias arg coercion, text-format call recovery,
+    (`_generate_tool_call`: the tool's schema as the response grammar, alias arg coercion,
+    text-format call recovery,
     temperature-escalating retries with a schema hint) and emitted as a tool-calling AIMessage —
     the approval gate and tool node then handle it exactly as before, so the trust envelope
     (policy gate, quarantine escalation, egress attribution, tool_events) is unchanged.
@@ -26,6 +27,7 @@ Three step shapes:
 write-gate skip, argument failure, no step left) falls through to `rectify`.
 """
 
+import json
 import time
 import uuid
 
@@ -43,7 +45,7 @@ from core.plan_context import (
     WRITE_TOOLS,
     authorization_basis,
     clean,
-    exec_context,
+    exec_parts,
     is_revoked,
     revocation_kind,
     original_request,
@@ -65,6 +67,8 @@ from core.structured import (
 from core.tool_args import (
     coerce_args, concrete_args, launders_a_value, parse_text_call, schema_hint,
 )
+from core.structured import _extract_json
+from langchain_core.utils.function_calling import convert_to_openai_tool
 
 # The steps the semantic write gate fronts (WRITE_TOOLS), and the gathering tools whose
 # presence arms it (SEARCH_TOOLS) — both from core/plan_context, THE one home for the engine's
@@ -335,7 +339,14 @@ def _metrics(resp) -> dict:
     return out
 
 
-def _reasoning_call(context: str):
+def _context_messages(context) -> list:
+    """The curated context as consecutive user messages: `exec_parts` (stable grounding, request
+    + per-turn grounding, results, the per-step tail) or one string (an older caller, a test)."""
+    parts = [context] if isinstance(context, str) else list(context)
+    return [HumanMessage(content=str(p)) for p in parts]
+
+
+def _reasoning_call(context):
     """One text generation for a pure reasoning step. Returns (content, last_response)."""
     model = get_model("tool_caller")
     resp = None
@@ -344,7 +355,7 @@ def _reasoning_call(context: str):
         try:
             resp = generate(
                 model,
-                [EXECUTE_REASONING_SYS, HumanMessage(content=context)],
+                [EXECUTE_REASONING_SYS] + _context_messages(context),
                 tag=_model_tag("tool_caller"),
                 **_invoke_kwargs("tool_caller", None, temp, task="reasoning",
                                  repetition=repetition),
@@ -360,20 +371,89 @@ def _reasoning_call(context: str):
     return content, resp
 
 
-def _generate_tool_call(tool, context: str):
-    """Generate ONE call against exactly `tool` (bound alone, so the model can't wander to a
-    different tool than the step planned). Recovers text-format calls, coerces alias args onto
-    the real schema, and retries with a schema hint at escalating temperature.
+# The tool-call generation runs under a JSON GRAMMAR for the tool's own argument schema instead
+# of a native single-tool bind (2026-09-04). Ollama's chat template renders bound tools INTO the
+# system message, so every step's prompt began with a different schema block and re-prefilled
+# whole (measured: 8k tokens, 20 s per step on the 9b; a `format` grammar leaves the prompt
+# untouched, so consecutive steps extend one cached lineage). The wrapper keeps the one escape
+# the bind gave the model — answering in text instead of calling (a write whose value is
+# unavailable) — as an explicit `refusal`, which lands as the text fallback exactly as before.
+_TOOL_DESC_CAP = 1500  # every shipped tool rides whole (the longest, remember, is ~1.2k)
+
+
+def tool_call_format(tool) -> dict:
+    """The response grammar for one tool call: `{"arguments": <the tool's parameters>}` or
+    `{"refusal": "<why the tool must not be called>"}`. The parameter schema is the tool's
+    own (an MCP tool's remote schema included), so the grammar enforces its types."""
+    try:
+        params = convert_to_openai_tool(tool)["function"].get("parameters")
+    except Exception:
+        params = None
+    if not isinstance(params, dict) or params.get("type") != "object":
+        params = {"type": "object", "properties": {}}
+    return {
+        "type": "object",
+        "properties": {"arguments": params, "refusal": {"type": "string"}},
+    }
+
+
+def tool_brief(tool) -> str:
+    """The per-step tail that names the tool and its arguments (what the native bind used to put
+    in the system prompt) plus the response shape."""
+    desc = str(getattr(tool, "description", "") or "").strip()
+    desc = desc.split("\n\n", 1)[0].replace("\n", " ").strip().rstrip(".")
+    if len(desc) > _TOOL_DESC_CAP:
+        desc = desc[:_TOOL_DESC_CAP] + "…"
+    props = tool_call_format(tool)["properties"]["arguments"].get("properties") or {}
+    shape = ", ".join(
+        f"{name}: {spec.get('type', 'any') if isinstance(spec, dict) else 'any'}"
+        for name, spec in props.items()
+    ) or "(no arguments)"
+    return (
+        f"The tool for this step is `{tool.name}`" + (f" — {desc}" if desc else "") + ".\n"
+        f"Its arguments: {shape}.\n"
+        'Respond with ONLY this JSON: {"arguments": {<the arguments for this step>}} — or, if '
+        "the tool must NOT be called for this step (the value it needs is unavailable, empty, "
+        'or an error), {"refusal": "<why, in one sentence>"}.'
+    )
+
+
+def _parse_arguments(content: str):
+    """(args_dict | None, refusal_text): the wrapper, a bare argument object (a model that
+    skipped the wrapper), a text-format call (core/tool_args.parse_text_call), or nothing."""
+    try:
+        obj = json.loads(_extract_json(content))
+    except (ValueError, TypeError):
+        obj = None
+    if isinstance(obj, dict):
+        if isinstance(obj.get("arguments"), dict):
+            return obj["arguments"], ""  # {} is a call to a tool that takes no arguments
+        if str(obj.get("refusal") or "").strip():
+            return None, str(obj["refusal"]).strip()
+        if obj and "arguments" not in obj and "refusal" not in obj:
+            return obj, ""
+        return None, ""
+    parsed = parse_text_call(content)
+    return (parsed, "") if parsed else (None, "")
+
+
+def _generate_tool_call(tool, context):
+    """Generate ONE call against exactly `tool` — its argument schema as the response grammar
+    (`tool_call_format`), so the model can't wander to a different tool than the step planned.
+    Recovers text-format calls, coerces alias args onto the real schema, and retries with a
+    schema hint at escalating temperature.
 
     Returns (args, failure_text, last_response): `args` set on success; otherwise
-    `failure_text` is what lands on the step (the model's plain-text fallback answer, or an
-    error line)."""
+    `failure_text` is what lands on the step (the model's refusal / plain-text fallback answer,
+    or an error line)."""
     model = get_model("tool_caller")
     try:
-        bound = model.bind_tools([tool])
+        fmt = tool_call_format(tool)
+        brief = tool_brief(tool)
     except Exception as exc:
-        return None, f"error: cannot bind tool {tool.name}: {exc}", None
-    block = context
+        return None, f"error: cannot describe tool {tool.name}: {exc}", None
+    base = _context_messages(context)
+    tail = brief
     text_fallback = ""
     problem = "no tool call emitted"
     resp = None
@@ -382,10 +462,10 @@ def _generate_tool_call(tool, context: str):
     for temp in _ATTEMPT_TEMPS:
         try:
             resp = generate(
-                bound,
-                [EXECUTE_TOOL_SYS, HumanMessage(content=block)],
+                model,
+                [EXECUTE_TOOL_SYS] + base + [HumanMessage(content=tail)],
                 tag=_model_tag("tool_caller"),
-                **_invoke_kwargs("tool_caller", None, temp, task=task,
+                **_invoke_kwargs("tool_caller", fmt, temp, task=task,
                                  repetition=repetition),
             )
         except Exception as exc:
@@ -396,8 +476,8 @@ def _generate_tool_call(tool, context: str):
             continue
         content = getattr(resp, "content", "")
         content = content if isinstance(content, str) else str(content)
-        calls = [{"args": tc.get("args")} for tc in (getattr(resp, "tool_calls", None) or [])]
-        if not calls and was_truncated(resp):
+        raw_args, refusal = _parse_arguments(content)
+        if raw_args is None and not refusal and was_truncated(resp):
             # The call was cut mid-JSON at num_predict. No temperature fixes that — the
             # remaining rungs would reproduce the cut (measured: three identical 512-token
             # truncations per step). Refuse now with the limit named, so the answer can say
@@ -409,14 +489,10 @@ def _generate_tool_call(tool, context: str):
                 "long to generate in one call; write a shorter version, or write the first part "
                 "with write_file and append the rest with edit_file"
             ), resp
-        if not calls:
-            parsed = parse_text_call(content)
-            if parsed:
-                calls = [{"args": parsed}]
-        if calls:
-            args = coerce_args(tool.name, calls[0].get("args"))
+        if raw_args is not None:
+            args = coerce_args(tool.name, raw_args)
             if args is None:
-                problem = f"arguments {calls[0].get('args')} do not fit the tool"
+                problem = f"arguments {raw_args} do not fit the tool"
             elif launders_a_value(tool.name, args):
                 # A `calculate` whose expression is a bare literal computes nothing and mints
                 # tool provenance for a number that was never gathered. Refused here, on the
@@ -430,10 +506,10 @@ def _generate_tool_call(tool, context: str):
             else:
                 return args, None, resp
         else:
-            text_fallback = content.strip() or text_fallback
+            text_fallback = refusal or text_fallback
             problem = "no tool call emitted"
             repetition = repetition or looks_repetitive(content)
-        block = context + "\n\n" + schema_hint(tool.name, problem)
+        tail = brief + "\n\n" + schema_hint(tool.name, problem)
     if text_fallback:
         # The step's tool was never called — the prose is NOT a tool observation, and recording
         # it as a plain "done" result would feed unverified text into later steps' contexts as
@@ -454,7 +530,7 @@ def execute_node(state: AgentState):
     if idx is None:
         return {}  # nothing left — route_after_execute falls through to rectify -> synthesize
 
-    context = exec_context(state, state_plan[idx])
+    context = exec_parts(state, state_plan[idx])
     plan = [dict(s) for s in state_plan]  # never mutate state's plan in place
     step = plan[idx]
     step["status"] = "active"

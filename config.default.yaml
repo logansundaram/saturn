@@ -51,6 +51,13 @@ runtime:
   # 2026-09-02: 37-50 s for a cold "hello" against 15 s warm). Sent on every request, so the
   # timer restarts each call; it is not a load option, so changing it never reloads the model.
   keep_alive: 30m
+  # Idle prefix priming (2026-09-04): between turns (and once after the weights load) the agent
+  # re-sends each node's stable prompt prefix — its system prompt plus the workspace grounding —
+  # with one predicted token, so the daemon holds a prompt-cache checkpoint at the point the
+  # next turn's calls extend and they prefill only what is new (measured on the 9b: the plan
+  # call's prefill 5 s → 0.2 s per turn). Costs ~0.2 s of idle daemon time per node once warm;
+  # a query typed mid-prime simply queues behind that one request. false = never prime.
+  prime: true
   # Auto-compaction: when a turn leaves the context window filled past `compact_threshold` (a
   # fraction, 0–1), the older turns are folded into one LLM-written summary before the next turn so
   # the conversation stops re-sending — and overflowing — the window. The mechanical per-turn

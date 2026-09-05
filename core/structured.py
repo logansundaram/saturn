@@ -116,7 +116,8 @@ RECTIFY_FORMAT = {
     "required": ["reasoning", "rectify"],
 }
 RECTIFY_SHAPE = (
-    'Respond with ONLY this JSON: {"reasoning":"<why>","rectify":<true|false>}'
+    'Respond with ONLY this JSON: {"reasoning":"<why, in one or two sentences>",'
+    '"rectify":<true|false>}'
 )
 
 RESOLUTION_FORMAT = {

@@ -180,12 +180,8 @@ def test_tool_call_ladder_arms_the_repeat_penalty_after_a_degenerate_text_answer
         def __init__(self):
             self.replies = [
                 AIMessage(content="okokokokokokokokok"),   # degenerate, no call
-                AIMessage(content="", tool_calls=[{"name": "calculate", "args": {"expression": "1+1"},
-                                                   "id": "c1", "type": "tool_call"}]),
+                AIMessage(content='{"arguments": {"expression": "1+1"}}'),
             ]
-
-        def bind_tools(self, tools):
-            return self
 
         def invoke(self, msgs, **kw):
             seen.append(kw)
@@ -249,14 +245,9 @@ def test_generate_tool_call_uses_the_payload_cap_for_write_file(monkeypatch):
     seen = []
 
     class M:
-        def bind_tools(self, tools):
-            return self
-
         def invoke(self, msgs, **kw):
             seen.append(kw)
-            return AIMessage(content="", tool_calls=[{
-                "name": "write_file", "args": {"file_path": "a.txt", "content": "hi"},
-                "id": "c1", "type": "tool_call"}])
+            return AIMessage(content='{"arguments": {"file_path": "a.txt", "content": "hi"}}')
 
     monkeypatch.setattr(ex, "get_model", lambda role: M())
     monkeypatch.setattr(structured, "_role_is_ollama", lambda role: True)

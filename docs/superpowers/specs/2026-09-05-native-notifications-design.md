@@ -49,6 +49,26 @@ self-cleanup script, AppleScript escaping, every `parse_when` form, past-time re
 pending order, the tool's tier and error path, the command's three verbs, and the unsupported
 platform message.
 
+## Addendum (same day): the menu bar item
+
+Approved in chat after the tool shipped. A ringed-planet icon in the macOS menu bar, derived
+from the splash motif (drawn as an 18-pt template image, no asset file), that outlives the
+terminal the way the notifications do.
+
+| Question | Decision | Rationale |
+|---|---|---|
+| Toolkit | `pyobjc-framework-Cocoa`, a `sys_platform == 'darwin'` dependency | Installs only on Macs; NSStatusItem directly, no rumps |
+| Lifecycle | Started by each interactive launch (`ensure_running`), registered as a login LaunchAgent (RunAtLoad, KeepAlive off) | Outlives the terminal and returns after reboot like the notifications; a crash never loops |
+| What Quit means | Confirm sheet, then: stop a running agent (SIGTERM via `database/agent.pid`), cancel every pending notification, unregister the icon | "Fully quit" — the one full stop; closing the terminal does none of it |
+| Menu | agent status · pending list (click cancels) · test alert · Quit Saturn… | Rebuilt from the plists on every open; nothing new stored |
+| Off switch | `notify.menubar: false`; `/notify icon start|stop` on demand | The icon is a convenience, never a dependency of launch |
+
+`notify/menubar.py` is the tested, Cocoa-free half (`tests/test_menubar.py`); `menubar_app.py`
+only draws and was verified live (launchd registration, icon rendering, idempotent restart).
+The LaunchAgent pins `WorkingDirectory` to the project root because launchd starts jobs at `/`
+and `python -m` needs the package importable in a clone-mode install.
+
 ## Out of scope
 
-Recurrence, click actions, an in-process fallback, agent-side cancel, Linux/Windows backends.
+Recurrence, click actions on the notification itself, an in-process fallback, agent-side
+cancel, Linux/Windows backends, a Dock tile, tracking more than one concurrent agent process.

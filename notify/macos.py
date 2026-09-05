@@ -39,9 +39,10 @@ def _uid() -> int:
     return os.getuid()
 
 
-def _run(argv: list[str]) -> None:
-    """Run one launchctl/osascript command; a non-zero exit becomes a NotifyError carrying the
-    tool's own stderr (launchctl's messages are the useful diagnostic)."""
+def _run(argv: list[str]) -> str:
+    """Run one launchctl/osascript command and return its stdout; a non-zero exit becomes a
+    NotifyError carrying the tool's own stderr (launchctl's messages are the useful
+    diagnostic)."""
     try:
         proc = subprocess.run(argv, capture_output=True, text=True, timeout=15)
     except (OSError, subprocess.TimeoutExpired) as exc:
@@ -49,6 +50,7 @@ def _run(argv: list[str]) -> None:
     if proc.returncode != 0:
         detail = (proc.stderr or proc.stdout or "").strip() or f"exit {proc.returncode}"
         raise NotifyError(f"{' '.join(argv[:2])} failed: {detail}")
+    return proc.stdout or ""
 
 
 def _applescript_string(text: str) -> str:

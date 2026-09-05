@@ -136,6 +136,8 @@ precisely to avoid the import cycle — keep it that way.
 `notify/` is the scheduled-notification seam behind `schedule_notification` and `/notify`: `backend()` picks
 by `sys.platform` (macOS = one launchd LaunchAgent per one-shot, shown by `osascript`; anything else is the
 honest `Unsupported`). A new platform is one module plus one branch in `backend()`. It is not egress.
+`notify/menubar.py` (tested, Cocoa-free) + `notify/menubar_app.py` (AppKit, pyobjc, macOS-only dep) are the
+menu bar icon: a login LaunchAgent the REPL starts, which outlives the terminal; its Quit is `quit_all()`.
 
 ### Slash commands
 

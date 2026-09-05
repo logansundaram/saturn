@@ -24,6 +24,9 @@ ddgs>=9.14.4                  # keyless DuckDuckGo search
 trafilatura>=2.0.0            # local page-content extraction
 httpx>=0.28.1
 
+# --- the macOS menu bar item (notify/menubar_app.py) — installs on Macs only ---
+pyobjc-framework-Cocoa>=10; sys_platform == 'darwin'
+
 # --- cloud providers (OPTIONAL: only if a tier binds a role to a cloud provider) ---
 # langchain-anthropic>=1.0.0    # provider: anthropic (the cloud-hybrid tier)
 # langchain-openai>=1.0.0       # provider: openai

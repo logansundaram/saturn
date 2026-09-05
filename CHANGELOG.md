@@ -18,6 +18,15 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
   sends an alert now (use it once to grant the permission macOS asks for). Nothing leaves the
   machine. The platform seam is `notify/` — other platforms report "not supported" honestly
   until a backend lands.
+- **A menu bar icon that outlives the terminal (macOS).** Each interactive launch starts a
+  small separate process — a ringed-planet icon in the menu bar, drawn from the splash motif —
+  registered as a login LaunchAgent, so closing the terminal stops the agent and nothing else:
+  the icon and the scheduled notifications stay. Its menu shows whether an agent is running,
+  lists every pending notification (click one to cancel it), sends a test alert, and offers
+  "Quit Saturn…" — the one full stop, behind a confirm: it ends a running agent, cancels every
+  pending notification, and removes the icon until the next launch. `/notify icon [start|stop]`
+  manages it from inside Saturn; `notify.menubar: false` in config.yaml stops it auto-starting.
+  Adds `pyobjc-framework-Cocoa` as a macOS-only dependency.
 
 ### Changed
 

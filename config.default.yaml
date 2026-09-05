@@ -194,6 +194,15 @@ memory:
 #       Authorization: Bearer ${EXAMPLE_TOKEN}
 #     risk: read_only
 # ---------------------------------------------------------------------------
+# --- scheduled notifications (notify/, the schedule_notification tool, /notify) -----------
+notify:
+  # Start the menu bar icon with each interactive launch (macOS). It is a separate small
+  # process registered as a login LaunchAgent, so it outlives this terminal and comes back
+  # after a reboot — like the notifications it lists. Its "Quit Saturn…" stops the agent,
+  # cancels every pending notification, and removes itself. false = never start it
+  # (/notify icon start still works on demand).
+  menubar: true
+
 mcp:
   connect_timeout: 20
   call_timeout: 60

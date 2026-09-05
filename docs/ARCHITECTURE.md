@@ -25,7 +25,7 @@ app/        the application shell: CLI, graph assembly, turn driver, headless + 
 core/       the engine room: state, model factory, prompts, structured output, plan plumbing
 nodes/      the graph nodes, one per file (ground → plan → … → synthesize)
 tools/      the tool implementations + registry + MCP client (risk tiers declared at definition)
-notify/     scheduled desktop notifications: the platform seam + the macOS launchd/osascript backend
+notify/     scheduled desktop notifications: the platform seam, the macOS launchd/osascript backend, the menu bar item
 trust/      the trust stack: gate policy, egress ledger, redaction, quarantine, receipt, answer provenance
 commands/   the slash-command layer (/help themes, one module each)
 stores/     data + persistence: RAG corpus, manifests, memory, snapshots, trace DB
@@ -128,6 +128,14 @@ is the *tool-execution node*, not the `tools/` package (see the name-collision t
 | `shell.py` | `run_shell` — always `destructive` (the human approving the exact command is the boundary), bounded foreground runs only. |
 | `interaction.py` | `ask_user` — pauses the running graph via `interrupt()` to ask the human ONE question; the typed answer resumes as the observation. `read_only` (asking never gates); degrades honestly headless. |
 | `notify.py` | `schedule_notification` — a one-shot desktop reminder handed to the OS scheduler via `notify/` (launchd + osascript on macOS; other platforms refuse honestly). `side_effecting`; not egress. Human side: `/notify`. |
+
+### `notify/` — the OS-scheduled side
+| File | What it does |
+|---|---|
+| `__init__.py` | `Notification`, the `Backend` protocol, `backend()` by platform (macOS or the honest `Unsupported`), `parse_when` (the tool's time grammar). |
+| `macos.py` | One LaunchAgent per notification, shown by `osascript`; the job deletes itself after firing. `_run` / `agents_dir` / `_uid` are the test seams. |
+| `menubar.py` | The menu bar item's Cocoa-free half: its login LaunchAgent (`com.saturn.menubar`), the agent pidfile, `menu_model()` (plain rows), `quit_all()` (stop agent · cancel all · unregister). Fully tested offline. |
+| `menubar_app.py` | The AppKit half (`python -m notify.menubar_app`): draws the ringed-planet template icon and renders the model. Needs pyobjc (macOS-only dep). |
 
 ### `trust/` — the product's namesake
 | File | What it does |

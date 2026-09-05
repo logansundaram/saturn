@@ -38,6 +38,9 @@ database/.hint_*
 # plan-recipes and user-command cuts.)
 database/sessions/
 database/permissions.json
+# the menu bar item (notify/menubar.py): agent liveness pidfile + the LaunchAgent's stderr
+database/agent.pid
+database/menubar.err
 database/snapshots/
 database/recipes/
 database/commands/

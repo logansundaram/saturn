@@ -50,6 +50,8 @@ dependencies = [
     "httpx>=0.28.1",
     # --- config / utilities ---
     "pyyaml>=6.0.3",
+    # --- the macOS menu bar item (notify/menubar_app.py) — installs on Macs only ---
+    "pyobjc-framework-Cocoa>=10; sys_platform == 'darwin'",
     "python-dotenv>=1.2.2",
     # --- terminal UI ---
     "rich>=15.0.0",

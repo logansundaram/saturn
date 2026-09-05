@@ -6,6 +6,7 @@ turn lifecycle (trace run, interrupts, streaming answer, provenance), checkpoint
 autosave, and auto-compaction. One call — `run_repl()` — owns the whole session.
 """
 
+import sys
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -37,6 +38,28 @@ def run_repl() -> None:
         ui.warn(ingest_warning)
     tracer = Tracer(DB_PATH)
     state = _initial_state()
+
+    # The menu bar icon (notify/menubar.py): record this agent's pid so the icon can show
+    # "agent running" and its Quit can stop us, then make sure the icon itself is up (a login
+    # LaunchAgent that outlives this terminal). Best-effort — a launch never depends on it.
+    import atexit
+    import signal
+
+    from notify import menubar as _menubar
+
+    _menubar.write_pid()
+    atexit.register(_menubar.clear_pid)
+    # The icon's Quit sends SIGTERM; turn it into a normal exit so the prompt's raw mode and
+    # the atexit hooks unwind instead of leaving the terminal wedged.
+    try:
+        signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+    except (ValueError, OSError):
+        pass  # not the main thread / unsupported here
+    if _menubar.enabled():
+        _menubar_status = _menubar.ensure_running()
+        diag.log(f"menubar: {_menubar_status}")
+        if _menubar_status.startswith("failed"):
+            ui.warn(f"menu bar icon {_menubar_status} (/notify icon start to retry)")
 
     # Startup header — tier/model / tool count / corpus size, like a tool's first line.
     from core.llms import model_id, check_models

@@ -9,20 +9,42 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
 
 ### Fixed
 
-- **A lone "ask the user" step no longer ends the turn.** When the planner drafted a question
+- **Two Saturn sessions no longer erase each other's menu bar entry.** Each interactive session
+  records its pid for the menu bar icon; the first session to exit removed the file even when a
+  second session had since written its own, so the icon showed no agent running and its Quit
+  could stop nothing. A session now clears only an entry that is still its own.
+- **A reminder's detail is no longer lost at the gate.** When the model put the body of a
+  `schedule_notification` under `message`, `text`, `details` or `note` alongside a `title`, the
+  detail was silently dropped and the approval prompt showed a reminder with an empty body. Those
+  names now fill the body whenever the title has its own key.
+- **The freeze editor no longer resumes on a split Alt+Enter.** Over ssh, mosh or a slow terminal
+  the Escape and Enter of an Alt/Shift+Enter newline can arrive separately; at the editor's 50 ms
+  Esc timeout that read as a bare Esc and resumed generation from a half-edited answer. The wait
+  is now 250 ms.
+- **A lone "ask the user" step no longer ends the turn.**
+ When the planner drafted a question
   with no step after it to use the answer (a calendar request missing its time, a delete it
   wanted confirmed), the ask gate skipped the question and the run ended with "I cannot" and an
   incident; the next message hit the same wall. The dangling question is now redrafted once —
   keep the question, add the step that acts on the answer — and a second lone ask still lands
-  honestly through the no-call guard. Once the redraft has asked, the original refusal is no
-  longer disclosed as a failed step (it had the answer opening with "I cannot" under a turn
-  that asked and proceeded).
+  honestly through the no-call guard. Once the redraft has asked, the original refusal is
+  marked `superseded` on the plan itself — not an incident in the answer, the plan rail,
+  `/trace` or the headless status (it had the answer opening with "I cannot" under a turn that
+  asked and proceeded), and no longer arms the write gate as a "failed" step, which had a
+  "make a note in notes.md" turn refusing its own write. A lone ask refused after the redraft
+  budget is spent now lands the turn directly instead of spending two more model calls asking
+  the judge for a redraft it could not have.
+
 - **Calendar, reminder and mail effects are authorized by the words that ask for them.** A
   replanned `create_calendar_event`, `schedule_notification` or `draft_mail` step was refused
   as an "unauthorized effect" unless the request happened to say "create" or "write": the
   authorization vocabulary knew only workspace verbs. "make an appointment", "remind me",
   "schedule", "book", "draft/email Petra" now count; "my schedule", "the emails" and "send"
-  still do not. The planner prompt no longer calls reminders and email actions it has no tool
+  still do not — nor does a question ("is the appointment scheduled?", "did you notify Sam?")
+  or the "remind me what / of …" idiom, which asks to be told, not reminded: an effect verb in
+  those positions would otherwise have authorized a calendar or reminder step injected by a
+  file's contents. The planner prompt no longer calls reminders and email actions it has no tool
+
   for. And effect authorization now arms only once a tool other than `ask_user` has actually
   run this turn: a refusal the engine stamped, or the user's own typed answer, is not a result
   a file or web page could have written, so a step redrafted before anything was read is no
@@ -62,8 +84,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
 
 - **Esc is both the freeze key and the unfreeze key.** Esc still stops the streaming answer and
   opens it in the editor; now pressing Esc (or Enter) inside the editor resumes generation at
-  once from whatever you left. The `resume? [Y]es / [d]one` confirm after the editor is gone,
-  and so is the accept-as-final path — leaving the editor always continues the answer.
+  once from whatever you left. The `resume? [Y]es / [d]one` confirm after the editor is gone;
+  to keep exactly the text on screen as the final answer, press Ctrl-D inside the editor
+  instead (the no-prompt_toolkit wizard always resumes).
+
 - **Prompts are laid out for the daemon's prompt cache, and an idle prime keeps it warm.**
   Measured on the 9b tier: every plan call re-read ~2,000 tokens of unchanged grounding (5 s),
   and every execute, rectify and synthesize call re-read its whole prompt (a 16-call turn spent

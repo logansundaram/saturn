@@ -59,8 +59,12 @@ def is_turn_start(m) -> bool:
 #                      blocked    a hard refusal ended it (BLOCKED result)
 #                      error      the tool call failed
 #                      cancelled  retired by rectify after a prior guarded/missing-item outcome
-#                    Anything but "done" is an INCIDENT synthesize must disclose instead of
-#                    claiming success.
+#                      superseded an engine refusal a redraft then carried out (a dangling
+#                                 ask_user that a later ask_user step asked) — record, not
+#                                 incident. Stamped by update_plan, never by a model.
+#                    Anything but "done" or "superseded" is an INCIDENT synthesize must
+#                    disclose instead of claiming success.
+
 #   intended_tool    the ONE tool this step calls (None = a pure reasoning step).
 #   result           the step's observation/output; None until it runs.
 #   needs_resolution True when the step's exact target (file/value/item list) is not yet known
@@ -69,10 +73,13 @@ def is_turn_start(m) -> bool:
 
 # A step in one of these statuses is retired for DISPLAY purposes; execution-wise the pointer
 # is `result is None` (a retired step always carries a result).
-TERMINAL_STATUSES = ("done", "skipped", "blocked", "error", "cancelled")
+TERMINAL_STATUSES = ("done", "skipped", "blocked", "error", "cancelled", "superseded")
 
 # Statuses that count as incidents — the final answer must report these actions did NOT complete.
+# `superseded` is deliberately absent: the refusal it marks was carried out by a later step, so
+# every reader (the incidents block, the write gate, the rail, /trace) treats it as record.
 INCIDENT_STATUSES = ("skipped", "blocked", "error", "cancelled")
+
 
 
 def current_step(plan: List[dict]) -> Optional[dict]:

@@ -11,6 +11,8 @@ The plan is the agent's living checklist. With no args, renders the most recent 
 with its status glyph and intended tool (empty until you've run at least one turn).
 
 Status glyphs:  · pending   ▸ active   ✓ done   ⨯ skipped   ⊘ blocked   ✗ error   − cancelled
+                ↷ superseded (a refusal a later step carried out)
+
 
 Execution is always step-at-a-time: the engine works exactly the current step, records its
 result on the plan, and reflects before continuing. This command controls the human-in-the-loop

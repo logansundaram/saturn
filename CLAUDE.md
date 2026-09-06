@@ -79,8 +79,9 @@ ground → plan → plan_gate → execute → [approval] → tools → update_pl
 Steps are **plain dicts** `{step_id, label, status, intended_tool, result, needs_resolution}` — never a
 custom class (the checkpointer serializer won't round-trip it). `current_step()` = the first step whose
 `result is None`; that is THE execution pointer. Any status other than `done` (`skipped`, `blocked`,
-`error`, `cancelled`) is an incident synthesize must disclose. `gate_events` is the only
-non-recomputable record (human decisions).
+`error`, `cancelled`) is an incident synthesize must disclose; `superseded` (a dangling-ask refusal a
+later `ask_user` step carried out, stamped by `update_plan`) is the one non-incident exception.
+`gate_events` is the only non-recomputable record (human decisions).
 
 When slicing conversation history, use `core.state.is_turn_start` — a mid-turn steer note is a
 `HumanMessage` with `STEER_PREFIX` and is NOT a turn boundary; a hand-rolled isinstance check mis-slices.

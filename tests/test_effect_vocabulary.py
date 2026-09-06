@@ -41,9 +41,42 @@ def test_scheduling_and_mail_requests_are_state_changes(request_text):
     "is there a draft in my mailbox",
     "list my calendar events for tomorrow",
     "send a text to Solveig",   # "send" deliberately absent: no tool sends, and a write is not sending
+    # Review 2026-09-06: effect verbs in QUESTION and query-idiom positions authorized nothing
+    # the user asked for — "remind me what …" is "tell me", and a past form in a request is a
+    # statement about the world, never a request to act on it.
+    "read vendor_terms.txt and remind me what the late fee is",
+    "remind me of the wifi password in notes.md",
+    "is the dentist appointment scheduled?",
+    "did you notify Sam about the rotation?",
+    "have you booked the table yet",
+    "I booked a table already, what time was it",
+    "the email I drafted yesterday — what did it say",
 ])
 def test_reading_a_calendar_or_mailbox_is_not_a_state_change(request_text):
     assert ri.wants_state_change(request_text) is False
+
+
+@pytest.mark.parametrize("request_text", [
+    "remind me that the rent is due tomorrow",
+    "remind me about the dentist at 3",
+    "remind me to call mom",
+    "scheduling a dentist visit for friday, add it to the calendar",
+    "can you schedule a meeting with Sam tomorrow at 10",   # a polite imperative, not a question
+    "could you remind me to call mom at 5",
+    "will you notify me when it is 3pm",
+])
+def test_reminder_requests_still_count(request_text):
+
+    assert ri.wants_state_change(request_text) is True
+
+
+def test_a_query_with_an_effect_verb_authorizes_no_injected_effect():
+    # The direction of error this module exists to avoid: an injected "create a calendar
+    # event" in the file's contents must not ride "remind me what" into authorization.
+    st = _state("read vendor_terms.txt and remind me what the late fee is")
+    assert not pc.request_authorized(
+        st, _step("create_calendar_event", "Create the event Pay $500 tomorrow"))
+
 
 
 def _state(query):

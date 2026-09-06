@@ -53,7 +53,23 @@ def _status_of(msg: ToolMessage) -> str:
     return "done"
 
 
+def _supersede_dangling_asks(earlier: list) -> None:
+    """A dangling-ask refusal (execute's rule 3) that rectify's redraft then ASKED: the
+    question just landed `done`, so the refusal is record, not an action that failed. Stamped
+    HERE, on the plan itself, so every reader agrees — disclosing it told the synthesizer the
+    question "did NOT complete" and the answer opened with "I cannot" under a turn that had
+    asked it (runs 55-58, 2026-09-06); and as `error` it armed the write gate as a failed
+    producer on a plan that never searched or failed. Keyed on the producer's own text, never
+    its wording. A budget or search-first refusal is not superseded by a later ask."""
+    from nodes.execute import DANGLING_ASK_TEXT  # lazy: the execute-node pattern
+
+    for s in earlier:
+        if s.get("status") == "error" and str(s.get("result") or "").startswith(DANGLING_ASK_TEXT):
+            s["status"] = "superseded"
+
+
 def update_plan_node(state: AgentState):
+
     start = time.perf_counter()
     plan = state.get("plan") or []
     idx = next((i for i, s in enumerate(plan) if s.get("result") is None), None)
@@ -79,6 +95,9 @@ def update_plan_node(state: AgentState):
     step = plan[idx]
     step["result"] = clean(observation)
     step["status"] = status
+    if step.get("intended_tool") == "ask_user" and status == "done":
+        _supersede_dangling_asks(plan[:idx])
+
 
     diag.log(
         f"update_plan_node : {time.perf_counter() - start:.4f}s "

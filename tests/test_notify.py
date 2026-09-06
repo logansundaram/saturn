@@ -378,4 +378,13 @@ def test_coerce_args_maps_aliases_onto_when_and_title():
         "when": "16:00", "title": "x", "body": "y",
     }
     assert coerce_args("schedule_notification", {"title": "x"}) is None   # `when` missing → retry
+    # Review 2026-09-06: the detail under a title alias was silently dropped (an empty body at
+    # the gate). An optional arg has aliases too, drawn from keys no required arg consumed.
+    assert coerce_args("schedule_notification", {
+        "when": "tomorrow at 09:00", "title": "Dentist", "message": "bring the insurance card",
+    }) == {"when": "tomorrow at 09:00", "title": "Dentist", "body": "bring the insurance card"}
+    assert coerce_args("schedule_notification", {"when": "16:00", "title": "x", "details": "y"}) == {
+        "when": "16:00", "title": "x", "body": "y",
+    }
+
     assert "schedule_notification(when=" in schema_hint("schedule_notification", "missing arg")

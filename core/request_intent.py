@@ -172,13 +172,32 @@ _NOTE_DOWN_RE = re.compile(
 # "add the total to notes.md" — the one multi-word form.
 _ADD_TO_RE = re.compile(r"\badd(?:s|ed|ing)?\b[^.?!]{0,60}\bto\b")
 
-# Effects outside the workspace: the verbs a registered tool acts on ...
+# Effects outside the workspace: the verbs a registered tool acts on. Present and -ing forms
+# only: a past form in a request ("is the appointment scheduled?", "I booked a table already")
+# is a statement about the world, never a request to act on it — and counting it handed a
+# replan-drafted effect step authorization the user's words never gave (review 2026-09-06).
 _EFFECT_VERBS_RE = re.compile(
-    r"\b(?:schedule|schedules|scheduled|scheduling|book|books|booked|booking"
-    r"|remind|reminds|reminded|reminding|notify|notifies|notified|notifying"
-    r"|draft|drafts|drafted|drafting|compose|composes|composed|composing"
-    r"|email|emails|emailed|emailing)\b"
+    r"\b(?:schedule|schedules|scheduling|book|books|booking"
+    r"|remind|reminds|reminding|notify|notifies|notifying"
+    r"|draft|drafts|drafting|compose|composes|composing"
+    r"|email|emails|emailing)\b"
 )
+# ... except where the verb sits in a QUESTION or a query idiom: "did you notify Sam?",
+# "have you booked the table", and "remind me what/of …" — which is "tell me", not a reminder.
+# A verb match inside one of these spans does not count (the `_REMEMBER_QUERY_RE` rule,
+# generalized). Only the auxiliaries that ask about the world: "can/could/would/will you
+# schedule …" is a polite imperative and keeps counting. "remind me that/to/about/at …" stays
+# a reminder request.
+_EFFECT_QUERY_RE = re.compile(
+    r"\b(?:do|does|did|have|has|had|are|is|was|were)"
+    r"\s+(?:you|it|they|he|she|we|i)\s+(?:\w+\s+)?"
+
+    r"(?:schedule|schedules|scheduling|book|books|booking|remind|reminds|reminding"
+    r"|notify|notifies|notifying|draft|drafts|drafting|compose|composes|composing"
+    r"|email|emails|emailing)\b"
+    r"|\bremind(?:s|ing)?\s+(?:me|us)\s+(?:what|how|when|where|who|why|which|whether|if|of)\b"
+)
+
 # ... and "make / set (up) / put / add / arrange an appointment|event|meeting|reminder|...".
 _EFFECT_NOUN_RE = re.compile(
     r"\b(?:make|makes|made|making|set|sets|setting|put|puts|putting|add|adds|added|adding"
@@ -216,8 +235,13 @@ def wants_state_change(request) -> bool:
         return True
     if _REMEMBER_RE.search(text) and not _REMEMBER_QUERY_RE.search(text):
         return True
-    verbs = list(_STATE_CHANGE_RE.finditer(text)) + list(_EFFECT_VERBS_RE.finditer(text))
+    queries = [(m.start(), m.end()) for m in _EFFECT_QUERY_RE.finditer(text)]
+    verbs = list(_STATE_CHANGE_RE.finditer(text)) + [
+        m for m in _EFFECT_VERBS_RE.finditer(text)
+        if not any(a <= m.start() < b for a, b in queries)
+    ]
     return any(
         m.group(0) not in _AMBIGUOUS_TERMS or not _reads_as_noun(text, m.start())
         for m in verbs
     )
+

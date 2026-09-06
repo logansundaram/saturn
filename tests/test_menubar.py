@@ -80,6 +80,9 @@ def test_ensure_running_writes_and_bootstraps_once(agents):
     calls.clear()
     assert menubar.ensure_running("/venv/bin/python") == "already running"
     assert not any(c[1] == "bootstrap" for c in calls)
+    # one launchctl round-trip on the startup path, not two (running implies loaded)
+    assert sum(1 for c in calls if c[1] == "print") == 1
+
 
 
 def test_ensure_running_reloads_when_the_python_moved(agents):
@@ -148,7 +151,19 @@ def test_pidfile_lifecycle(isolated_paths):
     assert not menubar.pid_path().exists()
 
 
+def test_clear_pid_with_an_owner_leaves_another_sessions_pidfile(isolated_paths):
+    # Review 2026-09-06: two REPLs — the first to exit unlinked the live session's pidfile, so
+    # the icon showed no agent and its Quit could stop nothing. A session clears only its own.
+    menubar.write_pid(4242)
+    menubar.clear_pid(owner=os.getpid())
+    assert menubar.pid_path().read_text() == "4242"
+    menubar.clear_pid(owner=4242)
+    assert not menubar.pid_path().exists()
+    menubar.clear_pid(owner=4242)  # already gone: no error
+
+
 def test_stale_pidfile_reads_as_not_running_and_is_cleared(isolated_paths, monkeypatch):
+
     menubar.write_pid(999999)
 
     def dead(pid, sig):

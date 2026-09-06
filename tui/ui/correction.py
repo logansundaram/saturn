@@ -158,17 +158,21 @@ def _inline_available() -> bool:
 
 
 # How long the editor waits after a bare Esc before deciding it was Esc and not the start of an
-# Alt+key / Shift+Enter sequence (prompt_toolkit's default is 0.5s — vim's ttimeoutlen). The
-# terminal delivers those multi-byte sequences in one read, so a short wait is safe, and it is
-# the difference between Esc feeling instant and feeling stuck.
-_ESC_TIMEOUT_S = 0.05
+# Alt+key / Shift+Enter sequence (prompt_toolkit's default is 0.5s — vim's ttimeoutlen). A local
+# terminal delivers those multi-byte sequences in one read, but over ssh/mosh or through a slow
+# multiplexer the ESC and the CR can land in separate reads — and at 50 ms that parsed as a bare
+# Esc, which SUBMITS the half-edited buffer with no way back (review 2026-09-06). 250 ms covers a
+# realistic round-trip while still feeling like Esc rather than like the editor is stuck.
+_ESC_TIMEOUT_S = 0.25
 
 
-def _freeze_key_bindings():
+
+def _freeze_key_bindings(decision: dict):
     """The freeze editor's key bindings: the `»` prompt's set (Shift+Enter/Ctrl+J newline, paste
-    chips, Enter submits) plus ONE addition — a bare Esc submits the buffer, i.e. unfreezes.
-    Built as a separate merged set so the prompt's own bindings never gain a bare Esc (there,
-    Esc-then-Enter is a newline and a bare Esc binding would shadow it)."""
+    chips, Enter submits) plus two additions — a bare Esc submits the buffer, i.e. unfreezes,
+    and Ctrl-D submits it as the FINAL answer (`decision["action"] = "done"`: no generation
+    follows). Built as a separate merged set so the prompt's own bindings never gain a bare Esc
+    (there, Esc-then-Enter is a newline and a bare Esc binding would shadow it)."""
     from prompt_toolkit.key_binding import KeyBindings, merge_key_bindings
 
     _p = _prompt_module()
@@ -178,13 +182,19 @@ def _freeze_key_bindings():
     def _esc_unfreeze(event):
         event.current_buffer.validate_and_handle()  # submit = resume from this text
 
+    @kb.add("c-d")
+    def _accept_as_final(event):
+        decision["action"] = "done"
+        event.current_buffer.validate_and_handle()
+
     return merge_key_bindings([_p._PTK_KB, kb])
 
 
-def _edit_inline(text: str) -> "str | None":
+def _edit_inline(text: str) -> "tuple[str, str] | None":
     """The prompt_toolkit path: the whole buffer pre-filled in the same multiline editor as the
-    `»` prompt (Shift+Enter/Ctrl+J insert a newline; Esc or Enter submits and resumes). None
-    when prompt_toolkit isn't available or the editor failed to open — the caller falls back."""
+    `»` prompt (Shift+Enter/Ctrl+J insert a newline; Esc or Enter submits and resumes; Ctrl-D
+    submits as the final answer). Returns `(edited text, "resume"|"done")`, or None when
+    prompt_toolkit isn't available or the editor failed to open — the caller falls back."""
     _p = _prompt_module()
 
     if not _p._PTK:
@@ -196,6 +206,7 @@ def _edit_inline(text: str) -> "str | None":
         session.app.ttimeoutlen = _ESC_TIMEOUT_S
     except Exception:
         return None  # editor unavailable — the wizard below still works
+    decision = {"action": "resume"}
     try:
         edited = session.prompt(
             # Indented to the app's 2-space rhythm: at column 0 the editor's first line sat two
@@ -204,19 +215,20 @@ def _edit_inline(text: str) -> "str | None":
             [("class:prompt", "  ✎ ")],
             default=text,
             multiline=True,
-            key_bindings=_freeze_key_bindings(),
+            key_bindings=_freeze_key_bindings(decision),
             style=_p._PTK_STYLE,
             prompt_continuation=_p._ptk_continuation,
         )
-        return _p._expand_paste_tags(edited)
+        return _p._expand_paste_tags(edited), decision["action"]
     except (KeyboardInterrupt, EOFError):
         # Not a hotkey, just not a trap: resume from whatever is in the buffer right now.
         try:
-            return _p._expand_paste_tags(session.default_buffer.text)
+            return _p._expand_paste_tags(session.default_buffer.text), "resume"
         except Exception:
-            return text
+            return text, "resume"
     except Exception:
         return None  # editor unavailable — the wizard below still works
+
 
 
 def _edit_wizard(text: str) -> str:
@@ -240,8 +252,9 @@ def _edit_wizard(text: str) -> str:
 
 def edit_answer(value: dict) -> dict:
     """The freeze editor: show the frozen tail, collect the edit, resume. Returns the answer_gate
-    resume value `{"action": "resume", "text": <full edited text>}` — no confirm step: leaving
-    the editor (Esc or Enter) IS the decision."""
+    resume value `{"action": "resume"|"done", "text": <full edited text>}` — no confirm step:
+    the key that leaves the editor IS the decision (Esc/Enter resume, Ctrl-D accepts the text
+    as the final answer; the wizard floor always resumes)."""
     text = str(value.get("text") or "")
     spans = value.get("spans") or []
 
@@ -249,15 +262,17 @@ def edit_answer(value: dict) -> dict:
     # one-line summary above it. The wizard floor has no editor, so it gets the tail.
     inline = _inline_available()
     section("answer frozen", "edit the text · esc or enter resumes — the model continues from "
-                             "exactly what you leave")
+                             "exactly what you leave · ctrl-d keeps it as the final answer")
+
     _print_frozen(text, spans, value.get("confidence"), show_tail=not inline)
     if _RICH:
         _console.print()
     else:
         print()
 
-    edited = _edit_inline(text)
-    if edited is None:
+    action = "resume"
+    result = _edit_inline(text)
+    if result is None:
         # The editor was expected to open and didn't (its generic except: a PromptSession or
         # _make_ptk_input failure on an odd terminal). `_inline_available` only tests _PTK, so the
         # tail was skipped up front and the wizard would ask the user to name a fragment of text
@@ -265,6 +280,9 @@ def edit_answer(value: dict) -> dict:
         if inline:
             _print_frozen_tail(text, spans, value.get("confidence"))
         edited = _edit_wizard(text)
+    else:
+        edited, action = result
+
 
     # Re-pin the status bar, exactly as the other blocking editors do on the way out
     # (approval.ask_approval, plan.review_plan). The graph now resumes and the model re-primes
@@ -274,4 +292,5 @@ def edit_answer(value: dict) -> dict:
     # response.ResponseStream._reopen / .finish stop it again before touching the screen, so only
     # one Live is ever active.
     _live_start()
-    return {"action": "resume", "text": edited}
+    return {"action": action, "text": edited}
+

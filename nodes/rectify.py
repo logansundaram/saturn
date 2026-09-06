@@ -411,12 +411,21 @@ def rectify_node(state: AgentState):
     #     refusal is only half a mechanism: without a redraft the turn lands with an incident
     #     and no answer. Detected off the producer's own texts, never its wording (the
     #     DECLINE_TEXT pattern). Bounded: a second dangling ask is caught by 1b above.
-    if (
-        last_done is not None
-        and str(last_done.get("result") or "").startswith(ASK_GATE_PREFIX)
-        and state.get("replans", 0) < 2
-    ):
+    if last_done is not None and str(last_done.get("result") or "").startswith(ASK_GATE_PREFIX):
         dangling = str(last_done.get("result") or "").startswith(DANGLING_ASK_TEXT)
+        if state.get("replans", 0) >= 2:
+            # The redraft budget is spent. Landing here, not at the judge: it would ask for
+            # another redraft that reproduces the same ask (two more model calls, one more
+            # replan) before 1b cancelled — the `skipped` posture this replaced ended the run
+            # at once (review 2026-09-06). Concrete pending steps still run (route_after_rectify).
+            diag.log(f"rectify_node : {time.perf_counter() - start:.4f}s "
+                     f"(ask gate{', dangling' if dangling else ''}: redraft budget spent -> land)")
+            return {
+                "rectify": False,
+                "reasoning": "a question was refused and the redraft budget is spent; finish "
+                             "from what is known and report what could not be asked",
+            }
+
         diag.log(f"rectify_node : {time.perf_counter() - start:.4f}s "
                  f"(ask gate -> redraft{', dangling' if dangling else ''})")
         if dangling:

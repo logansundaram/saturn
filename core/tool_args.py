@@ -78,8 +78,12 @@ _EMPTY_OK: dict[str, set[str]] = {
     "write_file": {"content"},
 }
 
-# Optional args passed through when present (correctly named) — never required, never invented.
-_OPTIONAL: dict[str, list[str]] = {
+# Optional args passed through when present — never required, never invented. A bare name is
+# accepted under that exact key; a list is the alias order, drawn from keys no REQUIRED arg
+# consumed (schedule_notification's detail under "message" was silently dropped when "message"
+# also aliased the title — an empty body at the gate, review 2026-09-06).
+_OPTIONAL: dict[str, list] = {
+
     "list_directory": ["directory"],
     "find_files": ["directory"],
     "search_files": ["directory", "file_glob"],
@@ -87,8 +91,11 @@ _OPTIONAL: dict[str, list[str]] = {
     "edit_file": ["replace_all"],
     "remember": ["category", "layer", "replaces", "sensitivity"],
     "recall": ["query"],
-    "schedule_notification": ["body"],
+    "schedule_notification": [
+        ["body", "detail", "details", "description", "message", "text", "note", "content"],
+    ],
 }
+
 
 # The exact call shape quoted back at the model when its attempt was rejected.
 _SCHEMA_SHAPES: dict[str, str] = {
@@ -225,16 +232,22 @@ def coerce_args(name: str, args) -> Optional[dict]:
     lower = {k.lower(): v for k, v in args.items() if isinstance(k, str)}
     empty_ok = _EMPTY_OK.get(name, set())
     out: dict = {}
+    used: set = set()
     for canon, names in aliases.items():
         missing = (None,) if canon in empty_ok else (None, "")
-        val = next((lower[a] for a in names if lower.get(a) not in missing), None)
-        if val is None:
+        key = next((a for a in names if lower.get(a) not in missing), None)
+        if key is None:
             return None
-        out[canon] = val
+        out[canon] = lower[key]
+        used.add(key)
     for opt in _OPTIONAL.get(name, []):
-        if opt in lower and lower[opt] is not None:
-            out[opt] = lower[opt]
+        names = [opt] if isinstance(opt, str) else list(opt)
+        key = next((a for a in names if a in lower and a not in used and lower[a] is not None), None)
+        if key is not None:
+            out[names[0]] = lower[key]
+            used.add(key)
     return out
+
 
 
 def schema_hint(name: str, problem: str) -> str:

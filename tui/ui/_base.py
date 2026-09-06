@@ -50,7 +50,11 @@ _PLAN = {
     "blocked": ("⊘", "bold red"),
     "error": ("✗", "red"),
     "cancelled": ("−", "grey30 strike"),
+    # An engine refusal a later step carried out (a dangling ask the redraft then asked):
+    # record, not incident — retired like a skip, never red.
+    "superseded": ("↷", "grey30 strike"),
 }
+
 # risk tier -> style for the approval gate. Read-only never reaches the gate, but kept for parity.
 _RISK = {
     "read_only": "green",

@@ -6,8 +6,10 @@ turn lifecycle (trace run, interrupts, streaming answer, provenance), checkpoint
 autosave, and auto-compaction. One call — `run_repl()` — owns the whole session.
 """
 
+import os
 import sys
 import uuid
+
 from datetime import datetime
 from pathlib import Path
 
@@ -48,7 +50,8 @@ def run_repl() -> None:
     from notify import menubar as _menubar
 
     _menubar.write_pid()
-    atexit.register(_menubar.clear_pid)
+    atexit.register(_menubar.clear_pid, os.getpid())  # ours only — a second REPL may own it now
+
     # The icon's Quit sends SIGTERM; turn it into a normal exit so the prompt's raw mode and
     # the atexit hooks unwind instead of leaving the terminal wedged.
     try:

@@ -118,9 +118,11 @@ def ensure_running(python: str | None = None) -> str:
     path = plist_path()
     try:
         pinned = _current_python()
-        loaded = is_loaded()
-        if pinned == python and is_running():
+        out = _print_job()  # one launchctl round-trip on the startup path: running implies loaded
+        loaded = out is not None
+        if pinned == python and loaded and "pid = " in out:
             return "already running"
+
         if loaded:
             try:
                 macos._run(["launchctl", "bootout", f"{macos._domain()}/{LABEL}"])
@@ -163,11 +165,21 @@ def write_pid(pid: int | None = None) -> None:
         diag.log(f"menubar: pidfile write failed: {exc}")
 
 
-def clear_pid() -> None:
+def clear_pid(owner: int | None = None) -> None:
+    """Drop the pidfile. With `owner`, only when the file still records that pid: two REPLs
+    overwrite each other's entry, and the first to exit must not unlink the live session's
+    (the icon then showed no agent and its Quit could stop nothing — review 2026-09-06)."""
     try:
+        if owner is not None:
+            try:
+                if pid_path().read_text().strip() != str(owner):
+                    return
+            except OSError:
+                return
         pid_path().unlink(missing_ok=True)
     except OSError:
         pass
+
 
 
 def agent_pid() -> int | None:

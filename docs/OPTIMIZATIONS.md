@@ -110,3 +110,96 @@ everything that changed sits after such a checkpoint.
 - Validate behavior with `python benchmark.py` on both trees, not timing alone: the one
   regression found on 2026-09-04 (a memory correction stored as a duplicate) came from a tool
   description truncated in the new argument brief, not from the cache work itself.
+
+## 7. Assessment (2026-09-05) — for later consideration
+
+Ranked against the 46 traced turns since 2026-09-02 (`llm_calls` in `database/db.sqlite`), the
+daemon log, and the code each idea touches. The traffic shape decides most of it: 41 of 46 plans
+are single-step, 17 of 46 are a lone reasoning (`none`) step, the plan call costs 5.5–19 s per
+turn for 21–30 output tokens (thinking, not prefill), and the rectify judge said `rectify=true`
+13 times in 53 — never once on a clean, fully-done plan.
+
+**Do first**
+
+- **Skip the reasoning-step generation on single-`none` plans** (37 % of turns). Run 45: execute
+  wrote the story in 13 s, synthesize rewrote it in 15 s. Route such plans plan_gate → synthesize
+  and record the streamed answer as the step's result (synthesize already streams, cites and
+  grades confidence — keep that generator). Keep the judge on this path but run it BEFORE
+  synthesize on request + plan alone: its only job here is the groundedness rule, and the
+  benchmark's `caught_by_rectify` (2 of 3 baits on 2026-09-04) depends on it.
+- **Prime the judge lineage.** The judge prompt is `RECTIFY_SYS` + request + plan with no
+  grounding message and `core/prime.py` has no lineage for it, so every judge call logs
+  `forcing full prompt re-processing` (run 47: 1180 tokens, 2.8 s). A `("judge",
+  [RECTIFY_SYS])` lineage is a few lines and changes no behavior.
+- **Retire the judge deterministically where its rules cannot fire.** New branch before the LLM
+  verdict: plan clean, every step done, and a `web_search` ran ⇒ neither "all steps ran" rule
+  applies. In the sample this retires the judge on every clean web turn with zero verdict
+  changes.
+- **Structural shaping, starting with `web_extract`.** Run 39: the judge itself reported the
+  extraction returned "generic navigation text", the turn replanned three times, and synthesize
+  prefilled 4.4k tokens for 25 s. A quality fix that also cuts prefill. Files/search are already
+  shaped by the caps in `tools/files.py`.
+
+**Worth doing, smaller**
+
+- Tighter schemas: the judge rationale is 30–60 tokens (~1–1.5 s per call); keep reasoning
+  before the boolean.
+- Prime during slow tools: only multi-step web turns benefit; do it after the judge lineage
+  exists.
+- Right-size `num_ctx`: on a 48 GB machine the 9b at 65k occupies 8.1 GB, so no speed to gain;
+  the only payoff is the embedder hang hazard (§5), which may not be memory at all.
+
+**Close or drop**
+
+- Speculative decoding: already measured negative in `core/confidence.py` (drafting ran SLOWER
+  on this Mac for the 27b; the 9b has no drafter). Measured, not pending.
+- Flash attention: the runner log already shows `Flash Attention enabled` (`flash_attn = auto`).
+- KV cache q8_0: memory is not the constraint, only one in four layers of a hybrid model has a
+  KV cache, and quantizing it shifts the logits the per-model confidence calibration was
+  measured against.
+- Exact-prompt memoization: prompts do not repeat within a session (the results block changes);
+  they DO repeat across benchmark runs, which would stop the benchmark measuring the model.
+- Batch mechanical steps: concrete-step fill already removed the model call from planned reads
+  and rectify's concrete-pending branch is free (run 26's slow reads predate that commit).
+- Model cascade: after the judge changes above the judge barely runs, and the planner is the one
+  role where the 9b already struggles with think off.
+
+**The lever not on the list:** after the prefix cache, the plan call's thinking is the largest
+fixed cost on every turn. Think must stay ON for the planner (off ⇒ a lone `ask_user` stub on
+the 9b), so the play is a tighter think budget, not a toggle. First measurement: think-token
+count per plan call.
+
+## 8. Decision (2026-09-05) — route around the engine, then trim it
+
+Supersedes the ordering in §7. The full statement of the principle is `PLAN.md` → "The
+common-case contract"; this section records only what it changes about the latency work.
+
+**Why §7's ranking was wrong.** Every item in §7 makes the plan engine cheaper for turns that
+still go through it. The traffic (41 of 46 plans single-step, 17 of 46 a lone reasoning step)
+says the common turn should not go through it at all. The largest fixed cost, the plan call's
+thinking (12.4 s avg for 63 output tokens), is not tunable away — think must stay ON for the
+planner — so the only way to remove it from a simple turn is to not make the call.
+
+**What replaces §7's "do first".**
+
+- A request-side regex complexity check (`core/request_intent.py` style, zero tokens) routes
+  simple turns to a bounded read-only ReAct loop: one call under a union grammar with a handful
+  of read-only tool descriptions in the prompt and nothing bound (the bind_tools prefill cost in
+  §1 is the reason a naive ReAct loop is slower, not faster, on the 9b). Chat: one streamed call.
+  One read-only tool: two calls. Think off on both. Expected: ~8 s and ~13 s against ~20 s and
+  ~25 s today, and zero thinking tokens.
+- Escalation, not a judge: three tool calls, an out-of-set tool, or an error hands the
+  observations to the plan engine. `/plan` and `/quick` override the check in either direction.
+- The measurement before anything ships: run the regex over the traced requests and report the
+  misroute rate; after it ships, model seconds and thinking tokens per turn by shape, and an
+  unchanged trust benchmark.
+
+**What survives from §7, in the plan engine, for the turns that still need it.** Prime the
+judge lineage (a few lines, no behavior change). Retire the judge deterministically where its
+rules cannot fire (a clean, fully-done plan that ran a web_search). Structural shaping of
+`web_extract`. The single-`none` fast path in §7 is subsumed: those turns never reach the
+planner now.
+
+**Rule going forward (from the contract).** A new node, branch, or safeguard states the turn
+shape it runs on and its cost there; a safeguard that cannot fire on a shape costs that shape
+nothing. Rectify's branch count is held flat.

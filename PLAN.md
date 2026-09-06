@@ -120,6 +120,30 @@ Files + `/undo` (reversibility is trust-adjacent) · shell · keyless web search
 - **Capability benchmark suites** — CI regression only; benchmark energy goes to the trust benchmark.
 - **Hold existing cuts/shelves:** recipes, user-defined commands, background jobs, `/dryrun`, token budget, cloud models, phase-3 crypto (no signing before design partners), TUI prompt machinery, the art. Formal scope cuts stay cut: GUI, consumer integrations, coding-agent specialization, vision.
 
+## The common-case contract (2026-09-05) — design for the traffic, not the hardest case
+
+_Written after reading the 46 traced turns since 2026-09-02 (`llm_calls` in `database/db.sqlite`) against the daily-companion framing above. This section is the decision knife for every latency and feature question from here on._
+
+**What the traffic is.** 41 of 46 plans were single-step; 17 of 46 were a lone reasoning step with no tool at all. The typical turn is a chat question or one read, and it costs four model calls and 14–24 s of model time: a 12 s plan call (63 output tokens — the time is thinking, not prefill), the step (7 s), the rectify judge (5 s), and synthesize (8 s). A lone reasoning step is generated twice, once in `execute` and once in `synthesize`. The per-node totals over the sample: plan 582 s, execute 571 s, synthesize 353 s, rectify 281 s, replan 185 s.
+
+**What went wrong.** Rectify has ten branches, each a fix for a real, measured failure, each pinned by a test. None is wrong. All of them run on every turn, and the safeguards they exist for cannot fire on the turn shape that dominates. The engine is built for the hardest five percent and the other ninety-five pay for it in seconds and watts. That is the feature-accretion pattern: every addition served the rare case at the common case's expense, and nothing measured the common case.
+
+**The contract.** Latency and hardware (including energy) are first-class constraints, equal in rank to the trust stack. Concretely:
+
+- The target shape is the chat question and the single read. Their budget is one streamed model call (chat) or two (one read-only tool, then the answer), think off, no thinking tokens, no judge.
+- Every new node, branch, or safeguard states the turn shape it runs on and its cost there. A safeguard that cannot fire on a shape must cost that shape nothing — a deterministic short-circuit or a route around it, never a model call.
+- Rectify's branch count is held flat. A new failure mode gets a deterministic detector or a routing change, not an eleventh branch.
+- The trace database decides. Turn-shape distribution, model seconds per turn, and thinking tokens per turn are reported before and after any engine change; the trust benchmark's verdicts must be unchanged.
+
+**The decided direction (spec to follow in `docs/superpowers/specs/`).** One engine, plus a cheap complexity check that routes around it:
+
+1. **Complexity check — a request-side regex, not a model.** Zero tokens, deterministic, the same readings `core/request_intent.py` already trusts. Plan mode is forced by: more than one workspace path, a computed figure, a write/edit verb, a reference hop ("the file it names"), a multi-clause request. Everything else is simple. `/plan` forces planning; `/quick` forces the simple path. The misroute rate is measured offline against the traced requests before it ships.
+2. **Simple path — a bounded ReAct loop, read-only tools only, nothing bound.** One call under a union grammar ("answer" | "call one of these tools with these args") with three to five read-only tool descriptions in the prompt; think off. No tool catalog in the chat template — the prefix-cache work measured that at 8k tokens / 20 s per call on the 9b, which is why a naive ReAct loop is slower than the plan engine on tool turns. Files, search, web, knowledge base, calculator. Writes and side effects always go through the plan engine and plan review: the gate is the product, and a simple turn that turns out to need a write escalates.
+3. **Escalation instead of a judge.** Hard bound of three tool calls. Past that, a tool outside the set, or an error hands the gathered observations to the plan engine and the turn continues there. A wrong "simple" verdict costs one cheap call, never a bad answer and never an irreversible effect.
+4. **Shared trust stack, one record.** Simple-path tool calls go through the same approval, tools, egress, and quarantine nodes. Each call is appended to the plan list as a done step so the plan stays the data bus: trace, replay, incident disclosure, confidence coloring, and the Esc freeze all work unchanged. Plan-level review is the one thing the simple path gives up, by design and only on turns the check judged simple.
+
+**Not a diet.** This adds a route, a regex, and a small loop; the codebase gets slightly larger. The bloat is a separate deletion pass over the "Trim / demote" list above, taken after this lands, because a slimmer tree does not make the next turn faster and this does.
+
 ## Verification pass (2026-09-01) — gaps the sections above did not name
 
 Read against main @ b843da9 with the "Claude Code for daily tasks" question in mind. Ordered by how much each blocks daily use; the first two are substrate fixes, not new capability, and are the cheapest large gains in the repo.

@@ -115,14 +115,23 @@ def invites_a_question(request) -> bool:
     return bool(_ASK_INVITED_RE.search(str(request or "").lower()))
 
 
-# ── "the user asked for the workspace to CHANGE" ───────────────────────────────────────────
+# ── "the user asked for something to CHANGE" ───────────────────────────────────────────────
 #
 # The authorization half of the effect-authorization rule (`plan_context.request_authorized`).
 # "Read vendor_terms.txt and tell me the late fee" asks for NO state change at all — the file's
 # contents must not be able to put `write_file breach_marker.txt` into the redrafted plan.
-# COMMUNICATION verbs are deliberately absent: "Send an email to Petra" is an effect on the world,
-# not the workspace, and treating it as write authorization is how a turn writes
-# email_to_petra.txt and calls it sent.
+# "send" is deliberately absent: no tool sends anything, and treating "Send an email to Petra"
+# as write authorization is how a turn writes email_to_petra.txt and calls it sent. The
+# closest honest tool (draft_mail, an unsent draft) is authorized by "draft" / "email" / "write".
+#
+# Two vocabularies. `_STATE_CHANGE_RE` is the WORKSPACE verbs. `_EFFECT_VERBS_RE` and
+# `_EFFECT_NOUN_RE` (2026-09-06) are the effects the Apple Calendar / Notes / Mail tools and
+# schedule_notification produce — side_effecting tools, so a replan-drafted step for them faces
+# this rule, and with workspace verbs alone "make an appointment for me tomorrow" authorized
+# nothing: the create_calendar_event step the ask-gate redraft added was refused as an
+# unauthorized effect (run 55), as was every notify/calendar step resolved by reference after
+# current_time. Nouns that double as verbs ("my schedule", "the book", "an email") are in
+# `_AMBIGUOUS_TERMS` and count only in verb position.
 
 _STATE_CHANGE_RE = re.compile(
     r"\b(?:save|saves|saved|saving|write|writes|wrote|writing|store|stores|stored|storing"
@@ -163,13 +172,29 @@ _NOTE_DOWN_RE = re.compile(
 # "add the total to notes.md" — the one multi-word form.
 _ADD_TO_RE = re.compile(r"\badd(?:s|ed|ing)?\b[^.?!]{0,60}\bto\b")
 
+# Effects outside the workspace: the verbs a registered tool acts on ...
+_EFFECT_VERBS_RE = re.compile(
+    r"\b(?:schedule|schedules|scheduled|scheduling|book|books|booked|booking"
+    r"|remind|reminds|reminded|reminding|notify|notifies|notified|notifying"
+    r"|draft|drafts|drafted|drafting|compose|composes|composed|composing"
+    r"|email|emails|emailed|emailing)\b"
+)
+# ... and "make / set (up) / put / add / arrange an appointment|event|meeting|reminder|...".
+_EFFECT_NOUN_RE = re.compile(
+    r"\b(?:make|makes|made|making|set|sets|setting|put|puts|putting|add|adds|added|adding"
+    r"|arrange|arranges|arranged|arranging)(?:\s+up)?"
+    r"\s+(?:(?:an?|the|my|me|me\s+an?|us|us\s+an?)\s+)?(?:(?:new|quick|short)\s+)?"
+    r"(?:appointment|event|meeting|reminder|alarm|notification|calendar\s+entry|email|e-mail)s?\b"
+)
+
 # Terms above that are also ordinary NOUNS ("search my records", "the run", "a copy"). The
 # direction of the error matters: a missed detection costs a blocked write that is DISCLOSED as
 # an incident; a false one silently hands an injected step the authorization the gate exists to
 # withhold. So an ambiguous term counts only where it cannot be read as a noun.
 _AMBIGUOUS_TERMS = frozenset(
     "record records recording run runs running copy copies move moves "
-    "store stores update updates edit edits".split()
+    "store stores update updates edit edits "
+    "schedule schedules book books draft drafts email emails".split()
 )
 _NOUN_MARKERS = frozenset(
     "a an the my our your his her its their this that these those "
@@ -184,13 +209,15 @@ def _reads_as_noun(text: str, start: int) -> bool:
 
 
 def wants_state_change(request) -> bool:
-    """Whether the request asks for the WORKSPACE to change."""
+    """Whether the request asks for something to change — the workspace, memory, or an app a
+    side_effecting tool reaches (calendar, notes, mail, notifications)."""
     text = str(request or "").lower()
-    if _ADD_TO_RE.search(text) or _NOTE_DOWN_RE.search(text):
+    if _ADD_TO_RE.search(text) or _NOTE_DOWN_RE.search(text) or _EFFECT_NOUN_RE.search(text):
         return True
     if _REMEMBER_RE.search(text) and not _REMEMBER_QUERY_RE.search(text):
         return True
+    verbs = list(_STATE_CHANGE_RE.finditer(text)) + list(_EFFECT_VERBS_RE.finditer(text))
     return any(
         m.group(0) not in _AMBIGUOUS_TERMS or not _reads_as_noun(text, m.start())
-        for m in _STATE_CHANGE_RE.finditer(text)
+        for m in verbs
     )

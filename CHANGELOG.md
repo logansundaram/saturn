@@ -7,6 +7,27 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
 
 ## [Unreleased]
 
+### Fixed
+
+- **A lone "ask the user" step no longer ends the turn.** When the planner drafted a question
+  with no step after it to use the answer (a calendar request missing its time, a delete it
+  wanted confirmed), the ask gate skipped the question and the run ended with "I cannot" and an
+  incident; the next message hit the same wall. The dangling question is now redrafted once —
+  keep the question, add the step that acts on the answer — and a second lone ask still lands
+  honestly through the no-call guard. Once the redraft has asked, the original refusal is no
+  longer disclosed as a failed step (it had the answer opening with "I cannot" under a turn
+  that asked and proceeded).
+- **Calendar, reminder and mail effects are authorized by the words that ask for them.** A
+  replanned `create_calendar_event`, `schedule_notification` or `draft_mail` step was refused
+  as an "unauthorized effect" unless the request happened to say "create" or "write": the
+  authorization vocabulary knew only workspace verbs. "make an appointment", "remind me",
+  "schedule", "book", "draft/email Petra" now count; "my schedule", "the emails" and "send"
+  still do not. The planner prompt no longer calls reminders and email actions it has no tool
+  for. And effect authorization now arms only once a tool other than `ask_user` has actually
+  run this turn: a refusal the engine stamped, or the user's own typed answer, is not a result
+  a file or web page could have written, so a step redrafted before anything was read is no
+  longer refused as an effect of results that did not exist.
+
 ### Added
 
 - **Apple Notes, Calendar and Mail as tools (macOS).** `search_notes` / `read_note`,

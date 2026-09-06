@@ -144,12 +144,31 @@ def plan_outcomes_block(plan) -> str:
     return "\n".join(lines) or "(no steps were run)"
 
 
+def _superseded_ask(plan, step) -> bool:
+    """A dangling-ask refusal (execute's rule 3) that rectify's redraft then ASKED: a later
+    ask_user step ran. The refusal stays in the record (the no-call guard counts it) but is
+    not an action that failed — disclosing it told the synthesizer the question "did NOT
+    complete" and the answer opened with "I cannot" under a turn that had asked it (runs
+    55-58, 2026-09-06). Read off the producer's own text, never its wording."""
+    from nodes.execute import DANGLING_ASK_TEXT  # lazy: the execute-node pattern
+
+    if not str(step.get("result") or "").startswith(DANGLING_ASK_TEXT):
+        return False
+    after = plan[plan.index(step) + 1:]
+    return any(
+        s.get("intended_tool") == "ask_user" and s.get("status") == "done" for s in after
+    )
+
+
 def incidents_block(plan) -> list[str]:
     """One line per incident the answer must disclose: steps that were skipped, blocked,
-    errored, cancelled — or never ran at all (iteration cap / abort)."""
+    errored, cancelled — or never ran at all (iteration cap / abort). A dangling-ask refusal
+    the redraft superseded (`_superseded_ask`) is record, not incident."""
+    plan = list(plan or [])
     out = [
         f"step {s.get('step_id')} ({s.get('label')}): {s.get('result')}"
         for s in incident_steps(plan)
+        if not _superseded_ask(plan, s)
     ]
     out += [
         f"step {s.get('step_id')} ({s.get('label')}): never ran — the turn ended before it"

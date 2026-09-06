@@ -25,6 +25,7 @@ from core.plan_context import (
     original_request,
     plan_txt,
     request_authorized,
+    results_exist,
     vetoes_block,
 )
 from core.plan_ops import retarget_knowledge_base_reads
@@ -144,8 +145,10 @@ def replan_node(state: AgentState):
     # RESULTS — anything a file or a web page says can appear here as a proposed step. Every
     # step drafted while results exist is stamped origin=replan, and a state-changing one is
     # dropped unless the USER'S words name its target (execute re-checks on the arguments).
+    # "Results exist" is plan_context.results_exist — a tool other than ask_user actually ran —
+    # not `done` (which also holds engine-stamped refusals and the human's own answers).
     refused: list = []
-    if done:
+    if results_exist(state):
         for s in new_steps:
             s["origin"] = ORIGIN_REPLAN
         authorized = []

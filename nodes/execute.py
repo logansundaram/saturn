@@ -120,12 +120,19 @@ TRUNCATED_TEXT = "error: the tool call was cut off at the output limit"
 # A question the USER asked for in their own words is exempt from 2 and 3 (the interrupting-tool
 # seam). Measured: dev.absence.kb_miss 3/5 -> 5/5.
 #
-# The refusal's STATUS is the mechanism's second half: rules 1 and 2 have something to redraft
-# TOWARD (finish from what is known / search the named source), so they stamp `error` and carry
-# ASK_GATE_PREFIX for rectify's 4a redraft; rule 3 does not — asked to replace an impossible action
-# a small model substitutes a possible one (measured: "Send an email to Petra" came back writing
-# email_to_petra.txt and claiming it sent) — so it takes the guarded posture, `skipped`, and the
-# run reports it. One producer (this prefix), one parser (rectify 4a).
+# The refusal's STATUS is the mechanism's second half: every rule has something to redraft
+# TOWARD, so all three stamp `error` and carry ASK_GATE_PREFIX for rectify's 4a redraft. Rules 1
+# and 2 redraft to "finish from what is known" / "search the named source". Rule 3 redrafts to
+# "keep the question, add the step that uses the answer by reference" — it took the guarded
+# posture (`skipped`, run over) from 2026-08-16 to 2026-09-06, on the reading that a plan with
+# no consumer had nothing to do with the answer. Measured wrong once tools existed for the
+# consumer (runs 51-54): the 9b drafts "ask the time" for a calendar request WITHOUT the
+# create_calendar_event step 3/3 replays, the skip ended the run with "I cannot", and the
+# user's next message hit the same wall. The substitution risk the skip guarded against ("Send
+# an email to Petra" came back writing email_to_petra.txt and claiming it sent) is carried by
+# the redraft text instead (no tool for the action -> a single cannot-do step, never a
+# substitute), and a second lone ask ends the run through rectify's no-call guard (1b), so the
+# redraft is bounded to one. One producer (these two texts), one parser (rectify 4a).
 # The plan-review revocation lock's refusal (from the engine isolate): stamped through
 # core.plan_ops.retirement_text so the result ends with the review stamp — which is what tells
 # rectify this is the user's SINGLE-STEP veto ("skip this one, continue the rest") rather than a
@@ -146,6 +153,13 @@ _REVOKED_REASONS = {
 UNAUTHORIZED_PREFIX = "blocked: unauthorized effect —"
 
 ASK_GATE_PREFIX = "error: ask_user was not executed:"
+# Rule 3's exact text: rectify 4a keys its consumer-step redraft on it (startswith), so the
+# dangling case gets its own instruction rather than the search/budget one.
+DANGLING_ASK_TEXT = (
+    f"{ASK_GATE_PREFIX} no step follows this question, so nothing in the plan can use the "
+    "answer — the plan needs the step that acts on the answer, or a plain statement of what "
+    "cannot be done."
+)
 MAX_ASKS_PER_TURN = 1
 
 
@@ -182,12 +196,7 @@ def _ask_gate(state: AgentState, plan: list, step: dict) -> "tuple[str, str] | N
     idx = next((i for i, s in enumerate(steps) if s is step), None)  # identity, not equality
     follows = steps[idx + 1:] if idx is not None else []
     if not follows and not invited:
-        return (
-            "skipped ask: no step follows this question, so nothing in the plan can use the "
-            "answer. Say in the ANSWER what you need from the user, or what you cannot do — an "
-            "interrupt whose answer feeds no step costs a round trip and changes nothing.",
-            "skipped",
-        )
+        return (DANGLING_ASK_TEXT, "error")
     return None
 
 

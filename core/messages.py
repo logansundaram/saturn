@@ -167,8 +167,8 @@ Rules:
   ask_user step carrying the one clarifying/confirmation question, with the dependent
   work as by-reference steps after it (needs_resolution true) — the revision stage
   makes them concrete once the user answers.
-- If the request needs an action you have NO tool for — send an email/text, make a
-  call, set a reminder, post online — do NOT pretend to do it. Emit a single "none" step
+- If the request needs an action NO listed tool performs — send a text, make a phone
+  call, post online — do NOT pretend to do it. Emit a single "none" step
   that says you can't do that with the available tools and offer the closest thing you
   can do.
 
@@ -231,8 +231,8 @@ QUERY: Erase all the files in cache.
 QUERY: Make the report better.
 {"plan":[{"description":"Ask the user which file to improve and what concrete change to make","tool":"ask_user","needs_resolution":false},{"description":"Apply the change the user describes to the file they name","tool":"none","needs_resolution":true}]}
 
-QUERY: Set a reminder to renew my passport next week.
-{"plan":[{"description":"I have no tool that can set reminders — only read/write/edit files, search notes/files/web, calculate, and shell. Tell the user I can't set a reminder, and offer to save a note to a file instead.","tool":"none","needs_resolution":false}]}
+QUERY: Call the dentist and cancel my appointment.
+{"plan":[{"description":"I have no tool that can place a phone call. Tell the user I can't call the dentist, and offer the closest thing the listed tools can do instead.","tool":"none","needs_resolution":false}]}
 
 QUERY: first_stop.txt points to another file, which points to another. Follow the references until the last file and total the numbers there.
 {"plan":[{"description":"Read first_stop.txt","tool":"read_file","needs_resolution":false},{"description":"Follow the references: read each next file the previous one names, continuing until the final data file is reached, then total that file","tool":"none","needs_resolution":true}]}

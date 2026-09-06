@@ -281,6 +281,21 @@ def is_revoked(revoked, tool, *texts) -> bool:
     return revocation_kind(revoked, tool, *texts) is not None
 
 
+def results_exist(state) -> bool:
+    """Whether anything from OUTSIDE the human's own words has landed this turn — the arming
+    condition of effect authorization (replan stamps `origin: replan` on what it drafts only
+    then; execute re-checks the stamp on the arguments). Read off `tool_events` — what actually
+    RAN — never off "some step has a result": an engine-stamped refusal (the ask gate, the write
+    gate, a revocation) is a result that no file or web page wrote, and `ask_user`'s observation
+    is the human's typed answer. Keying on results alone armed the rule on a plan whose only
+    result was the ask gate's own text, and refused the calendar step the redraft added as an
+    "unauthorized effect" of results that did not exist (run 57, 2026-09-06)."""
+    return any(
+        isinstance(ev, dict) and ev.get("name") not in (None, "ask_user")
+        for ev in state.get("tool_events") or []
+    )
+
+
 def request_authorized(state, step, *texts) -> bool:
     """Whether a state-changing action from `step` is authorized by the user's own words. A step
     drafted before any result existed (no `origin: replan`), or one that cannot change state, is

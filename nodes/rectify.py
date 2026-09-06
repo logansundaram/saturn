@@ -61,7 +61,7 @@ from core.plan_context import (
     vetoes_block,
 )
 from core.plan_ops import is_review_retirement
-from nodes.execute import ASK_GATE_PREFIX  # one producer (execute), one parser (branch 4a)
+from nodes.execute import ASK_GATE_PREFIX, DANGLING_ASK_TEXT  # one producer (execute), one parser (4a)
 from core.state import AgentState
 from core.structured import (
     RectifyBool,
@@ -405,16 +405,35 @@ def rectify_node(state: AgentState):
         }
 
     # 4a. THE ASK GATE'S REDRAFT (transplanted from the engine isolate): `execute` refused an
-    #     `ask_user` step — past this turn's one-question budget, or before the searchable source
-    #     the request itself named had been searched. The refusal is only half a mechanism:
-    #     without a redraft the turn lands with an incident and no answer. Detected off the
-    #     producer's own prefix, never its wording (the DECLINE_TEXT pattern).
+    #     `ask_user` step — past this turn's one-question budget, before the searchable source
+    #     the request itself named had been searched, or DANGLING (no step after it can use the
+    #     answer — since 2026-09-06 a redraft, not a run-ender: see execute's rule-3 note). The
+    #     refusal is only half a mechanism: without a redraft the turn lands with an incident
+    #     and no answer. Detected off the producer's own texts, never its wording (the
+    #     DECLINE_TEXT pattern). Bounded: a second dangling ask is caught by 1b above.
     if (
         last_done is not None
         and str(last_done.get("result") or "").startswith(ASK_GATE_PREFIX)
         and state.get("replans", 0) < 2
     ):
-        diag.log(f"rectify_node : {time.perf_counter() - start:.4f}s (ask gate -> redraft)")
+        dangling = str(last_done.get("result") or "").startswith(DANGLING_ASK_TEXT)
+        diag.log(f"rectify_node : {time.perf_counter() - start:.4f}s "
+                 f"(ask gate -> redraft{', dangling' if dangling else ''})")
+        if dangling:
+            return {
+                "rectify": True,
+                "reasoning": (
+                    "The plan put a question to the user with NO step after it that uses the "
+                    "answer, so the question was not asked. Redraft the remaining steps: KEEP "
+                    "that one question as the first step, and after it add the step(s) that act "
+                    "on the answer, written by reference (needs_resolution true) — e.g. 'create "
+                    "the event at the time the user gives'. If NO available tool can act on the "
+                    "answer (the action itself is impossible here), do not ask at all: emit a "
+                    "single 'none' step stating plainly which part of the request you cannot "
+                    "carry out. Never substitute a different action for the one requested, and "
+                    "never ask more than one question."
+                ),
+            }
         return {
             "rectify": True,
             "reasoning": (

@@ -104,13 +104,14 @@ _CLOCK = re.compile(
 )
 
 
-def parse_when(text: str, now: datetime | None = None) -> datetime:
-    """Resolve a `when` string to an aware local datetime strictly after `now`.
+def parse_when(text: str, now: datetime | None = None, *, allow_past: bool = False) -> datetime:
+    """Resolve a `when` string to an aware local datetime strictly after `now` (or any time at
+    all with `allow_past`, for range queries that look backward).
 
     Accepted: ISO 8601 (`2026-09-06T09:00`, offset kept when given, else local), a relative
     offset (`in 20 minutes`, `in 2 hours`, `+3d`, `20m`), `today/tomorrow [at] HH:MM[am|pm]`,
     and a bare clock time (`16:00`, `3pm`) meaning its NEXT occurrence. Anything in the past
-    raises NotifyError with a hint to call current_time first."""
+    raises NotifyError with a hint to call current_time first, unless `allow_past`."""
     now = (now or datetime.now()).astimezone()
     raw = (text or "").strip()
     s = raw.lower()
@@ -144,7 +145,7 @@ def parse_when(text: str, now: datetime | None = None) -> datetime:
             "'in 20 minutes', 'tomorrow at 09:00', or '16:00'"
         )
 
-    if when <= now:
+    if when <= now and not allow_past:
         raise NotifyError(
             f"{when.isoformat(timespec='minutes')} is in the past (now is "
             f"{now.isoformat(timespec='minutes')}); call current_time and pick a future time"

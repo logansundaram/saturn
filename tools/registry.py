@@ -20,6 +20,9 @@ import tools.knowledge  # noqa: E402,F401  (search_knowledge_base + remember/rec
 import tools.shell  # noqa: E402,F401
 import tools.interaction  # noqa: E402,F401  (ask_user — the mid-run question to the human)
 import tools.notify  # noqa: E402,F401  (schedule_notification — a one-shot OS-scheduled reminder)
+import tools.notes  # noqa: E402,F401  (search_notes / read_note / create_note — Apple Notes, macOS)
+import tools.calendar  # noqa: E402,F401  (list_calendar_events / create_calendar_event — Apple Calendar, macOS)
+import tools.mail  # noqa: E402,F401  (list_mail / search_mail / read_mail / draft_mail — Apple Mail, macOS; drafts only, never sends)
 
 # Remote MCP tools (roadmap #12): connect the servers declared under `mcp.servers` in config.yaml
 # and register each remote tool through toolspec.register_tool_object, so they land in the same

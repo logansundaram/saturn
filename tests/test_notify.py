@@ -93,6 +93,11 @@ def test_parse_when_refuses_past_and_hints_current_time():
         parse_when("today at 10:00", now=NOW)
 
 
+def test_parse_when_allow_past_accepts_earlier_times():
+    assert parse_when("2020-01-01T00:00", now=NOW, allow_past=True) == datetime(2020, 1, 1).astimezone()
+    assert parse_when("today at 09:00", now=NOW, allow_past=True) == NOW.replace(hour=9, minute=0)
+
+
 def test_parse_when_refuses_garbage():
     with pytest.raises(NotifyError, match="could not understand"):
         parse_when("whenever", now=NOW)

@@ -128,6 +128,10 @@ is the *tool-execution node*, not the `tools/` package (see the name-collision t
 | `shell.py` | `run_shell` — always `destructive` (the human approving the exact command is the boundary), bounded foreground runs only. |
 | `interaction.py` | `ask_user` — pauses the running graph via `interrupt()` to ask the human ONE question; the typed answer resumes as the observation. `read_only` (asking never gates); degrades honestly headless. |
 | `notify.py` | `schedule_notification` — a one-shot desktop reminder handed to the OS scheduler via `notify/` (launchd + osascript on macOS; other platforms refuse honestly). `side_effecting`; not egress. Human side: `/notify`. |
+| `applescript.py` | The one seam for native macOS app tools: `run(script, app=)` opens the target app hidden then runs `osascript`, translating "not macOS" / Automation denied / not running / timeout into model-readable errors; `quote` + RS/US `records` so user text never splits a field. Not egress; imports nothing project-side. |
+| `notes.py` | Apple Notes: `search_notes` / `read_note` (`read_only`, **untrusted** — shared or pasted content is scanned like a web page) + `create_note` (`side_effecting`). |
+| `mail.py` | Apple Mail: `list_mail` / `search_mail` / `read_mail` (`read_only`, **untrusted** — email is the canonical injection vector) + `draft_mail` (`side_effecting`, opens a visible UNSENT draft; the human is the send button, so it is not egress). No `send_mail` by decision — see `docs/superpowers/specs/2026-09-06-macos-apps.md`. |
+| `calendar.py` | Apple Calendar: `list_calendar_events` (`read_only`, **untrusted** — invitations are someone else's text) + `create_calendar_event` (`side_effecting`). AppleScript, not EventKit: a terminal-launched Python only gets EventKit access when the terminal app carries Apple's usage key. Slow (6–15s for a window across all calendars, under a second narrowed to one), so it takes calendar names. |
 
 ### `notify/` — the OS-scheduled side
 | File | What it does |

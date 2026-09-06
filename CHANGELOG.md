@@ -9,6 +9,15 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
 
 ### Added
 
+- **Apple Notes, Calendar and Mail as tools (macOS).** `search_notes` / `read_note`,
+  `list_calendar_events`, and `list_mail` / `search_mail` / `read_mail` read the Mac's own
+  Notes, Calendar and Mail apps through AppleScript; `create_note`, `create_calendar_event`
+  and `draft_mail` write to them and face the approval gate. `draft_mail` opens an unsent
+  draft in Mail for you to review and send yourself — nothing is ever sent by the agent. The
+  readers are classified untrusted — a shared note, a calendar invitation, or any email is
+  someone else's text — so their content passes through the prompt-injection quarantine like
+  a web page. First use pops the macOS "wants to control …" Automation dialog once per app.
+  Nothing leaves the machine. Other platforms report "only available on macOS" honestly.
 - **Scheduled desktop notifications, delivered by the OS.** A new `schedule_notification` tool
   (`side_effecting`, so it faces the gate) hands a one-shot reminder — "in 20 minutes",
   "tomorrow at 09:00", or an ISO time — to the operating system's own scheduler. On macOS that

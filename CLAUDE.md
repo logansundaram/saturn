@@ -139,6 +139,13 @@ honest `Unsupported`). A new platform is one module plus one branch in `backend(
 `notify/menubar.py` (tested, Cocoa-free) + `notify/menubar_app.py` (AppKit, pyobjc, macOS-only dep) are the
 menu bar icon: a login LaunchAgent the REPL starts, which outlives the terminal; its Quit is `quit_all()`.
 
+Native macOS app tools (`tools/notes.py`, `tools/calendar.py`, `tools/mail.py`) go through `tools/applescript.py` — `run(script,
+app=)` opens the app hidden then runs `osascript` (osascript alone gets -600 on a closed Calendar); output is
+RS/US-delimited via `records()`. AppleScript, not EventKit: EventKit access from a terminal Python depends on the
+terminal app's Info.plist. Readers are `untrusted=True` (shared notes, invitations, email); tests capture `applescript._run`.
+`draft_mail` opens an unsent draft and is NOT egress; a `send_mail`/`send_message` would be a new egress chokepoint
+(deferred, with the Messages-history findings, in `docs/superpowers/specs/2026-09-06-macos-apps.md`).
+
 ### Slash commands
 
 `commands/_framework.py` provides `@command(name, summary, aliases=, usage=, details=)`; one module owns

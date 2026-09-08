@@ -151,6 +151,24 @@ def show_node(node: str, delta: dict | None = None) -> None:
 _REASONING_CAP = 280
 
 
+def _render_quick(delta: dict, leaf) -> None:
+    """The quick node's one decision as a leaf: the lookup it chose, the hand-over and why, or
+    that it is answering directly (nodes/quick.py)."""
+    calls = []
+    for m in delta.get("messages") or []:
+        calls.extend(getattr(m, "tool_calls", None) or [])
+    if calls:
+        from textutil import fmt_args
+
+        names = ", ".join(f"{c.get('name')}({fmt_args(c.get('args') or {}, 60)})" for c in calls)
+        leaf(_truncate(f"quick: {names}", _REASONING_CAP), _DIM)
+    elif delta.get("route") == "plan":
+        reason = " ".join(str(delta.get("reasoning") or "").split())
+        leaf(_truncate(f"quick: handing over to the planner — {reason}", _REASONING_CAP), "yellow")
+    elif "route" in delta:
+        leaf("quick: answering directly", _DIM)
+
+
 def _node_leaf(text: str, style: str) -> None:
     """One wrapped `└ …` annotation leaf directly under a node's rail line — the shared shape for
     the agent's reasoning preview, the judge's verdict, and the gate-decision echo."""
@@ -241,6 +259,8 @@ def _render_trust_annotations(node: str, delta: dict, *, emit=None) -> int:
             leaf("↩ answer resumed unchanged", _DIM)
         if buf.get("state") == "done":
             leaf("✓ you accepted the text as the final answer", "cyan")
+    if node == "quick":
+        _render_quick(delta, leaf)
     if node == "rectify":
         reason = " ".join(str(delta.get("reasoning") or "").split())
         if delta.get("rectify"):

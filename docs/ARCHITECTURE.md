@@ -54,6 +54,13 @@ The whole product is one loop. Reading it end to end explains 80% of the repo:
      recent Q&A, attachments). Every node sends the stable half as its own message right after
      its system prompt, and `core/prime.py` re-sends exactly that prefix between turns so the
      daemon's prompt cache resumes there (see `core/serving.py`, "the prefix cache").
+   - `nodes/quick.py` is where most turns go next (2026-09-08): `route_after_ground` runs the
+     request-side complexity check (`core/complexity.py` — a regex, zero tokens) and a chat
+     question or a single lookup skips the planner and the judge. One grammar-bound router call
+     picks "answer" (straight to synthesize) or ONE read-only tool (`core/plan_context.QUICK_TOOLS`);
+     the call rides the same approval → tools → update_plan nodes below and its step lands on
+     the same plan, then update_plan returns to quick (`state["route"]`). A tool outside the set,
+     an error, or the three-call budget hands the turn to the engine with the observations kept.
    - `nodes/plan.py` drafts the step list via the hardened structured-output path
      (`core/structured.py`). **The plan is the data bus**: each step is a plain dict that will
      carry its own `result`; the first step with `result: None` is the execution pointer.

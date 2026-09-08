@@ -147,6 +147,14 @@ class AgentState(TypedDict):
     context_stable: str
     context_dynamic: str
 
+    # Which engine this turn runs on (2026-09-08, the common-case contract): "" = decide from
+    # the request (core/complexity.plan_reason via nodes/quick.route_after_ground); "quick" =
+    # the quick path (one router call, read-only tools, no planner/judge) — set by /quick or by
+    # the quick node itself once it runs; "plan" = the plan engine — set by /plan <request>, or
+    # by the quick node when it hands the turn over (its observations stay on the plan). Read by
+    # update_plan's routing so a tool round returns to the engine that issued it. Reset per turn.
+    route: str
+
     # Per-turn @file attachments: the contents of files the user referenced with `@path` in their
     # message, pre-formatted as a context section by `mentions.expand` and appended to `context` by
     # the grounding node — so the planner/execute/synthesize (which read `context`, not raw

@@ -234,17 +234,25 @@ def run_repl() -> None:
         # `not dropped` keeps the drag-and-drop promise: a POSIX absolute path ("/home/…")
         # whose owner chose "[Enter] send as-is" must run as a message, not fall through to
         # dispatch as an unknown slash command.
+        forced_route = ""
         if not dropped and commands.is_command(user_input):
             commands.dispatch(user_input, cmd_ctx)
             if cmd_ctx.should_quit:
                 break
             state = cmd_ctx.state  # a command (e.g. /reset) may have swapped state out
-            continue
+            if not cmd_ctx.pending_turn:
+                continue
+            # `/quick <request>` / `/plan <request>`: the command handed back a turn to run with
+            # its engine forced — fall through into the turn with that request as the input.
+            forced_route, user_input = cmd_ctx.pending_turn
+            cmd_ctx.pending_turn = None
 
         if not user_input.strip():
             continue
 
         state = _fresh_turn(state, user_input)
+        if forced_route:
+            state["route"] = forced_route
         # A plan the user drafted between turns (/draft): this turn RUNS their steps — seed
         # the fresh state with them (plan_node honors a pre-seeded plan and skips its own
         # drafting) and consume the draft, so exactly one turn runs it.

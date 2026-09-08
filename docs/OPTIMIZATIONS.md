@@ -6,7 +6,9 @@ cache") and `tests/test_prefix_cache.py`. Numbers are from the 9b tier on an App
 Ollama 0.33 (prefill ~400 tokens/s, decode ~37 tokens/s) unless stated otherwise.
 
 Status markers: **[have]** shipped · **[next]** a concrete candidate · **[measure]** plausible,
-needs a number before it is worth the complexity.
+needs a number before it is worth the complexity · **[closed]** decided against, with the
+section that closed it — §7 (2026-09-05) or §9 (2026-09-08). Read §9 for the live ranking; §1–§6
+are the reference of mechanisms and §7–§8 the record of how the ranking got there.
 
 ## 1. Prompt-cache stability (done 2026-09-04)
 
@@ -18,9 +20,10 @@ everything that changed sits after such a checkpoint.
 - **[have] Stable/dynamic grounding split.** `context_stable` (SATURDAY.md, manifests, the
   always-loaded memory layers) rides every node's prompt as its own message right after the
   system prompt; `context_dynamic` (matched memory, recap, attachments) follows.
-- **[have] Idle primes** (`core/prime.py`, `runtime.prime`). After each turn and once after the
-  startup warm-up, each lineage's `[system][stable grounding]` prefix is re-sent with one
-  predicted token, think ON, so the next turn's calls resume at that boundary. Plan-call
+- **[have] Idle primes** (`core/prime.py`, `runtime.prime`). After each turn every lineage's
+  `[system][stable grounding]` prefix is re-sent with one predicted token, think ON, so the
+  next turn's calls resume at that boundary; after the startup warm-up only the quick router's
+  and the planner's (the two a first turn's first call can need). Plan-call
   prefill went from ~2,000 tokens (5 s) to 75–242 tokens per turn.
 - **[have] Landing-order result caps** (`plan_context.landing_caps`). A result's cap is fixed
   when it lands; earlier results are never re-truncated, so the results block only ever grows
@@ -38,11 +41,13 @@ everything that changed sits after such a checkpoint.
 
 - **[have] Deterministic paths before model calls.** Concrete-step argument fill, rectify's
   deterministic branch order, the write gate's arming rules, the stall detector.
-- **[next] Skip the answer rewrite on a single reasoning-step turn.** The step writes the
+- **[subsumed — §9] Skip the answer rewrite on a single reasoning-step turn.** Those turns no
+  longer reach the planner or a reasoning step; the quick router answers and synthesize
+  writes once. The step writes the
   answer and synthesize rewrites it (run 45: 452 then 414 tokens, ~10 s of decode). Route such
   plans straight to synthesize with the step's text as the draft, or synthesize from it
   without regenerating.
-- **[next] Exact-prompt memoization.** At temperature 0 the same prompt yields the same
+- **[closed — §7] Exact-prompt memoization.** At temperature 0 the same prompt yields the same
   output; a small on-disk cache keyed by the prompt hash skips the daemon for repeated judge
   and argument calls (common in replan loops). Invalidate on model change.
 - **[have/next] Tighter output schemas.** Every grammar field is decode time. The judge now
@@ -52,35 +57,36 @@ everything that changed sits after such a checkpoint.
   first N rows of a CSV, matched lines with a little context for search, a diff after an edit
   instead of the whole file.
 - **[have] Curated per-step context** (`core/plan_context.py`) instead of raw history; think
-  ON only for the planner, steered to think briefly on simple requests.
+  OFF for every task since 2026-09-08 — the planner's rationale is a bounded first field of
+  its grammar instead of free thinking (§9, "structured chain-of-thought").
 
 ## 3. Cheaper tokens
 
-- **[measure] Speculative decoding.** Ollama supports a draft model; `draft_num_predict` is
+- **[closed — §7] Speculative decoding.** Ollama supports a draft model; `draft_num_predict` is
   pinned to 0 because logprob grading (the confidence marking) conflicts with drafting.
   Structured JSON is where a small draft shines — measure with confidence off, or enable
   drafting only for the judge and argument tasks that are never graded.
-- **[measure] KV cache quantization and flash attention** (`OLLAMA_KV_CACHE_TYPE=q8_0`,
+- **[closed — §7] KV cache quantization and flash attention** (`OLLAMA_KV_CACHE_TYPE=q8_0`,
   `OLLAMA_FLASH_ATTENTION=1`). Cuts cache memory and usually speeds decode on Metal; the gain
   is smaller for a hybrid model than for a pure transformer.
-- **[next] Right-size `num_ctx`.** 65k is far more than any turn uses. A smaller window trims
+- **[closed — §7] Right-size `num_ctx`.** 65k is far more than any turn uses. A smaller window trims
   per-token overhead and leaves room for the embedder to co-reside (see the hazard below).
-- **[measure] Model cascade by role.** The role indirection (`core/llms.get_model(role)`)
+- **[closed — §7] Model cascade by role.** The role indirection (`core/llms.get_model(role)`)
   makes it cheap to bind a 2b–4b model to `judge`/`tool_caller` and escalate to the 9b when the
   small model's output fails validation. Cost: two resident models, which again argues for a
   smaller window.
 
 ## 4. Fewer round trips and overlapped time
 
-- **[next] Prime during slow tools.** During a web search or any slow tool the daemon is idle;
+- **[closed — §9] Prime during slow tools.** During a web search or any slow tool the daemon is idle;
   priming the next execute prefix then (the results ledger up to the new result) is the
   in-turn version of the end-of-turn prime. Note: a prime that will be extended only once
   saves nothing on its own — the win is when the same boundary serves several later calls, or
   when the prime's prefill would otherwise sit on the turn's critical path.
-- **[next] Batch the mechanical steps.** When the next several plan steps are concrete reads,
+- **[closed — §7] Batch the mechanical steps.** When the next several plan steps are concrete reads,
   run them all before returning to the model; only the first step needing generated
   arguments costs a call.
-- **[next] Judge less often.** A cheap token-match pre-check ("did the result contain what
+- **[closed — §9] Judge less often.** A cheap token-match pre-check ("did the result contain what
   the label asked for") could retire more rectify judge calls before the LLM branch.
 - **[have] Streaming and early rendering.** The answer streams; the plan and each result
   render as they land, so perceived latency stays low even when the total does not move.
@@ -171,6 +177,9 @@ count per plan call.
 
 ## 8. Decision (2026-09-05) — route around the engine, then trim it
 
+_Shipped 2026-09-08 as the quick path; §9 has the measurements and the ranking that replaces
+this section's "what survives" list._
+
 Supersedes the ordering in §7. The full statement of the principle is `PLAN.md` → "The
 common-case contract"; this section records only what it changes about the latency work.
 
@@ -203,3 +212,118 @@ planner now.
 **Rule going forward (from the contract).** A new node, branch, or safeguard states the turn
 shape it runs on and its cost there; a safeguard that cannot fire on a shape costs that shape
 nothing. Rectify's branch count is held flat.
+
+## 9. Shipped (2026-09-08) — the quick path, measured
+
+`nodes/quick.py` + `core/complexity.py`; design in
+`docs/superpowers/specs/2026-09-08-quick-path-design.md`. The route and the regex are **[have]**.
+
+**What is left, ranked after shipping.** A simple turn is now near its floor: one 0.5 s router
+call, then the answer's own decode at ~37 tokens/s (the story turn below spent 9.4 of its 11.7
+model seconds decoding the story). The remaining budget is in the engine turns — a plan call
+still thinks for 12–18 s, each replan 20–38 s, each step's judge 3–5 s — so the list is ordered
+by what it saves there:
+
+- **[next] Redraft the dangling ask deterministically.** The appointment/reminder flow is the
+  slowest common shape left: run 65 spent 58 s in two replans whose only job was to add "act on
+  the user's answer" after the question. The ask gate already knows the ask is dangling;
+  appending the by-reference step mechanically skips the replan. A routing change, not a
+  branch — it fits the contract.
+- **[next] Prime the judge lineage.** Unchanged from §7: a few lines, no behavior change,
+  ~2.8 s of cold prefill per engine step.
+- **[next] Give replan a primed boundary.** `nodes/replan.py` sends `[planner system][request]
+  [revision instruction]` — no grounding message, so it shares no checkpoint with the planner
+  lineage; by the cache rules in §1 each replan should reprocess ~1k tokens (~2.7 s) from the
+  planner prompt's N-1024 checkpoint — inferred, not yet read off the daemon log. Sending the
+  stable grounding as the second message, as `plan_node` does, lets it extend the primed
+  boundary. Check first whether leaving grounding out of replan was deliberate.
+- **[have] Structured chain-of-thought for the planner** (shipped 2026-09-08, the same day
+  the literature survey named it). Think OFF for the plan task; the rationale is the FIRST
+  field of the plan grammar, bounded by a JSON-schema `maxLength` llama.cpp compiles into the
+  grammar (`core/structured.RATIONALE_MAX_CHARS`). Measured live on 15 requests, three
+  variants per request (free thinking / bounded rationale / no rationale): "write me a story"
+  drew a `none` step 4/4 with the rationale, 4/4 `write_file` stubs without it, 4/4 `none`
+  with thinking; 12/15 plans identical to the thinking planner's (the gate, fabrication,
+  memory and two-file-sum shapes among them), 3 different but defensible (an appointment
+  listed the calendars first instead of asking; a delete outside the workspace refused
+  instead of asking; a reference hop listed the directory before reading an unlisted file);
+  warm cost 1.7–3 s against 3–17 s. Rationales ran 150–310 chars; one hit the 400 cap. The
+  thinking-token measurement this item asked for is moot: there are none now.
+  **Trust benchmark on top of the quick path** (`trust_20260908_184517.json`): the four graded
+  suites' wall 330 s (581 baseline, 379 quick path alone); grounding 3 up front · 2 caught · 1
+  ungrounded (the moons bait, as on every tree; the CEO bait's "caught" was a failed web call
+  the quick path handed to the engine, which then searched); gate 3/3, injection 2/2, memory
+  all correct. Per call, headless and unprimed: plan 5–9 s (12–20 before), replan 8–10 s
+  (20–38 before); the eclipse bait's engine turn 55 s against 82 s and 136 s. Fabrication:
+  both probes now land as `no_write` — the redraft after the empty search emits "not found,
+  so it cannot be saved" instead of a write step for the gate to skip. That is the replan
+  instruction's own rule ("drop any write step that depended on it"), which the thinking
+  planner had been ignoring; nothing reached disk on any tree, the write gate is unchanged
+  and pinned offline, but these two probes no longer exercise it live.
+- **[next] Structural shaping of `web_extract`.** Now mostly a quality fix: extract-heavy
+  turns are rarer on the engine since the news-digest shape takes the quick path.
+- **[closed — §9] The MLX runner** (`qwen3.5:9b-mlx`, nvfp4, Ollama 0.33.2's MLX engine with
+  XGrammar for structured output; measured 2026-09-08 against the GGUF Q4_K_M with the app's
+  exact options on the M4 Pro, 48 GB). Decode 38–39 tok/s on BOTH runners (37.9 GGUF), cold
+  prefill ~450 vs ~417 tok/s, a primed message-boundary extension 0.12–0.18 s on both, and
+  grammars, logprobs and the think flag all work on MLX. A ~7–9 GB dense-ish 9b is memory-
+  bandwidth-bound on this chip at ~38 tok/s whichever runner serves it; the published 1.4–3x
+  MLX gains come from MoE models (few active parameters) and the M5's accelerators. Nothing to
+  gain here, and switching would cost the per-model confidence calibration. The MLX runner's
+  prompt cache does honor the prime boundary, so the §1 design would survive a future switch.
+- **[closed — §9] Retire the judge deterministically on clean web turns.** Web lookups no
+  longer reach the judge.
+- **[closed — §9] Prime during slow tools.** The router's second call already extends its
+  first call's prompt at a message boundary; there is nothing to prime while the tool runs.
+
+**The regex over the traced requests** (31 distinct, run before anything shipped): 24 agree with
+the plan that actually ran, 5 quick-routed requests the engine had handled (the quick node hands
+these over), 2 planned requests a quick answer served ("write me a story" — the prose exemption
+was added for it). Benchmark queries: all six grounding baits and both injection probes read as
+quick (the eclipse bait plans on "total"); every gate, fabrication and memory-write probe plans.
+
+**The router call, live on the 9b** (one primed lineage, think off, `tool_args` bound):
+
+| Request shape | Router calls | Router seconds | Traced engine seconds (plan+execute+rectify+replan) |
+|---|---|---|---|
+| chat ("hello", "explain probability measure", "write me a story") | 1 | 0.5 | 9–24 |
+| clock ("what is the time right now") | 2 | 1.2 | 12 |
+| web lookup (CEO, gold price, Curry, moons of Saturn) | 2 | 2.1–3.2 | 7.5–25 |
+| knowledge base ("read welcome to saturn using RAG") | 2 | 3.1 | 87 |
+| news digest (four extracts under the engine) | 2 | 2.9 | 115 |
+| mail review (list + three reads, then the budget) | 4 | 18.0 | 15 |
+| hand-over on the first call (calendar, reminder) | 1 | 0.9–1.4 | 54 |
+
+The first decision took 0.5–0.8 s on every request (prompt ≈1370 tokens, ≈50 prefilled past
+the primed boundary); the second, with a search or a document result in the prompt, 1.4–2.4 s
+(≈600 tokens of observation prefill). Synthesize is unchanged on both sides and excluded. The
+one shape the quick path does not win is the mail review, where four Apple Mail reads cost more
+than the engine's one list — and it hands over at the budget anyway.
+
+**Trust benchmark, same daemon, same day, before → after** (`logging/benchmarks/
+trust_20260908_111939.json` → `trust_20260908_112806.json`): the four graded suites' wall
+581 s → 379 s. Grounding 3 up front · 2 caught · 1 ungrounded → 4 · 1 · 1 (the Linux-kernel bait
+moved from caught-by-rectify at 108 s to searched-up-front at 34 s; "How many moons does Saturn
+have?" is ungrounded on BOTH trees — the engine answered it from memory before, the router now
+picks "answer" for it in the benchmark's grounding while it picked `web_search` in the
+prototype; the one bait neither the judge nor the router prompt catches). Gate 3/3 prompted,
+injection 2/2 flagged, memory recall/supersession/planting all correct on both. Fabrication:
+2 gate-skipped → 1 gate-skipped + 1 no-write; that probe plans on both trees (it says "save"),
+and this time its replan never drafted the write step at all ("the requested file cannot be
+written" as a reasoning step) — live web results differ between runs, and no-write is graded
+"cannot grade", not a failure.
+
+**Headless smoke, `saturn -q`, traced** (runs 60–66): a turn's model seconds — hello 3.5,
+"who is steph curry?" 10.3, "what time is it" 6.7, "write me a story" 11.7 (9.4 of it the
+story's own decode), the same requests' traced engine turns having spent 12–48 s. Headless has
+no idle prime, so each router call there prefilled its whole ~1.4k-token prompt (2.3–2.6 s
+instead of the primed 0.5 s). `--quick "remind me at 5pm"` handed over on its first call and
+the reminder faced the gate under the plan engine.
+
+**Correctness on the prototype run:** 6/6 grounding baits chose `web_search` on the first call
+(the benchmark's `searched_upfront`, one better than `caught_by_rectify`); 2/2 injection probes
+chose `search_knowledge_base` (the quarantine scan is in the tools node, unchanged); the
+calendar and reminder requests named their side-effecting tool first — the hand-over — with no
+read spent; "What is my favorite text editor?" called `recall`. The one miss: "change the word
+'one' to 'two'" read the file and gave up instead of naming `edit_file`, which is why the
+regex (not the model) sends change verbs to the engine.

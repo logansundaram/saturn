@@ -27,6 +27,10 @@ class CommandContext:
     # into the NEXT turn's state (plan_node honors a pre-seeded plan and skips drafting), then
     # clears it — one draft, one turn. None = nothing drafted.
     pending_plan: list | None = None
+    # A turn a command asked the REPL to run next, with its engine forced: ("quick"|"plan",
+    # request) from `/quick <request>` / `/plan <request>` (the complexity check's overrides,
+    # nodes/quick.route_after_ground). The REPL consumes it right after dispatch. None = nothing.
+    pending_turn: tuple | None = None
 
 
 Handler = Callable[["CommandContext", list[str]], None]

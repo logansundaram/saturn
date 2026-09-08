@@ -45,6 +45,15 @@ class _PlanItem(BaseModel):
 
 
 class _PlanOut(BaseModel):
+    """The planner's draft. `rationale` comes FIRST (2026-09-08, structured chain-of-thought):
+    with think OFF, the grammar makes the model state what the request needs before it commits
+    to steps — a bounded rationale (RATIONALE_MAX_CHARS, enforced by the grammar's maxLength)
+    that replaced the planner's free thinking, which cost 5–19 s per plan call for the same
+    decision. Measured on the 9b before shipping: the story request that drew a lone stub 4/4
+    with think off and no rationale draws a `none` step 4/4 with one (docs/OPTIMIZATIONS.md §9).
+    to_steps ignores the field; plan_node logs it."""
+
+    rationale: str = ""
     plan: List[_PlanItem] = []
 
 
@@ -79,12 +88,20 @@ class WriteGate(BaseModel):
 # ── flat schemas + shape hints ────────────────────────────────────────────────────────────────
 
 
+# The grammar-enforced bound on the planner's rationale (characters, a JSON-schema maxLength
+# llama.cpp compiles into the grammar). ~400 chars is one to three sentences — the measured
+# rationales ran 150–310 chars and the one that hit the cap was a cut-off, not a loss.
+RATIONALE_MAX_CHARS = 400
+
+
 def plan_format(tool_names: list[str]) -> dict:
-    """The planner's flat JSON schema, with the tool enum built from the LIVE registry (plus
-    "none" for pure reasoning steps) so an /mcp reload reaches the constrained decoder too."""
+    """The planner's flat JSON schema: the bounded `rationale` first, then the steps, with the
+    tool enum built from the LIVE registry (plus "none" for pure reasoning steps) so an /mcp
+    reload reaches the constrained decoder too."""
     return {
         "type": "object",
         "properties": {
+            "rationale": {"type": "string", "maxLength": RATIONALE_MAX_CHARS},
             "plan": {
                 "type": "array",
                 "items": {
@@ -98,13 +115,15 @@ def plan_format(tool_names: list[str]) -> dict:
                 },
             }
         },
-        "required": ["plan"],
+        "required": ["rationale", "plan"],
     }
 
 
 PLAN_SHAPE = (
     "Respond with ONLY this JSON and nothing else: "
-    '{"plan":[{"description":"<what this step does>",'
+    '{"rationale":"<one to three sentences: what the request needs, which tool if any, or why '
+    'a direct answer or a question is right>",'
+    '"plan":[{"description":"<what this step does>",'
     '"tool":"<one exact tool name from the list, or none for a pure reasoning step>",'
     '"needs_resolution":<true if this step\'s exact file/value/items are not yet '
     "known and depend on an earlier result, else false>}]}"
@@ -358,3 +377,38 @@ def structured(role, messages, schema, fmt, shape, default=None, attempts=3):
 # caller — the engine's one plain-text path is nodes/execute._reasoning_call, which needs the
 # raw response object for its metrics. Deleted 2026-07-04 rather than left as a second,
 # unexercised text-call path someone "fixes" believing it drives the engine.)
+
+
+# ── the quick path's router decision (nodes/quick.py, 2026-09-08) ─────────────────────────────
+
+
+class QuickDecision(BaseModel):
+    """ONE next action for a simple turn: "answer" (synthesize from what is known), a read-only
+    tool with its arguments, or any OTHER registered tool — which the quick node never runs: it
+    is the model's way of saying the request needs the plan engine (a write, an event, a
+    reminder, a question to the user), and the turn is handed over. Fail toward the engine: a
+    verdict that never parsed lands as an empty tool name, which reads as out-of-set."""
+
+    tool: str = ""
+    arguments: dict = Field(default_factory=dict)
+
+
+def quick_format(tool_names: list[str]) -> dict:
+    """The router's grammar: the tool enum is EVERY registered tool plus "answer" (an
+    out-of-set choice is the hand-over signal, so it must be expressible); the arguments are a
+    free object — the read-only tools' schemas are small and core/tool_args.coerce_args maps
+    alias keys onto the real ones, as it does for the execute node."""
+    return {
+        "type": "object",
+        "properties": {
+            "tool": {"type": "string", "enum": sorted(set(tool_names)) + ["answer"]},
+            "arguments": {"type": "object"},
+        },
+        "required": ["tool", "arguments"],
+    }
+
+
+QUICK_SHAPE = (
+    'Respond with ONLY this JSON: {"tool":"<one exact tool name, or answer>",'
+    '"arguments":{<the arguments for that tool; {} for answer>}}'
+)

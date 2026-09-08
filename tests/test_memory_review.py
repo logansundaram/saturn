@@ -267,6 +267,9 @@ def test_review_pending_asks_the_model_once_per_transcript(isolated_paths, monke
 
     rv.add_pending([rv._candidate("user", "prefers tea", "model", 2)])
     called = []
+    # The "same transcript" mark is (id(ctx), len(messages)); an earlier test's ctx can be
+    # reallocated at the same address, so start from an empty record.
+    monkeypatch.setattr(knowledge, "_LAST_MODEL_PASS", {})
     monkeypatch.setattr(rv, "llm_candidates", lambda *_a, **_k: called.append(1) or [])
     monkeypatch.setattr("sys.stdin", type("T", (), {"isatty": staticmethod(lambda: True)})())
     monkeypatch.setattr(ui, "ask", _scripted(["q", "q"]))

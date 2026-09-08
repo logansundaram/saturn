@@ -58,6 +58,14 @@ runtime:
   # call's prefill 5 s → 0.2 s per turn). Costs ~0.2 s of idle daemon time per node once warm;
   # a query typed mid-prime simply queues behind that one request. false = never prime.
   prime: true
+  # The quick path (2026-09-08): a request that reads as a chat question or a single lookup —
+  # no change asked for, no computed figure, no reference hop, one path at most, one clause —
+  # skips the planner and the judge: one grammar-bound router call picks "answer" or one
+  # read-only tool (up to three calls), then the answer streams. Everything else, and anything
+  # the quick path cannot finish (a tool outside its read-only set, an error, the call budget),
+  # goes through the plan engine — with the observations already gathered. `/plan <request>`
+  # and `/quick <request>` override the check for one turn. false = every turn plans.
+  quick_path: true
   # Auto-compaction: when a turn leaves the context window filled past `compact_threshold` (a
   # fraction, 0–1), the older turns are folded into one LLM-written summary before the next turn so
   # the conversation stops re-sending — and overflowing — the window. The mechanical per-turn

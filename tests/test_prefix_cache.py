@@ -283,16 +283,18 @@ def test_prime_sends_one_boundary_request_per_lineage(monkeypatch):
     monkeypatch.setattr(st, "_role_is_ollama", lambda role: True)
     monkeypatch.setattr(prime, "ENABLED", True)
     n = prime.prime("STABLE")
-    assert n == 4 == len(model.calls)
+    assert n == 5 == len(model.calls)
     firsts = [m[0][0].content for m in model.calls]
     from core.messages import (EXECUTE_REASONING_SYS, EXECUTE_TOOL_SYS, planner_sys_msg,
-                               synthesize_sys_msg)
+                               quick_sys_msg, synthesize_sys_msg)
 
-    assert firsts == [planner_sys_msg().content, EXECUTE_TOOL_SYS.content,
-                      synthesize_sys_msg.content, EXECUTE_REASONING_SYS.content]
+    # The quick router first: it is the first call of most turns (nodes/quick.py).
+    assert firsts == [quick_sys_msg().content, planner_sys_msg().content,
+                      EXECUTE_TOOL_SYS.content, synthesize_sys_msg.content,
+                      EXECUTE_REASONING_SYS.content]
     seconds = [m[0][1].content for m in model.calls]
-    assert seconds == ["Grounding context:\nSTABLE", "STABLE", "Relevant context:\nSTABLE",
-                       "STABLE"]
+    assert seconds == ["STABLE", "Grounding context:\nSTABLE", "STABLE",
+                       "Relevant context:\nSTABLE", "STABLE"]
     for _msgs, kw in model.calls:
         assert kw["options"]["num_predict"] == 1
         assert kw["reasoning"] is True  # think ON: think-off adds tokens past the boundary
@@ -345,7 +347,7 @@ def test_warm_up_thread_primes_after_the_weights_load(monkeypatch):
     monkeypatch.setattr(prime, "_config_enabled", lambda: True)
     t = startup.start_warm_up()
     t.join(timeout=5)
-    assert seen == ["warm", ("prime", ("planner",))]
+    assert seen == ["warm", ("prime", ("quick", "planner"))]
 
 
 def test_prime_stops_between_lineages_when_a_turn_starts(monkeypatch):

@@ -93,6 +93,17 @@ SEARCH_TOOLS = {"search_knowledge_base", "search_files", "find_files", "web_sear
 #                          corrective regeneration steering toward them, and then disclosed them
 #                          under "from the plan's own calculation step".
 COMPUTE_TOOLS = ("calculate", "run_shell")
+# The read-only tools the QUICK path (nodes/quick.py) may call itself. A fixed list, not "every
+# read_only tool": the quick prompt renders these descriptions, so the set must be stable for
+# the prefix cache, and a tool a /policy override or an MCP server declares read_only must not
+# join the no-planner path by declaration alone. Filtered again at prompt time by the LIVE risk
+# tier (a tool raised above read_only drops out — the safe direction). ask_user is deliberately
+# absent: a question to the user is the engine's seam, not a lookup.
+QUICK_TOOLS = (
+    "web_search", "web_extract", "read_file", "list_directory", "search_files", "find_files",
+    "search_knowledge_base", "calculate", "current_time", "recall",
+    "search_notes", "read_note", "list_calendar_events", "list_mail", "search_mail", "read_mail",
+)
 DERIVED_FIGURE_TOOLS = ("calculate",)
 
 

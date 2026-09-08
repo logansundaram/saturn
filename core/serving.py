@@ -8,17 +8,20 @@ the answer, a corrective — and this module decides two things the call site us
 daemon's defaults:
 
   - `think`: EXPLICIT per task, never the model's default (every local model Saturn targets
-    defaults to thinking ON) — ON for the planner, OFF for everything else. The planner's
-    rationale is where it decides "answer this directly or ask": without it the 9b turned every
-    open creative request into a lone `ask_user` step (measured 2026-09-03 by replaying run 40:
-    4/4 draws `[ask_user]` with think off, 4/4 `[none: write a story]` with it on), which the ask
-    gate skips and rectify then cancels. The flag was off for a few hours that day for latency
-    (~5 s per plan call on the 9b); the cost is now steered instead — the plan prompt tells the
-    model to think briefly on a simple request (measured: a one-tool request's rationale
-    108 → 49 words, 5.9 s → 3.1 s warm; a five-step request thinks longer, the plans unchanged).
-    Judges, tool arguments, reasoning prose and the answer stay without (measured: think-off
-    fixed `absence` 66 → 100 %, `no_capability` 2/5 → 5/5). The flag only changes the assistant
-    opener at the prompt's tail, so it costs nothing at the prefix cache (see below).
+    defaults to thinking ON) — OFF for every task since 2026-09-08. The planner was the one
+    task that thought: its rationale is where it decides "answer this directly or ask", and
+    without any rationale the 9b turned every open creative request into a lone `ask_user` or
+    `write_file` stub (measured 2026-09-03 by replaying run 40: 4/4 draws `[ask_user]` with
+    think off, 4/4 `[none: write a story]` with it on). Free thinking cost 5–19 s per plan call
+    and could not be budgeted under Ollama. The rationale now lives INSIDE the plan grammar
+    (structured chain-of-thought: `_PlanOut.rationale`, first field, maxLength-bounded), so the
+    model still reasons before it commits — measured 2026-09-08 on 15 requests: the story
+    request draws `none` 4/4, 12/15 plans identical to the thinking planner's, the rest
+    defensible, at 1.7–3 s warm against 9–17 s. Judges, tool arguments, reasoning prose and the
+    answer were already without (measured: think-off fixed `absence` 66 → 100 %,
+    `no_capability` 2/5 → 5/5). The flag only changes the assistant opener at the prompt's
+    tail, so it costs nothing at the prefix cache (see below) — but a PRIME is still sent think
+    ON (core/prime.py), or the empty think block lands past the boundary.
   - `num_predict`: a circuit breaker, not a budget — every cap is well above what a healthy
     generation of that task uses; it exists so a whitespace loop under a JSON grammar or a small
     model that starts repeating lands as a truncated generation instead of a full context window.
@@ -75,12 +78,13 @@ class Task:
 
 
 TASKS: dict = {
-    # think ON — the one task that keeps its rationale. Turned off for latency on 2026-09-03 and
-    # turned back on the same day: without it the 9b plans a lone `ask_user` for "write me a
-    # story" (4/4 draws; 4/4 correct with it on). The latency is steered in the plan prompt
-    # instead ("think only as much as the request needs"), see the module docstring. A rationale
-    # that runs to the cap returns EMPTY content, which structured() retries at the next rung.
-    "plan": Task("plan", strict=True, num_predict=1536, think=True),
+    # think OFF since 2026-09-08 — the rationale moved INTO the grammar (core/structured
+    # `_PlanOut.rationale`, first field, maxLength-bounded): the model still states what the
+    # request needs before it commits to steps, which is what stopped the lone `ask_user` /
+    # `write_file` stub for "write me a story" (4/4 stubs with think off and no rationale; 4/4
+    # `none` steps with the bounded rationale; 4/4 with free thinking at 3–17 s per call). See the
+    # module docstring and docs/OPTIMIZATIONS.md §9.
+    "plan": Task("plan", strict=True, num_predict=1536, think=False),
     # 1024, not 512: a verbose-but-healthy verdict's `reasoning` field hit 512 exactly and the
     # JSON never closed (run 16, 2026-09-02); the retry only parsed because it came out shorter.
     "judge": Task("judge", strict=True, num_predict=1024, think=False),

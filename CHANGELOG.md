@@ -7,6 +7,33 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
 
 ## [Unreleased]
 
+### Added
+
+- **The quick path: a simple turn skips the planner and the judge.** A request that reads as a
+  chat question or a single lookup — nothing to change, no figure to compute, no reference to
+  follow, at most one workspace path, one clause — no longer drafts a plan, executes a step,
+  and asks the rectify judge before answering. One grammar-bound call (think off) picks
+  "answer" or ONE read-only tool (web, files, the knowledge base, the calculator, the clock,
+  memory recall, the Apple Mail / Notes / Calendar readers; up to three calls), then the answer
+  streams as before. Every call still faces the approval gate, the egress ledger and the
+  quarantine scanner, and lands on the plan, so `/trace`, replay, citations and incident
+  disclosure are unchanged. Measured on the 9b: the decision costs 0.5–0.8 s
+  warm where the plan call alone cost 5–19 s of thinking; a chat turn drops from four model calls
+  to two, a lookup from four to three; the trust benchmark's graded suites ran in 379 s against
+  581 s the same morning with every gate, injection and memory verdict unchanged. Anything the quick path cannot finish — a tool
+  outside its read-only set (a write, an event, a reminder, a question to you), a failed call,
+  or its call budget — is handed to the plan engine with what it already read. `/plan <request>`
+  and `/quick <request>` (and `--plan` / `--quick` headless) override the check for one turn;
+  `/config runtime.quick_path false` plans every turn.
+
+- **The planner reasons inside its grammar instead of thinking.** Every plan call used to run
+  the model's free thinking (5–19 s on the 9b) because without any rationale it turned "write
+  me a story" into a lone question or a file write. The rationale is now a bounded first field
+  of the plan's JSON grammar — one to three sentences the model must write before it commits
+  to steps — and the planner runs think off like every other task. Measured on fifteen
+  requests: the story case answers directly four draws of four, twelve of fifteen plans are
+  identical to the thinking planner's and the rest defensible, at 1.7–3 s warm against 9–17 s.
+
 ### Fixed
 
 - **Two Saturn sessions no longer erase each other's menu bar entry.** Each interactive session

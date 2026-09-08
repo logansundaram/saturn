@@ -55,6 +55,6 @@ for open-ended text). Do NOT expose raw `temperature`/`top_p`/`top_k`/`repeat_pe
   the 0.0 rung (and optionally the retry rungs, so a retry is itself reproducible).
 - **Why:** Ollama randomises the seed per request; temperature 0 is greedy but not guaranteed
   bit-identical across runs when batching or kernels differ. Exact-prompt memoization
-  (`docs/OPTIMIZATIONS.md`, [next]) and any "replay should match" claim quietly assume it.
+  (`docs/OPTIMIZATIONS.md`, closed in its §7 on 2026-09-05) and any "replay should match" claim quietly assume it.
 - **Worth it when:** the memoization item ships, or a replay-divergence report comes in.
   Check first that llama-server honours `seed` with the multi-prompt cache enabled.

@@ -29,13 +29,21 @@ from nodes import execute as ex
 # ── the task table ──────────────────────────────────────────────────────────────────────────
 
 
-def test_only_the_planner_thinks():
-    # The planner's rationale is where it decides "answer directly or ask": with think off the
-    # 9b planned a lone ask_user for "write me a story" (4/4 replayed draws, 2026-09-03), which
-    # the ask gate skips and rectify cancels. Every other task measured better without.
-    assert serving.thinks("plan")
-    for task in ("judge", "tool_args", "reasoning", "answer", "correction"):
+def test_no_task_thinks_and_the_planner_reasons_in_the_grammar():
+    # The planner's rationale is where it decides "answer directly or ask": with think off and
+    # no rationale the 9b planned a lone stub for "write me a story" (4/4 replayed draws,
+    # 2026-09-03). Since 2026-09-08 the rationale is a bounded FIRST field of the plan grammar
+    # (structured chain-of-thought) and the planner runs think off like every other task.
+    for task in ("plan", "judge", "tool_args", "reasoning", "answer", "correction"):
         assert not serving.thinks(task), task
+    from core import structured as st
+
+    fmt = st.plan_format(["read_file"])
+    assert list(fmt["properties"]) == ["rationale", "plan"]  # the rationale decodes FIRST
+    assert fmt["properties"]["rationale"]["maxLength"] == st.RATIONALE_MAX_CHARS
+    assert fmt["required"] == ["rationale", "plan"]
+    assert st.PLAN_SHAPE.startswith('Respond with ONLY this JSON and nothing else: {"rationale"')
+    assert st.to_steps(st._PlanOut(rationale="x", plan=[])) == []  # to_steps ignores it
     assert not serving.thinks("some-unknown-task")   # unknown → the strictest safe shape
 
 
@@ -67,7 +75,7 @@ def test_invoke_kwargs_carry_think_num_predict_and_num_ctx(monkeypatch):
     assert "num_ctx" in kw["options"] and kw["options"]["temperature"] == 0.0
     assert kw["format"] == {"type": "object"}
     kw = structured._invoke_kwargs("planner", None, 0.0)
-    assert kw["reasoning"] is True and "format" not in kw    # explicit, never the model default
+    assert kw["reasoning"] is False and "format" not in kw   # explicit, never the model default
 
 
 def test_invoke_kwargs_task_override_and_repetition(monkeypatch):

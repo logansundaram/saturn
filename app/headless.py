@@ -89,6 +89,10 @@ def run_headless(args) -> None:
     tracer = Tracer(DB_PATH)
     state = _initial_state()
     state = _fresh_turn(state, query)
+    if getattr(args, "plan", False):
+        state["route"] = "plan"
+    elif getattr(args, "quick", False):
+        state["route"] = "quick"
     # @file mentions work headlessly too: `saturn -p "summarize @notes.md"` attaches the
     # file exactly as the interactive loop does (the grounding node folds it into context).
     attach_block, attached = mentions.expand(query)

@@ -2,13 +2,23 @@ from commands._framework import command, _print
 from commands._utils import is_remove_verb, parse_toggle_status
 
 
+# Cut /plan verbs (recipes 2026-06-11, lockstep 2026-07-03, save, run): still an error, never a
+# request — "/plan save whatever" must not become a turn that saves whatever.
+_REMOVED_VERBS = frozenset({"save", "recipes", "run", "lockstep"})
+
+
 @command(
     "plan",
     "Show the plan; control review mode and the mid-run pause.",
-    usage="/plan | /plan review [on|off] | /plan pause",
+    usage="/plan | /plan review [on|off] | /plan pause | /plan <request>",
     details="""
 The plan is the agent's living checklist. With no args, renders the most recent one — every step
 with its status glyph and intended tool (empty until you've run at least one turn).
+
+  /plan <request>         Run <request> through the plan engine even when it reads as a simple
+                          question or a single lookup (those normally take the quick path: one
+                          router call, read-only tools only, no planner and no judge — see
+                          /quick). The opposite override is /quick <request>.
 
 Status glyphs:  · pending   ▸ active   ✓ done   ⨯ skipped   ⊘ blocked   ✗ error   − cancelled
                 ↷ superseded (a refusal a later step carried out)
@@ -89,7 +99,14 @@ def _plan(ctx, args):
         _print("   type a correction first, then Esc, to steer the running turn instead.)")
         return
 
-    _print(f"  unknown /plan subcommand: {sub!r} — try: review, pause (or /plan --help)")
+    if sub in _REMOVED_VERBS:
+        _print(f"  unknown /plan subcommand: {sub!r} — try: review, pause (or /plan --help)")
+        return
+
+    # Anything else is a REQUEST to run through the plan engine (the quick path's override).
+    text = " ".join(args).strip()
+    ctx.pending_turn = ("plan", text)
+    _print("  planning this one (the quick path is skipped for this turn).")
 
 
 @command(
@@ -192,3 +209,35 @@ def _normalize_draft(plan: list) -> tuple[list, list[str]]:
                 )
         out.append(step)
     return out, notes
+
+
+@command(
+    "quick",
+    "Run a request on the quick path — one router call, read-only tools, no planner.",
+    usage="/quick <request>",
+    details="""
+Most turns already take the quick path: a request that reads as a chat question or a single
+lookup — nothing to change, no figure to compute, no reference to follow, at most one path, one
+clause — skips the planner and the rectify judge. One grammar-bound call picks "answer" or ONE
+read-only tool (web, files, the knowledge base, the calculator, the clock, memory, Apple Mail /
+Notes / Calendar readers; up to three calls), then the answer streams. Every call still faces
+the approval gate, the egress ledger and the quarantine scanner, and lands on the plan.
+
+`/quick <request>` forces that path for a request the check would have planned. The quick path
+cannot write, ask, or run commands: if the request turns out to need one of those, it is handed
+to the plan engine with whatever it already read — so the override costs one cheap call, never a
+missing gate. `/plan <request>` is the opposite override; `/config runtime.quick_path false`
+plans every turn.
+
+Examples:
+  /quick what does the total in the ledger mean?    (the word "total" would have planned it)
+  /plan who is the CEO of OpenAI?                   (plan + judge for a lookup)
+""",
+)
+def _quick(ctx, args):
+    text = " ".join(args).strip()
+    if not text:
+        _print("  usage: /quick <request>  (see /quick --help)")
+        return
+    ctx.pending_turn = ("quick", text)
+    _print("  quick path for this one.")

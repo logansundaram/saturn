@@ -25,6 +25,9 @@ from nodes.tools import tool_node
 from nodes.approval import approval_node
 from nodes.replan import replan_node
 from nodes.plan_gate import plan_gate_node, route_after_gate
+from nodes.quick import (
+    quick_node, route_after_ground, route_after_quick, route_after_update_plan,
+)
 
 DB_PATH = str(get_config().path("db_sqlite"))
 
@@ -34,6 +37,10 @@ def build_agent():
     human-in-the-loop approval gate AND the plan-review gate:
 
         START -> ground -> plan -> plan_gate -> execute -> approval -> tools -> update_plan ┐
+                     └─> quick ──(one read-only call)──────┘                     │      │
+                          │  ↑─────────────(the round comes back to quick)───────┘      │
+                          ├─ answer ──> synthesize                                       │
+                          └─ hand-over ──> plan (nothing gathered) | replan (kept steps) │
                               ┌──────────────↑   │  │         │                             │
                               │     (no call:    │  │   (fully rejected -> update_plan      │
                               │      reasoning/  │  │    records the decline as `skipped`)  │
@@ -43,6 +50,12 @@ def build_agent():
                               │     │                          │ (steps left)      (done/capped)
                               └─────┴──────> plan_gate ────────┘                        ▼
                                      (abort -> synthesize · steer -> replan)        synthesize -> END
+
+    The QUICK path (2026-09-08, nodes/quick.py): `ground` routes a request that reads as a chat
+    question or a single lookup (core/complexity) to `quick` instead of `plan` — one router call
+    picks "answer" or one read-only tool; its rounds go through the SAME approval/tools/
+    update_plan nodes (update_plan routes back to quick by state["route"]) and its steps land on
+    the same plan; anything it cannot finish is handed to the engine with what it gathered.
 
     The plan is the DATA BUS: each step carries its own `result`, written by `update_plan` (tool
     steps) or `execute` itself (reasoning steps, write-gate skips). `execute` runs exactly one
@@ -67,6 +80,7 @@ def build_agent():
 
     builder.add_node("ground", grounding_node)
     builder.add_node("plan", plan_node)
+    builder.add_node("quick", quick_node)
     builder.add_node("plan_gate", plan_gate_node)
     builder.add_node("execute", execute_node)
     builder.add_node("approval", approval_node)
@@ -78,7 +92,17 @@ def build_agent():
     builder.add_node("answer_gate", answer_gate_node)
 
     builder.add_edge(START, "ground")
-    builder.add_edge("ground", "plan")
+    # The complexity check: a simple request takes the quick path, everything else plans.
+    builder.add_conditional_edges(
+        "ground", route_after_ground, {"quick": "quick", "plan": "plan"}
+    )
+    builder.add_conditional_edges(
+        "quick",
+        route_after_quick,
+        # A read-only call faces the same gate; "answer" lands at synthesize; a hand-over goes
+        # to plan (nothing gathered yet) or replan (the gathered steps are kept).
+        {"approval": "approval", "synthesize": "synthesize", "plan": "plan", "replan": "replan"},
+    )
     # Every step boundary flows through plan_gate (the plan-review checkpoint) before execution.
     builder.add_edge("plan", "plan_gate")
     builder.add_conditional_edges(
@@ -97,7 +121,10 @@ def build_agent():
     # approval routes dynamically via Command(goto=...): "tools" (approved) or "update_plan"
     # (fully rejected — the decline is recorded onto the current step as a skipped incident).
     builder.add_edge("tools", "update_plan")
-    builder.add_edge("update_plan", "rectify")
+    # A tool round returns to the engine that issued it (state["route"]).
+    builder.add_conditional_edges(
+        "update_plan", route_after_update_plan, {"quick": "quick", "rectify": "rectify"}
+    )
     builder.add_conditional_edges(
         "rectify",
         route_after_rectify,

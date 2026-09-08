@@ -172,6 +172,7 @@ def _initial_state() -> AgentState:
         "context": "",
         "attachments": "",
         "plan": [],
+        "route": "",
         "iteration": 0,
         "rectify": False,
         "reasoning": "",

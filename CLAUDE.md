@@ -56,10 +56,20 @@ Commit messages follow `area: what changed` in lowercase (`gate: …`, `trace: �
 
 ```
 ground → plan → plan_gate → execute → [approval] → tools → update_plan → rectify → (replan | plan_gate | synthesize)
+   └───→ quick ─(one read-only call)─→ [approval] → tools → update_plan ─→ quick → (synthesize | plan | replan)
 ```
 
 - `ground` assembles `state["context"]` (SATURDAY.md, the memory selection for this request,
-  manifests, attachments).
+  manifests, attachments). Then `nodes/quick.route_after_ground` applies the request-side
+  complexity check (`core/complexity.py`, a regex over the user's words): a chat question or a
+  single lookup takes the **quick path**, everything else plans. `state["route"]` records it.
+- `quick` (the common case, 2026-09-08) makes ONE grammar-bound router call, think off: "answer"
+  → synthesize; one `QUICK_TOOLS` read-only tool → a pending step on the plan + a tool call
+  through the same approval/tools/update_plan nodes (update_plan routes back to quick); any
+  other tool, an error, or the three-call budget → the turn is handed to the engine with its
+  observations (`plan` if nothing ran, `replan` otherwise). No plan_gate, no judge, no write
+  gate on this path — by the common-case contract in `PLAN.md`, a safeguard that cannot fire on
+  a shape costs that shape nothing. `/quick` and `/plan <request>` force either route.
 - `plan` drafts the step list through `core/structured.py`. `/draft` pre-seeds a user-authored plan and
   the planner call is skipped.
 - `execute` runs ONE step per pass with a curated context (`core/plan_context.py`), never raw history.
@@ -93,6 +103,8 @@ Code references model **roles** (`planner`, `tool_caller`, `synthesizer`, `utili
 `tiers` in `config.yaml`. Ollama is the only provider; cloud bindings refuse to build (shelved
 2026-07-03, reintroduction seam documented in `core/llms.py`). The qwen3.5/3.6/3.8 ladder is closed
 (per-model confidence calibration in `core/confidence_calibration.py`, a generated module).
+
+`runtime.quick_path` (default true) turns the quick path off entirely.
 
 `config.yaml` is **gitignored user data**, seeded on first run from the tracked template
 `config.default.yaml` (or `$SATURDAY_HOME/config.yaml` for wheel installs). Change defaults in the

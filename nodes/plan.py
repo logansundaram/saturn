@@ -101,6 +101,8 @@ def plan_node(state: AgentState):
         PLAN_SHAPE,
         default=_PlanOut(),
     )
+    if draft.rationale:
+        diag.log(f"plan_node : rationale: {draft.rationale[:200]!r}")
     plan = retarget_knowledge_base_reads(to_steps(draft))
 
     if not plan:

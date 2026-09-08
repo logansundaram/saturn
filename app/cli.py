@@ -50,6 +50,16 @@ def _build_parser():
                                     "side-effecting/destructive tool calls, headless or "
                                     "interactive. The same view of the gate policy as "
                                     "/policy open (policy.set_gate_off — threshold: destructive).")
+    parser.add_argument("--plan", action="store_true",
+                               help="With -p or -q: run the request through the plan engine "
+                                    "even when it reads as a simple question or a single "
+                                    "lookup (those take the quick path by default — one "
+                                    "router call, read-only tools, no planner). Same as "
+                                    "/plan <request> in the REPL.")
+    parser.add_argument("--quick", action="store_true",
+                               help="With -p or -q: force the quick path for the request "
+                                    "(same as /quick <request>). A request it cannot finish "
+                                    "is handed to the plan engine.")
     parser.add_argument("--json", action="store_true",
                                help="With -p: print a structured JSON result (answer, plan, "
                                     "tools, tokens, timing) instead of the bare answer. Errors "

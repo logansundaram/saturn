@@ -440,7 +440,7 @@ def _render_why(ui, run, events, calls):
     verdicts: list[str] = []
     for _seq, node, output in calls:
         out = decode_json(output, {})
-        if node == "execute":
+        if node in ("execute", "quick"):
             step += 1
             content = _clip(out.get("content", ""), 240)
             tcs = out.get("tool_calls") or []

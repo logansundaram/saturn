@@ -437,15 +437,37 @@ def _render_why(ui, run, events, calls):
 
     # How it reasoned — the execute steps + the rectify verdicts, from the recorded LLM I/O.
     step = 0
+    printed_header = False
     verdicts: list[str] = []
     for _seq, node, output in calls:
         out = decode_json(output, {})
-        if node in ("execute", "quick"):
+        if node == "quick":
+            # The router's output is its grammar-bound decision, not a tool-calling message:
+            # the call is built by the node from the decoded JSON. "answer" produced no step,
+            # so it is not counted as one (review 2026-09-08).
+            decision = decode_json(out.get("content", ""), None)
+            if not isinstance(decision, dict):
+                decision = {"tool": "", "arguments": {}}
+            if not printed_header:
+                _print("  how it reasoned")
+                printed_header = True
+            tool = str(decision.get("tool") or "").strip()
+            if tool == "answer":
+                _print("    quick path: answered directly")
+            elif tool:
+                step += 1
+                _print(f"    step {step}: quick lookup")
+                _print(f"      → chose to call: {tool}({_fmt_call_args(decision.get('arguments'))})")
+            else:
+                _print("    quick path: (no decision — handed to the planner)")
+            continue
+        if node == "execute":
             step += 1
             content = _clip(out.get("content", ""), 240)
             tcs = out.get("tool_calls") or []
-            if step == 1:
+            if not printed_header:
                 _print("  how it reasoned")
+                printed_header = True
             if content:
                 _print(f"    step {step}: {content}")
             if tcs:
@@ -459,7 +481,7 @@ def _render_why(ui, run, events, calls):
             content = str(out.get("content", "") or "").strip()
             if content:
                 verdicts.append(f"{node}: {content}")
-    if step:
+    if printed_header:
         _print("")
 
     # What it relied on — the evidence the answer was built from.

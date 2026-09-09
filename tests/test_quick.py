@@ -336,3 +336,185 @@ def test_headless_flags_force_the_route():
     assert args.plan and not args.quick
     args = _build_parser().parse_args(["-q", "hello", "--quick"])
     assert args.quick
+
+
+# ── the engine review of the quick path (2026-09-08, the ten findings) ───────────────────────
+
+
+@pytest.mark.parametrize("text", [
+    "prepend a header line to notes.md",
+    "put today's date at the top of notes.md",
+    "make a file called todo.txt with three items",
+    "set the title in notes.md to Hello",
+    "export the list as todo.txt",
+    "log that I finished in journal.md",
+])
+def test_editing_verbs_outside_the_effect_vocabulary_still_plan(text):
+    """A write the quick path cannot make must never reach it: handed over after a read, the
+    replan-drafted write faced the effect-authorization rule and was refused as unauthorized —
+    a write the user asked for in so many words (review 2026-09-08, finding 1)."""
+    assert cx.plan_reason(text), text
+    assert not cx.is_simple(text)
+
+
+@pytest.mark.parametrize("text", [
+    "what makes Python slow?",
+    "put simply, what is a monad?",
+    "what does set do in python",
+    "show me the log for the last deploy",
+    "how do I export a function in javascript",
+])
+def test_the_same_verbs_in_conversation_stay_quick(text):
+    assert cx.is_simple(text), cx.plan_reason(text)
+
+
+def test_prepend_authorizes_a_replan_drafted_write_like_append():
+    """`prepend` is unambiguous, so it joins the authorization vocabulary; `export` is a common
+    question word ("how do I export a function") and stays out — it only ROUTES to the engine."""
+    from core.request_intent import wants_state_change
+
+    assert wants_state_change("prepend a header line to notes.md")
+    assert not wants_state_change("how do I export a function in javascript")
+
+
+def test_a_seeded_plan_outranks_a_forced_quick_route():
+    """/quick with a /draft pending: the drafted steps are the engine's by definition — running
+    the quick path on top of them wrote the lookup's result onto the first drafted step and the
+    draft never executed (finding 2)."""
+    seeded = [{"step_id": 1, "label": "read a.csv", "status": "pending", "intended_tool": "read_file",
+               "result": None, "needs_resolution": False}]
+    assert qk.route_after_ground(_state(query="hello", route="quick", plan=seeded)) == "plan"
+
+
+def test_quick_command_refuses_while_a_draft_is_pending(capsys):
+    from commands._framework import CommandContext
+    from commands.plan import _quick
+
+    ctx = CommandContext(state={}, make_initial_state=dict, db_path="")
+    ctx.pending_plan = [{"step_id": 1, "label": "x", "status": "pending", "intended_tool": None,
+                         "result": None, "needs_resolution": False}]
+    _quick(ctx, ["what", "is", "in", "b.csv"])
+    assert ctx.pending_turn is None
+    out = capsys.readouterr().out
+    assert "draft" in out and "/draft clear" in out
+
+
+def test_the_iteration_cap_never_leaves_an_emitted_call_behind(monkeypatch):
+    """At the cap the node LANDS — no router call, no active step, no tool-calling AIMessage
+    left without its ToolMessage (finding 3)."""
+    from config import get_config
+
+    monkeypatch.setattr(type(get_config()), "max_iterations",
+                        property(lambda self: 3), raising=False)
+    seen = _decide(monkeypatch, [QuickDecision(tool="read_file", arguments={"path": "a.md"})])
+    plan = [
+        {"step_id": i, "label": f"quick lookup: read_file(path='{i}.md')", "status": "done",
+         "intended_tool": "read_file", "result": f"file {i}", "needs_resolution": False}
+        for i in (1, 2)
+    ]
+    st = _state(plan=plan, route="quick", iteration=2, query="read a.md")
+    out = qk.quick_node(st)
+    assert seen == []                      # nothing was asked — any decision could only land
+    assert "messages" not in out and "plan" not in out
+    assert qk.route_after_quick({**st, **out}) == "synthesize"
+    # ... and the router itself puts an EMITTED call before the cap, the way route_after_execute
+    # does: a call that exists must reach approval so its ToolMessage exists too.
+    step = {"step_id": 3, "label": "quick lookup: read_file(path='a.md')", "status": "active",
+            "intended_tool": "read_file", "result": None, "needs_resolution": False}
+    call = AIMessage(content="", tool_calls=[{"name": "read_file", "args": {"path": "a.md"},
+                                              "id": "c1", "type": "tool_call"}])
+    st2 = _state(plan=plan + [step], route="quick", iteration=3, messages=[call])
+    assert qk.route_after_quick(st2) == "approval"
+
+
+def test_plan_command_treats_reserved_words_as_subcommands_only_when_bare():
+    """'/plan review the ledger for duplicates' is a request, not a mistyped toggle
+    (finding 4)."""
+    from commands._framework import CommandContext
+    from commands.plan import _plan
+    from core.plan_ops import get_pause_controller
+
+    ctx = CommandContext(state={}, make_initial_state=dict, db_path="")
+    _plan(ctx, ["review", "the", "ledger", "for", "duplicate", "entries"])
+    assert ctx.pending_turn == ("plan", "review the ledger for duplicate entries")
+    ctx.pending_turn = None
+    _plan(ctx, ["pause", "the", "build", "and", "check", "logs"])
+    assert ctx.pending_turn == ("plan", "pause the build and check logs")
+    assert not get_pause_controller().pending()
+    ctx.pending_turn = None
+    _plan(ctx, ["draft", "a", "letter", "to", "Sam"])
+    assert ctx.pending_turn == ("plan", "draft a letter to Sam")
+    ctx.pending_turn = None
+    _plan(ctx, ["review", "on"])           # the real toggle still toggles
+    assert ctx.review_plan is True and ctx.pending_turn is None
+    _plan(ctx, ["review", "off"])
+    assert ctx.review_plan is False
+
+
+def test_trace_why_renders_a_quick_decision_as_its_call_and_skips_the_answer(capsys):
+    """Two router calls (a search, then 'answer') are ONE step on the plan; /trace why must
+    not count the answer decision as a second step nor print raw JSON as reasoning
+    (finding 5)."""
+    import json
+
+    from commands.trace import _render_why
+    from tui import ui
+
+    run = (9, "what is the price of gold?", None, None, "ok", "an answer")
+    calls = [
+        (1, "quick", json.dumps({"content": '{"tool": "web_search", "arguments": {"query": "gold price"}}',
+                                 "tool_calls": []})),
+        (2, "quick", json.dumps({"content": '{"tool": "answer", "arguments": {}}', "tool_calls": []})),
+    ]
+    _render_why(ui, run, [], calls)
+    out = capsys.readouterr().out
+    assert "step 1" in out and "step 2" not in out
+    assert "web_search(query='gold price')" in out
+    assert '{"tool"' not in out
+    assert "answered directly" in out
+
+
+def test_the_rail_tells_a_guarded_landing_from_a_direct_answer(capsys):
+    """A gate decline on the quick path ends the turn; the leaf must say so, not 'answering
+    directly' next to an incident disclosure (finding 6)."""
+    from tui.ui import trace
+
+    plan = [{"step_id": 1, "label": "quick lookup: web_search(query='x')", "status": "skipped",
+             "intended_tool": "web_search", "result": "skipped: declined at the gate",
+             "needs_resolution": False}]
+    out = qk.quick_node(_state(plan=plan, route="quick"))
+    leaves = []
+    trace._render_quick(out, lambda text, style: leaves.append(text))
+    assert leaves and "answering directly" not in leaves[0]
+    assert "skipped" in leaves[0] or "declined" in leaves[0]
+    # ... while a plain answer still reads as one.
+    leaves.clear()
+    trace._render_quick({"route": "quick", "iteration": 1}, lambda text, style: leaves.append(text))
+    assert leaves == ["quick: answering directly"]
+
+
+def test_the_router_sees_the_same_clamped_results_as_the_engine():
+    """One renderer for the data bus: the quick router's observations clamp a result exactly
+    as results_block does for execute and rectify (finding 7)."""
+    from core.plan_context import _cap_result, landing_caps
+
+    big = "x" * 12000
+    plan = [{"step_id": 1, "label": "quick lookup: read_file(path='a.md')", "status": "done",
+             "intended_tool": "read_file", "result": big, "needs_resolution": False}]
+    msgs = qk._observations(plan)
+    assert len(msgs) == 1
+    body = msgs[0].content.split("\n", 1)[1]
+    assert body == _cap_result(big, landing_caps([big])[0])
+
+
+def test_the_quick_system_message_is_cached_until_the_tool_set_or_a_tier_changes(monkeypatch):
+    from core.messages import quick_sys_msg
+    from tools import registry
+
+    a = quick_sys_msg()
+    assert quick_sys_msg() is a
+    monkeypatch.setitem(registry.TOOL_RISK, "read_file", "side_effecting")
+    b = quick_sys_msg()
+    assert b is not a and "- read_file" not in b.content
+    monkeypatch.undo()
+    assert quick_sys_msg().content == a.content

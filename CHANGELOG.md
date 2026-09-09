@@ -36,6 +36,28 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
 
 ### Fixed
 
+- **A plain editing request no longer refuses its own write on the quick path.** "Prepend a
+  header to notes.md", "make a file called todo.txt", "put today's date at the top of
+  notes.md", "set the title in notes.md", "export the list as todo.txt", "log that in
+  journal.md" read as simple lookups, so the quick path read the file, then handed the write
+  to the plan engine mid-turn — where the effect-authorization rule refused it as a write the
+  request never asked for. These verbs now plan from the start (next to a workspace path or a
+  file word; in conversation — "what makes Python slow", "put simply" — they stay quick), and
+  `prepend` authorizes a redrafted write the way `append` does.
+- **`/quick <request>` while a `/draft` is pending no longer runs the quick path on top of your
+  plan** (the lookup's result landed on your first drafted step and the draft never ran). The
+  command now says the draft is pending and points at `/draft clear`; a seeded plan also
+  outranks any forced route inside the engine.
+- **The quick path's iteration cap no longer abandons a tool call it just emitted.** At the
+  cap the router lands without deciding, so no step is left active with a call that never ran.
+- **`/plan <request>` beginning with `review`, `pause` or `draft` runs the request** ("/plan
+  review the ledger for duplicates") instead of being read as the subcommand and lost; the
+  bare forms and `review on|off` behave as before.
+- **`/trace why` counts a quick turn honestly:** each router decision that made a call is one
+  step, rendered as the call it chose, and the "answer" decision is no longer a numbered step
+  showing raw JSON.
+- **The trace rail names a guarded landing on the quick path** ("a guarded outcome ended the
+  turn: … was skipped") instead of "answering directly" next to the incident it just disclosed.
 - **Two Saturn sessions no longer erase each other's menu bar entry.** Each interactive session
   records its pid for the menu bar icon; the first session to exit removed the file even when a
   second session had since written its own, so the icon showed no agent running and its Quit

@@ -135,7 +135,8 @@ def invites_a_question(request) -> bool:
 
 _STATE_CHANGE_RE = re.compile(
     r"\b(?:save|saves|saved|saving|write|writes|wrote|writing|store|stores|stored|storing"
-    r"|append|appends|appended|appending|create|creates|created|creating"
+    r"|append|appends|appended|appending|prepend|prepends|prepended|prepending"
+    r"|create|creates|created|creating"
     r"|delete|deletes|deleted|deleting|remove|removes|removed|removing"
     r"|edit|edits|edited|editing|update|updates|updated|updating"
     r"|rename|renames|renamed|renaming|move|moves|moved|moving|copy|copies|copied|copying"

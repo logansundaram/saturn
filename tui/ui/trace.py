@@ -152,8 +152,9 @@ _REASONING_CAP = 280
 
 
 def _render_quick(delta: dict, leaf) -> None:
-    """The quick node's one decision as a leaf: the lookup it chose, the hand-over and why, or
-    that it is answering directly (nodes/quick.py)."""
+    """The quick node's one decision as a leaf: the lookup it chose, the hand-over and why, a
+    landing and why (a guarded outcome, the cap), or that it is answering directly
+    (nodes/quick.py)."""
     calls = []
     for m in delta.get("messages") or []:
         calls.extend(getattr(m, "tool_calls", None) or [])
@@ -166,7 +167,14 @@ def _render_quick(delta: dict, leaf) -> None:
         reason = " ".join(str(delta.get("reasoning") or "").split())
         leaf(_truncate(f"quick: handing over to the planner — {reason}", _REASONING_CAP), "yellow")
     elif "route" in delta:
-        leaf("quick: answering directly", _DIM)
+        # A landing without a decision carries its reason (a gate decline, the iteration cap);
+        # a plain "answer" carries none — the two used to read identically next to an
+        # incident disclosure.
+        reason = " ".join(str(delta.get("reasoning") or "").split())
+        if reason:
+            leaf(_truncate(f"quick: {reason}", _REASONING_CAP), "yellow")
+        else:
+            leaf("quick: answering directly", _DIM)
 
 
 def _node_leaf(text: str, style: str) -> None:

@@ -592,7 +592,28 @@ def quick_tool_names() -> tuple:
     )
 
 
+# quick_sys_msg is rebuilt only when its inputs change: the registered tool set (an /mcp reload)
+# or a live tier (/policy risk). It is asked for on every router call and every idle prime, and
+# deriving sixteen OpenAI schemas each time was pure repeated work on a 0.5 s path — the message
+# must be byte-stable across those calls anyway (the prefix cache's lineage, core/prime.py).
+_QUICK_SYS_CACHE: tuple = ()  # (key, SystemMessage)
+
+
+def _quick_sys_key() -> tuple:
+    return (tuple(t.name for t in registry.tool), tuple(sorted(registry.TOOL_RISK.items())))
+
+
 def quick_sys_msg() -> SystemMessage:
+    global _QUICK_SYS_CACHE
+    key = _quick_sys_key()
+    if _QUICK_SYS_CACHE and _QUICK_SYS_CACHE[0] == key:
+        return _QUICK_SYS_CACHE[1]
+    msg = _build_quick_sys_msg()
+    _QUICK_SYS_CACHE = (key, msg)
+    return msg
+
+
+def _build_quick_sys_msg() -> SystemMessage:
     names = quick_tool_names()
     lines = []
     for name in names:

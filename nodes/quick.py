@@ -38,21 +38,21 @@ from langchain.messages import AIMessage, HumanMessage
 from config import get_config
 from core.complexity import plan_reason
 from core.messages import quick_sys_msg, quick_tool_names
-from core.plan_context import grounding_parts, original_request
+from core.plan_context import grounding_parts, original_request, result_lines
 from core.state import AgentState, current_step
 from core.structured import QUICK_SHAPE, QuickDecision, quick_format, structured
 from core.tool_args import coerce_args
-from textutil import fmt_args, head_tail
+from textutil import fmt_args
 
 # The tool-call budget: past it the model may still answer, but not call (a further call hands
 # the turn over). Three is the contract's number — a simple turn is one lookup, occasionally a
 # search then a read.
 QUICK_MAX_CALLS = 3
 
-# What each observation is trimmed to for the ROUTER's eyes (the full clamped observation still
-# rides the step result and tool_results into synthesize). A fixed cap per result, so the block
-# only ever grows at its end as calls land (prefix-cache order, like plan_context's results).
-_OBS_CAP = 3000
+# Each observation is trimmed for the ROUTER's eyes by plan_context.result_lines — the ONE
+# renderer of completed results, shared with the execute and rectify prompts (results_block), so
+# the router sees exactly what the engine sees. Its caps depend only on the results before each
+# index, so the messages only ever grow at their end as calls land (prefix-cache order).
 
 ANSWER = "answer"
 
@@ -67,18 +67,18 @@ ESCALATE_BUDGET = "the quick path spent its tool-call budget"
 ESCALATE_ERROR = "a quick-path tool call failed"
 ESCALATE_UNPARSED = "the quick path produced no decision"
 
+# The landing reasons (state["reasoning"] on a quick turn that ends without a decision) — the
+# rail's leaf distinguishes them from a plain "answer"; nothing downstream acts on them.
+LANDING_GUARDED = "a guarded outcome ended the turn"
+LANDING_CAP = "the iteration cap ended the turn"
+
 
 def _observations(plan: list) -> list:
     """The gathered results as consecutive user messages, one per step that ran, in plan order."""
-    out = []
-    for s in plan:
-        if s.get("result") is None:
-            continue
-        out.append(HumanMessage(content=(
-            f"Result of {s.get('label')}:\n"
-            + head_tail(str(s.get("result") or "").strip(), _OBS_CAP)
-        )))
-    return out
+    return [
+        HumanMessage(content=f"Result of {label}:\n{capped}")
+        for label, capped in result_lines(plan)
+    ]
 
 
 def _decide(state: AgentState, plan: list, spent: bool) -> QuickDecision:
@@ -124,13 +124,23 @@ def quick_node(state: AgentState):
         status = last.get("status")
         if status in ("skipped", "blocked"):
             # A guarded outcome ends the run (rectify's first branch, same rule): the incidents
-            # block discloses it; nothing is retried or substituted.
+            # block discloses it; nothing is retried or substituted. `reasoning` names it, so
+            # the rail's leaf tells this landing from a direct answer.
+            updates["reasoning"] = f"{LANDING_GUARDED}: {last.get('label')} was {status}"
             diag.log(f"quick_node : {time.perf_counter() - start:.4f}s (guarded: {status} — landing)")
             return updates
         if status == "error":
             updates.update({"route": "plan", "reasoning": f"{ESCALATE_ERROR}: {last.get('label')}"})
             diag.log(f"quick_node : {time.perf_counter() - start:.4f}s (error — handing over)")
             return updates
+
+    if updates["iteration"] >= get_config().max_iterations:
+        # The engine's cap, honored here BEFORE a decision: any decision made past it could only
+        # land, and a call emitted here would be abandoned at synthesize with its step active
+        # and its AIMessage without a ToolMessage (review 2026-09-08). No router call is spent.
+        updates["reasoning"] = LANDING_CAP
+        diag.log(f"quick_node : {time.perf_counter() - start:.4f}s (iteration cap — landing)")
+        return updates
 
     spent = len(plan) >= QUICK_MAX_CALLS
     decision = _decide(state, plan, spent)
@@ -141,16 +151,14 @@ def quick_node(state: AgentState):
         diag.log(f"quick_node : {time.perf_counter() - start:.4f}s (answer)")
         return updates
 
-    from tools.registry import tools_by_name
-
-    allowed = quick_tool_names()
+    allowed = quick_tool_names()  # registered AND read_only under the live policy
     if not name:
         reason = ESCALATE_UNPARSED
     elif name not in allowed or spent:
         reason = (ESCALATE_BUDGET if spent and name in allowed else ESCALATE_TOOL) + f": {name}"
     else:
         args = coerce_args(name, raw_args)
-        if args is None or name not in tools_by_name:
+        if args is None:
             reason = f"{ESCALATE_TOOL}: {name} with arguments {raw_args!r} did not fit its schema"
         else:
             step = {
@@ -180,15 +188,17 @@ def quick_node(state: AgentState):
 
 
 def route_after_ground(state: AgentState) -> str:
-    """quick or plan, for this turn: an explicit `route` (/quick, /plan <request>, --quick,
-    --plan) wins; a seeded plan (/draft) is the engine's by definition; `runtime.quick_path`
-    off means every turn plans; otherwise the request-side check decides."""
+    """quick or plan, for this turn: a seeded plan (/draft) is the engine's by definition and
+    outranks everything (a forced quick route on top of it would write the lookup's result onto
+    the first drafted step); then an explicit `route` (/quick, /plan <request>, --quick, --plan)
+    wins; `runtime.quick_path` off means every turn plans; otherwise the request-side check
+    decides."""
+    if state.get("plan"):
+        return "plan"  # a /draft: the user's steps run on the engine, whatever else was asked
     forced = str(state.get("route") or "")
     if forced in ("quick", "plan"):
         diag.log(f"route_after_ground : {forced} (forced)")
         return forced
-    if state.get("plan"):
-        return "plan"
     if not get_config().get("runtime.quick_path", True):
         return "plan"
     reason = plan_reason(state.get("current_query", ""))
@@ -200,15 +210,16 @@ def route_after_ground(state: AgentState) -> str:
 
 
 def route_after_quick(state: AgentState) -> str:
-    """A generated call -> approval; a hand-over -> plan (nothing gathered) or replan (the
-    gathered steps are kept, the rest drafted); anything else -> synthesize."""
-    if state.get("iteration", 0) >= get_config().max_iterations:
-        return "synthesize"  # the engine's cap, honored here too — an honest landing
+    """A generated call -> approval (an emitted call must run so its ToolMessage exists — the
+    node itself refuses to emit past the cap); a hand-over -> plan (nothing gathered) or replan
+    (the gathered steps are kept, the rest drafted); anything else -> synthesize."""
     msgs = state.get("messages") or []
     last = msgs[-1] if msgs else None
     if isinstance(last, AIMessage) and getattr(last, "tool_calls", None) \
             and current_step(state.get("plan") or []) is not None:
         return "approval"
+    if state.get("iteration", 0) >= get_config().max_iterations:
+        return "synthesize"  # the engine's cap, honored here too — an honest landing
     if state.get("route") == "plan":
         return "replan" if any(s.get("result") is not None for s in state.get("plan") or []) \
             else "plan"

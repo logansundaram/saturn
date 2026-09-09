@@ -44,7 +44,23 @@ _CHANGE_RE = re.compile(
     r"|modify|modifies|modified|modifying|rename|renames|renamed|renaming"
     r"|fix|fixes|fixed|fixing|correct|corrects|corrected|correcting"
     r"|insert|inserts|inserted|inserting|convert|converts|converted|converting"
-    r"|overwrite|overwrites|overwriting|truncate|truncates|truncating)\b"
+    r"|overwrite|overwrites|overwriting|truncate|truncates|truncating"
+    r"|prepend|prepends|prepended|prepending)\b"
+)
+
+# Verbs that name an edit ONLY next to a workspace target ("make a file called todo.txt", "put
+# today's date at the top of notes.md", "set the title in notes.md", "log that in journal.md",
+# "export the list as todo.txt") and are ordinary conversation otherwise ("what makes Python
+# slow", "put simply", "show me the log"). Counted when the request names a path or a persist
+# word (_PERSIST_RE). The miss this closes (review 2026-09-08): such a request took the quick
+# path, read the file, named write_file, and was handed to REPLAN — where the write it asked
+# for was refused as an unauthorized effect, since the authorization vocabulary (deliberately
+# narrower: a false positive there licenses an injected write) does not count these verbs.
+_TARGETED_CHANGE_RE = re.compile(
+    r"\b(?:make|makes|making|put|puts|putting|set|sets|setting|log|logs|logging"
+    r"|export|exports|exporting|generate|generates|generating|produce|produces|producing"
+    r"|output|outputs|dump|dumps|fill|fills|filling|populate|populates|populating"
+    r"|place|places|placing)\b"
 )
 
 # "… then …", "for each …", a semicolon, or a second imperative after ", and" / "and then".
@@ -75,6 +91,8 @@ def plan_reason(request) -> str:
     if ri.wants_state_change(low):
         return "the request asks for a change"
     if _CHANGE_RE.search(low):
+        return "the request asks for an edit"
+    if _TARGETED_CHANGE_RE.search(low) and (target_tokens(text) or _PERSIST_RE.search(low)):
         return "the request asks for an edit"
     if ri.wants_derived_number(low) or ri.states_an_expression(low):
         return "the request wants a computed figure"

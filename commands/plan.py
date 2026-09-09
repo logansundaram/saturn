@@ -68,6 +68,15 @@ def _plan(ctx, args):
         return
 
     sub = args[0].lower()
+    # A reserved word is a SUBCOMMAND only in its own form — bare, or `review on|off`. Followed
+    # by anything else it is the first word of a request ("/plan review the ledger for
+    # duplicates", "/plan pause the build and check logs"), which used to be swallowed by the
+    # subcommand branch and lost (review 2026-09-08).
+    bare = len(args) == 1
+    if sub == "review" and not bare:
+        bare = parse_toggle_status(args[1:]) != "invalid"
+    if not bare and sub not in _REMOVED_VERBS:
+        sub = ""
 
     if sub == "draft":
         # The draft composer moved to its own front door (2026-07-16, same day it shipped) —
@@ -227,7 +236,8 @@ the approval gate, the egress ledger and the quarantine scanner, and lands on th
 cannot write, ask, or run commands: if the request turns out to need one of those, it is handed
 to the plan engine with whatever it already read — so the override costs one cheap call, never a
 missing gate. `/plan <request>` is the opposite override; `/config runtime.quick_path false`
-plans every turn.
+plans every turn. While a /draft is pending the override is refused: the next turn runs your
+drafted steps, on the plan engine.
 
 Examples:
   /quick what does the total in the ledger mean?    (the word "total" would have planned it)
@@ -238,6 +248,13 @@ def _quick(ctx, args):
     text = " ".join(args).strip()
     if not text:
         _print("  usage: /quick <request>  (see /quick --help)")
+        return
+    if ctx.pending_plan:
+        # The next turn RUNS the drafted steps, on the plan engine — the quick path cannot run
+        # a plan, and forcing it on top of one wrote the lookup's result onto the first drafted
+        # step (review 2026-09-08). Refuse rather than silently plan.
+        _print("  a drafted plan is pending — your next message runs it on the plan engine.")
+        _print("  send the request as-is to run the draft, or /draft clear to discard it first.")
         return
     ctx.pending_turn = ("quick", text)
     _print("  quick path for this one.")

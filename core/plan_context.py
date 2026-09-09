@@ -410,16 +410,27 @@ def steps_before(plan, step) -> list:
     return list(plan or [])
 
 
+def result_lines(plan) -> list:
+    """Every completed step as (label, capped result), in plan order — THE rendering of the data
+    bus for a model's eyes. results_block (execute, rectify) and the quick router's observations
+    both read from here, so the two engines see identical results and one cap rule."""
+    done = [s for s in plan or [] if s.get("result") is not None]
+    caps = landing_caps([s.get("result") for s in done])
+    return [
+        (str(s.get("label") or ""), _cap_result(s.get("result"), cap))
+        for s, cap in zip(done, caps)
+    ]
+
+
 def results_block(plan) -> str:
     """The 'Results from earlier steps' block: every completed step's label -> result (capped),
     numbered in plan order. Empty string when nothing has run."""
-    done = [s for s in plan or [] if s.get("result") is not None]
-    if not done:
+    rows = result_lines(plan)
+    if not rows:
         return ""
     lines = ["Results from earlier steps (use these exact values):"]
-    caps = landing_caps([s.get("result") for s in done])
-    for i, (s, cap) in enumerate(zip(done, caps), 1):
-        lines.append(f"{i}. {s.get('label')} -> {_cap_result(s.get('result'), cap)}")
+    for i, (label, capped) in enumerate(rows, 1):
+        lines.append(f"{i}. {label} -> {capped}")
     return "\n".join(lines)
 
 

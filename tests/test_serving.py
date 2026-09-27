@@ -56,7 +56,7 @@ def test_every_task_has_an_output_bound():
 def test_role_maps_to_a_default_task():
     assert serving.task_for_role("planner") == "plan"
     assert serving.task_for_role("judge") == "judge"
-    assert serving.task_for_role("tool_caller") == "tool_args"
+    assert serving.task_for_role("tool_caller") == "agent"  # the v2 loop's one call
     assert serving.task_for_role("synthesizer") == "answer"
 
 

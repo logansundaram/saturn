@@ -98,6 +98,10 @@ TASKS: dict = {
     "reasoning": Task("reasoning", strict=False, num_predict=1024, think=False),
     "answer": Task("answer", strict=False, num_predict=1536, think=False),
     "correction": Task("correction", strict=False, num_predict=1536, think=False),
+    # The loop's one call (nodes/agent.py, 2026-09-27): prose OR a tool call, so the bound must
+    # fit a write_file payload (the tool_payload rationale); think off — the cheap rationale is
+    # the model's own pre-call text.
+    "agent": Task("agent", strict=False, num_predict=4096, think=False),
 }
 
 # The default task per model ROLE, for call sites that don't name one (the structured layer's
@@ -105,7 +109,7 @@ TASKS: dict = {
 _ROLE_TASK = {
     "planner": "plan",
     "judge": "judge",
-    "tool_caller": "tool_args",
+    "tool_caller": "agent",
     "synthesizer": "answer",
 }
 

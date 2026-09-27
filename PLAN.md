@@ -1,5 +1,13 @@
 # Saturn — Product focus: moat vs. trim
 
+_**2026-09-27 — v2.** The product pivoted to a "Claude Code for daily tasks" companion and the
+plan/execute engine this document ranks as moat #2 was replaced by one ReAct loop
+(`docs/superpowers/specs/2026-09-27-v2-react-loop-design.md`). Sections below that describe the
+planner, rectify, replan, the plan editor, `/draft` and the quick path describe v1 mechanisms that
+no longer exist; the trust stack (gate, egress, quarantine, trace/replay), memory and the tool
+surface are unchanged. The sub-projects after the loop — knowing the user, making it yours,
+feeling like a product — are listed at the end of that spec._
+
 _2026-07-15. Synthesis of Business Plan v4, the roadmap's cut history (CLAUDE.md), and the shipped code on main @ 75858e3. Verified: the embedding model (`qwen3-embedding:8b`, multi-GB) is used ONLY by the RAG knowledge base — memory is substring search over memory.md; nothing else touches it._
 
 _2026-09-01 re-verification against main @ b843da9 (offline suite: 1224 passed, 1 skipped). Corrections are marked **[verified 2026-09-01]** inline; the new gaps the earlier sections did not name are in the "Verification pass" section near the end. Note: CLAUDE.md no longer exists in the repo (21 stale pointers from README/ARCHITECTURE/FEATURE_INVENTORY), and the "Tool Suite doc" cited below is not in the repo either — its refusal of native email/calendar/browser survives only as README's "no plans for consumer integrations" line and one system-prompt instruction (`core/messages.py`). Restore or re-point both before the next planning pass._

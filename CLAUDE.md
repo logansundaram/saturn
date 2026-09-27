@@ -59,46 +59,54 @@ Commit messages follow `area: what changed` in lowercase (`gate: …`, `trace: �
 ### Life of a turn
 
 `agent.py` is a thin router into `app/`; `app/graph.py::build_agent` compiles the graph from `nodes/`
-(one file per node) with a SqliteSaver checkpointer, and `app/turn.py::run_turn` streams it:
+(one file per node) with a SqliteSaver checkpointer, and `app/turn.py::run_turn` streams it. Since
+2026-09-27 (v2) the engine is ONE ReAct loop — spec:
+`docs/superpowers/specs/2026-09-27-v2-react-loop-design.md`:
 
 ```
-ground → plan → plan_gate → execute → [approval] → tools → update_plan → rectify → (replan | plan_gate | synthesize)
-   └───→ quick ─(one read-only call)─→ [approval] → tools → update_plan ─→ quick → (synthesize | plan | replan)
+ground → agent ─(no tool calls)─→ END
+           ↑          │ tool calls
+           └── tools ← approval      (a fully-rejected batch → agent)
 ```
 
-- `ground` assembles `state["context"]` (SATURDAY.md, the memory selection for this request,
-  manifests, attachments). Then `nodes/quick.route_after_ground` applies the request-side
-  complexity check (`core/complexity.py`, a regex over the user's words): a chat question or a
-  single lookup takes the **quick path**, everything else plans. `state["route"]` records it.
-- `quick` (the common case, 2026-09-08) makes ONE grammar-bound router call, think off: "answer"
-  → synthesize; one `QUICK_TOOLS` read-only tool → a pending step on the plan + a tool call
-  through the same approval/tools/update_plan nodes (update_plan routes back to quick); any
-  other tool, an error, or the three-call budget → the turn is handed to the engine with its
-  observations (`plan` if nothing ran, `replan` otherwise). No plan_gate, no judge, no write
-  gate on this path — by the common-case contract in `PLAN.md`, a safeguard that cannot fire on
-  a shape costs that shape nothing. `/quick` and `/plan <request>` force either route.
-- `plan` drafts the step list through `core/structured.py`. `/draft` pre-seeds a user-authored plan and
-  the planner call is skipped.
-- `execute` runs ONE step per pass with a curated context (`core/plan_context.py`), never raw history.
-  Three shapes: reasoning step (no tool), write step (semantic write gate first), tool step (a single
-  call bound to exactly the planned tool; arg recovery in `core/tool_args.py`).
-- `approval` asks `trust/policy.approves(name, risk, args)` — the ONE gate question — and interrupts the
-  graph for the human when it says no.
+- `ground` assembles `state["context"]` in two halves (SATURDAY.md, manifests, the always-loaded
+  memory layers = stable; memory matches + attachments = dynamic). No model call.
+- `agent` (`nodes/agent.py`) makes ONE native tool-calling call per pass (`tool_caller` role,
+  `bind_tools(registry)`, think off, streamed). Prompt order is prefix-cache order:
+  `[system][stable grounding][history…][dynamic + request][turn messages…]`; the bound tool
+  schemas render into the chat template's system section, so the catalog is part of the prefix
+  `core/prime.py` caches. The checks around the call are deterministic, in this order, and each
+  is pinned by `tests/test_agent_loop.py`: **steer** (Esc + text → a `STEER_PREFIX` HumanMessage)
+  → **pause** (Esc → `interrupt({"type": "pause"})` → `ui.pause_prompt`: continue / steer / abort)
+  → **cap** (`runtime.max_iterations` passes; the last pass runs with tools UNBOUND and a budget
+  note — a real answer, never a stub) → generate → **hygiene** on each emitted call (unknown tool,
+  missing arguments via `core/tool_args.coerce_args`, malformed JSON, a repeat of a call the user
+  DECLINED this turn, a third identical call — each answered with an error ToolMessage that routes
+  straight back to `agent`, no gate, no model call) → **answer** (a message without tool calls IS
+  the answer; the Sources receipt and the incidents note are appended to the RECORDED message,
+  never the stream). `nodes.agent._generate` is the one model seam tests replace.
+- `approval` asks `trust/policy.approves(name, risk, args)` — the ONE gate question — on the
+  issuing message's calls MINUS those the agent already answered, and interrupts the graph for the
+  human when it says no. A fully-rejected batch routes back to `agent`; the declined-repeat guard
+  keeps that "no" for the rest of the turn.
 - `tools` (the node, not the package) executes, clamps the observation, records egress, fences
-  injection-suspicious content (`trust/quarantine.py`).
-- `rectify` reflects after EVERY step. Its branch order is load-bearing and deterministic-first:
-  guarded outcome → no-call guard → resolution check → concrete pending → dead-end retry → LLM verdict. Do not reorder
-  without reading the module docstring; `tests/test_engine.py` pins each branch.
-- `synthesize` streams the answer from recorded step results, disclosing incidents and citing `[n]`.
+  injection-suspicious content (`trust/quarantine.py`), and maps a `plan` call onto `state["plan"]`.
 
-### The plan is the data bus (`core/state.py`)
+There is no synthesize node, no judge, no planner: the model's last message is the answer and it
+streams under `── response` as it generates (`app/turn.py` filters LangGraph messages mode to the
+`agent` node; a text preamble before a tool call is discarded from the response region by
+`_make_on_update` and shown as the rail's agent leaf instead).
 
-Steps are **plain dicts** `{step_id, label, status, intended_tool, result, needs_resolution}` — never a
-custom class (the checkpointer serializer won't round-trip it). `current_step()` = the first step whose
-`result is None`; that is THE execution pointer. Any status other than `done` (`skipped`, `blocked`,
-`error`, `cancelled`) is an incident synthesize must disclose; `superseded` (a dangling-ask refusal a
-later `ask_user` step carried out, stamped by `update_plan`) is the one non-incident exception.
-`gate_events` is the only non-recomputable record (human decisions).
+### The plan is the model's checklist (`tools/planning.py`, `core/state.py`)
+
+`plan(steps=[{label, status}])` is a read-only tool the prompt asks for only on multi-step tasks.
+`nodes/tools.py` maps a successful call onto `state["plan"]` as the same **plain dicts**
+`{step_id, label, status, intended_tool, result, needs_resolution}` every reader already renders
+(the rail's `show_plan`, the gate's `step` context via `current_step()` = first item with
+`result is None`, `/trace why`, replay, the headless `plan` field). It is intent, not record:
+the answer's incidents note reads the tool rounds that actually ran (the ToolMessages'
+`saturn_status` stamp), never the checklist. `gate_events` is the only non-recomputable record
+(human decisions).
 
 When slicing conversation history, use `core.state.is_turn_start` — a mid-turn steer note is a
 `HumanMessage` with `STEER_PREFIX` and is NOT a turn boundary; a hand-rolled isinstance check mis-slices.
@@ -111,7 +119,7 @@ Code references model **roles** (`planner`, `tool_caller`, `synthesizer`, `utili
 2026-07-03, reintroduction seam documented in `core/llms.py`). The qwen3.5/3.6/3.8 ladder is closed
 (per-model confidence calibration in `core/confidence_calibration.py`, a generated module).
 
-`runtime.quick_path` (default true) turns the quick path off entirely.
+`runtime.max_iterations` bounds agent passes per turn; past it the last pass answers without tools.
 
 `config.yaml` is **gitignored user data**, seeded on first run from the tracked template
 `config.default.yaml` (or `$SATURDAY_HOME/config.yaml` for wheel installs). Change defaults in the
@@ -176,8 +184,8 @@ Shared verb grammar (remove/rm/delete/…, `--save`) is in `commands/_utils.py`.
 ### Same name, different file
 
 `tools/` (implementations) vs `nodes/tools.py` (execution node) · `trace`: `stores/trace.py` records,
-`tui/ui/trace.py` renders the rail, `commands/trace.py` is `/trace` · `plan`: `nodes/`, `tui/ui/`,
-`commands/` · `config.py` (loader) vs `commands/config.py` (`/config`) · `trust/policy.py` (mechanism)
+`tui/ui/trace.py` renders the rail, `commands/trace.py` is `/trace` · `plan`: `tools/planning.py` (the tool),
+`tui/ui/plan.py` (the panel) · `config.py` (loader) vs `commands/config.py` (`/config`) · `trust/policy.py` (mechanism)
 vs `commands/policy.py` (front door).
 
 ### Tests

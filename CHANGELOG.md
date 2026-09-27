@@ -7,6 +7,44 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
 
 ## [Unreleased]
 
+### v2 — one loop replaces the engine (2026-09-27)
+
+_The entries under this heading supersede the quick-path / planner / rectify entries further down
+this section, which describe v1 mechanisms that no longer exist._
+
+#### Changed
+
+- **The engine is one ReAct loop.** `ground → agent → [approval → tools → agent]*`. The agent
+  makes one native tool-calling call per pass (think off, streamed) and its first message
+  without tool calls IS the answer — a chat question costs one model call, a single read two.
+  Multi-step tasks run the same loop; deterministic guards replace the judge: a repeat of a
+  call you declined is refused without re-prompting, a third identical call is refused, an
+  unknown tool or malformed arguments go back to the model with the schema, and past
+  `runtime.max_iterations` the last pass answers from what it has and says what is undone.
+- **The rail shows the work.** Every tool call now renders a one-line result preview by
+  default (`/trace calls` and `/trace full` keep the full output); the agent's pre-call
+  thought shows as a leaf under its row; an auto-approved gate pass no longer prints a row.
+- **Esc pauses a running turn** into a small prompt — Enter continues, typed text steers the
+  running turn, `q` aborts — replacing the plan editor. Esc with text still steers immediately.
+- **The answer's Sources footer is a receipt** of every tool call and document the turn
+  gathered; the model is no longer asked for inline `[n]` markers. The incidents note still
+  discloses every declined, blocked or failed call.
+- `/trace why` renders each agent pass (thought + chosen calls, or the answer).
+
+#### Added
+
+- **`plan` tool.** On a task that needs several tool calls the model records its checklist
+  and updates it as steps complete; the rail, the gate's step context, `/trace why`, replay
+  and the headless `plan` field show it.
+
+#### Removed
+
+- The plan engine: the planner, plan review, rectify, replan, the semantic write gate, the
+  groundedness and computed-figure regeneration ladders, `/plan`, `/draft`, `/quick`,
+  `--plan`, `--quick`, `runtime.quick_path`, and the plan-review / `/dryrun` spellings (all now
+  print a pointer). Token steering (freeze-edit-continue) and confidence coloring are parked:
+  their modules remain, the loop does not arm them.
+
 ### Added
 
 - **The quick path: a simple turn skips the planner and the judge.** A request that reads as a

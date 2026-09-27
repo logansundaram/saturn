@@ -7,9 +7,9 @@ where, why it's grouped that way, and the order that makes the code easiest to a
 Saturn (Saturday.ai) is a local-first, transparent terminal agent. The product thesis is the
 **trust stack**: every action is visible (trace), every risky action asks a human (gate),
 every byte that leaves the machine is accounted for (egress ledger), and every answer can
-show its provenance (/trace answer). The engine is a **plan/execute loop**: an LLM drafts a step
-plan, each step executes one at a time against a curated context, and a judge reflects after
-every step.
+show its provenance (/trace answer). The engine is **one ReAct loop** (v2, 2026-09-27): the
+model makes one native tool-calling call per pass, every call faces the gate, and its first
+message without tool calls is the answer.
 
 ## The 30-second map
 
@@ -22,8 +22,8 @@ textutil.py         leaf text helpers (truncation, head+tail clamping, byte form
 env_keys.py         .env-backed secret management (the /config key front end)
 
 app/        the application shell: CLI, graph assembly, turn driver, headless + REPL loops
-core/       the engine room: state, model factory, prompts, structured output, plan plumbing
-nodes/      the graph nodes, one per file (ground → plan → … → synthesize)
+core/       the engine room: state, model factory, prompts, invoke options, the pause latch
+nodes/      the graph nodes, one per file (ground → agent → approval → tools → agent …)
 tools/      the tool implementations + registry + MCP client (risk tiers declared at definition)
 notify/     scheduled desktop notifications: the platform seam, the macOS launchd/osascript backend, the menu bar item
 trust/      the trust stack: gate policy, egress ledger, redaction, quarantine, receipt, answer provenance
@@ -50,40 +50,31 @@ The whole product is one loop. Reading it end to end explains 80% of the repo:
    - `nodes/ground.py` builds `state["context"]` in two halves: `context_stable` (workspace
      instructions from SATURDAY.md, document/workspace manifests, the always-loaded memory
      layers — `stores/memory_registry`: user facts + open commitments + the memo digest) and
-     `context_dynamic` (agent/entities/negative facts matched to this request, a recap of
-     recent Q&A, attachments). Every node sends the stable half as its own message right after
-     its system prompt, and `core/prime.py` re-sends exactly that prefix between turns so the
-     daemon's prompt cache resumes there (see `core/serving.py`, "the prefix cache").
-   - `nodes/quick.py` is where most turns go next (2026-09-08): `route_after_ground` runs the
-     request-side complexity check (`core/complexity.py` — a regex, zero tokens) and a chat
-     question or a single lookup skips the planner and the judge. One grammar-bound router call
-     picks "answer" (straight to synthesize) or ONE read-only tool (`core/plan_context.QUICK_TOOLS`);
-     the call rides the same approval → tools → update_plan nodes below and its step lands on
-     the same plan, then update_plan returns to quick (`state["route"]`). A tool outside the set,
-     an error, or the three-call budget hands the turn to the engine with the observations kept.
-   - `nodes/plan.py` drafts the step list via the hardened structured-output path
-     (`core/structured.py`). **The plan is the data bus**: each step is a plain dict that will
-     carry its own `result`; the first step with `result: None` is the execution pointer.
-   - `nodes/plan_gate.py` is the plan-review checkpoint at every step boundary — a
-     pass-through unless the user pressed Esc (pause/steer) or `/plan review` is on.
-   - `nodes/execute.py` runs ONE step per pass against a curated context
-     (`core/plan_context.py`) — a reasoning step answers in text; a write step first faces the
-     semantic write gate; a tool step generates its arguments under the planned tool's own
-     JSON schema as a response grammar — never a native tool bind, which would render the
-     schema into the system prompt (argument recovery in `core/tool_args.py`).
-   - `nodes/approval.py` is the human gate: `trust/policy.py` decides whether the call is
-     auto-approved (risk tier, /policy allow prefixes) or must interrupt and ask you.
-   - `nodes/tools.py` executes the call, clamps the observation, attributes egress
-     (`trust/egress.py`), and fences injection-suspicious content (`trust/quarantine.py`).
-   - `nodes/update_plan.py` mechanically records the observation onto the current step and
-     derives its status (done / skipped / blocked / error).
-   - `nodes/rectify.py` reflects after EVERY step — deterministic short-circuits first
-     (guarded outcome → cancel the rest; no-call guard → a tool that fails to generate a call
-     twice ends the run; unresolved reference; dead-end retry), an LLM verdict
-     last. If the plan must change, `nodes/replan.py` redrafts the remaining steps.
-   - `nodes/synthesize.py` streams the final answer from the plan's recorded outcomes +
-     numbered tool results, disclosing incidents and citing sources.
-3. **The answer renders** — `tui/ui/response.py` streams tokens, then closes with the trust
+     `context_dynamic` (agent/entities/negative facts matched to this request, attachments).
+     The agent sends the stable half as its own message right after its system prompt, and
+     `core/prime.py` re-sends exactly that prefix — through the same bound model, so the tool
+     schemas the chat template renders are inside it — between turns so the daemon's prompt
+     cache resumes there (see `core/serving.py`, "the prefix cache").
+   - `nodes/agent.py` makes ONE native tool-calling call per pass (`bind_tools` over the
+     registry, think off, streamed) over `[system][stable][history…][dynamic + request][turn…]`.
+     Around the call, deterministic checks in a fixed order: a steer (Esc + text) lands as a
+     `STEER_PREFIX` message; a pause (Esc) `interrupt()`s for the pause prompt (continue /
+     steer / abort); past `runtime.max_iterations` the last pass runs with tools unbound and a
+     budget note; each emitted call passes hygiene (unknown tool, missing or malformed
+     arguments via `core/tool_args`, a repeat of a call the user declined this turn, a third
+     identical call — each answered with an error ToolMessage back to the model). A message
+     without tool calls is the answer: the Sources receipt and the incidents note (declined /
+     blocked / failed rounds, read off the ToolMessages' `saturn_status` stamp) are appended
+     to the recorded message.
+   - `nodes/approval.py` is the human gate: `trust/policy.py` decides whether each call the
+     agent did not answer itself is auto-approved (risk tier, /policy allow prefixes) or must
+     interrupt and ask you. A fully-rejected batch routes back to the agent.
+   - `nodes/tools.py` executes the calls, clamps the observation, attributes egress
+     (`trust/egress.py`), fences injection-suspicious content (`trust/quarantine.py`), and
+     maps a `plan` call (`tools/planning.py` — the model's checklist) onto `state["plan"]`.
+3. **The answer renders** — `tui/ui/response.py` streamed the agent's answer tokens as they
+   generated (a preamble before a tool call is discarded and shown as the rail's agent leaf
+   instead); the loop then closes with the trust
    receipt (`trust/receipt.py`) and trust-colored sources (`trust/glassbox.py`). The trace of
    every node/tool landed in `stores/trace.py`'s SQLite as it happened (`/trace` replays it).
 
@@ -103,24 +94,25 @@ The whole product is one loop. Reading it end to end explains 80% of the repo:
 ### `core/` — the engine room
 | File | What it does |
 |---|---|
-| `state.py` | `AgentState` + the plan-step vocabulary. `current_step` (first step with `result is None`) is THE execution pointer; `gate_events` is the one non-recomputable record (human decisions). |
+| `state.py` | `AgentState` + the step-dict vocabulary of the model's checklist. `current_step` (first item with `result is None`) is the gate's step context; `gate_events` is the one non-recomputable record (human decisions); `is_turn_start` is THE turn-boundary predicate. |
 | `llms.py` | `get_model(role)` — the five-role model factory (planner / tool_caller / synthesizer / utility / judge) over Ollama; locality boundary wrapping for a remote `OLLAMA_HOST`; startup health check. Cloud providers are shelved (refuse actionably). |
-| `messages.py` | Every system prompt, in one place: the planner prompt (built per call from the live registry), execute/rectify/write-gate/synthesize prompts. |
-| `structured.py` | The hardened structured-output layer: flat JSON schemas, salvage parsing, temp-escalating retries, tool-name normalization (`TOOL_SYNONYMS`), `to_steps` minting the plan dicts. Exists because small local models emit near-miss output. |
-| `plan_context.py` | Curated context builders — the engine's LLM calls see request + grounding + earlier step results, never raw message history. Prefix-stable by construction: results are capped in landing order and never re-truncated; `exec_parts` lays the step context out as message-boundary parts. |
-| `prime.py` | The idle prefix primes: between turns (and once after the weights load) each node lineage's `[system][stable grounding]` prefix is re-sent with one predicted token so the next turn's calls resume from that checkpoint. Off under tests and `runtime.prime: false`. |
-| `tool_args.py` | Tool-argument recovery: alias coercion onto real schemas, text-format call parsing (small-model tolerance). |
-| `plan_ops.py` | The plan-review seam: pure plan-editor functions + the `PauseController` that `plan_gate` consults at each boundary. |
+| `messages.py` | Every system prompt, in one place: `agent_sys_msg()` (the loop's one prompt — no tool catalog, the tools ride the native bind) plus the compaction, memory-review and /init prompts. |
+| `structured.py` | `_invoke_kwargs` — THE builder of the per-task decoding options every model call sends (num_ctx, num_predict, think) — plus the hardened structured-output call the memory review uses. |
+| `context.py` | `grounding_parts` (the stable / per-turn halves of the grounding block) and `clean` (workspace paths collapse in observations). |
+| `sources.py` | `build_sources` — the answer's source numbering, shared by the Sources footer, `/trace source` and the Glass Box. |
+| `pause.py` | The `PauseController`: the Esc pause / steer latch the agent node consults at the top of every pass. |
+| `prime.py` | The idle prefix prime: between turns (and once after the weights load) the agent's `[system][stable grounding]` prefix is re-sent through the bound model with one predicted token so the next turn's call resumes from that checkpoint. Off under tests and `runtime.prime: false`. |
+| `tool_args.py` | Tool-argument recovery: alias coercion onto real schemas + the schema hint the agent sends back on a rejected call (small-model tolerance). |
 | `compaction.py` | The heavier LLM compaction (automatic past threshold) folding old turns into a summary message. |
-| `memory_review.py` | Session-end learning, gated: collects memory candidates from each turn (steer notes, vetoes, gate denials, unfinished steps) and from compaction summaries into a pending queue, optionally asks the utility model for proposals, and runs the accept-each review screen (`/memory review`, `/quit`). Never writes without a y. |
+| `memory_review.py` | Session-end learning, gated: collects memory candidates from each turn (steer notes, gate denials, failed tool calls) and from compaction summaries into a pending queue, optionally asks the utility model for proposals, and runs the accept-each review screen (`/memory review`, `/quit`). Never writes without a y. |
 | `mentions.py` | `@file` expansion into clamped attachment blocks; drag-and-drop path detection. |
 
 ### `nodes/` — the graph, one file per node
-`ground` → `plan` → `plan_gate` → `execute` → `approval` → `tools` → `update_plan` →
-`rectify` → (`replan` | back to `plan_gate` | `synthesize`). Routing helpers live beside
-their node (`route_after_execute` in `execute.py`, etc.). See "Life of a turn" above for what
-each does; `CLAUDE.md`'s Architecture section documents every branch. Note: `nodes/tools.py`
-is the *tool-execution node*, not the `tools/` package (see the name-collision table below).
+`ground` → `agent` → `approval` → `tools` → `agent` … → END. Routing helpers live beside
+their node (`route_after_agent` in `agent.py`; `approval` routes through `Command(goto=…)`).
+See "Life of a turn" above for what each does; `CLAUDE.md`'s Architecture section documents
+every check in the agent node. Note: `nodes/tools.py` is the *tool-execution node*, not the
+`tools/` package (see the name-collision table below).
 
 ### `tools/` — capabilities behind the gate
 | File | What it does |
@@ -164,7 +156,7 @@ is the *tool-execution node*, not the `tools/` package (see the name-collision t
 modules: `conversation.py` (/clear /resume), `knowledge.py` (/docs
 /memory /init /undo), `runtime.py` (/tools /models /mcp), `system.py` (/help /quit
 /update), `config.py` (/config, incl. the `context` subview — the folded-in /context),
-`plan.py` (/plan), `policy.py` (/policy — the legacy /risk /allow /autoapprove spellings were
+`policy.py` (/policy — the legacy /risk /allow /autoapprove spellings were
 cut 2026-07-06 and print pointers), `privacy.py` (/privacy), `trace.py` (/trace — incl. the
 `answer` + `source` provenance subviews, the folded-in /glass and /source — + export/replay
 engine; the three folds landed 2026-07-07 and print _RENAMED pointers). Convention: one file
@@ -182,7 +174,7 @@ search` and the current-run seam `remember` stamps provenance from).
 `system_monitor.py` (CPU/RAM/GPU for the status bar), and `ui/` split by screen concern,
 re-exported flat (`from tui import ui`): `_base` (console plumbing), `statusbar`, `art`
 (the frozen Saturn splash), `prompt` (prompt_toolkit line editor), `trace` (the live rail),
-`plan` (plan panel + review editor), `approval` (the gate UI), `response` (streamed answer +
+`plan` (the checklist panel), `approval` (the gate UI + the Esc pause prompt lives in `prompt`), `response` (streamed answer +
 receipt), `glass` (the /trace answer provenance renderer), `readouts`, `listing` (the shared table/section
 vocabulary every listing command renders through).
 
@@ -195,7 +187,7 @@ deliberate name reuse. When you're jumping by filename, disambiguate here:
 |---|---|
 | `tools/` vs `nodes/tools.py` | The package holds tool *implementations*; the node *executes* the calls the model makes. |
 | `trace` ×3 | `stores/trace.py` records runs to SQLite · `tui/ui/trace.py` renders the live rail · `commands/trace.py` is the `/trace` drill-down + export/replay. |
-| `plan` ×3 | `nodes/plan.py` drafts the plan · `tui/ui/plan.py` renders it · `commands/plan.py` is `/plan`. |
+| `plan` ×2 | `tools/planning.py` is the tool the model calls · `tui/ui/plan.py` renders the checklist. |
 | `approval` ×2 | `nodes/approval.py` decides + interrupts · `tui/ui/approval.py` renders the gate prompt. |
 | `config` ×2 | root `config.py` loads/persists config.yaml · `commands/config.py` is `/config`. |
 | `policy`/`privacy` | `trust/policy.py`/`trust/egress.py` are the mechanisms · `commands/policy.py`/`commands/privacy.py` are their front doors. |
@@ -206,12 +198,12 @@ deliberate name reuse. When you're jumping by filename, disambiguate here:
 
 1. **`config.yaml` + `config.py`** — the knob surface; everything else reads it.
 2. **`agent.py` → `app/graph.py` → `app/turn.py`** — the skeleton: what runs, in what order.
-3. **`core/state.py`** — the state shape; the plan-as-data-bus idea lives here.
-4. **`nodes/` in graph order** — ground, plan, plan_gate, execute, approval, tools,
-   update_plan, rectify, replan, synthesize. This is the heart; take it slowly at
-   `execute.py` and `rectify.py` (branch order is load-bearing — see CLAUDE.md gotcha #8).
-5. **`core/structured.py` + `core/plan_context.py` + `core/tool_args.py`** — the small-model
-   hardening the nodes lean on.
+3. **`core/state.py`** — the state shape.
+4. **`nodes/` in graph order** — ground, agent, approval, tools. This is the heart; take it
+   slowly at `agent.py` (the check order around the call is load-bearing — the module
+   docstring and `tests/test_agent_loop.py` pin it).
+5. **`core/structured.py` + `core/tool_args.py` + `core/serving.py`** — the small-model
+   hardening and the per-task decoding options the agent leans on.
 6. **`trust/policy.py` → `nodes/approval.py` → `tui/ui/approval.py`** — the gate, end to end.
 7. **`trust/egress.py`, `quarantine.py`, `receipt.py`, `glassbox.py`** — the rest of the
    trust stack.
@@ -220,9 +212,9 @@ deliberate name reuse. When you're jumping by filename, disambiguate here:
 
 ## Where the rules live
 
-- **Design rules & gotchas:** `CLAUDE.md` (bottom sections) — invariants like "the plan step's
-  `result is None` is the execution pointer" and rectify's branch ordering.
-- **Feature log / changelog:** `documentation.md` (untracked, repo root).
-- **Tests as documentation:** `tests/test_engine.py` (the whole plan/execute engine),
+- **Design rules & gotchas:** `CLAUDE.md` (Architecture section) — invariants like the agent
+  node's check order and "steps are plain dicts".
+- **Feature log / changelog:** `CHANGELOG.md`.
+- **Tests as documentation:** `tests/test_agent_loop.py` (the whole loop),
   `tests/test_policy.py` (the gate), `tests/test_quarantine.py` (injection defense) — each
   test file names the surface it pins.

@@ -14,11 +14,10 @@ boundary restores that prompt's N-4 checkpoint and reprocesses only the extensio
 think block after the boundary and pushes N-4 past it — measured, tests pin the flag), the
 same load options as every turn (num_ctx, the runner options) so it never reloads the model.
 
-When: after the weights load at startup (the quick and planner lineages only — the ones a
-first turn's first call needs; the others would queue the user's first request behind ~15 s of
-cold prefill each) and
-after every turn (every lineage, ~0.2 s each once warm, rebuilt from disk so a write this turn
-is already in the manifest the next turn's grounding renders). Never during a turn: the REPL
+When: after the weights load at startup and after every turn (~0.2 s once warm, rebuilt from
+disk so a write this turn is already in the manifest the next turn's grounding renders). One
+lineage since the v2 loop (2026-09-27): the agent's, through the bound model, so the tool
+catalog the chat template renders is inside the cached prefix. Never during a turn: the REPL
 marks the turn busy and the sequence stops before its next request. Never in headless mode
 (one turn per process) and never under tests (conftest disables it — no test may reach a
 model). Never raises; a down daemon is logged and counted as zero.
@@ -55,31 +54,22 @@ def set_busy(busy: bool) -> None:
 
 
 def lineages(stable: str) -> list:
-    """`(name, role, messages)` per prompt lineage, each ending at the message boundary the
-    node's real prompt extends: the quick router (nodes/quick.py — first, it is the first call
-    of most turns), the planner (nodes/plan.py), the tool-step and reasoning-step executes
-    (nodes/execute.py), the answer (nodes/synthesize.py). The user message must be
-    BYTE-IDENTICAL to the node's own first user message — the tests pin each pairing."""
+    """`(name, role, runnable_factory, messages)` per prompt lineage — ONE since the v2 loop
+    (2026-09-27): the agent's `[system][stable grounding]`, sent through the SAME bound model
+    nodes/agent.py uses, so the tool schemas the chat template renders into the system section
+    are part of the cached prefix. The user message is BYTE-IDENTICAL to the node's own first
+    user message (nodes/agent._llm_input) — the tests pin the pairing."""
     from langchain.messages import HumanMessage
 
-    from core.messages import (
-        EXECUTE_REASONING_SYS,
-        EXECUTE_TOOL_SYS,
-        planner_sys_msg,
-        quick_sys_msg,
-        synthesize_sys_msg,
-    )
+    from core.messages import agent_sys_msg
 
-    return [
-        ("quick", "tool_caller", [quick_sys_msg(), HumanMessage(content=stable)]),
-        ("planner", "planner",
-         [planner_sys_msg(), HumanMessage(content="Grounding context:\n" + stable)]),
-        ("execute_tool", "tool_caller", [EXECUTE_TOOL_SYS, HumanMessage(content=stable)]),
-        ("synthesizer", "synthesizer",
-         [synthesize_sys_msg, HumanMessage(content="Relevant context:\n" + stable)]),
-        ("execute_reasoning", "tool_caller",
-         [EXECUTE_REASONING_SYS, HumanMessage(content=stable)]),
-    ]
+    def bound():
+        from core.llms import get_model
+        from tools.registry import tool as registered
+
+        return get_model("tool_caller").bind_tools(list(registered))
+
+    return [("agent", "tool_caller", bound, [agent_sys_msg(), HumanMessage(content=stable)])]
 
 
 def prime(stable: str, only: "tuple | None" = None) -> int:
@@ -87,26 +77,26 @@ def prime(stable: str, only: "tuple | None" = None) -> int:
     returns how many were sent. Stops early when a turn starts. Never raises."""
     if not ENABLED or not stable:
         return 0
-    from core.llms import generate, get_model
+    from core.llms import generate
     from core.structured import _invoke_kwargs, _model_tag
 
     sent = 0
-    for name, role, messages in lineages(stable):
+    for name, role, factory, messages in lineages(stable):
         if only is not None and name not in only:
             continue
         if _busy.is_set():
             diag.log(f"prime: turn in progress — stopping after {sent} lineage(s)")
             break
         try:
-            # The planner task's kwargs for EVERY lineage at the shared num_ctx/runner options,
-            # one token so the request is all prefill — and think ON regardless of the task table
-            # (the planner stopped thinking 2026-09-08): a think-off prime appends the empty
-            # think block after the boundary and pushes the N-4 checkpoint past it.
-            kwargs = _invoke_kwargs(role, None, 0.0, task="plan")
+            # The agent task's kwargs at the shared num_ctx/runner options, one token so the
+            # request is all prefill — and think ON regardless of the task table: a think-off
+            # prime appends the empty think block after the boundary and pushes the N-4
+            # checkpoint past it.
+            kwargs = _invoke_kwargs(role, None, 0.0, task="agent")
             kwargs.setdefault("options", {})["num_predict"] = 1
             if "reasoning" in kwargs:
                 kwargs["reasoning"] = True
-            generate(get_model(role), messages, tag=_model_tag(role), **kwargs)
+            generate(factory(), messages, tag=_model_tag(role), **kwargs)
             sent += 1
         except Exception as exc:
             diag.log(f"prime: {name} lineage skipped ({exc})")

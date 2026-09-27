@@ -44,7 +44,7 @@ def startup_load(interactive: bool = True):
 
 def warm_model(role: str = "tool_caller") -> bool:
     """Load `role`'s model into the daemon with ONE minimal request, so the session's first turn
-    does not pay the weight load inside its planner call (measured 2026-09-02: 50 s and 37 s
+    does not pay the weight load inside its first agent call (measured 2026-09-02: 50 s and 37 s
     for a cold "hello" against 15 s warm — the difference between an agent that looks hung and
     one that answers). The request rides the same `num_ctx` every turn uses: Ollama keys the
     loaded runner on the context size, so warming at another window would load a runner the
@@ -56,7 +56,7 @@ def warm_model(role: str = "tool_caller") -> bool:
     from core.structured import _invoke_kwargs, _model_tag
 
     try:
-        kwargs = _invoke_kwargs(role, None, 0.0, task="judge")
+        kwargs = _invoke_kwargs(role, None, 0.0, task="agent")
         kwargs.setdefault("options", {})["num_predict"] = 1
         generate(get_model(role), [HumanMessage(content="ok")], tag=_model_tag(role), **kwargs)
         return True
@@ -66,14 +66,12 @@ def warm_model(role: str = "tool_caller") -> bool:
 
 
 def _warm_and_prime(role: str) -> None:
-    """The warm-up thread's body: load the weights, then plant the quick router's and the
-    planner's prefix checkpoints (core/prime.py) so the first turn's first call prefills only
-    its request. Those two lineages ONLY here: priming every lineage cold is ~15 s of prefill
-    each, and a first query typed meanwhile would queue behind all of it."""
+    """The warm-up thread's body: load the weights, then plant the agent's prefix checkpoint
+    (core/prime.py) so the first turn's first call prefills only its request."""
     warm_model(role)
     from core import prime
 
-    prime.prime_now(only=("quick", "planner"))
+    prime.prime_now(only=("agent",))
 
 
 def start_warm_up(role: str = "tool_caller") -> threading.Thread:

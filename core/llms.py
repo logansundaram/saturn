@@ -493,10 +493,6 @@ def check_models() -> list[str]:
     # the other startup warnings with the rest of the health report.
     for role, attr, needs, consequence in (
         ("tool_caller", "supports_tools", "native tool-calling", "the agent loop may misbehave"),
-        ("planner", "supports_structured_output", "structured output",
-         "the planner will lean on its fallback plan"),
-        ("judge", "supports_structured_output", "structured output",
-         "the replan judge may misfire"),
     ):
         spec = cfg.model_for_role(role)
         if not getattr(cfg.capability_of(spec.model), attr):

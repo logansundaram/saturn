@@ -390,3 +390,28 @@ def test_response_stream_discard_forgets_the_preamble(monkeypatch):
     assert s.started
     s.discard()
     assert not s.started and "".join(s._chars) == ""
+
+
+# ── Task 5: the prime lineage ────────────────────────────────────────────────────────────────
+
+
+def test_prime_lineage_is_the_bound_agent_prefix(monkeypatch):
+    from core import prime
+    from core.messages import agent_sys_msg
+
+    sent = []
+
+    class M:
+        def bind_tools(self, tools):
+            sent.append(("bound", len(tools)))
+            return self
+
+        def invoke(self, msgs, **kw):
+            sent.append(("invoke", [m.content for m in msgs], kw.get("reasoning")))
+            return AIMessage(content="")
+
+    monkeypatch.setattr(prime, "ENABLED", True)
+    monkeypatch.setattr("core.llms.get_model", lambda role: M())
+    assert prime.prime("STABLE") == 1
+    assert sent[0][0] == "bound" and sent[0][1] > 0
+    assert sent[1][1] == [agent_sys_msg().content, "STABLE"] and sent[1][2] is True

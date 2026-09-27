@@ -268,11 +268,18 @@ def test_tool_call_format_for_an_mcp_shaped_tool_uses_its_own_schema():
 
 
 def test_prime_sends_one_boundary_request_per_lineage(monkeypatch):
+    """One lineage since the v2 loop (2026-09-27): the agent's, through the BOUND model, so the
+    tool schemas the chat template renders are inside the cached prefix."""
     from core import prime
 
     class M:
         def __init__(self):
             self.calls = []
+            self.bound = 0
+
+        def bind_tools(self, tools):
+            self.bound += 1
+            return self
 
         def invoke(self, msgs, **kw):
             self.calls.append((msgs, kw))
@@ -283,22 +290,14 @@ def test_prime_sends_one_boundary_request_per_lineage(monkeypatch):
     monkeypatch.setattr(st, "_role_is_ollama", lambda role: True)
     monkeypatch.setattr(prime, "ENABLED", True)
     n = prime.prime("STABLE")
-    assert n == 5 == len(model.calls)
-    firsts = [m[0][0].content for m in model.calls]
-    from core.messages import (EXECUTE_REASONING_SYS, EXECUTE_TOOL_SYS, planner_sys_msg,
-                               quick_sys_msg, synthesize_sys_msg)
+    assert n == 1 == len(model.calls) == model.bound
+    from core.messages import agent_sys_msg
 
-    # The quick router first: it is the first call of most turns (nodes/quick.py).
-    assert firsts == [quick_sys_msg().content, planner_sys_msg().content,
-                      EXECUTE_TOOL_SYS.content, synthesize_sys_msg.content,
-                      EXECUTE_REASONING_SYS.content]
-    seconds = [m[0][1].content for m in model.calls]
-    assert seconds == ["STABLE", "Grounding context:\nSTABLE", "STABLE",
-                       "Relevant context:\nSTABLE", "STABLE"]
-    for _msgs, kw in model.calls:
-        assert kw["options"]["num_predict"] == 1
-        assert kw["reasoning"] is True  # think ON: think-off adds tokens past the boundary
-        assert kw["options"]["num_ctx"] == st._invoke_kwargs("planner", None, 0.0)["options"]["num_ctx"]
+    msgs, kw = model.calls[0]
+    assert [m.content for m in msgs] == [agent_sys_msg().content, "STABLE"]
+    assert kw["options"]["num_predict"] == 1
+    assert kw["reasoning"] is True  # think ON: think-off adds tokens past the boundary
+    assert kw["options"]["num_ctx"] == st._invoke_kwargs("tool_caller", None, 0.0)["options"]["num_ctx"]
 
 
 def test_prime_never_raises_and_reports_zero_when_the_daemon_is_down(monkeypatch):
@@ -347,7 +346,7 @@ def test_warm_up_thread_primes_after_the_weights_load(monkeypatch):
     monkeypatch.setattr(prime, "_config_enabled", lambda: True)
     t = startup.start_warm_up()
     t.join(timeout=5)
-    assert seen == ["warm", ("prime", ("quick", "planner"))]
+    assert seen == ["warm", ("prime", ("agent",))]
 
 
 def test_prime_stops_between_lineages_when_a_turn_starts(monkeypatch):
@@ -356,6 +355,9 @@ def test_prime_stops_between_lineages_when_a_turn_starts(monkeypatch):
     class M:
         def __init__(self):
             self.calls = 0
+
+        def bind_tools(self, tools):
+            return self
 
         def invoke(self, msgs, **kw):
             self.calls += 1

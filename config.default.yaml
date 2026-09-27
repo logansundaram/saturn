@@ -23,49 +23,6 @@ paths:
   snapshots: database/snapshots        # per-turn pre-write file snapshots (/undo)
   permissions: database/permissions.json  # persisted /policy risk overrides + allow prefixes
   exports: logging/exports             # /trace export run records (audit artifacts)
-
-# ---------------------------------------------------------------------------
-# Loop / safety runtime knobs (were the MAX_ITERATIONS constant + the gate policy).
-# ---------------------------------------------------------------------------
-runtime:
-  # Execute-pass cap for the plan/execute engine (2026-07-03): one pass ≈ one plan step, so this
-  # bounds the longest plan (incl. replan-expanded fan-outs) a single turn may run. Every early
-  # landing is disclosed by synthesize's incidents block.
-  max_iterations: 16
-  # Tools AT OR BELOW this risk tier run without prompting; anything riskier hits the
-  # approval gate. One of: read_only | side_effecting | destructive.
-  auto_approve: read_only
-  # Ollama context window (`num_ctx`) for every local model. `null` = auto: each model uses its
-  # `capabilities.<model>.context_window` below. An integer overrides all roles at once (the
-  # /config context command sets this live). Without it Ollama silently caps the window at 2048.
-  num_ctx: null
-  # Read timeout (seconds) for a single local-model call. Guards against a WEDGED Ollama daemon
-  # (accepts the connection but never responds) hanging a turn forever — a turn that times out now
-  # fails cleanly and returns to the prompt. Set generously: it must exceed your slowest single
-  # generation so a healthy-but-slow model is never false-tripped (connect is capped separately at
-  # ~10s, so a daemon that is simply DOWN still fails fast). null disables the timeout.
-  llm_timeout: 120
-  # How long Ollama keeps the model loaded after each request (an Ollama duration: "30m", "2h";
-  # -1 = never unload; null = the daemon's own 5-minute default). The daemon's default drops the
-  # weights after five idle minutes, and the next turn then pays the whole load again (measured
-  # 2026-09-02: 37-50 s for a cold "hello" against 15 s warm). Sent on every request, so the
-  # timer restarts each call; it is not a load option, so changing it never reloads the model.
-  keep_alive: 30m
-  # Idle prefix priming (2026-09-04): between turns (and once after the weights load) the agent
-  # re-sends each node's stable prompt prefix — its system prompt plus the workspace grounding —
-  # with one predicted token, so the daemon holds a prompt-cache checkpoint at the point the
-  # next turn's calls extend and they prefill only what is new (measured on the 9b: the plan
-  # call's prefill 5 s → 0.2 s per turn). Costs ~0.2 s of idle daemon time per node once warm;
-  # a query typed mid-prime simply queues behind that one request. false = never prime.
-  prime: true
-  # The quick path (2026-09-08): a request that reads as a chat question or a single lookup —
-  # no change asked for, no computed figure, no reference hop, one path at most, one clause —
-  # skips the planner and the judge: one grammar-bound router call picks "answer" or one
-  # read-only tool (up to three calls), then the answer streams. Everything else, and anything
-  # the quick path cannot finish (a tool outside its read-only set, an error, the call budget),
-  # goes through the plan engine — with the observations already gathered. `/plan <request>`
-  # and `/quick <request>` override the check for one turn. false = every turn plans.
-  quick_path: true
   # Auto-compaction: when a turn leaves the context window filled past `compact_threshold` (a
   # fraction, 0–1), the older turns are folded into one LLM-written summary before the next turn so
   # the conversation stops re-sending — and overflowing — the window. The mechanical per-turn

@@ -50,3 +50,34 @@ def test_agent_sys_msg_is_stable_and_names_plan_tool():
     a, b = agent_sys_msg(), agent_sys_msg()
     assert isinstance(a, SystemMessage) and a.content == b.content
     assert "plan" in a.content and "data" in a.content.lower()
+
+
+# ── Task 2: the plan tool ────────────────────────────────────────────────────────────────────
+
+
+def _call(name, args, cid="c1"):
+    return {"name": name, "args": args, "id": cid, "type": "tool_call"}
+
+
+def test_plan_tool_maps_onto_step_dicts():
+    from tools.planning import plan, to_plan
+
+    steps = to_plan([{"label": "read both files", "status": "done"},
+                     {"label": "total", "status": "pending"}, {"label": "", "status": "x"}])
+    assert steps == [
+        {"step_id": 1, "label": "read both files", "status": "done", "intended_tool": None,
+         "result": "done", "needs_resolution": False},
+        {"step_id": 2, "label": "total", "status": "pending", "intended_tool": None,
+         "result": None, "needs_resolution": False},
+    ]
+    assert "2 step" in plan.invoke({"steps": [{"label": "a"}, {"label": "b", "status": "done"}]})
+
+
+def test_tool_node_writes_plan_state_from_plan_call():
+    from nodes.tools import tool_node
+
+    call = _call("plan", {"steps": [{"label": "read", "status": "done"}, {"label": "sum"}]})
+    out = tool_node({"messages": [HumanMessage(content="q"), AIMessage(content="", tool_calls=[call])]})
+    assert [s["label"] for s in out["plan"]] == ["read", "sum"]
+    assert out["plan"][0]["status"] == "done" and out["plan"][1]["result"] is None
+    assert isinstance(out["messages"][0], ToolMessage)

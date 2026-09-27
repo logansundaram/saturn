@@ -15,6 +15,7 @@ from langgraph.errors import GraphInterrupt
 from trust import egress
 from trust import quarantine
 from tools.registry import tools_by_name, RETRIEVAL_TOOLS
+from tools.planning import PLAN_TOOL, to_plan
 from core.state import AgentState
 from textutil import CALL_RESULT_SEP, clip, fmt_args, head_tail
 
@@ -114,6 +115,7 @@ def tool_node(state: AgentState):
     tool_results = []
     documents_retrieved = []
     tool_events = []
+    plan_update = None
 
     for tool_call in pending_calls:
         name = tool_call["name"]
@@ -139,6 +141,10 @@ def tool_node(state: AgentState):
                 observation = f"Error calling {name}: {exc}"
                 ok = False
         dur = time.perf_counter() - start
+        if name == PLAN_TOOL and ok:
+            # The checklist is state, not an observation: the rail, the gate's step context and
+            # /trace why read state["plan"]. The observation still lands as a ToolMessage below.
+            plan_update = to_plan(args.get("steps") if isinstance(args, dict) else None)
 
         observation = str(observation)
         # Clamp what flows back into the model (ToolMessage + paired tool_results) so one large
@@ -209,10 +215,13 @@ def tool_node(state: AgentState):
             event["egress"] = sent
         tool_events.append(event)
 
-    return {
+    result = {
         "messages": tool_messages,
         "tools_called": tools_called,
         "tool_results": tool_results,
         "documents_retrieved": documents_retrieved,
         "tool_events": tool_events,
     }
+    if plan_update is not None:
+        result["plan"] = plan_update
+    return result

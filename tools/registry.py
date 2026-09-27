@@ -19,6 +19,7 @@ import tools.files  # noqa: E402,F401
 import tools.knowledge  # noqa: E402,F401  (search_knowledge_base + remember/recall)
 import tools.shell  # noqa: E402,F401
 import tools.interaction  # noqa: E402,F401  (ask_user — the mid-run question to the human)
+import tools.planning  # noqa: E402,F401  (plan — the model's own checklist, mapped onto state by nodes/tools.py)
 import tools.notify  # noqa: E402,F401  (schedule_notification — a one-shot OS-scheduled reminder)
 import tools.notes  # noqa: E402,F401  (search_notes / read_note / create_note — Apple Notes, macOS)
 import tools.calendar  # noqa: E402,F401  (list_calendar_events / create_calendar_event — Apple Calendar, macOS)

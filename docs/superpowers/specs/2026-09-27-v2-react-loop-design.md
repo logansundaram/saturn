@@ -80,7 +80,8 @@ stream to the UI via LangGraph messages mode filtered to `langgraph_node == "age
    - the Sources footer (`runtime.citations`): every tool call / retrieved document this turn, a
      receipt of what informed the answer — inline `[n]` markers are no longer requested;
    - the incidents note: tool rounds that ended `skipped` / `blocked` / `error` (read off the
-     ToolMessages' `saturn_status` stamp) and `plan` items still pending.
+     ToolMessages' `saturn_status` stamp). Pending `plan` items are NOT incidents — the
+     checklist is model-authored intent, not a record of what ran; the rail shows it.
    The groundedness and computed-figure regeneration ladders are removed: they cost a call each
    and compensated for a synthesizer that never saw raw observations; the loop does.
 

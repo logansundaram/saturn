@@ -147,46 +147,20 @@ class AgentState(TypedDict):
     context_stable: str
     context_dynamic: str
 
-    # Which engine this turn runs on (2026-09-08, the common-case contract): "" = decide from
-    # the request (core/complexity.plan_reason via nodes/quick.route_after_ground); "quick" =
-    # the quick path (one router call, read-only tools, no planner/judge) — set by /quick or by
-    # the quick node itself once it runs; "plan" = the plan engine — set by /plan <request>, or
-    # by the quick node when it hands the turn over (its observations stay on the plan). Read by
-    # update_plan's routing so a tool round returns to the engine that issued it. Reset per turn.
-    route: str
-
     # Per-turn @file attachments: the contents of files the user referenced with `@path` in their
     # message, pre-formatted as a context section by `mentions.expand` and appended to `context` by
     # the grounding node — so the planner/execute/synthesize (which read `context`, not raw
     # `messages`) all see the file inline. Empty when the message had no resolvable @mentions.
     attachments: str
 
-    # The living plan / data bus (see above), stored as plain dicts:
-    # {step_id, label, status, intended_tool, result, needs_resolution}.
+    # The model's checklist (tools/planning.py — the `plan` tool, mapped here by nodes/tools.py),
+    # stored as plain dicts {step_id, label, status, intended_tool, result, needs_resolution}.
+    # Rendered by the rail and read by the gate's step context; intent, not record.
     plan: List[dict]
 
-    # Execute-pass counter, bounded by config runtime.max_iterations so a runaway plan/replan
-    # cycle can't spin forever. One increment per execute pass (≈ one per step).
+    # Agent passes this turn, bounded by runtime.max_iterations (nodes/agent.py): past it the
+    # last pass answers without tools. One increment per pass.
     iteration: int
-
-    # Rectify verdict + reasoning: set by the rectify node each cycle (True = the remaining plan
-    # must be revised → route to replan, with `reasoning` carried as the revision instruction).
-    # plan_gate's mid-turn steering sets the same pair, so a user correction rides the exact
-    # replan seam. replan resets rectify to False.
-    rectify: bool
-    reasoning: str
-
-    # In-loop replan counter: how many times this turn the replan node rewrote the remaining
-    # steps. Bounded by MAX_REPLANS (nodes/rectify.py). Reset to 0 per turn.
-    replans: int
-
-    # Plan-review interrupt (see nodes/plan_gate.py). Pauses arrive through the shared
-    # plan_ops.PauseController (keyboard Esc, /plan pause|review); `aborted` is set by the gate
-    # when the user abandons the turn at the review prompt, routing the loop to synthesize.
-    # Reset per turn. (The speculative in-graph `pause_requested`/`pause_reason` seam was
-    # deleted 2026-07-04 — nothing ever set it; a future LLM-initiated pause uses the same
-    # controller.)
-    aborted: bool
 
     # Trace / transparency accumulators. The engine consumes observations via the plan's step
     # results; these mirror them as a flat, append-only record for the trace store, citations,
@@ -212,20 +186,6 @@ class AgentState(TypedDict):
     # the Glass Box's gate_summary — keep the shape minimal (see nodes/approval.gate_event). Same
     # append-reducer; reset per turn.
     gate_events: Annotated[List[dict], operator.add]
-
-    # Plan-review vetoes (2026-07-06): labels of un-run steps the USER removed (drop) or retired
-    # (status skipped/cancelled/blocked) at the plan-review editor this turn. The human's edit
-    # OUTRANKS the engine's self-correction — the same principle as the gate's guarded outcome:
-    # the rectify judge and the replanner receive these as deliberately-out-of-scope
-    # (plan_context.vetoes_block), replan drops exact-label resurrections mechanically, and
-    # synthesize describes them as skipped at the user's request, never as failures. Written
-    # only by plan_gate (review resume, read-merge-write); reset per turn.
-    plan_vetoes: List[str]
-    # The effect-typed half of the review veto (2026-08-15, from the engine isolate): the TARGETS
-    # (path tokens, REVOKE_ALL, or tool:<name>) of un-run state-changing steps the user removed
-    # or retired at plan review — written only by plan_gate, consumed by execute's revocation
-    # lock (label + generated arguments) and replan's pre-filter. Reset per turn.
-    revoked_writes: List[str]
 
     # Interrupt-and-correct: the provenance-tagged answer buffer (core/provenance.py — plain
     # dicts, gotcha #4: {"text", "spans", "edits", "state", ...}). None until the user freezes

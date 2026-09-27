@@ -81,3 +81,216 @@ def test_tool_node_writes_plan_state_from_plan_call():
     assert [s["label"] for s in out["plan"]] == ["read", "sum"]
     assert out["plan"][0]["status"] == "done" and out["plan"][1]["result"] is None
     assert isinstance(out["messages"][0], ToolMessage)
+
+
+# ── Task 3: the agent node ───────────────────────────────────────────────────────────────────
+
+
+@pytest.fixture(autouse=True)
+def _clean_pause():
+    from core.pause import get_pause_controller
+
+    get_pause_controller().reset()
+    yield
+    get_pause_controller().reset()
+
+
+def _state(msgs, **kw):
+    s = {"messages": msgs, "current_query": str(msgs[0].content) if msgs else "", "context": "",
+         "plan": [], "iteration": 0, "tools_called": [], "tool_results": [],
+         "documents_retrieved": [], "tool_events": [], "gate_events": []}
+    s.update(kw)
+    return s
+
+
+def _round(name, args, cid, content="hello", status="done"):
+    return [AIMessage(content="", tool_calls=[_call(name, args, cid)]),
+            ToolMessage(content=content, tool_call_id=cid, name=name,
+                        additional_kwargs={"saturn_status": status})]
+
+
+def test_agent_answers_directly_with_trailers(monkeypatch):
+    from nodes import agent
+
+    seen = {}
+
+    def fake(llm_input, *, tools):
+        seen["tools"] = tools
+        seen["input"] = llm_input
+        return AIMessage(content="42", response_metadata={
+            "eval_count": 10, "eval_duration": 1e9, "prompt_eval_count": 500})
+
+    monkeypatch.setattr(agent, "_generate", fake)
+    st = _state([HumanMessage(content="q")], context_stable="STABLE", context_dynamic="DYN",
+                tool_results=["read_file(file_path='a.txt') -> hello"])
+    out = agent.agent_node(st)
+    assert seen["tools"] is True
+    assert seen["input"][0].content == agent.agent_sys_msg().content
+    assert seen["input"][1].content == "STABLE"
+    assert "DYN" in seen["input"][2].content and "q" in seen["input"][2].content
+    final = out["messages"][-1]
+    assert final.content.startswith("42") and "Sources:" in final.content and "read_file" in final.content
+    assert out["iteration"] == 1 and out["tok_per_sec"] == 10.0 and out["context_tokens"] == 500
+    assert agent.route_after_agent({"messages": out["messages"]}) == "end"
+
+
+def test_agent_prompt_keeps_prior_history_before_the_request(monkeypatch):
+    from nodes import agent
+
+    seen = {}
+    monkeypatch.setattr(agent, "_generate", lambda i, *, tools: seen.setdefault("input", i) and AIMessage(content="ok"))
+    msgs = [HumanMessage(content="first"), AIMessage(content="one"), HumanMessage(content="second")]
+    agent.agent_node(_state(msgs, context_stable="S"))
+    contents = [m.content for m in seen["input"]]
+    assert contents[1:] == ["S", "first", "one", "second"]
+
+
+def test_agent_emits_tool_calls_to_approval(monkeypatch):
+    from nodes import agent
+
+    monkeypatch.setattr(agent, "_generate", lambda i, *, tools: AIMessage(
+        content="", tool_calls=[_call("read_file", {"path": "a.txt"})]))
+    out = agent.agent_node(_state([HumanMessage(content="q")]))
+    ai = out["messages"][-1]
+    assert ai.tool_calls[0]["args"] == {"file_path": "a.txt"}  # coerced onto the real schema
+    assert agent.route_after_agent({"messages": out["messages"]}) == "approval"
+
+
+def test_hygiene_unknown_tool_and_missing_args(monkeypatch):
+    from nodes import agent
+
+    monkeypatch.setattr(agent, "_generate", lambda i, *, tools: AIMessage(
+        content="", tool_calls=[_call("nope", {}, "a"), _call("read_file", {}, "b")]))
+    out = agent.agent_node(_state([HumanMessage(content="q")]))
+    tms = [m for m in out["messages"] if isinstance(m, ToolMessage)]
+    assert [m.tool_call_id for m in tms] == ["a", "b"]
+    assert "unknown tool" in tms[0].content and "read_file(file_path=" in tms[1].content
+    assert agent.route_after_agent({"messages": out["messages"]}) == "agent"
+
+
+def test_hygiene_malformed_call_gets_a_schema_hint(monkeypatch):
+    """A small model's tool call whose arguments were not valid JSON arrives as an
+    invalid_tool_call (LangChain refuses non-dict args on tool_calls): refused with the
+    schema hint, routed back to the model, never crashed on."""
+    from nodes import agent
+
+    bad = {"name": "read_file", "args": "a.txt", "id": "c1", "error": "not json"}
+    monkeypatch.setattr(agent, "_generate", lambda i, *, tools: AIMessage(
+        content="", invalid_tool_calls=[bad]))
+    out = agent.agent_node(_state([HumanMessage(content="q")]))
+    tm = out["messages"][-1]
+    assert isinstance(tm, ToolMessage) and tm.tool_call_id == "c1"
+    assert "read_file(file_path=" in tm.content
+    assert agent.route_after_agent({"messages": out["messages"]}) == "agent"
+
+
+def test_declined_repeat_is_auto_declined(monkeypatch):
+    from nodes import agent
+    from nodes.approval import DECLINE_TEXT
+
+    args = {"file_path": "x", "content": "y"}
+    prior = [HumanMessage(content="q")] + _round("write_file", args, "c1", DECLINE_TEXT, "skipped")
+    monkeypatch.setattr(agent, "_generate", lambda i, *, tools: AIMessage(
+        content="", tool_calls=[_call("write_file", args, "c2")]))
+    out = agent.agent_node(_state(prior))
+    assert out["messages"][-1].content == agent.ALREADY_DECLINED_TEXT
+    assert agent.route_after_agent({"messages": out["messages"]}) == "agent"
+
+
+def test_stall_refuses_third_identical_call(monkeypatch):
+    from nodes import agent
+
+    args = {"file_path": "a"}
+    prior = [HumanMessage(content="q")] + _round("read_file", args, "c1") + _round("read_file", args, "c2")
+    monkeypatch.setattr(agent, "_generate", lambda i, *, tools: AIMessage(
+        content="", tool_calls=[_call("read_file", args, "c3")]))
+    out = agent.agent_node(_state(prior))
+    assert out["messages"][-1].content == agent.STALL_TEXT
+    # a second identical call is still allowed
+    out2 = agent.agent_node(_state([HumanMessage(content="q")] + _round("read_file", args, "c1")))
+    assert agent.route_after_agent({"messages": out2["messages"]}) == "approval"
+
+
+def test_iteration_cap_answers_without_tools(monkeypatch):
+    from config import get_config
+    from nodes import agent
+
+    seen = {}
+
+    def fake(llm_input, *, tools):
+        seen["tools"] = tools
+        seen["last"] = llm_input[-1].content
+        return AIMessage(content="partial")
+
+    monkeypatch.setattr(agent, "_generate", fake)
+    prior = [HumanMessage(content="q")] + _round("read_file", {"file_path": "a"}, "c1", "err", "error")
+    out = agent.agent_node(_state(prior, iteration=get_config().max_iterations))
+    assert seen["tools"] is False and seen["last"] == agent.BUDGET_NOTE
+    final = out["messages"][-1]
+    assert final.content.startswith("partial")
+    assert agent.INCIDENTS_NOTE_HEADER in final.content and "read_file" in final.content
+
+
+def test_steer_is_injected_before_the_call(monkeypatch):
+    from core.pause import get_pause_controller
+    from core.state import STEER_PREFIX
+    from nodes import agent
+
+    get_pause_controller().request("steer", "use km")
+    seen = {}
+
+    def fake(llm_input, *, tools):
+        seen["input"] = llm_input
+        return AIMessage(content="ok")
+
+    monkeypatch.setattr(agent, "_generate", fake)
+    out = agent.agent_node(_state([HumanMessage(content="q")]))
+    steer = [m for m in out["messages"] if isinstance(m, HumanMessage)]
+    assert steer and steer[0].content == f"{STEER_PREFIX} use km"
+    assert any(getattr(m, "content", "") == f"{STEER_PREFIX} use km" for m in seen["input"])
+
+
+def test_pause_interrupt_continue_steer_abort(monkeypatch):
+    from core.pause import get_pause_controller
+    from core.state import STEER_PREFIX
+    from nodes import agent
+
+    c = get_pause_controller()
+    payloads = []
+
+    def fake_interrupt(v):
+        payloads.append(v)
+        return fake_interrupt.reply
+
+    monkeypatch.setattr(agent, "interrupt", fake_interrupt)
+    monkeypatch.setattr(agent, "_generate", lambda i, *, tools: AIMessage(content="ans"))
+    step = {"step_id": 1, "label": "x", "status": "pending", "intended_tool": None,
+            "result": None, "needs_resolution": False}
+
+    c.request("user", "esc")
+    fake_interrupt.reply = {"action": "continue"}
+    out = agent.agent_node(_state([HumanMessage(content="q")], plan=[step]))
+    assert payloads[0]["type"] == "pause" and payloads[0]["plan"][0]["label"] == "x"
+    assert out["messages"][-1].content.startswith("ans") and not c.pending()
+
+    c.request("user", "esc")
+    fake_interrupt.reply = {"action": "steer", "text": "shorter"}
+    out = agent.agent_node(_state([HumanMessage(content="q")]))
+    assert any(isinstance(m, HumanMessage) and m.content == f"{STEER_PREFIX} shorter"
+               for m in out["messages"])
+
+    c.request("user", "esc")
+    fake_interrupt.reply = {"action": "abort"}
+    out = agent.agent_node(_state([HumanMessage(content="q")]))
+    assert out["messages"][-1].content.startswith(agent.ABORT_TEXT)
+    assert agent.route_after_agent({"messages": out["messages"]}) == "end"
+
+
+def test_route_after_agent_mixed_hygiene_goes_to_approval():
+    from nodes import agent
+
+    msgs = [HumanMessage(content="q"),
+            AIMessage(content="", tool_calls=[_call("nope", {}, "a"),
+                                              _call("read_file", {"file_path": "x"}, "b")]),
+            ToolMessage(content="err", tool_call_id="a", name="nope")]
+    assert agent.route_after_agent({"messages": msgs}) == "approval"

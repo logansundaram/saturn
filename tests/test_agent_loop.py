@@ -415,3 +415,61 @@ def test_prime_lineage_is_the_bound_agent_prefix(monkeypatch):
     assert prime.prime("STABLE") == 1
     assert sent[0][0] == "bound" and sent[0][1] > 0
     assert sent[1][1] == [agent_sys_msg().content, "STABLE"] and sent[1][2] is True
+
+
+# ── Task 7: the rail and the pause prompt ────────────────────────────────────────────────────
+
+
+def _plain_rail(monkeypatch):
+    import importlib
+
+    base = importlib.import_module("tui.ui._base")
+    trace = importlib.import_module("tui.ui.trace")
+    monkeypatch.setattr(base, "_RICH", False, raising=False)
+    monkeypatch.setattr(trace, "_RICH", False, raising=False)
+    base._trace_started = False
+    base._t_last = None
+    base._status = dict(base._status, node="", iteration=0, tools=0, tok_per_sec=0.0)
+    return trace
+
+
+def test_rail_agent_row_hidden_for_the_answer_shown_for_a_call(capsys, monkeypatch):
+    trace = _plain_rail(monkeypatch)
+    trace.show_node("agent", {"messages": [AIMessage(content="reading it",
+                                                      tool_calls=[_call("read_file", {"file_path": "x"})])],
+                              "iteration": 1})
+    out = capsys.readouterr().out
+    assert "agent" in out and "reading it" in out
+    trace.show_node("agent", {"messages": [AIMessage(content="the answer")], "iteration": 2})
+    assert "agent" not in capsys.readouterr().out
+
+
+def test_rail_approval_row_only_for_a_human_decision(capsys, monkeypatch):
+    trace = _plain_rail(monkeypatch)
+    trace.show_node("approval", {})
+    assert "approval" not in capsys.readouterr().out
+    trace.show_node("approval", {"gate_events": [{"calls": [{"id": "1", "name": "write_file", "approved": False}],
+                                                  "decision": "rejected", "quarantine": False, "step": None}]})
+    out = capsys.readouterr().out
+    assert "approval" in out and "rejected write_file" in out
+
+
+def test_rail_tool_result_preview_shown_by_default(capsys, monkeypatch):
+    trace = _plain_rail(monkeypatch)
+    trace.show_node("tools", {"tool_events": [{"name": "read_file", "args": {"file_path": "x"},
+                                               "result": "hello world", "dur": 0.01, "ok": True}]})
+    assert "hello world" in capsys.readouterr().out
+
+
+def test_pause_prompt_decisions(monkeypatch):
+    import importlib
+
+    from tui import ui
+
+    p = importlib.import_module("tui.ui.prompt")
+    monkeypatch.setattr(p, "ask", lambda *a, **k: "")
+    assert ui.pause_prompt({"reason": "esc", "plan": []}) == {"action": "continue"}
+    monkeypatch.setattr(p, "ask", lambda *a, **k: "use km")
+    assert ui.pause_prompt({"reason": "esc", "plan": []}) == {"action": "steer", "text": "use km"}
+    monkeypatch.setattr(p, "ask", lambda *a, **k: "q")
+    assert ui.pause_prompt({"reason": "esc", "plan": []}) == {"action": "abort"}

@@ -217,30 +217,6 @@ def test_gate_decision_echo_renders_both_verdicts(capsys):
     assert "quarantine escalation" in out
 
 
-def test_rectify_and_replan_leaves_are_honest(capsys):
-    tr = importlib.import_module("tui.ui.trace")
-
-    tr._render_trust_annotations("rectify", {"rectify": True, "reasoning": "resolve the ref"})
-    assert "plan must change" in capsys.readouterr().out
-    tr._render_trust_annotations("rectify", {"rectify": False, "plan": [{"step_id": 1}],
-                                             "reasoning": "action guarded"})
-    assert "retired the remaining steps" in capsys.readouterr().out
-    tr._render_trust_annotations("rectify", {"rectify": False, "reasoning": "pending"})
-    assert capsys.readouterr().out == "", "a quiet rectify pass renders nothing"
-    tr._render_trust_annotations("replan", {"plan": [{"step_id": 1}], "replans": 1})
-    assert "redrafted" in capsys.readouterr().out
-    tr._render_trust_annotations("replan", {"replans": 1})
-    assert "plan kept" in capsys.readouterr().out
-    tr._render_trust_annotations("execute", {})  # other nodes say nothing
-    assert capsys.readouterr().out == ""
-
-
-# --- native answer provenance (response) ---------------------------------------------------------
-
-_FOOTER_TEXT = ("The answer body cites [1].\n\n"
-                "Sources:\n  [1] web_extract(url='https://e.com')\n  [2] knowledge base: a.md")
-
-
 def test_split_sources_extracts_a_wellformed_footer():
     resp = importlib.import_module("tui.ui.response")
 

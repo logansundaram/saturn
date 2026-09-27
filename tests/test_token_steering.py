@@ -211,27 +211,6 @@ def test_provenance_rstrip_trailing_keeps_spans_tiling():
 
 # --- synthesize routing + the no-generation finalize path -------------------------------------------
 
-def test_rail_echoes_the_freeze_and_the_correction(capsys):
-    import importlib
-
-    trace = importlib.import_module("tui.ui.trace")
-
-    trace._render_trust_annotations(
-        "synthesize", {"answer_buffer": {"state": "frozen", "text": "x", "spans": []}})
-    assert "froze the answer" in capsys.readouterr().out
-
-    trace._render_trust_annotations(
-        "answer_gate",
-        {"answer_buffer": {"state": "resume", "edited": True,
-                           "edits": [{"at": 5, "cut": "Sydney", "typed": "Canberra"}]}})
-    out = capsys.readouterr().out
-    assert "you corrected the answer" in out and "Canberra" in out
-
-    trace._render_trust_annotations(
-        "answer_gate", {"answer_buffer": {"state": "resume", "edited": False, "edits": []}})
-    assert "resumed unchanged" in capsys.readouterr().out
-
-
 def test_receipt_counts_corrections(capsys, monkeypatch):
     import importlib
 

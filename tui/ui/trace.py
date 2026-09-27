@@ -53,17 +53,25 @@ def _node_line(node: str, dur: float, delta: dict) -> "Text | str":
     return f"  {_RAIL_GLYPH} ✓ {node:<{_NODE_W}}{_fmt_dur(dur):>7}{tail}"
 
 
-def _synthesize_row_is_quiet(node: str, delta: dict) -> bool:
-    """Whether synthesize's rail row can be skipped this pass (see the call site): only at normal
-    verbosity, and only when `_render_trust_annotations` will draw NOTHING under it. A freeze, a
-    correction, or a bounded record keeps the row so its leaf has a parent.
+def _is_answer(delta: dict) -> bool:
+    """Whether an agent delta is the ANSWER pass: its last message is an AIMessage without tool
+    calls (the text that streamed into the response region). A tool-calling pass is not."""
+    msgs = (delta or {}).get("messages") or []
+    last = msgs[-1] if msgs else None
+    if last is None or isinstance(last, str):
+        return False
+    return getattr(last, "type", "") == "ai" and not getattr(last, "tool_calls", None)
 
-    The question is answered by running the real annotator with its output discarded — never by a
-    second list of delta keys. That list said "any truthy `answer_buffer`", but synthesize returns
-    a `complete` buffer on EVERY finished turn while its leaf is drawn only for a `frozen` one, so
-    the row came back for every answer — landing inside the open response block, to parent a leaf
-    that never printed. One producer of the condition, no drift."""
-    if node != "synthesize" or _base._VERBOSITY == "verbose":
+
+def _agent_row_is_quiet(node: str, delta: dict) -> bool:
+    """Whether the agent's rail row can be skipped this pass: the ANSWER pass at normal
+    verbosity, and only when `_render_trust_annotations` will draw NOTHING under it (a bounded
+    record keeps the row so its leaf has a parent). The answer pass's update fires after the
+    answer began streaming into the open response region, and rich inserts a console print
+    ABOVE a live display — the row would shove the streaming answer down mid-stream. The
+    question is answered by running the real annotator with its output discarded, never by a
+    second list of delta keys."""
+    if node != "agent" or _base._VERBOSITY == "verbose" or not _is_answer(delta):
         return False
     return _render_trust_annotations(node, delta, emit=lambda _text, _style: None) == 0
 
@@ -77,26 +85,13 @@ def show_node(node: str, delta: dict | None = None) -> None:
     dur = now - _base._t_last if _base._t_last is not None else 0.0
     _base._t_last = now
 
-    # plan_gate is a control checkpoint, not an informative node — skip its rail line so the
-    # per-step pass-throughs don't double the trace. Its effects still surface elsewhere: a plan
-    # edit via show_plan (the on_update subscriber calls it on a `plan` delta), a pause via the
-    # plan-review prompt. _t_last is already advanced, so the next node's timing excludes the gate.
-    # The plumbing nodes (ground, update_plan) fold the same way at normal verbosity: their timing
-    # rolls into the next visible node, and update_plan's plan diff still prints (show_plan is
-    # driven separately by on_update). Everything stays in the trace DB for /trace and /trace calls.
-    if node == "plan_gate":
-        return
+    # The plumbing node (ground) folds at normal verbosity: its timing rolls into the next
+    # visible node. Everything stays in the trace DB for /trace and /trace calls.
     if node in _base._FOLD_NODES and _base._VERBOSITY != "verbose":
         return
-    # rectify passes through after EVERY step; a quiet pass (no revision, no cancellation) is
-    # plumbing — fold it like ground/update_plan. When it FIRED (rectify=true, or it cancelled
-    # remaining steps via a plan delta) it is signal and renders with its annotation leaf below.
-    if (
-        node == "rectify"
-        and not (delta or {}).get("rectify")
-        and not (delta or {}).get("plan")
-        and _base._VERBOSITY != "verbose"
-    ):
+    # approval passes through before EVERY tool round; an auto-approved pass is plumbing. When a
+    # HUMAN decided (the delta carries gate_events) it is signal and renders with its leaf below.
+    if node == "approval" and not (delta or {}).get("gate_events") and _base._VERBOSITY != "verbose":
         return
 
     delta = delta or {}
@@ -117,27 +112,21 @@ def show_node(node: str, delta: dict | None = None) -> None:
     # built from the delta by the shared _node_line helper (the live trace + the /trace replay
     # render identical rows).
     #
-    # synthesize is the exception: its update fires when the node COMPLETES, i.e. AFTER the answer
-    # has already begun streaming into the open response region. Rich inserts a console print
-    # ABOVE a live display, so emitting the row here shoves the streaming answer down mid-stream —
-    # a rail line landing inside the response block. At normal verbosity the ROW is skipped while
-    # everything else about the node still lands: its metrics were fed to the status bar above and
-    # are echoed permanently in the receipt, and `/trace full` (verbose) restores the row. Folding
-    # it through _FOLD_NODES instead would `return` before the metric feed and before
-    # _render_trust_annotations, silently costing the receipt its tok/s AND dropping the freeze /
-    # correction echo — an auditable human action. `_synthesize_row_is_quiet` keeps the row
-    # whenever a leaf will hang off it, so no annotation is ever orphaned.
-    if not _synthesize_row_is_quiet(node, delta):
+    # The agent's ANSWER pass is the exception (`_agent_row_is_quiet`): its update fires after
+    # the answer began streaming into the open response region, so at normal verbosity the ROW
+    # is skipped while everything else about the pass still lands — its metrics were fed to the
+    # status bar above and are echoed in the receipt, and `/trace full` restores the row.
+    if not _agent_row_is_quiet(node, delta):
         if not _base._trace_started:
             _emit("")  # one blank line parting the turn's trace from the prompt above it
             _base._trace_started = True
         _emit(_node_line(node, dur, delta))
 
-    # Live reasoning: the execute node's pre-action thinking (text alongside its tool call) AND a
-    # pure reasoning step's result (which otherwise surfaces only inside the final answer) both
-    # render as a dim leaf under the execute rail line — the "why"/"what" of the step.
-    if node == "execute":
-        _render_execute_reasoning(delta.get("messages") or [])
+    # The agent's thought: the text alongside its tool calls (the same words the gate's
+    # `e(xplain)` shows) renders as a dim leaf under the agent rail line — the "why" of the
+    # calls. The answer pass streams under `── response` instead, never here.
+    if node == "agent" and not _is_answer(delta):
+        _render_agent_thought(delta.get("messages") or [])
 
     if delta.get("tool_events"):
         _render_tool_events(delta["tool_events"])
@@ -149,32 +138,6 @@ def show_node(node: str, delta: dict | None = None) -> None:
 
 # Cap the live reasoning preview: enough to read the thought, not enough to drown the trace.
 _REASONING_CAP = 280
-
-
-def _render_quick(delta: dict, leaf) -> None:
-    """The quick node's one decision as a leaf: the lookup it chose, the hand-over and why, a
-    landing and why (a guarded outcome, the cap), or that it is answering directly
-    (nodes/quick.py)."""
-    calls = []
-    for m in delta.get("messages") or []:
-        calls.extend(getattr(m, "tool_calls", None) or [])
-    if calls:
-        from textutil import fmt_args
-
-        names = ", ".join(f"{c.get('name')}({fmt_args(c.get('args') or {}, 60)})" for c in calls)
-        leaf(_truncate(f"quick: {names}", _REASONING_CAP), _DIM)
-    elif delta.get("route") == "plan":
-        reason = " ".join(str(delta.get("reasoning") or "").split())
-        leaf(_truncate(f"quick: handing over to the planner — {reason}", _REASONING_CAP), "yellow")
-    elif "route" in delta:
-        # A landing without a decision carries its reason (a gate decline, the iteration cap);
-        # a plain "answer" carries none — the two used to read identically next to an
-        # incident disclosure.
-        reason = " ".join(str(delta.get("reasoning") or "").split())
-        if reason:
-            leaf(_truncate(f"quick: {reason}", _REASONING_CAP), "yellow")
-        else:
-            leaf("quick: answering directly", _DIM)
 
 
 def _node_leaf(text: str, style: str) -> None:
@@ -194,11 +157,10 @@ def _node_leaf(text: str, style: str) -> None:
             _emit(f"  {_RAIL_GLYPH}   {prefix}{ln}")
 
 
-def _render_execute_reasoning(messages: list) -> None:
-    """Render the execute node's message text as dim, wrapped leaf lines under its trace row:
-    the pre-action reasoning of a tool step (the text alongside the tool call — the same words
-    the gate's `e(xplain)` shows) or the produced result of a pure reasoning step. Quietly does
-    nothing when the message has no text."""
+def _render_agent_thought(messages: list) -> None:
+    """Render the agent's message text as dim, wrapped leaf lines under its trace row: the
+    pre-call thought alongside its tool calls (the same words the gate's `e(xplain)` shows).
+    Quietly does nothing when the message has no text."""
     msg = messages[-1] if messages else None
     if msg is None:
         return
@@ -213,22 +175,13 @@ def _render_trust_annotations(node: str, delta: dict, *, emit=None) -> int:
     """The trust-stack annotations a node's delta carries, rendered identically in the live rail
     and the /trace replay — the moments that used to be invisible without a command:
 
-      - under `rectify`, the verdict when it FIRED: the plan must change (rectify=true, with the
-        recorded reasoning) or remaining steps were cancelled after a guarded/missing-item
-        outcome (a plan delta with rectify=false);
-      - under `replan`, the revision: the remaining steps were redrafted (the delta carries the
-        new plan; an empty redraft honestly says the plan was kept);
       - under `approval`, the echo of each HUMAN gate decision (state["gate_events"]): the
         interactive prompt scrolls away with the turn, so this leaf is the transcript's
         permanent record of who allowed what — green for approved, red for rejected, with the
-        quarantine escalation named when one forced the prompt;
-      - under `synthesize`/`answer_gate`, interrupt-and-correct: the freeze (the user stopped
-        the streaming answer) and the correction they typed (from the buffer's edit records) —
-        a human edit mid-generation is a first-class auditable event, echoed permanently here
-        exactly like a gate decision.
+        quarantine escalation named when one forced the prompt.
 
     Returns the number of leaves drawn, and takes an `emit` override so a caller can ask what
-    WOULD be drawn without drawing it (`_synthesize_row_is_quiet`) — the conditions below stay the
+    WOULD be drawn without drawing it (`_agent_row_is_quiet`) — the conditions below stay the
     single producer of that answer."""
     drawn = 0
     _emit_leaf = emit or _node_leaf
@@ -249,38 +202,6 @@ def _render_trust_annotations(node: str, delta: dict, *, emit=None) -> int:
         leaf("record bounded at write time"
              + (f" ({size} chars)" if size is not None else "")
              + f" — dropped: {what}", "yellow")
-    buf = delta.get("answer_buffer")
-    if node == "synthesize" and isinstance(buf, dict) and buf.get("state") == "frozen":
-        leaf("✂ you froze the answer mid-generation — editing", "cyan")
-    if node == "answer_gate" and isinstance(buf, dict):
-        edits = [e for e in buf.get("edits") or [] if isinstance(e, dict)]
-        if buf.get("edited") and edits:
-            e = edits[-1]
-            parts = []
-            if e.get("cut"):
-                parts.append(f'cut "{e["cut"]}"')
-            if e.get("typed"):
-                parts.append(f'typed "{e["typed"]}"')
-            what = " · ".join(parts) or "edited the text"
-            leaf(_truncate(f"✎ you corrected the answer — {what}", _REASONING_CAP), "cyan")
-        else:
-            leaf("↩ answer resumed unchanged", _DIM)
-        if buf.get("state") == "done":
-            leaf("✓ you accepted the text as the final answer", "cyan")
-    if node == "quick":
-        _render_quick(delta, leaf)
-    if node == "rectify":
-        reason = " ".join(str(delta.get("reasoning") or "").split())
-        if delta.get("rectify"):
-            leaf(_truncate(f"rectify: plan must change — {reason}", _REASONING_CAP), "yellow")
-        elif delta.get("plan"):
-            leaf(_truncate(f"rectify: retired the remaining steps — {reason}",
-                           _REASONING_CAP), "yellow")
-    if node == "replan":
-        if delta.get("plan"):
-            leaf("replan: remaining steps redrafted", "yellow")
-        else:
-            leaf("replan: redraft came back empty — plan kept as-is", _DIM)
     for ev in delta.get("gate_events") or []:
         if not isinstance(ev, dict):
             continue
@@ -323,11 +244,10 @@ def _emit_result_leaf(cont: str, text: str, style: str) -> None:
 def _render_tool_events(events: list[dict], *, always_show_results: bool = False) -> None:
     """Draw the tool-I/O sub-tree under the `tools` node header: one `├─ name(args)  dur` branch
     per call, the call repr sized to the terminal and durations column-aligned within the round so
-    they read as a column. The raw result preview is **hidden** by default — it's noisy JSON, and
-    `/trace calls` (or `/trace full`) surfaces full outputs on demand — but a FAILED call still shows
-    its error leaf inline (signal, not noise). What the agent *did* (name · args · cost · ok/fail)
-    always stays visible. `always_show_results=True` (the /trace replay) shows every output, word-
-    wrapped under the rail with a hanging indent."""
+    they read as a column. Each call's result renders as ONE clipped line beneath it (v2: watching
+    it work means seeing what came back, the Claude Code feel); `/trace calls`, `/trace full` and
+    the /trace replay (`always_show_results=True`) show the full output, word-wrapped under the
+    rail with a hanging indent. A FAILED call's error always shows whole."""
     n = len(events)
     # Width-responsive: size the call repr to the room left after the tree prefix (~9) and the right
     # `   dur` column (~9), then align durations to the widest call in this round.
@@ -343,9 +263,10 @@ def _render_tool_events(events: list[dict], *, always_show_results: bool = False
         dur = _fmt_dur(ev.get("dur", 0.0))
         ok = ev.get("ok", True)
         result = ev.get("result", "")
-        # Outputs are hidden by default; show only errors, or everything under /trace full or in
-        # the /trace replay (always_show_results).
-        show_result = bool(result) and (always_show_results or not ok or _base._VERBOSITY == "verbose")
+        # One clipped line by default; the whole output under /trace full, in the /trace replay,
+        # or for an error (signal, never clipped).
+        show_result = bool(result)
+        full = always_show_results or not ok or _base._VERBOSITY == "verbose"
 
         if _RICH:
             line = _rail()
@@ -375,7 +296,8 @@ def _render_tool_events(events: list[dict], *, always_show_results: bool = False
                 "yellow",
             )
         if show_result:
-            _emit_result_leaf(cont, result, _DIM if ok else "red")
+            text = result if full else _truncate(" ".join(str(result).split()), call_cap)
+            _emit_result_leaf(cont, text, _DIM if ok else "red")
 
 
 def _egress_leaf(eg: dict) -> tuple[str, str]:

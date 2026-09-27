@@ -100,7 +100,7 @@ _TREE_MID, _TREE_END, _TREE_PIPE, _TREE_LEAF = "├─", "└─", "│", "└"
 #   "verbose"           — every node line, including the folded plumbing ones and full timings.
 # Whether the trace renders at all is a separate switch (commands' show_ui / `/trace off`).
 _VERBOSITY = "normal"
-_FOLD_NODES = ("ground", "update_plan")  # hidden from the live rail unless verbosity == "verbose"
+_FOLD_NODES = ("ground",)  # hidden from the live rail unless verbosity == "verbose"
 
 
 def set_verbosity(level: str) -> str:

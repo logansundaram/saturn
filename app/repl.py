@@ -340,7 +340,8 @@ def run_repl() -> None:
                 state,
                 config,
                 approver=on_interrupt,
-                on_update=_make_on_update(tracer, run_id, show_ui=cmd_ctx.show_ui),
+                on_update=_make_on_update(tracer, run_id, show_ui=cmd_ctx.show_ui,
+                                          answer=answer),
                 pause=input_queue,
                 on_token=answer.feed,
             )

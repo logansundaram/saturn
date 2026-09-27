@@ -789,6 +789,23 @@ class ResponseStream:
         start = confidence.grade_start(entries, joined, pos, threshold_p=enter, exit_p=exit_p)
         return confidence.low_runs(entries[start:], joined, threshold_p=enter, exit_p=exit_p)
 
+    def discard(self) -> None:
+        """Drop a stream that turned out NOT to be the answer (the model prefaced a tool call
+        with text): tear the transient tail down and forget the chars, so the real answer opens
+        its own `── response` section later. Plain path: close the typed line."""
+        if self._live is not None:
+            try:
+                self._live.stop()
+            except Exception:
+                pass
+            self._live = None
+        elif self._started and not _RICH:
+            print()
+        self._chars = []
+        self._len = 0
+        self._conf = []
+        self._started = False
+
     def abort(self) -> None:
         """Tear down the live tail without a final render — a failed/cancelled turn. The transient
         Live erases the partial text; the caller surfaces the error (`warn`) separately."""

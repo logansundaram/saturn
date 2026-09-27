@@ -99,7 +99,7 @@ def test_node_reject_all_records_event(monkeypatch):
     cmd = approval_node(_node_state(list(_CALLS)))
     # A fully-rejected batch goes to the recorder: the decline lands on the current step as a
     # `skipped` incident, and rectify retires the remaining plan.
-    assert cmd.goto == "update_plan"
+    assert cmd.goto == "agent"  # a fully-rejected batch goes back to the agent (v2 loop)
     (ev,) = cmd.update["gate_events"]
     assert ev["decision"] == "rejected"
     assert all(not c["approved"] for c in ev["calls"])
@@ -116,7 +116,7 @@ def test_node_unrecognized_resume_value_rejects(monkeypatch):
     for garbage in ("n", "y", 1, ["c1"], object()):
         _gate_everything(monkeypatch, garbage)
         cmd = approval_node(_node_state(list(_CALLS)))
-        assert cmd.goto == "update_plan", garbage
+        assert cmd.goto == "agent", garbage
         (ev,) = cmd.update["gate_events"]
         assert ev["decision"] == "rejected", garbage
         assert all(not c["approved"] for c in ev["calls"]), garbage

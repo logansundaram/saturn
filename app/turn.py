@@ -19,7 +19,7 @@ def run_turn(graph, payload, config, approver, on_update=None, pause=None, on_to
     `approver(interrupt_value) -> decision` resolves each interrupt — for the approval gate a bool,
     for the plan-review gate the editor's `{action, plan}` dict — and the result is fed back as the
     `Command(resume=...)` value. `on_update(node, delta)` is called for every node update (the trace
-    + live plan panel). `on_token(text, logprobs=None)`, if given, receives the *synthesize* node's
+    + live plan panel). `on_token(text, logprobs=None)`, if given, receives the *agent* node's
     answer tokens as they generate (LangGraph `stream_mode="messages"`, filtered to that node) plus
     each chunk's raw token logprobs when the daemon reported them (the live confidence marking), so
     the UI can render the final answer live. `pause`, if given, is a `typeahead.InputQueue` (any start()/stop() console
@@ -33,10 +33,9 @@ def run_turn(graph, payload, config, approver, on_update=None, pause=None, on_to
     tokens (`{"answer_token": …}` — raw-mode resumes after a freeze-edit are not LangChain chat
     calls, so messages mode never sees them; see nodes/synthesize._token_sink). Each streamed
     item is a `(mode, data)` pair."""
-    # The plan/execute engine visits ~5 nodes per step; LangGraph's default recursion_limit (25)
-    # would kill a healthy multi-step plan mid-flight. Generous but finite — the REAL bounds are
-    # runtime.max_iterations (execute passes) and MAX_REPLANS, which land at an honest synthesize
-    # long before this.
+    # The loop visits three nodes per tool round; LangGraph's default recursion_limit (25) would
+    # kill a healthy multi-step turn mid-flight. Generous but finite — the REAL bound is
+    # runtime.max_iterations (agent passes), which lands at an honest answer long before this.
     config.setdefault("recursion_limit", 200)
     pending = payload
     while True:
@@ -58,16 +57,16 @@ def run_turn(graph, payload, config, approver, on_update=None, pause=None, on_to
                         on_token(str(data["answer_token"]), data.get("logprobs"))
                     continue
                 if mode == "messages":
-                    # (message_chunk, metadata) — stream only the synthesize node's answer tokens.
-                    # Filters: skip other LLM nodes (agent draft, planner/judge structured output);
-                    # and require an AIMessageChunk (a streaming delta) — messages mode ALSO emits the
-                    # node's returned, complete AIMessage (the full answer written to state), which
-                    # would otherwise re-deliver the whole text once more and double the display.
+                    # (message_chunk, metadata) — stream only the agent node's tokens. Filters:
+                    # skip other nodes' model calls, and require an AIMessageChunk (a streaming
+                    # delta) — messages mode ALSO emits the node's returned, complete AIMessage
+                    # (the full answer written to state), which would otherwise re-deliver the
+                    # whole text once more and double the display.
                     message_chunk, metadata = data
                     if (
                         on_token
                         and isinstance(message_chunk, AIMessageChunk)
-                        and metadata.get("langgraph_node") == "synthesize"
+                        and metadata.get("langgraph_node") == "agent"
                     ):
                         text = getattr(message_chunk, "content", "")
                         if text:
@@ -100,12 +99,16 @@ def run_turn(graph, payload, config, approver, on_update=None, pause=None, on_to
         pending = Command(resume=decision)
 
 
-def _make_on_update(tracer, run_id, show_ui=True):
+def _make_on_update(tracer, run_id, show_ui=True, answer=None):
     """The per-delta subscriber: record first (the tracer self-guards — the watcher never takes
     down the watched), then render. DISPLAY is fail-soft (transplanted from the visibility
     isolate): a render bug — a hostile step dict, a width edge case — must never raise out of
     run_turn, land a healthy turn as `error`, and lose the answer. Each ui call is guarded on
-    its own; a failure prints one line and the loop continues."""
+    its own; a failure prints one line and the loop continues.
+
+    `answer` is the REPL's ResponseStream: an agent pass whose message ends in tool calls may
+    have streamed a text preamble into the response region as if it were the answer — that
+    region is discarded here (the rail's agent leaf shows the preamble where it belongs)."""
     def _render(what, fn, *args):
         try:
             fn(*args)
@@ -119,6 +122,11 @@ def _make_on_update(tracer, run_id, show_ui=True):
 
     def on_update(node, delta):
         tracer.log_event(run_id, node, delta)
+        if node == "agent" and answer is not None and getattr(answer, "started", False):
+            msgs = delta.get("messages") or []
+            last = msgs[-1] if msgs else None
+            if getattr(last, "tool_calls", None):
+                _render("discard", answer.discard)
         if show_ui:
             _render(f"node {node}", ui.show_node, node, delta)
             if delta.get("plan"):

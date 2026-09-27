@@ -7,12 +7,12 @@ doesn't approve pauses via a LangGraph `interrupt` so the user can decide per ba
 call. The policy is read live each call, so /config, /policy (risk · allow · open) and Shift+Tab
 all apply to the very next gate. Resuming with the user's decision is handled in agent.run_turn.
 
-Under the plan/execute engine (2026-07-03 transplant) the execute node emits exactly ONE call
-per step, so a batch is normally a singleton — but the node stays batch-shaped (the resume-value
-contract, per-call select, and the gate_event record are unchanged). A rejection routes to
-`update_plan`, which records the decline onto the current step as a `skipped` incident; rectify
-then cancels the remaining steps (a guarded action is reported, never retried or substituted).
-The old positional `_skip_rejected_steps` walker is gone with the multiset accounting.
+Under the v2 loop (2026-09-27) the agent node may emit several calls per pass and answers some
+of them itself (malformed, repeated, declined-before) with ToolMessages before this node runs,
+so the batch is the issuing AIMessage's calls MINUS those already answered — the same walk-back
+nodes/tools.py does. A fully-rejected batch routes back to `agent`: the decline ToolMessages are
+what the model sees, and nodes/agent's declined-repeat guard refuses the same call for the rest
+of the turn (a guarded action is reported, never retried or substituted).
 """
 
 from typing import Literal
@@ -144,7 +144,7 @@ def _apply_always_grants(decision: dict) -> None:
             diag.log(f"approval_node: always-allow shell grant refused — {msg}")
 
 
-def approval_node(state: AgentState) -> Command[Literal["tools", "update_plan"]]:
+def approval_node(state: AgentState) -> Command[Literal["tools", "agent"]]:
     """Human-in-the-loop safety gate. Calls within the configured auto-approve tier pass
     straight through. If any pending call exceeds it, pause via `interrupt` and let the user
     decide per batch OR per call.
@@ -156,10 +156,17 @@ def approval_node(state: AgentState) -> Command[Literal["tools", "update_plan"]]
     past the interrupt by `_apply_always_grants`. Rejected calls get a decline
     ToolMessage here (orphaned tool_calls break the next model turn); everything else in the
     batch still routes to `tools`, which executes only the calls that don't already have a
-    ToolMessage. A fully-rejected batch routes to `update_plan`, which records the decline onto
-    the current plan step as a `skipped` incident."""
-    last = state["messages"][-1]
-    tool_calls = getattr(last, "tool_calls", None) or []
+    ToolMessage. A fully-rejected batch routes back to `agent`."""
+    answered = set()
+    last = None
+    for m in reversed(state["messages"]):
+        if isinstance(m, ToolMessage):
+            answered.add(m.tool_call_id)
+            continue
+        last = m
+        break
+    tool_calls = [tc for tc in (getattr(last, "tool_calls", None) or [])
+                  if tc.get("id") not in answered]
 
     # Quarantine escalation (runtime.quarantine = gate): a previous tool result this turn carried
     # instruction-shaped content, so this batch's arguments may derive from injected text — every
@@ -263,8 +270,8 @@ def approval_node(state: AgentState) -> Command[Literal["tools", "update_plan"]]
     update = {"messages": decline, "gate_events": [event]}
 
     # Anything left to run (ungated or approved) still runs; a fully-rejected batch goes
-    # straight to the recorder — the decline lands on the current step as a `skipped` incident,
-    # and rectify retires the remaining plan (a guarded action is reported, never retried).
+    # straight back to the agent, which sees the declines (and whose declined-repeat guard
+    # refuses the same call for the rest of the turn — a guarded action is never retried).
     if len(rejected) < len(tool_calls):
         return Command(goto="tools", update=update)
-    return Command(goto="update_plan", update=update)
+    return Command(goto="agent", update=update)

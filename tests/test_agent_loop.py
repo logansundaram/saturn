@@ -294,3 +294,99 @@ def test_route_after_agent_mixed_hygiene_goes_to_approval():
                                               _call("read_file", {"file_path": "x"}, "b")]),
             ToolMessage(content="err", tool_call_id="a", name="nope")]
     assert agent.route_after_agent({"messages": msgs}) == "approval"
+
+
+# ── Task 4: graph, turn driver, approval route ───────────────────────────────────────────────
+
+
+def test_graph_has_four_nodes(isolated_paths, monkeypatch):
+    from app import graph
+
+    # DB_PATH is resolved at import; point it at the isolated tmp so the checkpointer opens there.
+    (isolated_paths / "database").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(graph, "DB_PATH", str(isolated_paths / "database" / "db.sqlite"))
+    nodes = set(graph.build_agent().get_graph().nodes)
+    assert {"ground", "agent", "approval", "tools"} <= nodes
+    assert not ({"plan", "quick", "execute", "rectify", "replan", "synthesize", "plan_gate",
+                 "update_plan", "answer_gate"} & nodes)
+
+
+def test_approval_rejected_batch_routes_to_agent(monkeypatch):
+    from nodes import approval
+
+    monkeypatch.setattr(approval, "interrupt", lambda v: False)
+    call = _call("write_file", {"file_path": "a", "content": "b"})
+    cmd = approval.approval_node({"messages": [HumanMessage(content="q"),
+                                               AIMessage(content="", tool_calls=[call])], "plan": []})
+    assert cmd.goto == "agent"
+    assert cmd.update["messages"][0].additional_kwargs["saturn_status"] == "skipped"
+
+
+def test_approval_ignores_calls_the_agent_already_answered(monkeypatch):
+    from nodes import approval
+
+    prompted = []
+    monkeypatch.setattr(approval, "interrupt", lambda v: prompted.append(v) or True)
+    msgs = [HumanMessage(content="q"),
+            AIMessage(content="", tool_calls=[_call("write_file", {"file_path": "a", "content": "b"}, "w"),
+                                              _call("nope", {}, "n")]),
+            ToolMessage(content="err", tool_call_id="n", name="nope")]
+    cmd = approval.approval_node({"messages": msgs, "plan": []})
+    assert cmd.goto == "tools" and [c["id"] for c in prompted[0]["tool_calls"]] == ["w"]
+
+
+def test_run_turn_streams_agent_tokens_only():
+    from langchain.messages import AIMessageChunk
+
+    from app import turn
+
+    class G:
+        def stream(self, *a, **k):
+            yield ("messages", (AIMessageChunk(content="hi"), {"langgraph_node": "agent"}))
+            yield ("messages", (AIMessageChunk(content="no"), {"langgraph_node": "tools"}))
+            yield ("updates", {"agent": {"iteration": 1}})
+
+        def get_state(self, config):
+            return SimpleNamespace(next=(), values={"messages": []}, tasks=[])
+
+    toks, ups = [], []
+    turn.run_turn(G(), {}, {}, approver=lambda v: True, on_update=lambda n, d: ups.append(n),
+                  on_token=lambda t, lp=None: toks.append(t))
+    assert toks == ["hi"] and ups == ["agent"]
+
+
+def test_on_update_discards_a_streamed_preamble_before_a_tool_call():
+    from app.turn import _make_on_update
+
+    class Answer:
+        started = True
+
+        def __init__(self):
+            self.discarded = 0
+
+        def discard(self):
+            self.discarded += 1
+
+    class Tracer:
+        def log_event(self, *a):
+            pass
+
+    a = Answer()
+    on_update = _make_on_update(Tracer(), 1, show_ui=False, answer=a)
+    on_update("agent", {"messages": [AIMessage(content="let me look",
+                                                tool_calls=[_call("read_file", {"file_path": "x"})])]})
+    assert a.discarded == 1
+    on_update("agent", {"messages": [AIMessage(content="the answer")]})
+    assert a.discarded == 1
+
+
+def test_response_stream_discard_forgets_the_preamble(monkeypatch):
+    import importlib
+
+    r = importlib.import_module("tui.ui.response")  # the package re-exports a same-named function
+    monkeypatch.setattr(r, "_RICH", False, raising=False)
+    s = r.ResponseStream()
+    s.feed("let me")
+    assert s.started
+    s.discard()
+    assert not s.started and "".join(s._chars) == ""

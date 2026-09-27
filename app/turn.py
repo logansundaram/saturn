@@ -123,9 +123,9 @@ def _make_on_update(tracer, run_id, show_ui=True, answer=None):
     def on_update(node, delta):
         tracer.log_event(run_id, node, delta)
         if node == "agent" and answer is not None and getattr(answer, "started", False):
-            msgs = delta.get("messages") or []
-            last = msgs[-1] if msgs else None
-            if getattr(last, "tool_calls", None):
+            # The pass's AIMessage may be followed by hygiene ToolMessages — look at every
+            # message, not the last one.
+            if any(getattr(m, "tool_calls", None) for m in delta.get("messages") or []):
                 _render("discard", answer.discard)
         if show_ui:
             _render(f"node {node}", ui.show_node, node, delta)

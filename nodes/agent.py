@@ -35,6 +35,9 @@ from langgraph.types import interrupt
 import diag
 from config import get_config
 from core.context import grounding_parts
+from langchain_core.exceptions import OutputParserException
+from pydantic import ValidationError
+
 from core.llms import extract_prompt_tokens, extract_tok_per_sec, generate, get_model
 from core.llms import stream as llm_stream
 from core.messages import agent_sys_msg
@@ -43,15 +46,21 @@ from core.state import STEER_PREFIX, AgentState, is_turn_start
 from core.structured import _invoke_kwargs, _model_tag
 from core.tool_args import coerce_args, schema_hint
 from core.sources import build_sources
-from textutil import SOURCES_HEADER, clip, fmt_args
+from textutil import SOURCES_HEADER, clip, fmt_args, split_sources_footer
 
 ROLE = "tool_caller"
 
 # The hygiene observations — one producer each; the rail and the tests key on them.
 ALREADY_DECLINED_TEXT = ("Not executed: the user already declined this exact call this turn. "
                          "Do not retry it — tell the user it was not done.")
-STALL_TEXT = ("Not executed: this exact call already ran this turn and its result is above. "
-              "Answer from it, or do something different.")
+STALL_TEXT = ("Not executed: this exact call was already made twice this turn and its outcome "
+              "is above. Do not repeat it — answer from what you have, or do something different.")
+ASK_ALONE_TEXT = ("Not executed: ask_user must be called on its own. Ask the question first; act "
+                  "on the answer in your next turn.")
+MALFORMED_NOTE = ("Your previous reply was not a valid tool call (its arguments were not valid "
+                  "JSON). Either call a tool with well-formed JSON arguments, or answer in text.")
+MALFORMED_TEXT = ("I could not complete this: the model produced a malformed tool call twice. "
+                  "Please rephrase the request.")
 UNKNOWN_TOOL_TEXT = "Error: unknown tool {name!r}. Use only the tools you were given."
 BUDGET_NOTE = ("The action budget for this turn is spent. Answer now from what you have, and "
                "state plainly what was not done.")
@@ -108,6 +117,28 @@ def _rounds(this_turn: list) -> list:
 # ── the prompt ────────────────────────────────────────────────────────────────────────────────
 
 
+def strip_trailers(text: str) -> str:
+    """A recorded answer without its mechanical trailers (the Sources receipt, the incidents
+    note) — what prior answers look like in the model's history. The trailers are for the
+    user; sent back every turn they cost tokens and invite the model to imitate the footer."""
+    prose, _entries = split_sources_footer(str(text or ""))
+    i = prose.rfind("\n\n" + INCIDENTS_NOTE_HEADER)
+    if i != -1:
+        prose = prose[:i]
+    return prose.rstrip()
+
+
+def _history(messages: list) -> list:
+    out = []
+    for m in messages:
+        if isinstance(m, AIMessage) and not getattr(m, "tool_calls", None) and isinstance(m.content, str):
+            stripped = strip_trailers(m.content)
+            if stripped != m.content:
+                m = AIMessage(content=stripped, id=getattr(m, "id", None))
+        out.append(m)
+    return out
+
+
 def _llm_input(state: AgentState, messages: list, extra: "list | None" = None) -> list:
     """`extra` rides at the very end and is never a turn boundary (the capped pass's budget
     note is a HumanMessage, which is_turn_start would otherwise read as a new request)."""
@@ -116,7 +147,7 @@ def _llm_input(state: AgentState, messages: list, extra: "list | None" = None) -
     if stable:
         out.append(HumanMessage(content=stable))
     start = _turn_start(messages)
-    out.extend(messages[:start])
+    out.extend(_history(messages[:start]))
     if start < len(messages):
         text = str(messages[start].content)
         if dynamic:
@@ -175,6 +206,36 @@ def _generate(llm_input: list, *, tools: bool) -> AIMessage:
                      **kw)
 
 
+def _is_parse_failure(exc: Exception) -> bool:
+    """A model call that failed because the MODEL's output was malformed — not because the
+    daemon is down. langchain-ollama raises OutputParserException for non-JSON tool arguments,
+    pydantic refuses a tool call whose arguments parsed to a non-object, and the daemon itself
+    answers "error parsing tool call" for a broken <tool_call> block (a known small-model
+    failure). Anything else propagates: a turn must fail loudly on a real fault."""
+    if isinstance(exc, (OutputParserException, ValidationError)):
+        return True
+    text = str(exc).lower()
+    return "tool call" in text and ("pars" in text or "invalid" in text or "malformed" in text)
+
+
+def _generate_or_retry(llm_input: list, *, tools: bool) -> "AIMessage | None":
+    """`_generate`, retried ONCE with the malformed-call note when the model's output could not
+    be parsed; None when the retry failed the same way (the caller answers honestly)."""
+    try:
+        return _generate(llm_input, tools=tools)
+    except Exception as exc:
+        if not _is_parse_failure(exc):
+            raise
+        diag.log(f"agent_node : malformed model output ({type(exc).__name__}: {exc}) — retrying once")
+    try:
+        return _generate(llm_input + [HumanMessage(content=MALFORMED_NOTE)], tools=tools)
+    except Exception as exc:
+        if not _is_parse_failure(exc):
+            raise
+        diag.log(f"agent_node : malformed model output twice ({type(exc).__name__}) — answering honestly")
+        return None
+
+
 # ── hygiene ───────────────────────────────────────────────────────────────────────────────────
 
 
@@ -219,14 +280,25 @@ def sources_footer(tool_results, documents_retrieved) -> str:
     return SOURCES_HEADER + "\n" + "\n".join(f"  [{n}] {label}" for n, label in sources)
 
 
+_INCIDENT_WORDING = {
+    "skipped": "declined at the approval gate — not done",
+    "blocked": "blocked by the air-gap — nothing was sent",
+}
+
+
 def incidents(this_turn: list) -> list:
-    """One line per tool round that did NOT complete — declined at the gate (skipped), refused
-    by the air-gap (blocked), or failed (error). Read off the ToolMessages' structural stamp."""
+    """One line per tool CALL that did NOT complete — declined at the gate (skipped), refused
+    by the air-gap (blocked), or failed (error) — read off the ToolMessages' structural stamp
+    and worded for the user (the observations are written for the model). One line per
+    distinct call: a declined call the model re-issued is one incident, not two."""
     out = []
-    for _key, name, args, status, obs in _rounds(this_turn):
-        if status in _INCIDENT_STATUSES:
-            out.append(f"{name}({fmt_args(args or {}, 60)}) — {status}: "
-                       f"{clip(' '.join(obs.split()), _INCIDENT_CAP)}")
+    seen: set = set()
+    for key, name, args, status, obs in _rounds(this_turn):
+        if status not in _INCIDENT_STATUSES or key in seen:
+            continue
+        seen.add(key)
+        why = _INCIDENT_WORDING.get(status) or f"failed: {clip(' '.join(obs.split()), _INCIDENT_CAP)}"
+        out.append(f"{name}({fmt_args(args or {}, 60)}) — {why}")
     return out
 
 
@@ -286,17 +358,22 @@ def agent_node(state: AgentState):
 
     # 3. the cap — the last pass answers without tools. The budget note rides the prompt only
     # (never state: a HumanMessage there would read as a new turn boundary).
-    capped = iteration > get_config().max_iterations
+    capped = iteration >= get_config().max_iterations
     extra = [HumanMessage(content=BUDGET_NOTE)] if capped else []
 
-    # 4. generate
-    ai = _generate(_llm_input(state, messages + new, extra), tools=not capped)
+    # 4. generate — a malformed model output is retried once, then answered honestly; any
+    # other failure propagates (the REPL reports "Turn failed").
+    this_turn = _this_turn(messages + new)
+    ai = _generate_or_retry(_llm_input(state, messages + new, extra), tools=not capped)
+    if ai is None:
+        updates["messages"] = new + [AIMessage(content=_with_trailers(MALFORMED_TEXT, state, this_turn))]
+        diag.log(f"agent_node : {time.perf_counter() - start:.4f}s (malformed output twice)")
+        return updates
     stats = SimpleNamespace(response_metadata=getattr(ai, "response_metadata", None) or {},
                             usage_metadata=getattr(ai, "usage_metadata", None))
     updates["tok_per_sec"] = extract_tok_per_sec(stats)
     updates["context_tokens"] = extract_prompt_tokens(stats)
 
-    this_turn = _this_turn(messages + new)
     calls, malformed = _calls_of(ai)
     if not calls or capped:
         # 6. the answer
@@ -309,12 +386,23 @@ def agent_node(state: AgentState):
 
     # 5. hygiene
     rounds = _rounds(this_turn)
-    kept, answered = [], []
+    kept, replies = [], []
     for call in calls:
         fixed, reply = _hygiene(call, rounds, malformed=call["id"] in malformed)
         kept.append(fixed)
-        if reply is not None:
-            answered.append(reply)
+        replies.append(reply)
+    # ask_user runs ALONE: its interrupt re-executes the tools node from the top on resume, so
+    # any sibling would run twice (an approved write, a second draft). The first question is
+    # kept; every other call in the pass is answered here with "ask first".
+    live = [c for c, r in zip(kept, replies) if r is None]
+    first_ask = next((c for c in live if c.get("name") == "ask_user"), None)
+    if first_ask is not None:
+        for i, (c, r) in enumerate(zip(kept, replies)):
+            if r is None and c is not first_ask:
+                replies[i] = ToolMessage(content=ASK_ALONE_TEXT, tool_call_id=c["id"],
+                                         name=str(c.get("name") or ""),
+                                         additional_kwargs={"saturn_status": "error"})
+    answered = [r for r in replies if r is not None]
     ai = AIMessage(content=ai.content, tool_calls=kept, response_metadata=ai.response_metadata,
                    usage_metadata=ai.usage_metadata)
     updates["messages"] = new + [ai] + answered

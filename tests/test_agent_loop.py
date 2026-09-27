@@ -506,3 +506,140 @@ def test_trace_why_renders_agent_passes(isolated_paths, capsys):
     assert "pass 1" in out and "read_file" in out and "let me read it" in out
     assert "pass 2: answered" in out
     assert "rectify" not in out
+
+
+# ── final review fixes ───────────────────────────────────────────────────────────────────────
+
+
+def test_config_template_keeps_the_runtime_block():
+    """The template seeds every fresh install: its runtime knobs must live under `runtime:`
+    (a lost header silently re-parents them under `paths:` and every runtime.* lookup falls
+    back to code defaults — airgap included)."""
+    import pathlib
+
+    import yaml
+
+    data = yaml.safe_load(pathlib.Path("config.default.yaml").read_text())
+    rt = data["runtime"]
+    for key in ("max_iterations", "auto_approve", "num_ctx", "llm_timeout", "keep_alive", "prime",
+                "airgap", "quarantine", "citations", "grant_scope"):
+        assert key in rt, key
+    assert "quick_path" not in rt
+    assert all(isinstance(v, str) for v in data["paths"].values())
+
+
+def test_ask_user_runs_alone(monkeypatch):
+    """LangGraph re-executes tool_node from the top when ask_user's interrupt resumes, so any
+    sibling call would run twice: hygiene keeps the question and refuses its siblings (and a
+    second question) with a note to ask first."""
+    from nodes import agent
+
+    monkeypatch.setattr(agent, "_generate", lambda i, *, tools: AIMessage(content="", tool_calls=[
+        _call("read_file", {"file_path": "a"}, "r"), _call("ask_user", {"question": "which?"}, "q"),
+        _call("ask_user", {"question": "and?"}, "q2")]))
+    out = agent.agent_node(_state([HumanMessage(content="q")]))
+    tms = {m.tool_call_id: m for m in out["messages"] if isinstance(m, ToolMessage)}
+    assert set(tms) == {"r", "q2"} and all(agent.ASK_ALONE_TEXT == m.content for m in tms.values())
+    assert agent.route_after_agent({"messages": out["messages"]}) == "approval"
+
+
+def test_on_update_discards_when_hygiene_answered_a_call():
+    from app.turn import _make_on_update
+
+    class Answer:
+        started = True
+        discarded = 0
+
+        def discard(self):
+            self.discarded += 1
+
+    class Tracer:
+        def log_event(self, *a):
+            pass
+
+    a = Answer()
+    on_update = _make_on_update(Tracer(), 1, show_ui=False, answer=a)
+    on_update("agent", {"messages": [AIMessage(content="let me", tool_calls=[_call("nope", {}, "n")]),
+                                     ToolMessage(content="err", tool_call_id="n", name="nope")]})
+    assert a.discarded == 1
+
+
+def test_generate_parse_failure_retries_once_then_answers_honestly(monkeypatch):
+    from langchain_core.exceptions import OutputParserException
+
+    from nodes import agent
+
+    calls = []
+
+    def flaky(llm_input, *, tools):
+        calls.append(llm_input[-1].content)
+        if len(calls) == 1:
+            raise OutputParserException("bad tool json")
+        return AIMessage(content="ok")
+
+    monkeypatch.setattr(agent, "_generate", flaky)
+    out = agent.agent_node(_state([HumanMessage(content="q")]))
+    assert out["messages"][-1].content.startswith("ok")
+    assert len(calls) == 2 and calls[1] == agent.MALFORMED_NOTE
+
+    def broken(llm_input, *, tools):
+        raise OutputParserException("bad tool json")
+
+    monkeypatch.setattr(agent, "_generate", broken)
+    out = agent.agent_node(_state([HumanMessage(content="q")]))
+    assert out["messages"][-1].content.startswith(agent.MALFORMED_TEXT)
+    assert agent.route_after_agent({"messages": out["messages"]}) == "end"
+
+    def down(llm_input, *, tools):
+        raise RuntimeError("connection refused")
+
+    monkeypatch.setattr(agent, "_generate", down)
+    with pytest.raises(RuntimeError):
+        agent.agent_node(_state([HumanMessage(content="q")]))
+
+
+def test_incidents_note_uses_user_wording_and_dedupes(monkeypatch):
+    from nodes import agent
+    from nodes.approval import DECLINE_TEXT
+
+    args = {"file_path": "x", "content": "y"}
+    prior = ([HumanMessage(content="q")] + _round("write_file", args, "c1", DECLINE_TEXT, "skipped")
+             + _round("write_file", args, "c2", agent.ALREADY_DECLINED_TEXT, "skipped")
+             + _round("web_search", {"query": "z"}, "c3", "air-gap refused", "blocked"))
+    monkeypatch.setattr(agent, "_generate", lambda i, *, tools: AIMessage(content="sorry"))
+    out = agent.agent_node(_state(prior))
+    text = out["messages"][-1].content
+    assert text.count("write_file(") == 1 and "declined at the approval gate" in text
+    assert "Do not retry" not in text and "blocked by the air-gap" in text
+
+
+def test_cap_lands_on_the_max_iterations_pass(monkeypatch):
+    from config import get_config
+    from nodes import agent
+
+    seen = []
+    monkeypatch.setattr(agent, "_generate", lambda i, *, tools: seen.append(tools) or AIMessage(content="a"))
+    agent.agent_node(_state([HumanMessage(content="q")], iteration=get_config().max_iterations - 2))
+    agent.agent_node(_state([HumanMessage(content="q")], iteration=get_config().max_iterations - 1))
+    assert seen == [True, False]
+
+
+def test_plan_call_is_not_a_source():
+    from nodes.tools import tool_node
+
+    out = tool_node({"messages": [HumanMessage(content="q"), AIMessage(content="", tool_calls=[
+        _call("plan", {"steps": [{"label": "a"}]})])]})
+    assert out["tool_results"] == [] and out["plan"]
+
+
+def test_prior_answer_trailers_are_stripped_from_history(monkeypatch):
+    from nodes import agent
+
+    seen = {}
+    monkeypatch.setattr(agent, "_generate", lambda i, *, tools: seen.setdefault("input", i) and AIMessage(content="ok"))
+    earlier = ("42\n\n" + agent.INCIDENTS_NOTE_HEADER + "\n- read_file(x) — error: boom\n\n"
+               "Sources:\n  [1] calculate(expression='6*7')")
+    msgs = [HumanMessage(content="first"), AIMessage(content=earlier), HumanMessage(content="second")]
+    agent.agent_node(_state(msgs))
+    prior_ai = [m for m in seen["input"] if isinstance(m, AIMessage)]
+    assert prior_ai and prior_ai[0].content == "42"

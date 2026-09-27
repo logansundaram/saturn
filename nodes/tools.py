@@ -134,8 +134,9 @@ def tool_node(state: AgentState):
             except GraphInterrupt:
                 # An interrupting tool (ask_user) pausing the graph is CONTROL FLOW, not a tool
                 # error — swallowing it here would answer the question with the exception's repr
-                # and never reach the human. LangGraph re-runs this node from the top on resume;
-                # batches are singletons (execute emits one call per step), so nothing re-executes.
+                # and never reach the human. LangGraph re-runs this node from the top on resume,
+                # which is why nodes/agent.py lets ask_user run only ALONE in its batch: a
+                # sibling call would execute twice.
                 raise
             except Exception as exc:  # surface tool errors to the model instead of crashing
                 observation = f"Error calling {name}: {exc}"
@@ -195,9 +196,11 @@ def tool_node(state: AgentState):
         # feeding the same passage to the synthesizer twice.
         if name in RETRIEVAL_TOOLS:
             documents_retrieved.append(clamped)
+        elif name == PLAN_TOOL:
+            pass  # the checklist is state, not a source the answer drew on
         else:
-            # The call paired with its observation (CALL_RESULT_SEP); synthesize's Sources labels
-            # split on it to recover the call half from the observation.
+            # The call paired with its observation (CALL_RESULT_SEP); the Sources receipt's
+            # labels split on it to recover the call half from the observation.
             tool_results.append(f"{_fmt_call(name, args)}{CALL_RESULT_SEP}{clamped}")
         # Structured per-call record for the UI's tool-I/O tree (args + result preview + timing).
         event = {

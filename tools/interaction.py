@@ -4,9 +4,8 @@ User-interaction tool — ask_user.
 The one tool whose "backend" is the human at the terminal. It pauses the RUNNING graph via
 LangGraph's `interrupt()` — the same checkpoint machinery the approval gate, plan review, and the
 freeze editor already ride — the loop's interrupt dispatcher renders the question at the prompt
-(`ui.answer_question`), and the typed answer resumes the turn as this tool's observation. So the
-answer lands on the plan step's `result` like any other tool output and flows to rectify/replan/
-synthesize through the ordinary data bus.
+(`ui.answer_question`), and the typed answer resumes the turn as this tool's observation — a
+ToolMessage the agent reads on its next pass like any other tool output.
 
 Registered `read_only`: asking mutates nothing, so it never faces the approval gate — the
 question IS the interaction. The answer is the user's own words: trusted input (never quarantined),
@@ -17,9 +16,9 @@ bare True (noting the unanswered question on stderr), and the tool reports the a
 the model must proceed without the answer and disclose the gap, never fabricate one. The same
 honest degradation covers an empty reply (the user pressing Enter / Ctrl-C at the prompt).
 
-Determinism contract (same as plan_gate): a resumed `interrupt()` re-executes its node from the
-top, so nothing here may mutate state before the interrupt — and tool_node's batches are
-singletons (execute emits one call per step), so the re-run re-invokes only this tool.
+Determinism contract: a resumed `interrupt()` re-executes its node from the top, so nothing
+here may mutate state before the interrupt — and nodes/agent.py lets ask_user run only ALONE
+in its batch, so the re-run re-invokes only this tool (a sibling would execute twice).
 """
 
 from langgraph.types import interrupt

@@ -205,27 +205,3 @@ def test_summarize_gates_empty_and_garbage_tolerant():
 # --- /trace why: the self-correction section always prints -----------------------------------
 # (Renamed from "verification" — the state records rectify verdicts, never a verified answer,
 # and the crypto-era word overpromised after the audit-crypto shelve.)
-
-
-def test_why_self_correction_prints_negative_case(capsys):
-    from commands.trace import _render_why
-    from tui import ui
-
-    run = (3, "what is new?", None, None, "ok", "an answer")
-    _render_why(ui, run, [], [])
-    out = capsys.readouterr().out
-    assert "self-correction" in out
-    assert "rectify judge did not run — every step resolved mechanically." in out
-
-
-def test_why_self_correction_prints_rectify_verdict(capsys):
-    from commands.trace import _render_why
-    from tui import ui
-
-    run = (4, "q", None, None, "ok", "an answer")
-    calls = [(1, "rectify", json.dumps(
-        {"content": '{"reasoning":"never looked it up","rectify":true}'}))]
-    _render_why(ui, run, [], calls)
-    out = capsys.readouterr().out
-    assert "rectify:" in out and "never looked it up" in out
-    assert "did not run" not in out

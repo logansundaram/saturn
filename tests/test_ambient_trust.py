@@ -217,6 +217,10 @@ def test_gate_decision_echo_renders_both_verdicts(capsys):
     assert "quarantine escalation" in out
 
 
+_FOOTER_TEXT = ("The answer body cites [1].\n\n"
+                "Sources:\n  [1] web_extract(url='https://e.com')\n  [2] knowledge base: a.md")
+
+
 def test_split_sources_extracts_a_wellformed_footer():
     resp = importlib.import_module("tui.ui.response")
 

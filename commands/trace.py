@@ -357,15 +357,15 @@ def _verbosity(ctx, args):
         level = ui.verbosity()
         detail = (
             "every node + full timings" if level == "verbose"
-            else "plan · execute · tools · synthesize (plumbing folded)"
+            else "agent · tools · gate decisions (plumbing folded)"
         )
         _print(f"  live trace on — {level}: {detail}.")
 
 
 # --- /trace why — decision provenance ----------------------------------------------------------
-# /trace shows WHAT happened; this subview reconstructs WHY: the causal chain from the recorded
-# plan, per-step agent reasoning + chosen tool calls, the evidence relied on, the groundedness
-# verdict, and the cited sources. (Folded in from the old standalone /why, June 2026.)
+# /trace shows WHAT happened; this subview reconstructs WHY: the causal chain from the model's
+# checklist (if it wrote one), each agent pass's thought + chosen tool calls, the evidence relied
+# on, and the cited sources. (Folded in from the old standalone /why, June 2026.)
 
 def _why(ctx, args):
     from tui import ui
@@ -435,52 +435,26 @@ def _render_why(ui, run, events, calls):
             _print(f"    {glyph} {s.get('step_id')}. {s.get('label')}{tool}")
         _print("")
 
-    # How it reasoned — the execute steps + the rectify verdicts, from the recorded LLM I/O.
+    # How it reasoned — every agent pass, from the recorded LLM I/O: the pre-call thought and the
+    # calls it chose, or the answer.
     step = 0
     printed_header = False
-    verdicts: list[str] = []
     for _seq, node, output in calls:
-        out = decode_json(output, {})
-        if node == "quick":
-            # The router's output is its grammar-bound decision, not a tool-calling message:
-            # the call is built by the node from the decoded JSON. "answer" produced no step,
-            # so it is not counted as one (review 2026-09-08).
-            decision = decode_json(out.get("content", ""), None)
-            if not isinstance(decision, dict):
-                decision = {"tool": "", "arguments": {}}
-            if not printed_header:
-                _print("  how it reasoned")
-                printed_header = True
-            tool = str(decision.get("tool") or "").strip()
-            if tool == "answer":
-                _print("    quick path: answered directly")
-            elif tool:
-                step += 1
-                _print(f"    step {step}: quick lookup")
-                _print(f"      → chose to call: {tool}({_fmt_call_args(decision.get('arguments'))})")
-            else:
-                _print("    quick path: (no decision — handed to the planner)")
+        if node != "agent":
             continue
-        if node == "execute":
-            step += 1
-            content = _clip(out.get("content", ""), 240)
-            tcs = out.get("tool_calls") or []
-            if not printed_header:
-                _print("  how it reasoned")
-                printed_header = True
-            if content:
-                _print(f"    step {step}: {content}")
-            if tcs:
-                names = ", ".join(
-                    f"{c.get('name')}({_fmt_call_args(c.get('args'))})" for c in tcs
-                )
-                _print(f"      → chose to call: {names}")
-            elif not content:
-                _print(f"    step {step}: (finished — no further action)")
-        elif node in ("rectify", "replan"):
-            content = str(out.get("content", "") or "").strip()
-            if content:
-                verdicts.append(f"{node}: {content}")
+        out = decode_json(output, {})
+        step += 1
+        content = _clip(out.get("content", ""), 240)
+        tcs = out.get("tool_calls") or []
+        if not printed_header:
+            _print("  how it reasoned")
+            printed_header = True
+        if tcs:
+            names = ", ".join(f"{c.get('name')}({_fmt_call_args(c.get('args'))})" for c in tcs)
+            _print(f"    pass {step}: {content or '(no preamble)'}")
+            _print(f"      → chose to call: {names}")
+        else:
+            _print(f"    pass {step}: answered" + (f" — {content}" if content else ""))
     if printed_header:
         _print("")
 
@@ -498,20 +472,8 @@ def _render_why(ui, run, events, calls):
         _print("    (no tools ran — answered from the model's own knowledge + context)")
         _print("")
 
-    # Self-correction — ALWAYS printed: the negative case is information too (the Glass Box's
-    # "rectified" row says the same thing, and the two must agree). Silence here used to read as
-    # "maybe checked, maybe not" — a trust surface can't leave that ambiguous. Named for what the
-    # state records (rectify verdicts); "verification" overpromised — nothing verifies the answer.
-    _print("  self-correction")
-    if verdicts:
-        for v in verdicts[-3:]:
-            _print(f"    {_clip(v, 160)}")
-    else:
-        _print("    rectify judge did not run — every step resolved mechanically.")
-    _print("")
-
-    # Provenance footer of the answer, if the synthesizer attached one (the [n] → source map).
-    # THE one parser of the footer synthesize builds. The hand-rolled split this replaced took the
+    # Provenance footer of the answer, if the agent attached one (the [n] → source map).
+    # THE one parser of the footer nodes/agent.py builds. The hand-rolled split this replaced took the
     # FIRST "Sources:" anywhere in the answer, so an answer whose prose used the word rendered the
     # rest of its own text as if it were the citation map.
     _, entries = split_sources_footer(response)
@@ -619,16 +581,15 @@ one:
 Every turn is one run. This is the durable record that survives restarts.
 Subviews:
 
-  /trace why [#id]     decision provenance: not WHAT happened but WHY — the plan it drafted, the
-                       model's recorded reasoning + tool choice at each step, the evidence the
-                       answer was built from, the rectify verdicts (plan revisions and why), and
-                       the cited sources. Defaults to the last run.
+  /trace why [#id]     decision provenance: not WHAT happened but WHY — the checklist it wrote
+                       (if any), each pass's recorded thought + tool choice, the evidence the
+                       answer was built from, and the cited sources. Defaults to the last run.
   /trace answer [#id]  answer-level provenance — each cited source's origin (local vs network)
                        and trust, and what left the machine. Bare = the live last turn; #id
                        reconstructs a recorded run. (/trace source <n> prints the full text
                        behind citation [n].)
   /trace source [n]    the FULL material behind a citation [n] of the last answer — the complete
-                       tool observation or retrieved passage the synthesizer read, under the same
+                       tool observation or retrieved passage the agent read, under the same
                        numbering the answer used. Bare lists the numbered sources.
   /trace invoke [#id]  the LLM calls of a run: each model call's INPUT messages + OUTPUT, with
                        timing + token counts. Defaults to the most recent run with LLM calls; add
@@ -656,7 +617,7 @@ Subviews:
 Live trace verbosity (controls what scrolls during a turn; recording is always on):
 
   /trace off    only the final response prints — runs quietly
-  /trace on     normal: plan · execute · tools · synthesize (plumbing nodes folded)  [default]
+  /trace on     normal: agent · tools · gate decisions (plumbing nodes folded)  [default]
   /trace full   verbose: every node line, including folded plumbing + full timings
 """,
 )
@@ -872,7 +833,7 @@ def _show_llm_context(ctx, args):
 
 # ── /trace source — the raw material behind a citation ────────────────────────────────────────
 # The citations footer maps each inline [n] to a one-line label; this shows the FULL tool
-# result / retrieved passage behind that number, rebuilt with the same numbering the synthesizer
+# result / retrieved passage behind that number, rebuilt with the same numbering the agent
 # saw (core.sources.build_sources over the turn's accumulators), so [3] here is exactly the
 # [3] in the answer. Closes the provenance loop in one keystroke instead of a /trace drill-down.
 

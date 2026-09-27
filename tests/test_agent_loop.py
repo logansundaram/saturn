@@ -473,3 +473,36 @@ def test_pause_prompt_decisions(monkeypatch):
     assert ui.pause_prompt({"reason": "esc", "plan": []}) == {"action": "steer", "text": "use km"}
     monkeypatch.setattr(p, "ask", lambda *a, **k: "q")
     assert ui.pause_prompt({"reason": "esc", "plan": []}) == {"action": "abort"}
+
+
+# ── Task 8: /trace why renders agent passes ──────────────────────────────────────────────────
+
+
+def test_trace_why_renders_agent_passes(isolated_paths, capsys):
+    import json
+    import sqlite3
+
+    from commands import trace as tr
+    from stores.trace import Tracer
+
+    (isolated_paths / "database").mkdir(parents=True, exist_ok=True)
+    db = str(isolated_paths / "database" / "db.sqlite")
+    t = Tracer(db)
+    run_id = t.start_run("th", "q")
+    t.log_event(run_id, "agent", {"messages": [AIMessage(content="", tool_calls=[_call("read_file", {"file_path": "x"})])]})
+    with sqlite3.connect(db) as c:
+        c.execute("INSERT INTO llm_calls (run_id, seq, ts, node, model, dur, prompt_tokens, output_tokens, "
+                  "input, output, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                  (run_id, 1, "2026-09-27T00:00:00", "agent", "m", 0.1, 10, 5, "[]",
+                   json.dumps({"content": "let me read it", "tool_calls": [_call("read_file", {"file_path": "x"})]}),
+                   "ok"))
+        c.execute("INSERT INTO llm_calls (run_id, seq, ts, node, model, dur, prompt_tokens, output_tokens, "
+                  "input, output, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                  (run_id, 2, "2026-09-27T00:00:01", "agent", "m", 0.1, 10, 5, "[]",
+                   json.dumps({"content": "x holds 3 lines", "tool_calls": []}), "ok"))
+    t.end_run(run_id, "ok", "done")
+    tr._why(SimpleNamespace(db_path=db, state={}), [str(run_id)])
+    out = capsys.readouterr().out
+    assert "pass 1" in out and "read_file" in out and "let me read it" in out
+    assert "pass 2: answered" in out
+    assert "rectify" not in out

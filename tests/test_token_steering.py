@@ -135,7 +135,7 @@ def test_freeze_latch_only_fires_while_armed():
 
 
 def test_typeahead_esc_prefers_freeze_then_falls_back_to_pause():
-    from core.plan_ops import PauseController
+    from core.pause import PauseController
     from tui.typeahead import InputQueue
 
     froze, paused = [], []
@@ -195,70 +195,6 @@ def _frozen_state(text="draft answer so far"):
     return {"answer_buffer": buf, "current_query": "q"}
 
 
-def test_answer_gate_applies_the_edit_and_resumes(monkeypatch):
-    import nodes.answer_gate as gate
-
-    monkeypatch.setattr(gate, "interrupt",
-                        lambda payload: {"action": "resume", "text": "draft answer CORRECTED"})
-    out = gate.answer_gate_node(_frozen_state())
-    buf = out["answer_buffer"]
-    assert buf["state"] == "resume" and buf["edited"]
-    assert buf["text"] == "draft answer CORRECTED"
-    assert provenance.human_spans(buf)
-
-
-def test_answer_gate_tolerates_a_bare_true_resume(monkeypatch):
-    """The headless approver answers unknown interrupts with True = continue unchanged."""
-    import nodes.answer_gate as gate
-
-    monkeypatch.setattr(gate, "interrupt", lambda payload: True)
-    out = gate.answer_gate_node(_frozen_state())
-    buf = out["answer_buffer"]
-    assert buf["state"] == "resume" and not buf["edited"] and not buf["edits"]
-
-
-def test_answer_gate_done_accepts_the_text_as_final(monkeypatch):
-    import nodes.answer_gate as gate
-
-    monkeypatch.setattr(gate, "interrupt", lambda payload: {"action": "done", "text": "keep this"})
-    out = gate.answer_gate_node(_frozen_state())
-    assert out["answer_buffer"]["state"] == "done"
-
-
-def test_answer_gate_strips_trailing_spaces_before_a_resume(monkeypatch):
-    """Transplanted from the token_steering isolate: a prefix ending in a space or tab is a bad
-    BPE tail (tokens carry their LEADING space, so " word" can never follow "abc "), and the
-    daemon has no token healing. The resume prefix is rstripped of spaces/tabs — newlines kept —
-    MECHANICALLY: an unchanged resume of a buffer that happened to freeze on a space is not a
-    human edit (no span, no edit record), and the spans still tile the text exactly."""
-    import nodes.answer_gate as gate
-
-    monkeypatch.setattr(gate, "interrupt", lambda payload: True)
-    out = gate.answer_gate_node(_frozen_state("draft answer so far   \t"))
-    buf = out["answer_buffer"]
-    assert buf["text"] == "draft answer so far"
-    assert not buf["edited"] and not buf["edits"] and not provenance.human_spans(buf)
-    assert buf["spans"][-1]["end"] == len(buf["text"])
-
-    # A newline tail is kept (a paragraph break is a legitimate continuation point).
-    out = gate.answer_gate_node(_frozen_state("para one.\n\n"))
-    assert out["answer_buffer"]["text"] == "para one.\n\n"
-
-    # A human edit ending in a space: the typed span is trimmed with the text.
-    monkeypatch.setattr(gate, "interrupt",
-                        lambda payload: {"action": "resume", "text": "draft answer FIXED "})
-    out = gate.answer_gate_node(_frozen_state())
-    buf = out["answer_buffer"]
-    assert buf["text"] == "draft answer FIXED" and buf["edited"]
-    assert provenance.human_spans(buf) == [(13, 18)]
-    assert buf["spans"][-1]["end"] == len(buf["text"])
-
-    # `done` finalizes the text as typed — no generation follows, nothing to strip for.
-    monkeypatch.setattr(gate, "interrupt", lambda payload: {"action": "done", "text": "keep  "})
-    out = gate.answer_gate_node(_frozen_state())
-    assert out["answer_buffer"]["text"] == "keep  "
-
-
 def test_provenance_rstrip_trailing_keeps_spans_tiling():
     buf = provenance.append_model(provenance.new_buffer(), "abc ")
     buf = provenance.apply_edit(buf, "abc  xyz \t")
@@ -274,32 +210,6 @@ def test_provenance_rstrip_trailing_keeps_spans_tiling():
 
 
 # --- synthesize routing + the no-generation finalize path -------------------------------------------
-
-def test_route_after_synthesize():
-    from nodes.synthesize import route_after_synthesize
-
-    assert route_after_synthesize({"answer_buffer": {"state": "frozen"}}) == "answer_gate"
-    assert route_after_synthesize({"answer_buffer": {"state": "complete"}}) == "end"
-    assert route_after_synthesize({"answer_buffer": None}) == "end"
-    assert route_after_synthesize({}) == "end"
-
-
-def test_synthesize_done_buffer_finalizes_without_an_llm(isolated_paths):
-    """A 'done' buffer (the user accepted the frozen text) must produce the final AIMessage
-    mechanically — no model call, so this runs offline."""
-    from nodes.synthesize import synthesize_node
-
-    buf = {**provenance.append_model(provenance.new_buffer(), "the corrected answer"),
-           "state": "done"}
-    state = {"current_query": "q", "context": "", "plan": [], "tool_results": [],
-             "documents_retrieved": [], "messages": [HumanMessage(content="q")],
-             "answer_buffer": buf, "tok_per_sec": 0.0, "context_tokens": 0}
-    out = synthesize_node(state)
-    assert out["messages"][-1].content.startswith("the corrected answer")
-    assert out["answer_buffer"]["state"] == "complete"
-
-
-# --- the audit echoes (live rail + /trace replay share these) ---------------------------------------
 
 def test_rail_echoes_the_freeze_and_the_correction(capsys):
     import importlib
@@ -415,7 +325,6 @@ def test_esc_timeout_covers_a_split_alt_enter():
 
     correction = importlib.import_module("tui.ui.correction")
     assert 0.2 <= correction._ESC_TIMEOUT_S < 0.5
-
 
 
 def test_freeze_editor_binds_escape_to_submit():
@@ -606,50 +515,6 @@ def test_second_esc_forces_the_cut():
     assert seek.after_chunk("mid-word") is True
     c.clear()
     assert not c.forced()
-
-
-def test_first_pass_freeze_lands_on_a_boundary(monkeypatch):
-    """End to end through _stream_first_pass with a scripted chunk stream: Esc arrives after
-    "The qui"; the freeze lands at "The quick" (word completed) and the whitespace-led chunk
-    that follows is not appended."""
-    import types
-
-    from nodes import synthesize as syn
-
-    chunks = ["The ", "qui", "ckl", "y", " brown", " fox"]
-    c = continuation.FreezeController()
-    c.arm()
-
-    def stream(_inp, **_kw):
-        for i, t in enumerate(chunks):
-            if i == 2:
-                c.freeze()  # Esc lands while "qui" is the tail
-            yield types.SimpleNamespace(content=t, response_metadata={}, usage_metadata=None)
-
-    monkeypatch.setattr(syn, "get_model", lambda role: types.SimpleNamespace(stream=stream))
-    buf, frozen, _meta, _usage = syn._stream_first_pass([], c)
-    assert frozen
-    assert buf["text"] == "The quickly"
-
-
-def test_first_pass_freeze_at_a_boundary_is_immediate(monkeypatch):
-    import types
-
-    from nodes import synthesize as syn
-
-    chunks = ["The ", "quick ", "brown", " fox"]
-    c = continuation.FreezeController()
-    c.arm()
-
-    def stream(_inp, **_kw):
-        for i, t in enumerate(chunks):
-            if i == 1:
-                c.freeze()
-            yield types.SimpleNamespace(content=t, response_metadata={}, usage_metadata=None)
-
-    monkeypatch.setattr(syn, "get_model", lambda role: types.SimpleNamespace(stream=stream))
-    buf, frozen, _m, _u = syn._stream_first_pass([], c)
-    assert frozen and buf["text"] == "The quick "
 
 
 def test_qwen38_resolves_to_the_qwen3x_family():

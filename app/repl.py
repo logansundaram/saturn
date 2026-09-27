@@ -22,7 +22,7 @@ from core import prime
 from app.turn import run_turn, _make_on_update, _trace_warning
 from config import get_config
 from core import mentions
-from core.plan_ops import get_pause_controller
+from core.pause import get_pause_controller
 from stores.rag import SUPPORTED_EXTENSIONS
 from stores.trace import Tracer
 from tui import ui
@@ -164,9 +164,9 @@ def run_repl() -> None:
     # One input reader for the session. While a turn runs it captures type-ahead so the user can
     # queue follow-up queries / slash commands without waiting (drained between turns below). The Esc
     # key acts on whatever is typed: with text, it's a mid-turn steering correction (injected into
-    # the running turn at the next step boundary via plan_gate, acknowledged by ui.steer_note); with
-    # an empty line, it asks the plan_gate to pause for plan review (acknowledged immediately by
-    # ui.pause_note — the gate itself may be many seconds away on a local model). The in-progress
+    # the running turn at the agent's next pass, acknowledged by ui.steer_note); with an empty
+    # line, it asks the agent to pause at its next pass (acknowledged immediately by
+    # ui.pause_note — the pass itself may be many seconds away on a local model). The in-progress
     # line + queue depth render live in the status bar (on_change -> ui). No-ops cleanly off-TTY
     # (see typeahead.InputQueue).
     input_queue = InputQueue(
@@ -234,35 +234,17 @@ def run_repl() -> None:
         # `not dropped` keeps the drag-and-drop promise: a POSIX absolute path ("/home/…")
         # whose owner chose "[Enter] send as-is" must run as a message, not fall through to
         # dispatch as an unknown slash command.
-        forced_route = ""
         if not dropped and commands.is_command(user_input):
             commands.dispatch(user_input, cmd_ctx)
             if cmd_ctx.should_quit:
                 break
             state = cmd_ctx.state  # a command (e.g. /reset) may have swapped state out
-            if not cmd_ctx.pending_turn:
-                continue
-            # `/quick <request>` / `/plan <request>`: the command handed back a turn to run with
-            # its engine forced — fall through into the turn with that request as the input.
-            forced_route, user_input = cmd_ctx.pending_turn
-            cmd_ctx.pending_turn = None
+            continue
 
         if not user_input.strip():
             continue
 
         state = _fresh_turn(state, user_input)
-        if forced_route:
-            state["route"] = forced_route
-        # A plan the user drafted between turns (/draft): this turn RUNS their steps — seed
-        # the fresh state with them (plan_node honors a pre-seeded plan and skips its own
-        # drafting) and consume the draft, so exactly one turn runs it.
-        if cmd_ctx.pending_plan:
-            state["plan"] = cmd_ctx.pending_plan
-            cmd_ctx.pending_plan = None
-            ui.note(
-                f"running your drafted plan ({len(state['plan'])} step(s)) — "
-                "Esc still pauses for review mid-turn."
-            )
         # Expand @file mentions: read any files the user referenced as `@path` and stash their
         # contents on state for the grounding node to fold into context (so every node sees the
         # file inline; dropped files queued via "[a]ttach" ride along as extra_paths). The message
@@ -273,12 +255,6 @@ def run_repl() -> None:
             state["attachments"] = attach_block
             ui.note("attached " + ", ".join(mentions.display(p) for p in attached))
             _warn_flagged_attachments(attach_block, ui.warn)
-        # Persistent review mode (/plan review on) arms a pause at the FIRST gate every turn, so the
-        # plan is vetted before any execution. A one-shot /plan pause set the controller directly.
-        if cmd_ctx.review_plan:
-            pause_controller.request(
-                "review", "review mode: vet the plan before executing"
-            )
         # Fresh thread per turn: gives the interrupts a stable thread to pause/resume on,
         # while cross-turn memory rides on the manually-carried `messages`.
         thread_id = str(uuid.uuid4())
@@ -293,39 +269,20 @@ def run_repl() -> None:
         }
         ui.reset_turn()  # reset node-timing + plan-diff state for this turn's trace
         expired_grants = {"prefixes": [], "tools": []}  # filled at the task boundary (finally)
-        # Renders the synthesize node's answer token-by-token as it streams (on_token below). It
+        # Renders the agent's answer token-by-token as it streams (on_token below). It
         # opens the response section on the first token and is finished (or aborted) after the turn.
         answer = ui.ResponseStream()
 
-        # Resolve each interrupt by type: the plan-review gate -> the plan editor; the approval
-        # gate -> the approval prompt. (/policy open no longer needs a branch here: it opens the
-        # gate policy itself, so the approval node stops interrupting at all.) Keeping this
-        # dispatch here lets run_turn stay interrupt-type-agnostic (it just feeds the result back
-        # as the resume value).
+        # Resolve each interrupt by type: the Esc pause -> the pause prompt; ask_user -> the
+        # question prompt; the approval gate -> the approval prompt. (/policy open needs no
+        # branch: it opens the gate policy itself, so the approval node stops interrupting.)
+        # Keeping this dispatch here lets run_turn stay interrupt-type-agnostic (it just feeds
+        # the result back as the resume value).
         def on_interrupt(value):
-            if isinstance(value, dict) and value.get("type") == "plan_review":
-                return ui.review_plan(value)
-            if isinstance(value, dict) and value.get("type") == "answer_edit":
-                # Interrupt-and-correct: the stream is already stopped; hand the screen from
-                # the live answer tail to the freeze editor, then re-point the streamed record
-                # at the edited text so the resumed tail and the final render continue from
-                # what the user actually kept. The confidence overlay is reseeded through THE
-                # one edit-diff implementation (provenance.apply_edit over a throwaway buffer),
-                # so the kept text's red marks survive the edit at their shifted positions.
-                answer.freeze_display()
-                decision = ui.edit_answer(value)
-                if isinstance(decision, dict) and isinstance(decision.get("text"), str):
-                    conf = None
-                    try:
-                        from core import provenance
-
-                        mini = {"text": str(value.get("text") or ""), "spans": [],
-                                "edits": [], "confidence": value.get("confidence") or []}
-                        conf = provenance.apply_edit(mini, decision["text"]).get("confidence")
-                    except Exception:
-                        conf = None  # the marking is additive — never at the editor's cost
-                    answer.reset_to(decision["text"], conf)
-                return decision
+            if isinstance(value, dict) and value.get("type") == "pause":
+                # The agent node paused at the top of a pass: Enter continues, typed text steers
+                # the running turn, q aborts it (nodes/agent.py reads the decision).
+                return ui.pause_prompt(value)
             if isinstance(value, dict) and value.get("type") == "ask_user":
                 # The ask_user tool: the agent's question renders at the prompt and the typed
                 # line resumes the turn as the tool's observation ("" = no answer, reported
@@ -377,10 +334,8 @@ def run_repl() -> None:
             continue
         finally:
             # Discard any pause request still pending at turn end. A keypress that lands AFTER the
-            # turn's last plan_gate (e.g. during the final agent message or synthesize) is never
-            # consumed by the gate's clear(), and would otherwise leak into the next, unrelated turn
-            # and pause it. A `/plan pause` issued at the prompt is set after this point, so it
-            # survives; review mode re-arms each turn — neither is affected.
+            # agent's last pass (e.g. while the answer streams) is never consumed by the node's
+            # clear(), and would otherwise leak into the next, unrelated turn and pause it.
             # One exception: a STEER carries the user's typed correction — don't silently drop
             # their words. Salvage it into the type-ahead queue so it runs as the next message
             # (echoed when drained); the note explaining why prints after the answer renders,
@@ -400,9 +355,9 @@ def run_repl() -> None:
             ]
             late_steer = "; ".join(late_steers) if late_steers else None
             late_req = pause_controller.peek()
-            # A late PAUSE can't be salvaged (there is no plan left to review), but the user saw
-            # the ⏸ acknowledgement — dropping it silently reads as "pause is broken". Noted
-            # after the answer renders, like the late-steer note below.
+            # A late PAUSE can't be salvaged (the turn is over), but the user saw the ⏸
+            # acknowledgement — dropping it silently reads as "pause is broken". Noted after
+            # the answer renders, like the late-steer note below.
             late_pause = late_req is not None and late_req.source != "steer"
             for text in late_steers:
                 input_queue.push(text)  # each salvaged correction runs as its own next message
@@ -440,12 +395,13 @@ def run_repl() -> None:
         # And the interrupt-and-correct buffer: a turn the user froze + corrected renders its
         # human-authored spans marked, with the correction count on the receipt.
         ui.set_turn_buffer(state)
-        # The answer streamed live during synthesize — close it out (final markdown render + receipt).
-        # If nothing streamed (e.g. the model yielded no content, or the turn aborted at the plan
-        # gate before synthesize produced text), fall back to rendering the recorded final message.
+        # The answer streamed live during the agent's last pass — close it out (final markdown
+        # render + receipt). If nothing streamed (the model yielded no content, an abort at the
+        # pause prompt), fall back to rendering the recorded final message.
         if answer.started:
-            # Pass the RECORDED final message: synthesize may append the citations Sources footer
-            # after the token stream ended, so the streamed chars alone would silently drop it.
+            # Pass the RECORDED final message: the agent node appends the Sources footer and the
+            # incidents note after the token stream ended, so the streamed chars alone would
+            # silently drop them.
             final = state["messages"][-1].content if state.get("messages") else None
             answer.finish(final if isinstance(final, str) else None)
         else:
@@ -474,10 +430,8 @@ def run_repl() -> None:
                 "applied mid-turn, so it will run as your next message instead."
             )
         elif late_pause:
-            ui.note(
-                "your pause request arrived after the plan had finished executing — there was "
-                "nothing left to review this turn."
-            )
+            ui.note("your pause request arrived after the turn had finished — nothing left to "
+                    "pause this turn.")
 
         # A tripped trace breaker (stores/trace._trip) degrades recording silently by design —
         # the degradation itself must not be silent. After the answer renders, never inside the

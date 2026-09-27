@@ -38,35 +38,31 @@ def test_collect_turn_maps_each_signal_to_its_layer():
         messages=[HumanMessage("old turn"), AIMessage("done"),
                   HumanMessage("rename the reports"),
                   HumanMessage(f"{STEER_PREFIX} keep the original file names as a prefix")],
-        plan_vetoes=["delete the originals"],
         gate_events=[{"calls": [{"id": "1", "name": "run_shell", "approved": False}],
                       "decision": "rejected", "quarantine": False, "step": "run the rename"},
                      {"calls": [{"id": "2", "name": "write_file", "approved": True}],
                       "decision": "approved", "quarantine": False, "step": None}],
-        plan=[_step("list the reports"), _step("rename them", status="blocked", result="blocked"),
-              _step("verify", status="error", result="Error: permission denied on /x")],
+        tool_events=[{"name": "read_file", "args": {"file_path": "/x"}, "ok": False,
+                      "result": "Error: permission denied on /x", "dur": 0.0}],
     )
     cands = rv.collect_turn(state, run_id=9)
     by_source = {c["source"]: c for c in cands}
-    assert set(by_source) == {"steer", "veto", "gate", "unfinished", "failed"}
+    assert set(by_source) == {"steer", "gate", "failed"}
     assert by_source["steer"]["layer"] == "agent" and "prefix" in by_source["steer"]["text"]
-    assert by_source["veto"]["layer"] == "negative" and "delete the originals" in by_source["veto"]["text"]
     assert by_source["gate"]["layer"] == "negative" and "run_shell" in by_source["gate"]["text"]
     assert "run the rename" in by_source["gate"]["text"]
-    assert by_source["unfinished"]["layer"] == "commitments" and "rename them" in by_source["unfinished"]["text"]
     assert by_source["failed"]["layer"] == "agent" and "permission denied" in by_source["failed"]["text"]
+    assert "read_file" in by_source["failed"]["text"]
     assert all(c["run"] == 9 for c in cands)
     # A steer note from an OLDER turn is not this turn's signal.
     assert sum(1 for c in cands if c["source"] == "steer") == 1
 
 
-def test_collect_turn_is_quiet_on_a_clean_turn_and_reads_aborted_steps():
+def test_collect_turn_is_quiet_on_a_clean_turn():
     assert rv.collect_turn(_state(plan=[_step("a"), _step("b")])) == []
-    cands = rv.collect_turn(_state(aborted=True, plan=[_step("a"), _step("b", status="pending",
-                                                                      result=None)]))
-    assert [c["layer"] for c in cands] == ["commitments"]
-    # Approved gates and user-skipped steps are not incidents to learn from.
-    assert rv.collect_turn(_state(plan=[_step("s", status="skipped", result="skipped")])) == []
+    # Approved gates and successful calls are not incidents to learn from.
+    ok_call = {"name": "read_file", "args": {}, "ok": True, "result": "hello", "dur": 0.0}
+    assert rv.collect_turn(_state(tool_events=[ok_call])) == []
 
 
 def test_summary_candidates_sort_bullets_by_shape():

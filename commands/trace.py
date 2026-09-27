@@ -873,14 +873,14 @@ def _show_llm_context(ctx, args):
 # ── /trace source — the raw material behind a citation ────────────────────────────────────────
 # The citations footer maps each inline [n] to a one-line label; this shows the FULL tool
 # result / retrieved passage behind that number, rebuilt with the same numbering the synthesizer
-# saw (nodes.synthesize.build_sources over the turn's accumulators), so [3] here is exactly the
+# saw (core.sources.build_sources over the turn's accumulators), so [3] here is exactly the
 # [3] in the answer. Closes the provenance loop in one keystroke instead of a /trace drill-down.
 
 
 def lookup_source(state: dict, n: int) -> "tuple[str, str] | None":
     """(label, full_text) for citation number `n` of the last turn, or None when out of range.
     Pure over the state accumulators so it's testable without a turn."""
-    from nodes.synthesize import build_sources
+    from core.sources import build_sources
 
     tool_results = (state or {}).get("tool_results") or []
     docs = (state or {}).get("documents_retrieved") or []
@@ -899,7 +899,7 @@ def lookup_source(state: dict, n: int) -> "tuple[str, str] | None":
 
 def _source(ctx, args):
     """`/trace source [n]` — the FULL text behind a citation [n] of the last answer."""
-    from nodes.synthesize import build_sources
+    from core.sources import build_sources
 
     state = ctx.state or {}
     tool_results = state.get("tool_results") or []

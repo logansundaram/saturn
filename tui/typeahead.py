@@ -41,7 +41,7 @@ from collections import deque
 from typing import Callable, Optional
 
 from core.continuation import get_freeze_controller
-from core.plan_ops import PauseController, get_pause_controller
+from core.pause import PauseController, get_pause_controller
 
 # Windows console key polling (msvcrt). On macOS/Linux this import fails and we fall back to
 # a POSIX termios reader; if that's also unavailable the queue degrades to a no-op.

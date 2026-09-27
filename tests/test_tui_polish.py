@@ -12,7 +12,7 @@ import importlib
 import pytest
 
 from trust import receipt
-from core.plan_ops import PauseController
+from core.pause import PauseController
 from tui.typeahead import InputQueue
 
 
@@ -80,7 +80,7 @@ def test_pause_note_prints_acknowledgement(capsys):
     from tui import ui
 
     ui.pause_note()
-    assert "pausing for plan review" in capsys.readouterr().out
+    assert "pausing at the next pass" in capsys.readouterr().out
 
 
 # --- posture at the prompt (live derivation, same reads as the status bar) ----------------------
@@ -372,90 +372,6 @@ def _fresh_trace():
     base._t_last = None
     base._status = dict(base._status, node="", iteration=0, tools=0, tok_per_sec=0.0)
     return base
-
-
-def test_synthesize_rail_row_is_skipped_at_normal_verbosity(capsys):
-    from tui import ui
-
-    base = _fresh_trace()
-    ui.set_verbosity("normal")
-    ui.show_node("synthesize", {"context_tokens": 5200, "tok_per_sec": 41.0})
-    assert "synthesize" not in capsys.readouterr().out
-    # …but the metrics still reached the status bar, which is what the receipt echoes.
-    assert base._status["tok_per_sec"] == 41.0
-    assert base._status["ctx_used"] == 5200
-
-
-def test_synthesize_rail_row_returns_under_trace_full(capsys):
-    from tui import ui
-
-    _fresh_trace()
-    try:
-        ui.set_verbosity("verbose")
-        ui.show_node("synthesize", {"context_tokens": 5200, "tok_per_sec": 41.0})
-        assert "synthesize" in capsys.readouterr().out
-    finally:
-        ui.set_verbosity("normal")
-
-
-def test_synthesize_keeps_its_row_when_a_trust_leaf_hangs_off_it(capsys):
-    """Folding synthesize through _FOLD_NODES would `return` before the metric feed AND before
-    the trust annotations — silently costing the receipt its tok/s and dropping the freeze echo,
-    an auditable human action. The row is kept whenever a leaf would otherwise be orphaned."""
-    from tui import ui
-
-    base = _fresh_trace()
-    ui.set_verbosity("normal")
-    ui.show_node("synthesize", {"tok_per_sec": 12.0,
-                                "answer_buffer": {"state": "frozen", "text": "x"}})
-    out = capsys.readouterr().out
-    assert "synthesize" in out            # the row is back — the leaf has a parent
-    assert "you froze the answer" in out  # …and the auditable event still prints
-    assert base._status["tok_per_sec"] == 12.0
-
-    # A bounded record is the same case: the disclosure keeps its row.
-    _fresh_trace()
-    ui.show_node("synthesize", {"truncated": {"original_chars": 9999, "dropped": ["messages"]}})
-    out = capsys.readouterr().out
-    assert "synthesize" in out and "record bounded at write time" in out
-
-
-def test_synthesize_row_still_folds_on_a_normally_completed_turn(capsys):
-    """The shape a REAL turn emits: synthesize returns `answer_buffer` with state `complete` on
-    every completion (nodes.synthesize._final_updates), so keying the row on the mere PRESENCE of
-    the key resurrected it for every answer — the row landed inside the open response block again,
-    to parent a leaf that is only ever drawn for a `frozen` buffer. The row must fold on what will
-    actually be DRAWN, not on which keys the delta happens to carry."""
-    from tui import ui
-
-    base = _fresh_trace()
-    ui.set_verbosity("normal")
-    ui.show_node("synthesize", {"tok_per_sec": 41.0, "context_tokens": 5200,
-                                "answer_buffer": {"state": "complete", "text": "the answer",
-                                                  "spans": [], "edits": [], "confidence": []}})
-    out = capsys.readouterr().out
-    assert "synthesize" not in out          # nothing to parent — the row folds
-    assert base._status["tok_per_sec"] == 41.0   # …and the metrics still reached the bar
-    assert base._status["ctx_used"] == 5200
-
-    # An `edited` buffer is answer_gate's leaf, not synthesize's: still nothing to parent here.
-    _fresh_trace()
-    ui.show_node("synthesize", {"answer_buffer": {"state": "complete", "edited": True,
-                                                  "edits": [{"cut": "x", "typed": "y"}]}})
-    assert "synthesize" not in capsys.readouterr().out
-
-
-def test_synthesize_keeps_its_row_for_a_gate_decision_leaf(capsys):
-    """The third leaf `_render_trust_annotations` can draw under any node — a human gate decision
-    is auditable, so its row is kept exactly like the freeze echo's."""
-    from tui import ui
-
-    _fresh_trace()
-    ui.set_verbosity("normal")
-    ui.show_node("synthesize", {"gate_events": [{"calls": [{"name": "write_file",
-                                                            "approved": True}]}]})
-    out = capsys.readouterr().out
-    assert "synthesize" in out and "you approved write_file" in out
 
 
 # ── streaming vs finished measure: the answer must not re-wrap when it lands ─────────────────

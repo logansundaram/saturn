@@ -22,38 +22,29 @@ from app.session import _fresh_turn, _initial_state
 from app.startup import startup_load, _warn_flagged_attachments
 from app.turn import run_turn, _make_on_update, _trace_warning
 from core import mentions
-from core.state import current_step
+from textutil import fmt_args
 from stores.trace import Tracer
 
 
 def _q_progress(emit=None):
     """The -q stderr progress renderer — a pure observer over the same node deltas the tracer
-    already receives (no engine coupling; a rendering seam only). Announces the plan draft /
-    revision, then each move of the execution pointer (the first step whose `result` is None —
-    THE pointer, core.state.current_step). Deltas without a plan pass through silently; nothing
-    here ever touches stdout (the pipe-clean contract)."""
+    already receives (a rendering seam only). Announces each tool call as it runs and every
+    update of the model's checklist (the `plan` tool). Nothing here ever touches stdout (the
+    pipe-clean contract)."""
     if emit is None:
         emit = lambda line: print(line, file=sys.stderr)  # noqa: E731
-    seen = {"plan": [], "announced": None}
 
     def on_progress(node, delta):
-        plan = delta.get("plan") if isinstance(delta, dict) else None
+        delta = delta if isinstance(delta, dict) else {}
+        plan = delta.get("plan")
         if isinstance(plan, list) and plan:
-            seen["plan"] = plan
-            if node == "plan":
-                emit(f"plan drafted — {len(plan)} step(s)")
-            elif node == "replan":
-                emit(f"plan revised — {len(plan)} step(s)")
-        cur = current_step(seen["plan"])
-        if cur is None:
-            return
-        key = (cur.get("step_id"), cur.get("label"))
-        if key == seen["announced"]:
-            return  # a status flip (pending -> active) is not a pointer move
-        seen["announced"] = key
-        pos = next((i + 1 for i, s in enumerate(seen["plan"]) if s is cur), 0)
-        label = cur.get("label") or cur.get("intended_tool") or "(unlabeled)"
-        emit(f"step {pos}/{len(seen['plan'])}: {label}")
+            done = sum(1 for s in plan if isinstance(s, dict) and s.get("status") == "done")
+            emit(f"plan · {done}/{len(plan)}: "
+                 + "; ".join(str(s.get("label")) for s in plan if isinstance(s, dict)))
+        for ev in delta.get("tool_events") or []:
+            if isinstance(ev, dict):
+                ok = "ok" if ev.get("ok", True) else "error"
+                emit(f"{ev.get('name')}({fmt_args(ev.get('args') or {}, 60)}) — {ok}")
 
     return on_progress
 
@@ -89,10 +80,6 @@ def run_headless(args) -> None:
     tracer = Tracer(DB_PATH)
     state = _initial_state()
     state = _fresh_turn(state, query)
-    if getattr(args, "plan", False):
-        state["route"] = "plan"
-    elif getattr(args, "quick", False):
-        state["route"] = "quick"
     # @file mentions work headlessly too: `saturn -p "summarize @notes.md"` attaches the
     # file exactly as the interactive loop does (the grounding node folds it into context).
     attach_block, attached = mentions.expand(query)
@@ -128,9 +115,9 @@ def run_headless(args) -> None:
         independently of the policy threshold) — and those are approved here, because
         --yolo is exactly the user pre-approving everything; denying them would make
         '--yolo to allow them' a lie. The decline path is already honest — the agent tells
-        the user the action was not performed. Any other interrupt type (the plan-review
-        gate never arms headless) resumes unchanged via a bare True, which plan_gate
-        tolerates by design."""
+        the user the action was not performed. Any other interrupt type (the Esc pause never
+        arms headless) resumes unchanged via a bare True, which the agent node reads as
+        "continue"."""
         if isinstance(value, dict) and value.get("type") == "approval_request":
             from trust import policy
 

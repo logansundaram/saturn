@@ -15,7 +15,7 @@ Two entry points feed one assembler:
     source tools instead).
 
 Numbering matches the answer's inline `[n]` citations exactly: it reuses
-`nodes.synthesize.build_sources`, the same numbering `/source` uses. Imports only leaves
+`core.sources.build_sources`, the same numbering `/source` uses. Imports only leaves
 (egress, quarantine) + that one pure helper (lazily), so it stays UI-free and testable.
 """
 
@@ -55,7 +55,6 @@ class GlassBox:
     # How many times rectify sent the plan back for revision (replan ran). NOTE: a quiet pass
     # records nothing, so 0 means "no revision happened" — it must never be rendered as
     # "verified correct"; the renderer says only what the state records.
-    replans: int
     # Whether every recorded delta behind this box decoded — False when the trace truncated an
     # event (stores/trace._DATA_CAP) and sources below may therefore be INCOMPLETE. A trust
     # surface must say so rather than render '0 sources · no untrusted content' over data it
@@ -140,12 +139,11 @@ def _gate_info(gate_events) -> "tuple[int | None, list[dict] | None]":
     return len(calls), summary
 
 
-def _assemble(query, answer, tool_results, documents_retrieved, tool_events, replans,
+def _assemble(query, answer, tool_results, documents_retrieved, tool_events,
               egress_events, gated, complete=True, gate_summary=None) -> GlassBox:
-    # Lazy: build_sources lives in synthesize.py (pulls llms/budget) and RETRIEVAL_TOOLS in
-    # registry (pulls the tool registry) — fine off the hot loop, and build_sources keeps the
-    # numbering identical to the answer's [n] and to /source.
-    from nodes.synthesize import build_sources
+    # Lazy: RETRIEVAL_TOOLS pulls the tool registry — fine off the hot loop; build_sources keeps
+    # the numbering identical to the answer's Sources footer and to /trace source.
+    from core.sources import build_sources
     from tools.registry import RETRIEVAL_TOOLS
 
     prose = _strip_footer(answer or "")
@@ -209,7 +207,6 @@ def _assemble(query, answer, tool_results, documents_retrieved, tool_events, rep
         sent_hosts=hosts,
         sent_known=sent_known,
         gated=gated,
-        replans=replans or 0,
         complete=bool(complete),
         gate_summary=gate_summary,
     )
@@ -230,7 +227,6 @@ def build_from_state(state, *, egress_events=None, gated=None) -> GlassBox:
         state.get("tool_results") or [],
         state.get("documents_retrieved") or [],
         state.get("tool_events") or [],
-        state.get("replans", 0),
         egress_events,
         gated,
         gate_summary=gate_summary,
@@ -265,7 +261,6 @@ def build_from_record(query, response, deltas, *, gated=None, complete=True) -> 
     docs: list = []
     tool_events: list = []
     gate_events: list = []
-    replans = 0
     for d in deltas or []:
         if not isinstance(d, dict):
             continue
@@ -273,8 +268,6 @@ def build_from_record(query, response, deltas, *, gated=None, complete=True) -> 
         docs += d.get("documents_retrieved") or []
         tool_events += d.get("tool_events") or []
         gate_events += d.get("gate_events") or []
-        if "replans" in d and d.get("replans") is not None:
-            replans = d["replans"]
     # The human decisions are the one fact a record CAN carry exactly (they ride the deltas like
     # tool_events) — when present they drive the gated count + summary; when absent (an older
     # record) the box stays honest: None = unknown, never "0 gated".
@@ -282,4 +275,4 @@ def build_from_record(query, response, deltas, *, gated=None, complete=True) -> 
     if ev_count is not None:
         gated = ev_count
     return _assemble(query or "", response or "", tool_results, docs, tool_events,
-                     replans, None, gated, complete=complete, gate_summary=gate_summary)
+                     None, gated, complete=complete, gate_summary=gate_summary)

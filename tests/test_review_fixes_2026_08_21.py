@@ -14,31 +14,6 @@ import pytest
 # incident at execute — while the identical spelling in /draft made a genuine reasoning step.
 
 
-def test_resolve_tool_no_tool_markers_mean_none():
-    from core.plan_ops import resolve_tool
-
-    for spelling in ("none", "None", "reasoning", "answer", "think", "n/a"):
-        assert resolve_tool(spelling) == (None, "")
-
-
-def test_resolve_tool_synonym_maps_and_unknown_kept_raw():
-    from core.plan_ops import resolve_tool
-
-    tool, note = resolve_tool("calc")
-    assert tool == "calculate" and "calc" in note
-    tool, note = resolve_tool("frobnicate")
-    assert tool == "frobnicate" and "fail closed" in note
-
-
-def test_editor_add_with_none_marker_makes_a_reasoning_step():
-    from core.plan_ops import apply_command
-
-    plan, _note = apply_command([], "add Summarize the findings ::none")
-    assert plan[0]["intended_tool"] is None
-    plan, _note = apply_command(plan, "tool 1 reasoning")
-    assert plan[0]["intended_tool"] is None
-
-
 # ── confidence: grade_start walks to a real run boundary (not a fixed margin) ─────────────────
 # A run OPENS on _MIN_RUN tokens under enter but EXTENDS indefinitely through hysteresis, so a
 # fixed entry margin dropped the red tail of any run longer than the margin: the live tail and

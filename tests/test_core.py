@@ -24,7 +24,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from langchain.messages import HumanMessage, AIMessage, ToolMessage
 
 from core.state import current_step, unfinished_steps, incident_steps
-from nodes.update_plan import update_plan_node
 from nodes.tools import _clamp_observation, _MAX_OBSERVATION
 
 
@@ -66,94 +65,6 @@ def _tool_round(plan, observation, name="web_search", stamp=None):
     }
 
 
-def test_update_plan_records_result_on_current_step():
-    plan = [_step(1, "web_search"), _step(2, "calculate")]
-    out = update_plan_node(_tool_round(plan, "search results here"))["plan"]
-    assert out[0]["result"] == "search results here"
-    assert out[0]["status"] == "done"
-    assert out[1]["result"] is None, "only the current step records"
-
-
-def test_update_plan_reads_stamped_incident_statuses():
-    plan = [_step(1, "run_shell")]
-    out = update_plan_node(
-        _tool_round(plan, "Error calling run_shell: boom", stamp="error")
-    )["plan"]
-    assert out[0]["status"] == "error"
-    plan = [_step(1, "web_search")]
-    out = update_plan_node(
-        _tool_round(plan, "Air-gap is ON — this operation would send data.", stamp="blocked")
-    )["plan"]
-    assert out[0]["status"] == "blocked"
-    plan = [_step(1, "write_file")]
-    decline = ("Execution declined by the user. Do not retry this action; tell the user you "
-               "did not perform it.")
-    out = update_plan_node(
-        _tool_round(plan, decline, name="write_file", stamp="skipped")
-    )["plan"]
-    assert out[0]["status"] == "skipped", "a gate rejection records as a skipped incident"
-
-
-def test_update_plan_never_sniffs_status_from_observation_text():
-    """A successful read of a file whose CONTENT starts with an error/blocked word must stay
-    `done` — the status is the producer's stamp, never the observation text (the old prefix
-    sniffing failed a step over its own data)."""
-    plan = [_step(1, "read_file")]
-    out = update_plan_node(
-        _tool_round(plan, "ERROR: disk full at 03:12\nrest of the log", name="read_file")
-    )["plan"]
-    assert out[0]["status"] == "done"
-    plan = [_step(1, "read_file")]
-    out = update_plan_node(
-        _tool_round(plan, "Blocked IPs: 10.0.0.1, 10.0.0.2", name="read_file")
-    )["plan"]
-    assert out[0]["status"] == "done"
-
-
-def test_update_plan_decline_prefix_fallback_without_stamp():
-    """Belt-and-braces: an UNSTAMPED decline still records as skipped off the DECLINE_TEXT
-    prefix (the one textual fallback kept)."""
-    from nodes.approval import DECLINE_TEXT
-
-    plan = [_step(1, "write_file")]
-    out = update_plan_node(_tool_round(plan, DECLINE_TEXT, name="write_file"))["plan"]
-    assert out[0]["status"] == "skipped"
-
-
-def test_set_status_keeps_the_pointer_pairing():
-    """The plan-review editor's status verb must keep gotcha #6 intact: a TERMINAL status on an
-    un-run step also stamps a result (else execute re-selects it by `result is None` and RUNS
-    the step the user just skipped), and pending clears the result so a step is runnable."""
-    from core import plan_ops
-
-    plan = [_step(1), _step(2)]
-    out = plan_ops.set_status(plan, 1, "skipped")
-    assert out[0]["result"] is not None
-    assert current_step(out)["step_id"] == 2, "the skipped step is no longer the pointer"
-    back = plan_ops.set_status(out, 1, "pending")
-    assert back[0]["result"] is None, "back to pending -> runnable again"
-    # A completed step marked done keeps its recorded result untouched.
-    done = [_step(1, result="real output", status="done")]
-    kept = plan_ops.set_status(done, 1, "done")
-    assert kept[0]["result"] == "real output"
-
-
-def test_update_plan_does_not_mutate_input():
-    plan = [_step(1, "web_search")]
-    before = [dict(s) for s in plan]
-    update_plan_node(_tool_round(plan, "result"))
-    assert plan == before, "update_plan must work on a copy, not mutate state in place"
-
-
-def test_update_plan_noop_without_observation_or_pending_step():
-    # No trailing ToolMessage -> nothing to record.
-    assert update_plan_node({"plan": [_step(1)], "messages": [HumanMessage("q")]}) == {}
-    # Every step already has a result -> nothing to record onto.
-    done = [_step(1, result="x", status="done")]
-    assert update_plan_node(_tool_round(done, "obs")) == {}
-
-
-# --- _compact_history: keep the most recent scratchpad, collapse older turns ----------------
 def test_compact_history_keeps_recent_scratchpad_drops_old():
     from agent import _compact_history
 
@@ -191,23 +102,6 @@ def test_clamp_long_observation_truncated_with_marker():
 
 
 # --- planner prompt stays in sync with the live registry ------------------------------------
-def test_planner_prompt_lists_every_registered_tool():
-    from core import messages
-    from tools import registry
-
-    prompt = messages.planner_sys_msg().content
-    for t in registry.tool:
-        assert t.name in prompt, f"{t.name} missing from planner prompt (drift!)"
-    # ...and the same names reach the constrained decoder's enum + the normalizer.
-    from core.structured import plan_format, registered_tools
-
-    enum = plan_format(sorted(registered_tools()))
-    enum = enum["properties"]["plan"]["items"]["properties"]["tool"]["enum"]
-    for t in registry.tool:
-        assert t.name in enum, f"{t.name} missing from the plan schema enum (drift!)"
-
-
-# --- #5: registration decorator keeps the registry views consistent -------------------------
 def test_registry_views_consistent():
     from tools import registry
 
@@ -361,7 +255,7 @@ def test_typeahead_blank_not_queued_and_backspace_edits():
 
 
 def test_escape_with_text_steers_empty_reviews():
-    from core import plan_ops as interrupts
+    from core import pause as interrupts
     from tui import typeahead
 
     c = interrupts.get_pause_controller()
@@ -375,30 +269,10 @@ def test_escape_with_text_steers_empty_reviews():
     assert q._buffer == "", "the typed line is consumed as a steer, not left to queue"
     c.clear()
     q._on_escape()  # empty buffer
-    assert c.peek().source == "user", "empty Esc asks for a plan-review pause"
+    assert c.peek().source == "user", "empty Esc asks for a pause"
     c.clear()
 
 
-def test_plan_gate_injects_steer_and_consumes_request():
-    from core import plan_ops as interrupts
-    from nodes.plan_gate import plan_gate_node, route_after_gate
-
-    c = interrupts.get_pause_controller()
-    c.clear()
-    c.request("steer", "focus on cost, not schedule")
-    upd = plan_gate_node({"messages": [HumanMessage("q")], "plan": [], "iteration": 1})
-    assert "messages" in upd, "a steer is injected as a message update"
-    assert "focus on cost" in upd["messages"][0].content
-    assert not c.pending(), "the steer request is consumed (won't re-inject next boundary)"
-    # The steer arms a replan with the correction as the revision instruction, and the gate's
-    # router honors it (the remaining steps are redrafted around the user's words).
-    assert upd["rectify"] is True and "focus on cost" in upd["reasoning"]
-    assert route_after_gate({"rectify": True}) == "replan"
-    assert route_after_gate({}) == "execute"
-    assert route_after_gate({"aborted": True}) == "synthesize"
-
-
-# --- Tier 2 #5: write_file diff preview (pure diff classification) ------------------------------
 def test_write_diff_new_file_is_all_additions():
     from tui import ui
 

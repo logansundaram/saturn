@@ -325,7 +325,7 @@ def test_redact_legacy_spelling_is_plain_unknown(gate, ctx, capsys, monkeypatch)
 def test_dryrun_is_a_renamed_pointer_not_a_command(gate, ctx, capsys):
     dispatch("/dryrun on", ctx)
     out = capsys.readouterr().out
-    assert "moved" in out and "plan review" in out
+    assert "moved" in out and "plan engine was removed" in out
     assert gate.get("runtime.dry_run") is None  # the knob no longer exists, nothing was set
 
 

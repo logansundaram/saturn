@@ -93,8 +93,9 @@ from .statusbar import set_input_preview, reset_turn
 # Startup splash.
 from .art import splash
 
-# Input prompt + banner (+ the session-start trust posture line + the ask_user answer prompt).
-from .prompt import prompt, banner, ask, answer_question, posture_line
+# Input prompt + banner (+ the session-start trust posture line, the ask_user answer prompt and
+# the Esc pause prompt).
+from .prompt import prompt, banner, ask, answer_question, pause_prompt, posture_line
 
 # Execution trace + recorded replays.
 from .trace import show_node, show_run, show_llm_calls, show_llm_context
@@ -102,8 +103,8 @@ from .trace import show_node, show_run, show_llm_calls, show_llm_context
 # The Glass Box — answer-level provenance.
 from .glass import show_glassbox
 
-# Plan rendering + the plan-review editor.
-from .plan import render_plan, show_plan, review_plan
+# Plan rendering (the model's checklist).
+from .plan import render_plan, show_plan
 
 # Approval gate (+ the diff helper the tests reach for).
 from .approval import ask_approval, _diff_lines
@@ -128,10 +129,10 @@ __all__ = [
     "set_verbosity", "verbosity",
     "set_input_preview", "reset_turn",
     "splash",
-    "prompt", "banner", "ask", "answer_question", "posture_line",
+    "prompt", "banner", "ask", "answer_question", "pause_prompt", "posture_line",
     "show_node", "show_run", "show_llm_calls", "show_llm_context",
     "show_glassbox",
-    "render_plan", "show_plan", "review_plan",
+    "render_plan", "show_plan",
     "ask_approval",
     "response", "ResponseStream", "set_turn_provenance", "set_turn_buffer",
     "edit_answer",

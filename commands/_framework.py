@@ -21,16 +21,6 @@ class CommandContext:
     db_path: str
     show_ui: bool = True
     should_quit: bool = False
-    # Persistent plan-review mode: when on, every turn pauses at the first plan_gate.
-    review_plan: bool = False
-    # A user-drafted plan composed via /draft, waiting for its request: the REPL seeds it
-    # into the NEXT turn's state (plan_node honors a pre-seeded plan and skips drafting), then
-    # clears it — one draft, one turn. None = nothing drafted.
-    pending_plan: list | None = None
-    # A turn a command asked the REPL to run next, with its engine forced: ("quick"|"plan",
-    # request) from `/quick <request>` / `/plan <request>` (the complexity check's overrides,
-    # nodes/quick.route_after_ground). The REPL consumes it right after dispatch. None = nothing.
-    pending_turn: tuple | None = None
 
 
 Handler = Callable[["CommandContext", list[str]], None]
@@ -121,10 +111,13 @@ _RENAMED = {
     # /commands was never a real command — point the habit at the command list.
     "commands": "help",
     "cmds": "help",
-    # /dryrun CUT 2026-07-03 — /plan review + the per-call gate are the surviving
-    # intent-before-execution surfaces.
-    "dryrun": "plan review",
-    "dry": "plan review",
+    # The plan engine was removed with the v2 loop (2026-09-27): /plan, /draft, /quick and the
+    # older /dryrun all point at the surviving controls (Esc pause/steer + the approval gate).
+    "plan": "help",
+    "draft": "help",
+    "quick": "help",
+    "dryrun": "help",
+    "dry": "help",
     # 2026-07-06 surface trim: the legacy top-level gate spellings fold into /policy for good.
     # They were already thin delegations to the /policy handlers; now the pointer is the only
     # stub — one spelling to learn, zero parallel registrations to audit.
@@ -144,9 +137,10 @@ _RENAMED = {
 }
 
 # A second, parenthesized line for redirects whose one-line pointer doesn't tell the whole story.
-_DRYRUN_NOTE = ("dry-run mode was removed — /plan review pauses at every step boundary, and the "
-                "approval gate shows every gated call before it runs")
-_RENAMED_NOTES: dict[str, str] = {"dryrun": _DRYRUN_NOTE, "dry": _DRYRUN_NOTE}
+_ENGINE_NOTE = ("the plan engine was removed in v2 — Esc pauses a running turn (Enter continues, "
+                "typed text steers it, q aborts), and the approval gate shows every gated call "
+                "before it runs")
+_RENAMED_NOTES: dict[str, str] = {k: _ENGINE_NOTE for k in ("plan", "draft", "quick", "dryrun", "dry")}
 
 
 def _print_renamed(key: str) -> bool:

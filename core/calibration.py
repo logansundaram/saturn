@@ -93,7 +93,7 @@ def measure(tag: str, prompts: "list | None" = None, on_progress=None) -> dict:
     Raises RuntimeError when the air-gap forbids an off-machine daemon."""
     from config import get_config
     from core import confidence, llms
-    from core.messages import synthesize_sys_msg
+    from core.messages import agent_sys_msg
     from core.serving import num_predict
     from langchain.messages import HumanMessage
     from trust import egress
@@ -121,7 +121,7 @@ def measure(tag: str, prompts: "list | None" = None, on_progress=None) -> dict:
     for i, q in enumerate(prompts, 1):
         text = ""
         entries: list = []
-        for chunk in llms.stream(model, [synthesize_sys_msg,
+        for chunk in llms.stream(model, [agent_sys_msg(),
                                          HumanMessage(content=f"Current user query:\n{q}")],
                                  tag=tag, **kwargs):
             piece = chunk.content if isinstance(chunk.content, str) else str(chunk.content)

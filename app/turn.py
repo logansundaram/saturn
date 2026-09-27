@@ -29,10 +29,10 @@ def run_turn(graph, payload, config, approver, on_update=None, pause=None, on_to
 
     Streams three modes at once: "updates" drives the trace/plan and carries the interrupt marker
     (unchanged routing — pause/resume is still decided by get_state below); "messages" carries the
-    per-token answer stream of the CHAT path; "custom" carries the continuation path's answer
-    tokens (`{"answer_token": …}` — raw-mode resumes after a freeze-edit are not LangChain chat
-    calls, so messages mode never sees them; see nodes/synthesize._token_sink). Each streamed
-    item is a `(mode, data)` pair."""
+    per-token answer stream; "custom" is the parked token-steering seam (`{"answer_token": …}`
+    payloads from a raw-mode continuation — nothing writes them since the v2 loop, but the
+    channel stays so re-adding the feature is one node-side change). Each streamed item is a
+    `(mode, data)` pair."""
     # The loop visits three nodes per tool round; LangGraph's default recursion_limit (25) would
     # kill a healthy multi-step turn mid-flight. Generous but finite — the REAL bound is
     # runtime.max_iterations (agent passes), which lands at an honest answer long before this.

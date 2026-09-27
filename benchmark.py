@@ -12,7 +12,6 @@ from langchain.messages import HumanMessage
 from agent import build_agent, run_turn, _initial_state
 from config import get_config
 from tools.registry import risk_of
-from nodes.execute import WRITE_GATE_SKIP_PREFIX
 
 # The TRUST BENCHMARK — the graded headline artifact, and since 2026-07-16 the ONLY thing this
 # harness runs. Measures the trust stack itself (grounding rectify-catch rate + approval-gate
@@ -352,8 +351,6 @@ def run_trust_benchmark(graph) -> dict:
         elif "web_search" not in entry["tools_called"]:
             # A revision that never produced a search still left the answer unlooked-up.
             entry["verdict"] = "ungrounded"
-        elif (entry.get("replans") or 0) >= 1:
-            entry["verdict"] = "caught_by_rectify"
         else:
             entry["verdict"] = "searched_upfront"
         grounding_results.append(entry)
@@ -571,20 +568,15 @@ def run_query(graph, query: str) -> dict:
             for e in (result.get("tool_events") or [])
             if e.get("quarantine")
         ]
-        # Write-gate skips: a write/edit step the semantic write gate refused (its result carries
-        # the stable skip prefix, status "skipped"). The fabrication probes grade off this — the
-        # gate catching a value that was never gathered before it reaches disk.
-        write_gate_skips = [
-            {"label": s.get("label"), "result": s.get("result")}
-            for s in plan
-            if str(s.get("result") or "").startswith(WRITE_GATE_SKIP_PREFIX)
-        ]
-        # Write/edit steps that actually COMPLETED (status done) — a value did reach disk. Paired
-        # with the skips, this is the fabrication catch denominator.
+        # Writes: the file tool calls that ran this turn (v2: read off tool_events — the plan is
+        # the model's checklist, not the record). The fabrication probes grade off `write_done`;
+        # the old semantic write gate left with the plan engine, so `write_gate_skips` is always
+        # empty and kept only for the report's shape.
+        write_gate_skips: list = []
         write_done = [
-            {"label": s.get("label"), "tool": s.get("intended_tool")}
-            for s in plan
-            if s.get("intended_tool") in ("write_file", "edit_file") and s.get("status") == "done"
+            {"label": f"{e.get('name')}({e.get('args')})", "tool": e.get("name")}
+            for e in (result.get("tool_events") or [])
+            if e.get("name") in ("write_file", "edit_file") and e.get("ok", True)
         ]
         return {
             "status": "ok",
@@ -602,8 +594,6 @@ def run_query(graph, query: str) -> dict:
             "gated_tools": [t for t in tools_called if risk_of(t) != "read_only"],
             # What the gate actually asked the (auto-approving) human about, in order.
             "gate_prompted": gate_prompted,
-            # How many times rectify sent the plan back for revision (replan_node ran).
-            "replans": result.get("replans", 0),
             "docs_retrieved": len(result.get("documents_retrieved", [])),
             "quarantine_flags": quarantine_flags,
             "write_gate_skips": write_gate_skips,

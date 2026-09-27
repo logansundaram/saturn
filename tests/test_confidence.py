@@ -365,35 +365,7 @@ def test_frozen_summary_counts_earlier_corrections():
     assert "8 chars" in _frozen_summary("abcdefgh", ["nope", None], None)
 
 
-def test_answer_gate_payload_carries_the_overlay(monkeypatch):
-    # The interrupt payload hands the freeze editor the overlay, and the edited buffer written
-    # back keeps it (shifted by THE one edit-diff, provenance.apply_edit).
-    from nodes import answer_gate
-
-    captured = {}
-
-    def fake_interrupt(payload):
-        captured.update(payload)
-        return {"action": "resume", "text": payload["text"]}
-
-    monkeypatch.setattr(answer_gate, "interrupt", fake_interrupt)
-    buf = provenance.append_model(provenance.new_buffer(), "abc",
-                                  confidence.align_chunk("abc", [_lp("abc", -1.0)]))
-    out = answer_gate.answer_gate_node(
-        {"answer_buffer": {**buf, "state": "frozen"}, "current_query": "q"}
-    )
-    assert captured["confidence"] == buf["confidence"]
-    assert out["answer_buffer"]["confidence"] == buf["confidence"]
-
-
-# --- hysteresis + the closed-class stoplist (transplanted from the confidence_coloring isolate) ------
-#
-# Two-threshold hysteresis: a run OPENS on tokens under the enter threshold (the min_run onset
-# floor is unchanged) and, once building, EXTENDS through tokens under the looser exit threshold
-# instead of one p=0.21 token closing it mid-phrase. Closed-class words (the, of, is, …) draw low
-# mass from many valid continuations, so they are NEUTRAL like punctuation: they ride along a run
-# without counting toward the floor or breaking it, and never form a run on their own.
-
+# ── hysteresis: the exit threshold keeps an open run going through a middling token ──────────
 MID = math.log(0.25)  # above enter=0.20, below the default exit (0.30)
 
 
@@ -622,42 +594,6 @@ def test_request_options_adds_draft_off_and_keeps_the_callers_keys():
     assert mine == {"temperature": 0.7, "num_ctx": 4096}
     assert confidence.request_options(None) == confidence.LOGPROB_OPTIONS
     assert confidence.request_options(None) is not confidence.LOGPROB_OPTIONS
-
-
-
-def test_synthesizer_stream_asks_for_logprobs_only_when_grading_is_on(monkeypatch):
-    """The first-pass answer stream is the runtime consumer of the calibrated thresholds: with
-    confidence on it asks for logprobs, keeping the serving layer's options untouched; with it
-    off it asks for nothing. Drafting-off is NOT added here — it rides every request from
-    core.llms (tests/test_runner_options.py), because adding it on this site alone made the
-    daemon reload the runner on every turn."""
-    from types import SimpleNamespace
-
-    from core import confidence
-    from nodes import synthesize as sy
-
-    seen = []
-
-    def fake_stream(model, llm_input, *, tag="", **kwargs):
-        seen.append(kwargs)
-        yield SimpleNamespace(content="Paris.", response_metadata={}, usage_metadata=None)
-
-    monkeypatch.setattr(sy, "get_model", lambda role: object())
-    monkeypatch.setattr(sy, "llm_stream", fake_stream)
-    monkeypatch.setattr(sy, "_model_tag", lambda *a, **k: "tag")
-    monkeypatch.setattr(sy, "_invoke_kwargs", lambda *a, **k: {
-        "options": {"temperature": 0.7, "num_ctx": 4096, "num_predict": 64}, "reasoning": False})
-
-    monkeypatch.setattr(confidence, "enabled", lambda: True)
-    buf, frozen, _meta, _usage = sy._stream_first_pass([], None)
-    monkeypatch.setattr(confidence, "enabled", lambda: False)
-    sy._stream_first_pass([], None)
-
-    on, off = seen
-    assert buf["text"] == "Paris." and not frozen
-    assert on["logprobs"] is True
-    assert on["options"] == {"temperature": 0.7, "num_ctx": 4096, "num_predict": 64}
-    assert "logprobs" not in off and off["options"] == on["options"]
 
 
 def test_runner_options_ride_every_request_only_while_grading_is_on(monkeypatch):

@@ -1,8 +1,6 @@
 import time
 import diag
 
-from langchain.messages import HumanMessage, AIMessage
-
 from core.state import AgentState
 from config import get_config
 from textutil import clip
@@ -17,7 +15,7 @@ from stores.document_registry import (
 Grounding node (re-scoped from the old context_builder).
 
 Its ONLY job is to load the things that are NOT already available to the model:
-  - the document + workspace manifests (so the planner knows what docs/files exist),
+  - the document + workspace manifests (so the agent knows what docs/files exist),
   - the per-workspace SATURDAY.md instructions, and
   - persistent memory (stores/memory_registry): the user layer + open commitments + the recent
     memo digest always, agent/entities/negative facts by match against the request, all under
@@ -25,20 +23,21 @@ Its ONLY job is to load the things that are NOT already available to the model:
     agent layers 2026-09-02 — nothing ever wrote them.)
 
 It deliberately does NOT include:
-  - the tool inventory  -> the planner's system prompt carries the catalog and the execute
-                           step names its one tool; duplicating them here hurts small models.
-  - the chat history    -> `messages` is already passed to the model directly.
+  - the tool inventory  -> the agent's native tool bind carries the catalog; duplicating it
+                           here hurts small models.
+  - the chat history    -> `messages` is already passed to the model directly (the v2 loop
+                           sees the real conversation, so the old recap section is gone).
 
 Built once per turn (manifests/memory are static within a turn). Dynamic information —
 tool results — flows through `messages`, never this frozen grounding string.
 
 The block is built in TWO halves (2026-09-04): `context_stable` — instructions, manifests, the
 query-independent memory layers — is byte-identical across turns while nothing on disk
-changed, and `context_dynamic` — memory's by-match selection, the recent-conversation recap,
-attachments — changes every turn. Every node's prompt sends the stable half as its own message
+changed, and `context_dynamic` — memory's by-match selection, attachments — changes every
+turn. Every node's prompt sends the stable half as its own message
 right after the system prompt and the dynamic half after it, and the idle prime (core/prime.py)
 re-sends exactly `stable_grounding()` between turns so the daemon holds a checkpoint at that
-message boundary: the next turn's plan/execute/synthesize calls then prefill only what is new
+message boundary: the next turn's agent call then prefills only what is new
 (core/serving.py, "the prefix cache"). `context` stays the joined block for every reader that
 wants the whole thing (/trace context, older checkpoints).
 """
@@ -62,58 +61,6 @@ def _read_instructions() -> str:
         text = text[:_INSTRUCTIONS_CAP] + "\n… (SATURDAY.md truncated — keep it concise)"
     return text
 
-# How many prior Q&A exchanges to recap into context, and how much of each to keep. Small on
-# purpose: enough for the planner/synthesizer to resolve a follow-up ("do that for the other
-# file") without re-bloating context — the full prior turn already rides `messages`.
-_RECAP_EXCHANGES = 2
-_RECAP_CHARS = 240
-
-
-def _recent_exchanges(messages: list) -> str:
-    """A compact recap of the last few completed Q&A exchanges, for the planner/synthesizer —
-    which read `context` but are NOT given the raw `messages` the agent sees. Without this they
-    are blind to the conversation, so a follow-up turn gets planned/synthesized as if it arrived
-    cold. Pairs each user question with the assistant's final (non-tool-call) answer; skips the
-    current in-flight query (the trailing HumanMessage with no answer yet)."""
-    from core.state import is_turn_start
-
-    pairs = []
-    pending_q = None
-    for m in messages:
-        if isinstance(m, HumanMessage):
-            # Not every HumanMessage is a question: a compaction summary is carried history and a
-            # standalone mid-turn steer note is a correction — pairing either with the next answer
-            # corrupts the recap (is_turn_start owns that rule). With those skipped, the LATEST
-            # question wins, so a question left unanswered by a failed turn is superseded instead
-            # of mis-pairing with the next turn's answer.
-            if not is_turn_start(m):
-                continue
-            text = str(m.content).strip()
-            if text:
-                pending_q = text
-        elif isinstance(m, AIMessage) and not getattr(m, "tool_calls", None):
-            answer = str(m.content).strip()
-            if pending_q and answer:
-                pairs.append((pending_q, answer))
-                pending_q = None
-            elif pairs and answer:
-                # A LATER no-tool AIMessage in the same turn supersedes the pair's answer: a
-                # normal turn carries TWO consecutive no-tool AIMessages — the agent's draft
-                # (the finish that routed to replan/synthesize) then synthesize's final answer —
-                # and the recap must show the answer the user actually saw, never the draft.
-                # Worst case otherwise is the replan-repair path: the recap would carry the very
-                # ungrounded draft the judge rejected. The `and answer` guard keeps an empty
-                # trailing AIMessage from blanking a real final answer.
-                pairs[-1] = (pairs[-1][0], answer)
-    if not pairs:
-        return ""
-
-    lines = []
-    for q, a in pairs[-_RECAP_EXCHANGES:]:
-        lines.append(f"- User: {clip(q, _RECAP_CHARS)}\n  You: {clip(a, _RECAP_CHARS)}")
-    return "\n".join(lines)
-
-
 def stable_grounding() -> str:
     """The query-independent half of the grounding block — what the idle prime re-sends between
     turns. Byte-identical to the `context_stable` the next turn's grounding_node builds unless
@@ -136,7 +83,7 @@ def stable_grounding() -> str:
 
     # Reconcile the manifest with the workspace on disk FIRST: a file deleted or dropped in
     # outside the agent would otherwise leave this block naming a phantom (which the planner
-    # then reads, fails, and replans around) or missing a real file. Best-effort — a sync
+    # then reads and fails on) or missing a real file. Best-effort — a sync
     # failure must never fail the first node of every turn.
     try:
         removed, added = sync_workspace_manifest()
@@ -185,14 +132,6 @@ def grounding_node(state: AgentState) -> dict:
             mark_used(matched_ids)
         except Exception as exc:
             diag.log(f"grounding_node : memory last-used stamp failed: {exc}")
-
-    # Per turn: the recap changes every turn and the request follows it.
-    recap = _recent_exchanges(state.get("messages", []))
-    if recap:
-        sections.append(
-            "### Recent conversation (this session — for resolving follow-up references)\n"
-            + recap
-        )
 
     # Files the user attached to THIS message with `@path` (resolved + read by mentions.expand in the
     # REPL loop, stashed on state). Folded in here so the planner/agent/synthesize — which read this

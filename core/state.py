@@ -6,7 +6,7 @@ from typing_extensions import TypedDict, Annotated
 
 
 # --- mid-turn steering tag ----------------------------------------------------------------
-# plan_gate injects a mid-turn steering correction as a HumanMessage. When it can't merge the
+# The agent node injects a mid-turn steering correction as a HumanMessage. When it can't merge the
 # note into the trailing message it appends a STANDALONE HumanMessage carrying this prefix —
 # which is NOT a turn boundary. Everything that slices the conversation by "last HumanMessage"
 # (agent._compact_history, compaction.summarize_messages, the grounding recap) must test
@@ -17,7 +17,7 @@ STEER_PREFIX = "[Steering correction from the user, mid-task — adjust your app
 
 
 def is_steer_message(m) -> bool:
-    """True if `m` is a standalone mid-turn steering note injected by plan_gate. The merged form
+    """True if `m` is a standalone mid-turn steering note injected by the agent node. The merged form
     (note appended onto an existing HumanMessage's content) deliberately does NOT match — there
     the underlying message is still the real turn boundary."""
     return isinstance(m, HumanMessage) and str(m.content).startswith(STEER_PREFIX)
@@ -52,24 +52,13 @@ def is_turn_start(m) -> bool:
 # type):
 #   {step_id, label, status, intended_tool, result, needs_resolution}
 #
-#   status           display + incident vocabulary. "pending"/"active" describe un-run steps;
-#                    a step with a result lands on exactly one of:
-#                      done       ran, usable result
-#                      skipped    a guard declined it (user rejection at the gate, write gate)
-#                      blocked    a hard refusal ended it (BLOCKED result)
-#                      error      the tool call failed
-#                      cancelled  retired by rectify after a prior guarded/missing-item outcome
-#                      superseded an engine refusal a redraft then carried out (a dangling
-#                                 ask_user that a later ask_user step asked) — record, not
-#                                 incident. Stamped by update_plan, never by a model.
-#                    Anything but "done" or "superseded" is an INCIDENT synthesize must
-#                    disclose instead of claiming success.
-
-#   intended_tool    the ONE tool this step calls (None = a pure reasoning step).
-#   result           the step's observation/output; None until it runs.
-#   needs_resolution True when the step's exact target (file/value/item list) is not yet known
-#                    and must be resolved from an earlier step's result (rectify checks these
-#                    before execution reaches them).
+#   status           display vocabulary. The `plan` tool writes "pending" / "done"; the wider
+#                    set (skipped, blocked, error, cancelled, superseded — the old engine's
+#                    incident statuses) survives for older trace records and the rail's glyphs.
+#   intended_tool    None since v2 (the checklist names no tool; kept for record compatibility).
+#   result           "done" for a completed item, None otherwise — `current_step` (the first
+#                    item with `result is None`) is the gate's step context.
+#   needs_resolution always False since v2 (kept for record compatibility).
 
 # A step in one of these statuses is retired for DISPLAY purposes; execution-wise the pointer
 # is `result is None` (a retired step always carries a result).

@@ -88,19 +88,11 @@ TASKS: dict = {
     # 1024, not 512: a verbose-but-healthy verdict's `reasoning` field hit 512 exactly and the
     # JSON never closed (run 16, 2026-09-02); the retry only parsed because it came out shorter.
     "judge": Task("judge", strict=True, num_predict=1024, think=False),
-    "tool_args": Task("tool_args", strict=True, num_predict=512, think=False),
-    # The payload-carrying tools (write_file, edit_file): the file's CONTENT rides inside the
-    # arguments, so the bound is the size of a file, not of an argument list. Still a circuit
-    # breaker — 4096 tokens is ~12-16 KB of text; a longer write is refused honestly by the
-    # execute node's truncation branch instead of looping (measured 2026-09-02: every write of a
-    # story/idea list cut at exactly 512 with done_reason=length and no call parsed).
-    "tool_payload": Task("tool_payload", strict=True, num_predict=4096, think=False),
-    "reasoning": Task("reasoning", strict=False, num_predict=1024, think=False),
+    # The answer task survives for core/calibration.py's confidence sampling.
     "answer": Task("answer", strict=False, num_predict=1536, think=False),
-    "correction": Task("correction", strict=False, num_predict=1536, think=False),
     # The loop's one call (nodes/agent.py, 2026-09-27): prose OR a tool call, so the bound must
-    # fit a write_file payload (the tool_payload rationale); think off — the cheap rationale is
-    # the model's own pre-call text.
+    # fit a write_file payload (4096 tokens is ~12-16 KB of text — a circuit breaker, not a
+    # budget); think off — the cheap rationale is the model's own pre-call text.
     "agent": Task("agent", strict=False, num_predict=4096, think=False),
 }
 

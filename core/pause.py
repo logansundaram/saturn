@@ -16,23 +16,19 @@ from typing import Optional
 
 
 # ── the pause latch ──────────────────────────────────────────────────────────────────────────
-# Pause-and-review mechanism for the living-plan loop: ANY source asks for a pause by calling
-# `request(source, reason)`; the `plan_gate` node consults it at each step boundary
-# (`pending()` / `peek()`) and clears it once handled. This is the one place the rest of the
-# system reads "should we pause?".
+# ANY source asks for a pause by calling `request(source, reason)`; the agent node consults it
+# at the top of each pass (`pending()` / `peek()`) and clears it once handled.
 #
 # The *user-initiated* trigger — a daemon thread that watches the console during a turn and
 # calls `controller.request(...)` when the pause key (**Esc**) is pressed — lives in
 # `typeahead.py`'s `InputQueue`, the single console reader for the duration of a turn. A console
-# that can't be polled degrades to a no-op there, and the gate still works via `/plan pause` and
-# `/plan review`.
+# that can't be polled degrades to a no-op there.
 #
 # Why a singleton rather than threading the controller through graph state/config: the CLI runs
 # exactly one turn at a time (blocking), so a single shared controller is unambiguous, needs no
-# serialization through the checkpointer, and keeps the gate node a pure `state -> updates`
-# function. This is THE one pause seam — a future in-graph source (e.g. an LLM
-# `request_plan_review` tool/node) calls `request()` on this same controller. See
-# `nodes/plan_gate.py`.
+# serialization through the checkpointer, and keeps the node a pure `state -> updates`
+# function. This is THE one pause seam — a future in-graph source calls `request()` on this same
+# controller.
 
 
 @dataclass(frozen=True)
@@ -49,7 +45,7 @@ class PauseController:
     gate reads it non-destructively (`pending()`/`peek()`) and `clear()`s it once it has handled
     the interrupt.
 
-    The read is intentionally non-destructive: the `plan_gate` node re-executes from the top when
+    The read is intentionally non-destructive: the agent node re-executes from the top when
     a LangGraph `interrupt()` resumes, so the path to the interrupt must be identical both times.
     `clear()` runs only *after* the interrupt returns, so `pending()` stays true across the
     pause/resume boundary and the control flow is deterministic."""
@@ -63,7 +59,7 @@ class PauseController:
         """Ask for a pause at the next step boundary — or, for source "steer", QUEUE a mid-turn
         correction. Two slots, not one (transplanted from the engine isolate, 2026-08-15): a
         pause is a request to INTERRUPT, a steer a request to adjust WITHOUT interrupting, and
-        plan_gate handles them on different paths. Sharing one slot let a steer typed after an
+        the agent node handles them on different paths. Sharing one slot let a steer typed after an
         Esc-pause overwrite the pause (the user saw the ⏸ acknowledgement and never got the
         editor), so steers queue and are drained only when no pause is outstanding — the pause
         outranks the steer, and the path to interrupt() evaluates identically on both LangGraph

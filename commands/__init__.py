@@ -31,7 +31,6 @@ _COMMAND_MODULES = [
     "conversation",  # /clear, /resume
     "knowledge",     # /docs, /memory, /init, /undo
     "notify",        # /notify — pending OS-scheduled notifications: list, cancel, test
-    "plan",          # /plan
     "policy",        # /policy — the one gate front door (risk · allow · open)
     "privacy",       # /privacy
     "runtime",       # /tools, /models, /mcp

@@ -1,9 +1,8 @@
 """
-Plan rendering + the plan-review editor (the human-in-the-loop pause). `render_plan` prints a plan
-on demand (`/plan`); `show_plan` re-renders the full plan — status glyph + intended tool on every
-row — each time it materially changes (the live trace's transparency surface); `review_plan` runs
-the interactive edit loop reached when a turn pauses at the plan_gate. All three share the
-`_plan_line` row format.
+Plan rendering — the model's checklist (tools/planning.py) as the rail shows it. `render_plan`
+prints a plan on demand (the pause prompt); `show_plan` re-renders the full plan — status glyph on
+every row — each time it materially changes (the live trace's transparency surface). Both share
+the `_plan_line` row format. (The plan-review editor left with the plan engine, 2026-09-27.)
 """
 
 import time
@@ -14,7 +13,6 @@ from ._base import (
     _ACCENT, _DIM, _FAINT, _PLAN, _RAIL, _RAIL_GLYPH,
     _emit, _rail, _term_width, _truncate,
 )
-from .statusbar import _live_start, _live_stop
 
 
 def _plan_line_bare(step: dict, *, show_tool: bool) -> "Text | str":
@@ -81,8 +79,8 @@ def _fingerprint(plan) -> list[tuple]:
 def _finished(plan) -> int:
     """How many steps have reached a terminal status. Reads the engine's own vocabulary
     (core.state.TERMINAL_STATUSES) rather than re-listing it here — a hand copy would drift the
-    moment a status is added. Lazily imported like `_review_help`'s plan_ops so the TUI stays a
-    leaf; any failure just costs the count, never the render."""
+    moment a status is added. Lazily imported so the TUI stays a leaf; any failure just costs
+    the count, never the render."""
     try:
         from core.state import TERMINAL_STATUSES
 
@@ -137,182 +135,3 @@ def show_plan(plan) -> None:
     _plan_header(plan)
     for step in plan:
         _emit(_plan_line(step, show_tool=True))
-
-
-# ── plan-review editor (the human-in-the-loop pause) ─────────────────────────────
-# Reached when a turn pauses at the plan_gate (keyboard pause, /plan pause|review, or an in-graph
-# request). Renders the live plan with the current step marked, then runs a small edit loop on the
-# shared plan_ops grammar until the user continues (resume with the edited plan) or aborts (end the
-# turn). Mirrors ask_approval's Live teardown/restart so it composes with the bottom status bar.
-def _review_emit(text) -> None:
-    _emit(text)
-
-
-def _review_header(reason: str, title: str = "plan review", subtitle: str = "execution paused") -> None:
-    if _RICH:
-        _console.print()  # the pause lands mid-trace — let the frame read as its own moment
-        top = Text()
-        top.append("  ┏━ ", style="bold")
-        top.append(title, style=f"bold {_ACCENT}")
-        top.append(f" — {subtitle}", style=_DIM)
-        _console.print(top)
-        if reason:
-            r = Text()
-            r.append("  ┃ ", style="bold")
-            r.append(reason, style=_DIM)
-            _console.print(r)
-    else:
-        print()
-        print(f"  ┏━ {title} — {subtitle}")
-        if reason:
-            print(f"  ┃ {reason}")
-
-
-def _render_review_plan(plan: list[dict]) -> None:
-    """List the plan inside the review block: every step with its status NAMED (the glyph alone
-    doesn't tell the user what word to type at `status <id> <…>`) + intended tool, and the step
-    execution will resume at flagged. The resume pointer is recomputed from the plan being
-    rendered (first step with no recorded result — the engine's own execution pointer), so it
-    tracks the user's edits instead of going stale the moment a step is added/dropped/moved."""
-    if not plan:
-        _review_emit("  ┃   (empty plan — add steps with `add <label>`)")
-        return
-    current = next((s.get("step_id") for s in plan if s.get("result") is None), None)
-    for step in plan:
-        # Bare rows: the review frame's `┃` IS the gutter — the railed variant would double it.
-        line = _plan_line_bare(step, show_tool=True)
-        status = step.get("status", "pending")
-        tag = f"  [{status}]" if status != "pending" else ""
-        marker = "  ← next to run" if step.get("step_id") == current else ""
-        if _RICH:
-            row = Text()
-            row.append("  ┃ ", style="bold")
-            row.append_text(line if isinstance(line, Text) else Text(str(line)))
-            if tag:
-                row.append(tag, style=_DIM)
-            if marker:
-                row.append(marker, style=f"bold {_ACCENT}")
-            _console.print(row)
-        else:
-            print(f"  ┃ {line}{tag}{marker}")
-
-
-def _review_hint(enter_verb: str = "runs", abort_verb: str = "stops") -> None:
-    """The one-line standing hint under the plan — enough to act (run, stop, or start editing)
-    without reprinting the whole editor grammar at every pause; `help` opens the full version."""
-    if _RICH:
-        t = Text()
-        t.append("  ┃ ", style="bold")
-        t.append("enter", style=_ACCENT)
-        t.append(f" {enter_verb} · ", style=_DIM)
-        t.append("abort", style=_ACCENT)
-        t.append(f" {abort_verb} · edit with ", style=_DIM)
-        t.append("add/edit/tool/status/move/drop", style="default")
-        t.append(" · ", style=_DIM)
-        t.append("help", style=_ACCENT)
-        t.append(" for the grammar", style=_DIM)
-        _console.print(t)
-    else:
-        print(f"  ┃ enter {enter_verb} · abort {abort_verb} · edit with add/edit/tool/status/move/drop"
-              " · help for the grammar")
-
-
-def _review_help() -> None:
-    from core import plan_ops
-
-    _review_emit("  ┃ edit the plan, then `go` to run it (or `abort` to stop):")
-    for h in plan_ops.COMMAND_HELP:
-        _review_emit(f"  ┃     {h}")
-    _review_emit("  ┃     go / <enter>          run the (edited) plan")
-    _review_emit("  ┃     abort / Ctrl-C        stop this turn")
-    _review_emit("  ┃     show · help           reprint the plan · this help")
-
-
-def _review_note(msg: str) -> None:
-    if _RICH:
-        t = Text()
-        t.append("  ┃   ", style="bold")
-        t.append(msg, style=_DIM if not msg.startswith("!") else "yellow")
-        _console.print(t)
-    else:
-        print(f"  ┃   {msg}")
-
-
-def _review_input() -> str:
-    if _RICH:
-        return _console.input("  [bold]┗━[/] edit» ", markup=True)
-    return input("  ┗━ edit» ")
-
-
-def review_plan(value: dict) -> dict:
-    """Handle a plan-review interrupt. Returns `{"action": "continue"|"abort", "plan": <edited>}`
-    — the resume value the plan_gate node applies. The edited plan is normalized + renumbered by
-    plan_ops, so step ids the user typed always match what's rendered. Bare Enter (or `go`)
-    continues; Ctrl-C/EOF aborts — an interrupted review must never run the plan.
-
-    The payload may override the frame's wording so other hosts of the same editor loop stay
-    honest about what enter/abort DO there — `/draft` composes a plan between turns, where
-    nothing is executing and enter saves rather than runs: `title`/`subtitle` (the ┏━ header),
-    `enter_verb`/`abort_verb` (the standing hint), `verbs` (the ┗━ tail as a
-    (continue, abort) pair). Defaults are the mid-turn review's."""
-    from core import plan_ops
-
-    plan = plan_ops.normalize(value.get("plan") or [])
-    reason = value.get("reason", "")
-    verbs = value.get("verbs") or ("running the plan", "aborting the turn")
-
-    _live_stop()  # the editor blocks on input(); the bar can't be live while it does
-
-    _review_header(
-        reason,
-        title=value.get("title") or "plan review",
-        subtitle=value.get("subtitle") or "execution paused",
-    )
-    _render_review_plan(plan)
-    _review_hint(
-        enter_verb=value.get("enter_verb") or "runs",
-        abort_verb=value.get("abort_verb") or "stops",
-    )
-
-    action = "continue"
-    while True:
-        try:
-            raw = _review_input()
-        except (EOFError, KeyboardInterrupt):
-            # Ctrl-C / a closed stdin at a control point must fail closed: abort the turn,
-            # never run a plan the user was interrupting their review of.
-            action = "abort"
-            break
-        cmd = raw.strip()
-        low = cmd.lower()
-        if low in ("", "go", "c", "continue", "run", "resume"):
-            action = "continue"
-            break
-        if low in ("abort", "q", "quit", "cancel", "stop"):
-            action = "abort"
-            break
-        if low in ("help", "h", "?"):
-            _review_help()
-            continue
-        if low in ("show", "ls", "plan"):
-            _render_review_plan(plan)
-            continue
-        try:
-            plan, note = plan_ops.apply_command(plan, cmd)
-            _review_note(note)
-            _render_review_plan(plan)
-        except ValueError as exc:
-            _review_note(f"! {exc}")
-
-    verb = verbs[0] if action == "continue" else verbs[1]
-    if _RICH:
-        tail = Text()
-        tail.append("  ┗━ ", style="bold")
-        tail.append(verb, style=_ACCENT)
-        _console.print(tail)
-    else:
-        print(f"  ┗━ {verb}")
-
-    _base._t_last = time.perf_counter()  # don't bill the human's edit time to the next node
-    _live_start()  # the turn continues; re-pin the bar
-    return {"action": action, "plan": plan}

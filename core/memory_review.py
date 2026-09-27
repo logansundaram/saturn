@@ -41,13 +41,11 @@ from stores.memory_registry import _atomic_write, normalize_layer
 from textutil import clip
 
 # Candidate sources, in the order the review lists them.
-SOURCES = ("steer", "veto", "gate", "unfinished", "failed", "compaction", "model")
+SOURCES = ("steer", "gate", "failed", "compaction", "model")
 _SOURCE_LABEL = {
     "steer": "you corrected the agent mid-task",
-    "veto": "you removed a step at plan review",
     "gate": "you declined a tool at the gate",
-    "unfinished": "the agent did not finish this",
-    "failed": "a step failed",
+    "failed": "a tool call failed",
     "compaction": "from the compacted conversation",
     "model": "proposed by the model from this session",
 }
@@ -94,19 +92,16 @@ def collect_turn(state: dict, run_id=None) -> list[dict]:
     result to the pending queue with `add_pending`. Deterministic sources only:
 
       steer notes      → agent      "when asked …, the user corrected: …"
-      plan vetoes      → negative   "do not: <step> (removed at plan review)"
       gate denials     → negative   "the user declined <tool> for: <step>"
-      unfinished steps → commitments (blocked / cancelled / never reached after an abort)
-      failed steps     → agent      "<step> failed: <error>"
+      failed calls     → agent      "<tool>(<args>) failed: <error>"
     """
     out: list[dict] = []
     query = clip(" ".join(str(state.get("current_query") or "").split()), 90)
     ctx = f" (while: {query})" if query else ""
 
     for m in _this_turn(state.get("messages") or []):
-        # Two shapes (nodes/plan_gate.py): a standalone steer HumanMessage, or — at the first
-        # boundary — the note MERGED onto the query message ("<query>\n<STEER_PREFIX> <reason>"),
-        # which is_steer_message deliberately does not match. Both carry the correction.
+        # A steer is a standalone STEER_PREFIX HumanMessage (nodes/agent.py); the merged form
+        # older records carry ("<query>\n<STEER_PREFIX> <reason>") is read the same way.
         if not isinstance(m, HumanMessage) or STEER_PREFIX not in str(m.content):
             continue
         for segment in str(m.content).split(STEER_PREFIX)[1:]:
@@ -114,12 +109,6 @@ def collect_turn(state: dict, run_id=None) -> list[dict]:
             if note:
                 out.append(_candidate("agent", f"The user corrected me mid-task{ctx}: {note}",
                                       "steer", run_id))
-
-    for label in state.get("plan_vetoes") or []:
-        label = " ".join(str(label).split())
-        if label:
-            out.append(_candidate("negative", f"Do not: {label} — removed at plan review{ctx}",
-                                  "veto", run_id))
 
     for ev in state.get("gate_events") or []:
         if not isinstance(ev, dict) or ev.get("decision") == "approved":
@@ -132,20 +121,15 @@ def collect_turn(state: dict, run_id=None) -> list[dict]:
                                       f"The user declined {call['name']} at the gate{what}",
                                       "gate", run_id))
 
-    plan = [s for s in (state.get("plan") or []) if isinstance(s, dict)]
-    aborted = bool(state.get("aborted"))
-    for s in plan:
-        label = " ".join(str(s.get("label") or "").split())
-        if not label:
+    for ev in state.get("tool_events") or []:
+        if not isinstance(ev, dict) or ev.get("ok", True) or not ev.get("name"):
             continue
-        status = str(s.get("status") or "")
-        if status in ("blocked", "cancelled") or (aborted and s.get("result") is None):
-            out.append(_candidate("commitments", f"Unfinished: {label}{ctx}", "unfinished",
-                                  run_id))
-        elif status == "error":
-            why = clip(" ".join(str(s.get("result") or "").split()), 120)
-            out.append(_candidate("agent", f"Step failed: {label} — {why}" if why
-                                  else f"Step failed: {label}", "failed", run_id))
+        from textutil import fmt_args
+
+        call = f"{ev['name']}({fmt_args(ev.get('args') or {}, 60)})"
+        why = clip(" ".join(str(ev.get("result") or "").split()), 120)
+        out.append(_candidate("agent", f"Tool call failed: {call} — {why}" if why
+                              else f"Tool call failed: {call}", "failed", run_id))
 
     return [c for c in out if c][:_MAX_PER_TURN]
 

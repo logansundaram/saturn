@@ -1,13 +1,8 @@
-"""nodes/synthesize.py provenance helpers — the numbering the synthesizer cites against
-and the mechanical Sources footer appended to the answer (runtime.citations)."""
+"""The answer's source numbering (core/sources.py) and the mechanical Sources footer nodes/agent.py
+appends to the recorded answer (runtime.citations)."""
 
-from nodes.synthesize import (
-    build_sources,
-    sources_footer,
-    _gathered_section,
-    _tool_source_label,
-    _doc_source_label,
-)
+from core.sources import _doc_source_label, _tool_source_label, build_sources
+from nodes.agent import sources_footer
 
 
 def test_numbering_is_continuous_across_sections():
@@ -30,22 +25,16 @@ def test_tool_label_is_the_call_repr():
 
 
 def test_doc_label_collects_distinct_sources():
-    obs = (
-        "[source: a.md]\nchunk one\n\n"
-        "[source: b.pdf, page 3]\nchunk two\n\n"
-        "[source: a.md]\nchunk three"
-    )
-    label = _doc_source_label(obs)
-    assert label == "knowledge base: a.md, b.pdf, page 3"
+    obs = "[source: a.md]\nchunk one\n\n[source: b.md]\nchunk two\n\n[source: a.md]\nchunk three"
+    assert _doc_source_label(obs) == "knowledge base: a.md, b.md"
     assert _doc_source_label("no markers here") == "knowledge base passage"
 
 
 def test_footer_shape_and_empty_case():
-    _, _, sources = build_sources(["calc(x=1) -> 1"], [])
-    footer = sources_footer(sources)
+    footer = sources_footer(["calc(x=1) -> 1"], [])
     assert footer.startswith("Sources:")
     assert "[1] calc(x=1)" in footer
-    assert sources_footer([]) == ""
+    assert sources_footer([], []) == ""
 
 
 def test_empty_inputs():
@@ -53,35 +42,10 @@ def test_empty_inputs():
     assert numbered_tools == [] and numbered_docs == [] and sources == []
 
 
-def test_gathered_section_headers_pinned():
-    """Pin the exact prompt headers _gathered_section reconstructs — the section folding must
-    keep the synthesizer's prompt bytes identical to the pre-refactor two-block form."""
-    items = ["calc(x=1) -> 1"]
-    numbered = ["[1] calc(x=1) -> 1"]
-    msg = _gathered_section(items, numbered, True, "Tool results")
-    assert msg.content == (
-        "Tool results (numbered — cite the matching [n] after claims drawn from them):\n"
-        "[1] calc(x=1) -> 1"
-    )
-    msg = _gathered_section(items, numbered, False, "Tool results")
-    assert msg.content == "Tool results:\ncalc(x=1) -> 1"
-    msg = _gathered_section(items, numbered, True, "Retrieved documents")
-    assert msg.content.startswith(
-        "Retrieved documents (numbered — cite the matching [n] after claims drawn from them):\n"
-    )
-    # Nothing gathered -> no section message at all (the prompt omits the block).
-    assert _gathered_section([], [], True, "Tool results") is None
-
-
 def test_split_call_result_is_the_one_parser():
-    # THE parser of nodes/tools.py's `name(args) -> observation` serialization — synthesize's
-    # Sources labels take [0], an observation-content reader takes [1]; one function, no drift.
+    # THE parser of nodes/tools.py's `name(args) -> observation` serialization — the Sources
+    # labels take [0], an observation-content reader takes [1]; one function, no drift.
     from textutil import CALL_RESULT_SEP, split_call_result
 
-    call, obs = "web_search(query='x')", "result text -> with an arrow inside"
-    got_call, got_obs = split_call_result(f"{call}{CALL_RESULT_SEP}{obs}")
-    assert got_call == call
-    assert got_obs == obs  # only the FIRST separator splits — observation content survives whole
-    # No separator: both halves are the whole entry, so the label fallback and the
-    # keep-the-whole-observation fallback coincide by construction.
-    assert split_call_result("plain doc passage") == ("plain doc passage", "plain doc passage")
+    assert split_call_result(f"calc(x=1){CALL_RESULT_SEP}1") == ("calc(x=1)", "1")
+    assert split_call_result("no separator")[0] == "no separator"

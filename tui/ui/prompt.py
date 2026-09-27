@@ -571,6 +571,24 @@ def answer_question(value: dict) -> str:
     return ask("your answer (Enter = no answer) » ")
 
 
+def pause_prompt(value: dict) -> dict:
+    """The Esc pause: show where the turn is, then one line decides — Enter continues, typed
+    text steers the running turn, q aborts it. The resume value nodes/agent.py reads."""
+    from .listing import section
+    from .plan import render_plan
+
+    section("paused", str((value or {}).get("reason") or "esc"))
+    plan = (value or {}).get("plan") or []
+    if plan:
+        render_plan(plan)
+    reply = ask("[Enter] continue · type a correction to steer · q abort » ", on_interrupt="q")
+    if reply.lower() in ("q", "quit", "abort", "stop"):
+        return {"action": "abort"}
+    if reply:
+        return {"action": "steer", "text": reply}
+    return {"action": "continue"}
+
+
 def ask(prompt_text: str, *, on_interrupt: str = "") -> str:
     """Read a single line for an interactive command prompt (e.g. the /models picker). Tears down
     any live status bar first — input() can't run under an active Live — and returns the raw,

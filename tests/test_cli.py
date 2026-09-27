@@ -120,29 +120,6 @@ def _q_plan(*labels, results=()):
     ]
 
 
-def test_q_progress_announces_plan_and_pointer_moves():
-    from app import headless
-
-    lines = []
-    progress = headless._q_progress(emit=lines.append)
-    plan = _q_plan("list files", "answer")
-    progress("plan", {"plan": plan})
-    assert lines == ["plan drafted — 2 step(s)", "step 1/2: list files"]
-    # execute's pending->active flip doesn't move the pointer — no re-announce.
-    active = [dict(plan[0], status="active"), plan[1]]
-    progress("execute", {"plan": active})
-    assert len(lines) == 2
-    # update_plan writes the result — the pointer moves, step 2 announces.
-    done = [dict(plan[0], status="done", result="ok"), plan[1]]
-    progress("update_plan", {"plan": done})
-    assert lines[-1] == "step 2/2: answer"
-    # a replan announces the revision (and its new pointer, if it moved).
-    revised = [done[0], dict(done[1], label="answer with sources")]
-    progress("replan", {"plan": revised})
-    assert "plan revised — 2 step(s)" in lines
-    assert lines[-1] == "step 2/2: answer with sources"
-
-
 def test_q_progress_tolerates_planless_and_garbage_deltas():
     from app import headless
 

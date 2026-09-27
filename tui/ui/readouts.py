@@ -112,18 +112,18 @@ def warn(msg: str) -> None:
 
 def steer_note(text: str) -> None:
     """Acknowledge a mid-turn steering correction the moment it's captured (Esc with typed text).
-    The correction is injected into the running turn at the next step boundary (see plan_gate); this
-    is the immediate feedback that it landed, printed above the live status bar."""
-    _glyph_line("  ↪ ", f"bold {_ACCENT}", "steering — applies at the next step: ",
+    The correction is injected into the running turn at the agent's next pass (nodes/agent.py);
+    this is the immediate feedback that it landed, printed above the live status bar."""
+    _glyph_line("  ↪ ", f"bold {_ACCENT}", "steering — applies at the next pass: ",
                 _ACCENT, _truncate(text, 80), _DIM)
 
 
 def pause_note() -> None:
-    """Acknowledge an empty-line Esc the moment it's captured. The plan-review pause lands at the
-    next step boundary (see plan_gate), which on a local model can be a long wait — this is the
-    immediate feedback that the keypress registered, printed above the live status bar exactly
-    like steer_note's steering acknowledgement."""
-    _glyph_line("  ⏸ ", f"bold {_ACCENT}", "pausing for plan review at the next step…", _ACCENT)
+    """Acknowledge an empty-line Esc the moment it's captured. The pause lands at the agent's
+    next pass (nodes/agent.py), which on a local model can be a long wait — this is the immediate
+    feedback that the keypress registered, printed above the live status bar exactly like
+    steer_note's steering acknowledgement."""
+    _glyph_line("  ⏸ ", f"bold {_ACCENT}", "pausing at the next pass…", _ACCENT)
 
 
 def freeze_note() -> None:

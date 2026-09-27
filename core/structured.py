@@ -1,18 +1,19 @@
 """
-Hardened structured-output layer for the plan/execute/rectify engine (transplanted from the
-agentic_benchmark harness, 2026-07-03).
+Hardened structured-output layer (transplanted from the agentic_benchmark harness, 2026-07-03).
+Its engine callers left with the plan engine (2026-09-27); it still serves the out-of-loop
+judgment calls (the memory review's proposals) and owns `_invoke_kwargs`, the ONE builder of
+the per-task decoding options every model call sends.
 
 Small local models mis-handle the full Pydantic JSON schema (`$ref`/`$defs`) that
 `.with_structured_output` sends, and intermittently wrap their JSON in prose. This layer is the
-defensive plumbing around every judgment call the engine makes:
+defensive plumbing around a judgment call:
 
-  - FLAT, hand-written JSON schemas (the `*_FORMAT` dicts) constrain Ollama's decoder without
-    `$ref` indirection, plus a one-line JSON "shape" hint appended as a trailing HumanMessage (see
-    `structured`'s docstring — NEVER a SystemMessage, which Ollama 0.32.13 rejects mid-conversation
-    for qwen3.8 models) so a model that ignores the grammar still sees the exact expected spelling.
+  - FLAT, hand-written JSON schemas constrain Ollama's decoder without `$ref` indirection, plus
+    a one-line JSON "shape" hint appended as a trailing HumanMessage (see `structured`'s
+    docstring — NEVER a SystemMessage, which Ollama 0.32.13 rejects mid-conversation for qwen3.8
+    models) so a model that ignores the grammar still sees the exact expected spelling.
   - `_extract_json` salvages the outermost `{...}` from prose-wrapped output.
-  - LENIENT parse models (`_PlanOut`, `RectifyBool`, `ResolutionCheck`, `WriteGate`) with
-    defaults, so a missing field degrades instead of raising.
+  - lenient parse models with defaults, so a missing field degrades instead of raising.
   - temperature-escalating retries (0.0 first for determinism, then sampled variety), and a
     caller-supplied `default` so a total parse failure degrades to a safe verdict instead of
     aborting the turn.
@@ -25,236 +26,11 @@ Ollama-served roles — other providers get the shape hint + salvage path alone.
 
 from __future__ import annotations
 
-from typing import List, Optional
-
 from langchain.messages import HumanMessage
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import ValidationError
 
 import diag
 from config import get_config
-
-
-# ── lenient parse models ──────────────────────────────────────────────────────────────────────
-# Boundary-only Pydantic (gotcha #4 still holds: the plan lives in state as plain dicts).
-
-
-class _PlanItem(BaseModel):
-    description: str = ""
-    tool: Optional[str] = None
-    needs_resolution: bool = False
-
-
-class _PlanOut(BaseModel):
-    """The planner's draft. `rationale` comes FIRST (2026-09-08, structured chain-of-thought):
-    with think OFF, the grammar makes the model state what the request needs before it commits
-    to steps — a bounded rationale (RATIONALE_MAX_CHARS, enforced by the grammar's maxLength)
-    that replaced the planner's free thinking, which cost 5–19 s per plan call for the same
-    decision. Measured on the 9b before shipping: the story request that drew a lone stub 4/4
-    with think off and no rationale draws a `none` step 4/4 with one (docs/OPTIMIZATIONS.md §9).
-    to_steps ignores the field; plan_node logs it."""
-
-    rationale: str = ""
-    plan: List[_PlanItem] = []
-
-
-class RectifyBool(BaseModel):
-    reasoning: str = Field(default="", description="why the plan is or isn't correct")
-    rectify: bool = Field(default=False, description="True if the plan must change/extend")
-
-
-class ResolutionCheck(BaseModel):
-    """Whether the gathered results actually contain the item a deferred step refers to.
-    `evidence` precedes `found` so the constrained decoder forces the model to quote its source
-    before committing to the boolean — a chain-of-thought the grammar actually enforces."""
-
-    evidence: str = ""
-    found: bool = True  # fail-open: a parse failure must not cancel a legitimate plan
-
-
-class WriteGate(BaseModel):
-    """Whether the value a write step wants to persist is actually present in trusted sources
-    (the request itself, or the gathered results). Same evidence-first design as above."""
-
-    evidence: str = ""
-    # fail-CLOSED: the gate is only ARMED when a search ran or a step failed, i.e. exactly when a
-    # value could be getting bridged in from somewhere it wasn't verified — so an unparseable /
-    # missing verdict must BLOCK the write, never wave it through. (ResolutionCheck above stays
-    # fail-open on purpose: over-cancelling a legitimate plan is its worse failure; here the
-    # worse failure is persisting a possibly-fabricated value.) execute.py's call-site `default`
-    # matches this.
-    present: bool = False
-
-
-# ── flat schemas + shape hints ────────────────────────────────────────────────────────────────
-
-
-# The grammar-enforced bound on the planner's rationale (characters, a JSON-schema maxLength
-# llama.cpp compiles into the grammar). ~400 chars is one to three sentences — the measured
-# rationales ran 150–310 chars and the one that hit the cap was a cut-off, not a loss.
-RATIONALE_MAX_CHARS = 400
-
-
-def plan_format(tool_names: list[str]) -> dict:
-    """The planner's flat JSON schema: the bounded `rationale` first, then the steps, with the
-    tool enum built from the LIVE registry (plus "none" for pure reasoning steps) so an /mcp
-    reload reaches the constrained decoder too."""
-    return {
-        "type": "object",
-        "properties": {
-            "rationale": {"type": "string", "maxLength": RATIONALE_MAX_CHARS},
-            "plan": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "description": {"type": "string"},
-                        "tool": {"type": "string", "enum": sorted(set(tool_names)) + ["none"]},
-                        "needs_resolution": {"type": "boolean"},
-                    },
-                    "required": ["description", "tool", "needs_resolution"],
-                },
-            }
-        },
-        "required": ["rationale", "plan"],
-    }
-
-
-PLAN_SHAPE = (
-    "Respond with ONLY this JSON and nothing else: "
-    '{"rationale":"<one to three sentences: what the request needs, which tool if any, or why '
-    'a direct answer or a question is right>",'
-    '"plan":[{"description":"<what this step does>",'
-    '"tool":"<one exact tool name from the list, or none for a pure reasoning step>",'
-    '"needs_resolution":<true if this step\'s exact file/value/items are not yet '
-    "known and depend on an earlier result, else false>}]}"
-)
-
-RECTIFY_FORMAT = {
-    "type": "object",
-    "properties": {"reasoning": {"type": "string"}, "rectify": {"type": "boolean"}},
-    "required": ["reasoning", "rectify"],
-}
-RECTIFY_SHAPE = (
-    'Respond with ONLY this JSON: {"reasoning":"<why, in one or two sentences>",'
-    '"rectify":<true|false>}'
-)
-
-RESOLUTION_FORMAT = {
-    "type": "object",
-    "properties": {"evidence": {"type": "string"}, "found": {"type": "boolean"}},
-    "required": ["evidence", "found"],
-}
-RESOLUTION_SHAPE = (
-    'Respond with ONLY this JSON: {"evidence":"<quote the exact result text that '
-    "contains the referenced item and name its source — or say nothing "
-    'matches>","found":<true|false>}'
-)
-
-WRITE_GATE_FORMAT = {
-    "type": "object",
-    "properties": {"evidence": {"type": "string"}, "present": {"type": "boolean"}},
-    "required": ["evidence", "present"],
-}
-WRITE_GATE_SHAPE = (
-    'Respond with ONLY this JSON: {"evidence":"<quote the exact result text that '
-    "contains the requested value and name its source file — or say nothing "
-    'matches>","present":<true|false>}'
-)
-
-
-# ── tool-name normalization (planner output → live registry) ─────────────────────────────────
-
-# Names small models emit from their priors, mapped onto the real registry tool. Includes the
-# benchmark harness's tool vocabulary so prompts/exemplars written against it keep resolving.
-TOOL_SYNONYMS = {
-    "calc": "calculate",
-    "calculator": "calculate",
-    "list_dir": "list_directory",
-    "ls": "list_directory",
-    "search_text": "search_files",
-    "grep": "search_files",
-    "rag_search": "search_knowledge_base",
-    "knowledge_base": "search_knowledge_base",
-    "search": "web_search",
-    "web": "web_search",
-    "shell": "run_shell",
-    "bash": "run_shell",
-    "fetch": "web_extract",
-    "web_fetch": "web_extract",
-    "ask": "ask_user",
-    "ask_human": "ask_user",
-    "ask_the_user": "ask_user",
-    "user_input": "ask_user",
-    "question": "ask_user",
-}
-
-
-def norm_tool(raw, valid: "set[str] | None" = None) -> Optional[str]:
-    """Normalize a planner-emitted tool name onto the live registry ("none"/junk → None).
-    `valid` overrides the registry lookup for tests."""
-    if not raw:
-        return None
-    tokens = str(raw).replace("=", " ").split("|")[0].split()
-    if not tokens:  # degenerate emissions like "|read_file", "=", or whitespace
-        return None
-    token = tokens[0].strip().lower()
-    token = TOOL_SYNONYMS.get(token, token)
-    if valid is None:
-        valid = registered_tools()
-    return token if token in valid else None
-
-
-def registered_tools() -> set[str]:
-    """Live registry tool names; lazy so importing this module never loads tool deps."""
-    try:
-        from tools.registry import tools_by_name
-
-        return set(tools_by_name)
-    except Exception:
-        return set()
-
-
-# Planner spellings that MEAN "no tool" — these normalize to a genuine reasoning step. Anything
-# else norm_tool can't resolve is a REAL tool intent with a broken spelling, and must not
-# silently degrade into a reasoning step (see to_steps below).
-_NO_TOOL_MARKERS = {
-    "", "none", "null", "no", "n/a", "na", "no_tool", "no-tool", "no tool", "-",
-    "reason", "reasoning", "think", "thinking", "answer", "respond", "response",
-    "summarize", "summary", "analyze", "analysis", "llm", "text",
-}
-
-
-def to_steps(draft: _PlanOut) -> list[dict]:
-    """Planner structured output → the plain step dicts stored in state (the checkpointer
-    serializer never sees a custom type). `result=None` marks a step not yet executed — the
-    engine's execution pointer. Blank descriptions are dropped; step_ids renumber 1..N.
-
-    Tool names normalize onto the registry (norm_tool). An unresolvable spelling that is NOT a
-    no-tool marker ("use read_file", "read_file: notes.txt") keeps its RAW text instead of
-    collapsing to None: a None here would execute as a reasoning step — the model answering a
-    tool step from its own priors, fabricated output recorded as a done result — whereas the
-    preserved unknown name makes execute_node fail closed (an error incident rectify can
-    redraft). The constrained decoder's tool enum makes this the salvage-path guard only."""
-    steps: list[dict] = []
-    for s in draft.plan:
-        desc = (s.description or "").strip()
-        if not desc:
-            continue
-        raw = str(s.tool or "").strip()
-        tool = norm_tool(raw)
-        if tool is None and raw.lower() not in _NO_TOOL_MARKERS:
-            tool = raw  # fail-closed passthrough — execute_node records the incident
-        steps.append(
-            {
-                "step_id": len(steps) + 1,
-                "label": desc,
-                "status": "pending",
-                "intended_tool": tool,
-                "result": None,
-                "needs_resolution": bool(s.needs_resolution),
-            }
-        )
-    return steps
 
 
 # ── the hardened calls ────────────────────────────────────────────────────────────────────────
@@ -377,38 +153,3 @@ def structured(role, messages, schema, fmt, shape, default=None, attempts=3):
 # caller — the engine's one plain-text path is nodes/execute._reasoning_call, which needs the
 # raw response object for its metrics. Deleted 2026-07-04 rather than left as a second,
 # unexercised text-call path someone "fixes" believing it drives the engine.)
-
-
-# ── the quick path's router decision (nodes/quick.py, 2026-09-08) ─────────────────────────────
-
-
-class QuickDecision(BaseModel):
-    """ONE next action for a simple turn: "answer" (synthesize from what is known), a read-only
-    tool with its arguments, or any OTHER registered tool — which the quick node never runs: it
-    is the model's way of saying the request needs the plan engine (a write, an event, a
-    reminder, a question to the user), and the turn is handed over. Fail toward the engine: a
-    verdict that never parsed lands as an empty tool name, which reads as out-of-set."""
-
-    tool: str = ""
-    arguments: dict = Field(default_factory=dict)
-
-
-def quick_format(tool_names: list[str]) -> dict:
-    """The router's grammar: the tool enum is EVERY registered tool plus "answer" (an
-    out-of-set choice is the hand-over signal, so it must be expressible); the arguments are a
-    free object — the read-only tools' schemas are small and core/tool_args.coerce_args maps
-    alias keys onto the real ones, as it does for the execute node."""
-    return {
-        "type": "object",
-        "properties": {
-            "tool": {"type": "string", "enum": sorted(set(tool_names)) + ["answer"]},
-            "arguments": {"type": "object"},
-        },
-        "required": ["tool", "arguments"],
-    }
-
-
-QUICK_SHAPE = (
-    'Respond with ONLY this JSON: {"tool":"<one exact tool name, or answer>",'
-    '"arguments":{<the arguments for that tool; {} for answer>}}'
-)

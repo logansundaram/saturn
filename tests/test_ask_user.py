@@ -14,7 +14,6 @@ from langgraph.errors import GraphInterrupt
 
 import nodes.tools as nodes_tools
 import tools.interaction as interaction
-from core.structured import norm_tool
 from core.tool_args import coerce_args, schema_hint
 from tools.registry import risk_of, tools_by_name
 
@@ -104,14 +103,6 @@ def test_coerce_args_maps_aliases_onto_question():
     assert coerce_args("ask_user", {}) is None  # missing → retry with the schema hint
     assert "ask_user(question=" in schema_hint("ask_user", "missing arg")
 
-
-def test_norm_tool_synonyms_resolve_to_ask_user():
-    valid = {"ask_user"}
-    for raw in ("ask", "ask_human", "ask_the_user", "user_input", "question", "ask_user"):
-        assert norm_tool(raw, valid) == "ask_user"
-
-
-# --- the REPL prompt renderer -------------------------------------------------------------------
 
 def test_answer_question_returns_the_typed_line(monkeypatch, capsys):
     import importlib

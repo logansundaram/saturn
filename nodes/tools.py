@@ -168,7 +168,7 @@ def tool_node(state: AgentState):
         # Per-call boundary record (computed here so the outcome stamp below can see it): what
         # this call sent over the network, or what air-gap blocked.
         sent = _egress_slice(egress_mark)
-        # Structural outcome stamp for the recorder (nodes/update_plan reads it off the message):
+        # Structural outcome stamp (nodes/agent.py's incidents note and guards read it off the message):
         # derived HERE, where the call actually ran, so a step's status never has to be sniffed
         # back out of observation text — a successful read of a file whose content happens to
         # start with "ERROR:" or "Blocked …" must not fail its step. "blocked" = every boundary

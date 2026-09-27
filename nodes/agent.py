@@ -42,7 +42,8 @@ from core.pause import get_pause_controller
 from core.state import STEER_PREFIX, AgentState, is_turn_start
 from core.structured import _invoke_kwargs, _model_tag
 from core.tool_args import coerce_args, schema_hint
-from textutil import SOURCES_HEADER, clip, fmt_args, parse_doc_sources, split_call_result
+from core.sources import build_sources
+from textutil import SOURCES_HEADER, clip, fmt_args
 
 ROLE = "tool_caller"
 
@@ -63,7 +64,6 @@ INCIDENTS_NOTE_HEADER = "Note — the following could not be completed:"
 STALL_REPEATS = 2
 _INCIDENT_STATUSES = ("skipped", "blocked", "error")
 _INCIDENT_CAP = 160
-_MAX_SOURCE_LABEL = 100
 
 
 # ── this turn's record ────────────────────────────────────────────────────────────────────────
@@ -211,17 +211,12 @@ def _hygiene(call: dict, rounds: list, malformed: bool = False) -> "tuple[dict, 
 
 def sources_footer(tool_results, documents_retrieved) -> str:
     """The receipt of what informed the answer: one line per tool call / document, in the order
-    they were gathered. '' when nothing was."""
-    labels = []
-    for r in tool_results or []:
-        labels.append(clip(split_call_result(r)[0], _MAX_SOURCE_LABEL))
-    for d in documents_retrieved or []:
-        names = parse_doc_sources(d)
-        labels.append(clip("knowledge base: " + ", ".join(names), _MAX_SOURCE_LABEL)
-                      if names else "knowledge base passage")
-    if not labels:
+    they were gathered (core.sources — the same numbering /trace source and the Glass Box use).
+    '' when nothing was."""
+    _tools, _docs, sources = build_sources(tool_results, documents_retrieved)
+    if not sources:
         return ""
-    return SOURCES_HEADER + "\n" + "\n".join(f"  [{i}] {lbl}" for i, lbl in enumerate(labels, 1))
+    return SOURCES_HEADER + "\n" + "\n".join(f"  [{n}] {label}" for n, label in sources)
 
 
 def incidents(this_turn: list) -> list:

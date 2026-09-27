@@ -26,8 +26,8 @@ from trust import quarantine
 from tools.registry import risk_of
 from core.state import AgentState, current_step
 
-# The decline observation a rejected call gets. update_plan keys the `skipped` status off this
-# text's prefix (nodes/update_plan._DECLINE_PREFIX) — change them together.
+# The decline observation a rejected call gets. The structural `saturn_status: skipped` stamp on
+# the ToolMessage is what readers key on (nodes/agent.py's declined-repeat guard + incidents).
 DECLINE_TEXT = (
     "Execution declined by the user. Do not retry this action; tell the user you "
     "did not perform it."
@@ -235,7 +235,7 @@ def approval_node(state: AgentState) -> Command[Literal["tools", "agent"]]:
     # escalation is spent only when the human LET SOMETHING THROUGH — a fully-rejected batch
     # leaves it armed, so a re-issued copy of the call the human just declined faces the gate
     # again instead of auto-approving right past their 'no'. Re-issuing is itself rare now:
-    # rectify cancels the remaining steps after a guarded outcome.
+    # nodes/agent.py's declined-repeat guard answers an identical call without running it.
     if escalated and approved_ids:
         quarantine.consume_gate()
 

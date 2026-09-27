@@ -37,7 +37,6 @@ def test_build_from_state_axes():
         tool_results=["web_extract(url='blog.evil') -> page: " + _PAYLOAD + " end"],
         docs=["[source: doc.pdf] A trusted local fact with plenty of descriptive text here."],
         tool_events=[{"name": "web_extract", "quarantine": ["override-instructions"]}],
-        replans=1,
     )
     gb = glassbox.build_from_state(state, egress_events=None, gated=0)
 
@@ -52,7 +51,6 @@ def test_build_from_state_axes():
     assert doc.origin == "local"          # RAG corpus is local on disk...
     assert not doc.trusted                 # ...but untrusted origin (downloaded docs)
 
-    assert gb.replans == 1
 
 
 def test_clean_network_source_axes():
@@ -144,7 +142,6 @@ def test_build_from_record_sums_deltas():
     assert [s.tool for s in gb.sources] == ["web_extract", "search_knowledge_base"]
     assert gb.sources[0].injection_flagged
     assert gb.sent_known is False          # egress not correlated to a run in the trace DB
-    assert gb.replans == 1
     assert gb.complete is True
     assert "Sources:" not in gb.answer
 

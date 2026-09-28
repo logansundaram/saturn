@@ -125,11 +125,9 @@ _RENAMED = {
     "allow": "policy allow",
     "autoapprove": "policy open",
     "yolo": "policy open",
-    # 2026-07-07 command fold: three surfaces collapsed into their canonical homes — the Glass Box
-    # and the citation drill-down become /trace subviews (both already read the same trace DB /
-    # accumulators), and the runtime readout joins /config (the one runtime-settings front door).
-    "glass": "trace answer",
-    "glassbox": "trace answer",
+    # 2026-07-07 command fold: the citation drill-down became a /trace subview and the runtime
+    # readout joined /config (the one runtime-settings front door). (/glass — the answer-level
+    # provenance box — was CUT 2026-09-27; a cut feature leaves no pointer.)
     "source": "trace source",
     "sources": "trace source",
     "context": "config context",

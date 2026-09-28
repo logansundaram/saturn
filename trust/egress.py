@@ -25,7 +25,7 @@ The ledger is per-process (one Saturn session), like `budget.py` — a live boun
 
 This module also owns the inference-locality classifier (`_inference` + its display companions):
 "where do the words come from" is fundamentally an egress question, and this is where the loopback
-test (`ollama_is_local`) already lives. The posture line, `/privacy`, and the Glass Box all read
+test (`ollama_is_local`) already lives. The posture line and `/privacy` both read
 the one classifier here. Imports only leaves (config, diag, textutil), so any module (web tools,
 mcp_client, llms, the TUI) can import it without a cycle.
 """
@@ -227,7 +227,7 @@ def count() -> int:
 
 def summarize_events(events) -> dict:
     """Aggregate one slice of EgressEvents — THE one accounting every per-slice trust surface
-    uses (the per-answer receipt, the Glass Box, the `/privacy egress` headline), so they can
+    uses (the per-answer receipt, the `/privacy egress` headline), so they can
     never report different byte/host numbers for the same events. Returns
     {sent, blocked, bytes, redactions, hosts (first-seen order), channels (sent, first-seen)}."""
     sent = [e for e in events if getattr(e, "status", "") == SENT]
@@ -278,7 +278,7 @@ def clear() -> None:
     """Empty the ledger (a deliberate operator reset via `/privacy egress clear`). The seq counter
     is NOT reset — outstanding turn-start marks must keep pointing past the cleared events, not
     get re-matched against new ones. The clear itself is remembered (cleared_since) so a per-turn
-    consumer (the Glass Box) can tell an empty slice from a clear-emptied one instead of reporting
+    consumer can tell an empty slice from a clear-emptied one instead of reporting
     'local-only' over a turn whose events were wiped."""
     global _CLEARED_AT
     _LEDGER.clear()
@@ -298,7 +298,7 @@ def cleared_since(mark: int) -> bool:
 # ── inference-locality classifier ────────────────────────────────────────────────────────────────
 # "Where do the words come from" — local (computed on this machine) vs off-machine (a cloud
 # provider, or an Ollama daemon behind a remote OLLAMA_HOST). THE one classifier: the session
-# posture line (receipt.posture_spans), `/privacy`, and the Glass Box all read this — never
+# posture line (receipt.posture_spans) and `/privacy` both read this — never
 # re-rolled. Lives here because locality IS an egress question and the loopback test
 # (ollama_is_local) already lives in this module.
 

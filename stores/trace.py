@@ -38,13 +38,13 @@ def parse_ts(ts):
 # Write-time truncation marker for the recorded final answer (end_run). The stable PREFIX is the
 # detection key — the cap value is appended after it so the stored row is self-describing even if
 # the cap changes between recording and reading. One constant + one detector, shared by every
-# reader (show_run's label, the /glass #id reconstruction), so they can't drift.
+# reader (show_run's label, the export), so they can't drift.
 _RESPONSE_TRUNCATION_MARKER = "… [recorded answer truncated at "
 
 
 def response_truncated(text) -> bool:
     """True when a recorded `runs.response` carries end_run's write-time truncation marker.
-    Readers treat a marked row as INCOMPLETE (show_run says "truncated", the Glass Box
+    Readers treat a marked row as INCOMPLETE (show_run says "truncated", the export
     reconstruction passes complete=False). Historical rows cut at the old 2000-char cap carry no
     marker and read False here — absent-as-unknown (the gotcha #7 convention): never try to
     infer truncation for legacy rows."""
@@ -313,7 +313,7 @@ def _bound_delta(data: str, original: int) -> str:
     with an explicit `truncated` record naming what was dropped and the original size. Never a
     slice of the JSON text: a mid-token cut stores an undecodable blob — decode_json -> default,
     the whole delta (tool events, the plan update) silently gone from /trace replay, `data: null`
-    in an export, and the Glass Box reconstruction INCOMPLETE for the wrong reason."""
+    in an export — INCOMPLETE for the wrong reason."""
     note = f"delta exceeded the {_DATA_CAP}-char record cap at write time"
     try:
         obj = json.loads(data)
@@ -488,7 +488,7 @@ class Tracer:
         _CURRENT_RUN_ID = None
         text = response or ""
         # The recorded answer is capped like a delta (_DATA_CAP — it IS the headline record every
-        # after-the-fact surface reads: show_run, the export, /glass #id's reconstruction).
+        # after-the-fact surface reads: show_run, the export).
         # When it still overflows, the cut gets an explicit write-time marker so the stored row
         # is self-describing: readers render "truncated" / complete=False instead of presenting
         # a mid-sentence cut as the whole answer, and the export's digest commits the marker
@@ -499,7 +499,7 @@ class Tracer:
         # the per-delta hot path the breaker protects from repeated busy-timeout stalls) and it
         # carries the run's terminal status + answer — a transient lock that tripped the breaker
         # early in the turn and cleared since must not leave this run 'running' forever with no
-        # recorded response (/trace, /glass #id, and exports all read that row). Worst case one
+        # recorded response (/trace and exports both read that row). Worst case one
         # more busy-timeout wait per turn; a failure still just trips/diag-logs.
         try:
             self.conn.execute(

@@ -178,7 +178,7 @@ def _egress(ctx, args):
         pass
 
     # A clear-emptied ledger must never read as "nothing left this machine" — the counts below
-    # are since the clear. Same unknown-over-local-only contract the receipt and Glass Box apply.
+    # are since the clear. Same unknown-over-local-only contract the receipt applies.
     cleared = bool(s.get("cleared"))
     if not evs:
         if cleared:

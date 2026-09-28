@@ -28,10 +28,8 @@ Don't take the claims on faith — run one loop and check each one yourself:
 2. **Read the receipt.** The stats line under the answer carries the trust segment — here it
    shows `⇅ N sends · <bytes> → <host>` in yellow, because something *did* leave your machine,
    and the receipt says so instead of hiding it.
-3. **`/trace answer`** — answer-level provenance: each cited source's origin (local vs network)
-   and trust, and what left the machine this turn.
-4. **`/privacy egress`** — the per-event ledger: exactly what left, channel / host / bytes.
-5. **Make it ask.** `» save a two-line summary to notes.md` — the approval gate shows the exact
+3. **`/privacy egress`** — the per-event ledger: exactly what left, channel / host / bytes.
+4. **Make it ask.** `» save a two-line summary to notes.md` — the approval gate shows the exact
    file diff and waits; bare Enter rejects (the default is always *no*).
 6. **Hold the record.** `/trace export` writes the run's complete record as JSON — the plan,
    every tool call and observation, every human gate decision. Replay it offline any time:
@@ -119,7 +117,7 @@ replay. The point isn't how much Saturn can do — it's that you can see and con
 - **Trust receipt when it matters** — the stats line under a response says exactly how many
   bytes went to which host and how many actions faced the approval gate — whenever anything
   actually left your machine or was gated. A fully-local turn stays clean: silence means
-  nothing left. `/privacy` and `/trace answer` carry the full readout on demand.
+  nothing left. `/privacy` carries the full readout on demand.
 - **Per-workspace instructions** — `/init` surveys your workspace and drafts `SATURDAY.md`,
   standing instructions loaded every turn (like a per-project system prompt).
 - **Headless mode** — `saturn -p "query"` runs one query and prints the answer; piped stdin
@@ -343,7 +341,6 @@ Type `/help` for the full list, or `/<command> --help` for details on any one. H
 | `/memory` | See, add, edit, and review the layered facts the agent permanently remembers; `review` is the gated learning step (also runs at `/quit`), `why <n>` its provenance. |
 | `/policy` | The whole safety posture as one object: bare = status; `risk`/`allow`/`open` are its levers (bare forms report, changing is always explicit). The old `/risk`/`/allow`/`/autoapprove` spellings print a pointer here. |
 | `/trace source` | Show the full material behind a citation `[n]` of the last answer (folded in from `/source`). |
-| `/trace answer` | Answer-level provenance — each cited source's origin + trust, what left the machine, and the human gate decisions (folded in from `/glass`; `#id` for past runs). |
 | `/privacy` | The privacy surface: what CAN leave (`/privacy`), what DID (`/privacy egress`), and seal the boundary (`/privacy airgap`). |
 | `/undo` | Revert the file changes of the last turn that wrote anything. |
 | `/init` | Survey the workspace and draft `SATURDAY.md` standing instructions. |
@@ -380,7 +377,7 @@ app/                # the application shell: CLI, graph assembly, turn driver, R
 config.yaml         # all settings: models, paths, safety, web knobs
 core/               # the engine room: state, model factory, prompts, structured output
 trust/              # the trust stack: gate policy, egress ledger, quarantine,
-                    #   trust receipt, answer provenance
+                    #   trust receipt
 tools/              # the agent's tools (web, files, shell, calculator, knowledge)
                     #   + the registry and MCP client
 nodes/              # the graph's nodes (ground, plan, execute, tools, rectify, synthesize, …)

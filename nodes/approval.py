@@ -44,9 +44,9 @@ def gate_event(
     """The structured record of ONE human gate decision, appended to state["gate_events"] only
     when the gate actually PROMPTED (auto-approved batches record nothing — there was no human
     decision to record). A human's yes/no is the one fact about a run that cannot be recomputed
-    later, so this is the single justified persisted exception to the Glass Box's
+    later, so this is the single justified persisted exception to the record's
     recompute-everything design. ONE minimal, JSON-serializable shape: the same record feeds the
-    headless --json "gates" field and the Glass Box's gate_summary — resist letting it grow.
+    headless --json "gates" field and the run export — resist letting it grow.
 
     `decision` summarizes the per-call verdicts: "approved" (everything let through),
     "rejected" (nothing), "partial" (a per-call select split the batch)."""

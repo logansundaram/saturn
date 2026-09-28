@@ -98,18 +98,14 @@ from .prompt import prompt, banner, ask, answer_question, pause_prompt, posture_
 # Execution trace + recorded replays.
 from .trace import show_node, show_run, show_llm_calls, show_llm_context
 
-# The Glass Box — answer-level provenance.
-from .glass import show_glassbox
-
 # Plan rendering (the model's checklist).
 from .plan import render_plan, show_plan
 
 # Approval gate (+ the diff helper the tests reach for).
 from .approval import ask_approval, _diff_lines
 
-# Final answer (streamed + non-streamed) + the per-turn provenance handoffs (Glass Box sources
-# + the interrupt-and-correct answer buffer).
-from .response import response, ResponseStream, set_turn_provenance
+# Final answer (streamed + non-streamed).
+from .response import response, ResponseStream
 
 # On-demand readouts + log lines.
 from .readouts import (
@@ -126,10 +122,9 @@ __all__ = [
     "splash",
     "prompt", "banner", "ask", "answer_question", "pause_prompt", "posture_line",
     "show_node", "show_run", "show_llm_calls", "show_llm_context",
-    "show_glassbox",
     "render_plan", "show_plan",
     "ask_approval",
-    "response", "ResponseStream", "set_turn_provenance",
+    "response", "ResponseStream",
     "show_system_metrics", "show_context",
     "note", "warn", "steer_note", "pause_note", "echo_queued",
     "section", "table", "risk_style", "status_glyph",

@@ -114,7 +114,7 @@ def banner(model: str, n_tools: int, n_docs: int, db_path: str) -> None:
 
 
 # kind -> style for the posture line's spans (receipt.posture_spans) — the same semantic palette
-# as the receipt and the Glass Box: green = safe default, yellow = caution, red = open gate.
+# as the receipt: green = safe default, yellow = caution, red = open gate.
 _POSTURE_LINE_STYLE = {
     "ok": "green",
     "warn": "yellow",

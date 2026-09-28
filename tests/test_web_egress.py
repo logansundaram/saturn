@@ -3,8 +3,8 @@ web.py egress attribution — the ledger must name the host ACTUALLY contacted.
 
 API-less since 2026-07-06: web_search is keyless DuckDuckGo (one send, one event naming
 duckduckgo.com), web_extract fetches each page itself (one event PER URL naming ITS host — a
-multi-URL extract to three hosts is three sends, and /privacy egress, the rail leaf, and the
-Glass Box must say so). The air-gap check stays single and up-front (it keys on airgap_on(),
+multi-URL extract to three hosts is three sends, and /privacy egress and the rail leaf must
+say so). The air-gap check stays single and up-front (it keys on airgap_on(),
 not the host); recording is fail-toward-recording, before the send. (The Tavily backend and its
 fallback double-record contract left with the API-less pivot.)
 
@@ -114,7 +114,7 @@ def test_extract_airgap_blocks_before_any_fetch(monkeypatch):
 def test_extract_multi_url_records_every_host(monkeypatch):
     # Each URL in a multi-URL extract is its own fetch — each host gets its own ledger event.
     # (Previously one event named only the first host, hiding real egress to every other host
-    # from /privacy egress, the rail leaf, the receipt, and the Glass Box.)
+    # from /privacy egress, the rail leaf, and the receipt.)
     monkeypatch.setattr(web, "_local_extract", lambda u: f"text of {u}")
     out = web.web_extract.func(url=["https://a.example/x", "https://b.example/y",
                                     "https://c.example/z"])

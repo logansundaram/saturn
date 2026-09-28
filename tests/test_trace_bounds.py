@@ -2,8 +2,7 @@
 
 An oversized node delta used to be bounded by slicing the JSON text at _DATA_CAP — an
 undecodable blob, so `decode_json` fell back to None and the WHOLE delta (tool events, the plan
-update) vanished from `/trace`, exports carried `data: null`, and the Glass Box reconstruction
-rendered INCOMPLETE for the wrong reason. `_bound_delta` keeps the record parseable: leaf clip
+update) vanished from `/trace` and exports carried `data: null`. `_bound_delta` keeps the record parseable: leaf clip
 with a halving cap, then per-key salvage with an explicit `truncated` marker naming what was
 dropped and the original size — and the replay says so under the node row.
 """

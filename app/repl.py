@@ -387,10 +387,6 @@ def run_repl() -> None:
             add_pending(collect_turn(state, run_id))
         except Exception as exc:
             diag.log(f"memory review: candidate collection failed: {exc}")
-        # Hand the finished turn to the answer renderer as provenance (the live Glass Box slice):
-        # the Sources footer renders trust-colored (local green / network yellow, injection flags
-        # named) — the /glass headline facts, native on every answer. Best-effort inside ui.
-        ui.set_turn_provenance(state)
         # The answer streamed live during the agent's last pass — close it out (final markdown
         # render + receipt). If nothing streamed (the model yielded no content, an abort at the
         # pause prompt), fall back to rendering the recorded final message.

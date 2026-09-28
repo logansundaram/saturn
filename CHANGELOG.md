@@ -16,6 +16,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
   `runtime.confidence_threshold`, the per-model calibration table, the freeze editor, the
   `calibrated` column on `/models`, and the answer buffer on state. Every model call stops
   requesting per-token logprobs — a chat turn no longer pays for a marking nothing rendered.
+- **The Glass Box (`/trace answer`, the old `/glass`).** Answer-level provenance built on the
+  synthesizer's inline `[n]` citations, which the loop no longer asks for; the Sources footer
+  is the receipt now, and the egress facts it repeated live in the receipt and `/privacy
+  egress`. The per-source trust coloring on the Sources footer goes with it.
 
 ### v2 — one loop replaces the engine (2026-09-27)
 

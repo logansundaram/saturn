@@ -142,9 +142,8 @@ def parse_doc_sources(text) -> "list[str]":
 
 # The mechanical `Sources:` block synthesize appends to a cited answer — one builder
 # (nodes/synthesize.sources_footer renders through SOURCES_HEADER) and ONE parser, the
-# CALL_RESULT_SEP treatment. Three readers (the Glass Box's answer prose, the trust-colored
-# footer render, /trace why's cited-sources view) each hand-rolled this and already disagreed:
-# two anchored on the trailing block, the third matched the first "Sources:" ANYWHERE in the
+# CALL_RESULT_SEP treatment. The readers (the footer render, /trace why's cited-sources view)
+# each hand-rolled this and already disagreed: some anchored on the trailing block, one matched the first "Sources:" ANYWHERE in the
 # answer, so prose containing the word swallowed the rest of the text.
 SOURCES_HEADER = "Sources:"
 # Public: the footer entry shape `  [n] label`. The trust-colored renderer reads the

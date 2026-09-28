@@ -94,11 +94,10 @@ def test_cut_gate_spellings_get_policy_pointer(capsys):
 
 
 def test_folded_commands_get_subview_pointer(capsys):
-    """The 2026-07-07 command fold: /glass and /source became /trace subviews, /context joined
-    /config. Each answers with a pointer to its new home — via /help <name> AND direct dispatch
-    (the same _print_renamed line) — and none is a live command any more."""
-    for spelling, target in (("glass", "/trace answer"), ("glassbox", "/trace answer"),
-                             ("source", "/trace source"), ("sources", "/trace source"),
+    """The 2026-07-07 command fold: /source became a /trace subview, /context joined /config.
+    Each answers with a pointer to its new home — via /help <name> AND direct dispatch (the same
+    _print_renamed line) — and none is a live command any more."""
+    for spelling, target in (("source", "/trace source"), ("sources", "/trace source"),
                              ("context", "/config context"), ("ctx", "/config context")):
         assert spelling not in COMMANDS, f"/{spelling} should be folded, not registered"
         dispatch(f"/help {spelling}", _ctx())

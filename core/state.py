@@ -172,7 +172,7 @@ class AgentState(TypedDict):
     #    "step": active-step label or None}
     # Plain dicts only (gotcha #4). A human decision is the ONE run fact that can never be
     # recomputed after the fact, so this same record feeds the headless --json "gates" field and
-    # the Glass Box's gate_summary — keep the shape minimal (see nodes/approval.gate_event). Same
+    # the run export — keep the shape minimal (see nodes/approval.gate_event). Same
     # append-reducer; reset per turn.
     gate_events: Annotated[List[dict], operator.add]
 

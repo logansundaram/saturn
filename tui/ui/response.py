@@ -7,7 +7,7 @@ answer once on finish. Both end on the same receipt — the permanent echo of th
 
 import time
 
-from textutil import SOURCE_ENTRY_RE, split_sources_footer
+from textutil import split_sources_footer
 
 from . import _base
 from ._base import (
@@ -49,51 +49,18 @@ def _trust_spans() -> list:
     return []
 
 
-# Trust-span kind -> semantic style: the same yellow/red vocabulary the Glass Box colors the
+# Trust-span kind -> semantic style: the same yellow/red vocabulary the posture line colors the
 # identical facts with — a boundary crossing must not render with the weight of a tok/s gauge.
 # `gated` stays dim (a count, not a signal — the human already approved those); `unknown` is
-# yellow (the slice may hide a send, like the Glass Box's truncated-record caveat). No `local`
+# yellow (the slice may hide a send). No `local`
 # kind anymore: a calm local turn emits no trust spans at all (deviation-only, 2026-07-06).
 _TRUST_STYLE = {"sent": "yellow", "blocked": "bold red",
                 "gated": _DIM, "unknown": "yellow", "human": "cyan",
                 "uncertain": "red"}
 
-# One-time discovery hints (receipt.take_hint — sentinel-backed, once per install):
-# the post-first-answer line teaching the inspection surfaces, and the receipt tail pointing at
-# the Glass Box the first time a receipt actually shows egress or a gated count.
-_FIRST_ANSWER_HINT = ("see this run: /trace · answer provenance: /trace answer · "
-                      "what left your machine: /privacy egress")
-_GLASS_HINT = "/trace answer: answer provenance"
-
-
-# ── per-turn answer provenance (the Glass Box, ambient) ───────────────────────────────────────
-# The loop hands the finished turn's state here (set_turn_provenance) just before the final
-# render; finish/response pop it to color the Sources footer by source trust — the answer-provenance
-# headline facts on every answer, no /trace answer required. Pop-on-read: a stale box can never paint a
-# later answer (error/Ctrl-C turns never set one; a consumer that doesn't render still clears it).
-_turn_glass = None
-
-def set_turn_provenance(state) -> None:
-    """Build the live answer-provenance box for the turn that just finished (trust.glassbox.build_live
-    — the same mark-guarded egress contract `/trace answer` applies) so the answer render can color the
-    Sources footer by source trust natively. Best-effort and additive: any failure leaves the
-    answer rendering exactly as it would without provenance."""
-    global _turn_glass
-    _turn_glass = None
-    try:
-        from trust import glassbox
-
-        gb = glassbox.build_live(state, gated=_base._status.get("gates", 0))
-        if gb.sources:
-            _turn_glass = gb
-    except Exception:
-        _turn_glass = None
-
-
-def _pop_turn_provenance():
-    global _turn_glass
-    gb, _turn_glass = _turn_glass, None
-    return gb
+# One-time discovery hint (receipt.take_hint — sentinel-backed, once per install): the
+# post-first-answer line teaching the inspection surfaces.
+_FIRST_ANSWER_HINT = "see this run: /trace · what left your machine: /privacy egress"
 
 
 def _split_sources(text: str) -> "tuple[str, list[str] | None]":
@@ -105,70 +72,28 @@ def _split_sources(text: str) -> "tuple[str, list[str] | None]":
     return split_sources_footer(text)
 
 
-def _facet_annotation(facet) -> tuple[str, str, str]:
-    """(glyph, style, note) for one source's trust facet — the same green/yellow vocabulary
-    the Glass Box renders, compacted for the footer."""
-    if facet.origin == "network" or not facet.trusted:
-        note = "web" if facet.origin == "network" else "untrusted origin"
-        if facet.injection_flagged:
-            note += " · injection-flagged"
-        return "◐", "yellow", note
-    return "✓", "green", "local"
-
-
-def _print_sources(entries: list[str], gb) -> None:
-    """The Sources footer, rendered natively with per-source trust coloring: green = local +
-    trusted, yellow = network / untrusted origin, red = a span of that source reached the answer
-    verbatim. The line text is identical to the recorded footer; only an annotation is appended
-    (and the block sits at the answer's 2-space indent). Without provenance the block prints
-    dim — never colored by guesswork."""
-    by_n = {s.n: s for s in (gb.sources if gb is not None else [])}
+def _print_sources(entries: list[str]) -> None:
+    """The Sources footer — the receipt of every tool call and document the turn gathered —
+    printed dim at the answer's 2-space indent, the line text identical to the recorded footer
+    (the markdown renderer would collapse its lines into one paragraph)."""
     if _RICH:
         _console.print()
         _console.print(Text("  Sources:", style=_DIM))
         for ln in entries:
-            m = SOURCE_ENTRY_RE.match(ln)
-            facet = by_n.get(int(m.group(1))) if m else None
-            if facet is None:
-                _console.print(Text("  " + ln, style=_DIM))
-                continue
-            glyph, style, note = _facet_annotation(facet)
-            head, _, rest = ln.partition("]")
-            row = Text("  ")
-            row.append(head + "]", style=style)
-            row.append(rest, style="default")
-            row.append(f"   {glyph} {note}", style=style)
-            _console.print(row)
+            _console.print(Text("  " + ln, style=_DIM))
     else:
         print()
         print("  Sources:")
         for ln in entries:
-            m = SOURCE_ENTRY_RE.match(ln)
-            facet = by_n.get(int(m.group(1))) if m else None
-            if facet is None:
-                print("  " + ln)
-            else:
-                glyph, _style, note = _facet_annotation(facet)
-                print(f"  {ln}   {glyph} {note}")
+            print("  " + ln)
 
 
 def _print_receipt() -> None:
     """The one-line receipt under every answer: the trust segment leads as semantically-colored
     spans WHEN the turn deviated (what was sent / blocked / gated — a calm local turn emits
-    none), then the dim run stats. The plain (no-rich) path prints the identical text, unstyled.
-    The first time the trust segment shows egress or a gated count, a dim `/glass` pointer is
-    appended once per install."""
+    none), then the dim run stats. The plain (no-rich) path prints the identical text, unstyled."""
     stats = _stats_parts()
     spans = _trust_spans()
-    tail = None
-    if any(kind in ("sent", "blocked", "gated") for _, kind in spans):
-        try:
-            from trust import receipt
-
-            if receipt.take_hint("glass"):
-                tail = _GLASS_HINT
-        except Exception:
-            pass
     if _RICH:
         line = Text("  ╶ ", style=_DIM)
         for i, (text, kind) in enumerate(spans):
@@ -178,11 +103,9 @@ def _print_receipt() -> None:
         if spans and stats:
             line.append(" · ", style=_DIM)
         line.append(" · ".join(stats), style=_DIM)
-        if tail:
-            line.append(" · " + tail, style=_DIM)
         _console.print(line)
     else:
-        parts = [text for text, _ in spans] + stats + ([tail] if tail else [])
+        parts = [text for text, _ in spans] + stats
         print("  ╶ " + " · ".join(parts))
 
 
@@ -250,7 +173,7 @@ def response(text: str) -> None:
     """The payload. Leaves the trace rail behind a short labeled rule and renders the answer as
     real markdown — headings, bold, lists, and fenced code with syntax highlighting — so it reads
     like a finished answer, not a log line. The mechanical Sources footer, when present, renders
-    through the trust-colored provenance block instead of the markdown body. Falls back to plain
+    as its own dim block instead of through the markdown body. Falls back to plain
     text if markdown rendering raises (arbitrary model output), and to plain print without rich."""
     _live_stop()  # turn's over: drop the status bar before printing the answer
     section("response")  # parts the answer from the trace rail above it (rich + plain branches)
@@ -259,18 +182,17 @@ def response(text: str) -> None:
 
 
 def _final_render(text: str, *, plain_body: "str | None") -> None:
-    """THE final-answer tail (provenance pop → sources split → markdown body → trust-colored
-    Sources → receipt → first-answer hint), shared by `response()` and ResponseStream.finish()
+    """THE final-answer tail (sources split → markdown body → dim Sources → receipt →
+    first-answer hint), shared by `response()` and ResponseStream.finish()
     so streamed and non-streamed answers can never drift apart. `plain_body` is what the
     no-rich path prints as the body — the whole text for `response()`, only the trailer beyond
     the already-typed stream for `finish()` (None = nothing left to print)."""
-    gb = _pop_turn_provenance()
     if _RICH:
         prose, src_lines = _split_sources(text)
         body = prose if src_lines else text
         _print_markdown_body(body)
         if src_lines:
-            _print_sources(src_lines, gb)
+            _print_sources(src_lines)
         _console.print()  # let the answer breathe before the receipt
         _print_receipt()
         _first_answer_hint()

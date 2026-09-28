@@ -126,7 +126,7 @@ def _make_on_update(tracer, run_id, show_ui=True, answer=None):
 def _trace_warning(tracer) -> "str | None":
     """The user-facing notice when this turn's trace circuit breaker tripped (stores/trace._trip),
     or None. The tracer degrades to silence by design (the watcher must never stall the watched),
-    but the DEGRADATION itself must be loud — the user believes /trace, /glass #id, and /trace
+    but the DEGRADATION itself must be loud — the user believes /trace and /trace
     export are accumulating a record, and this turn's may be partial or missing entirely. The
     breaker re-arms on the next start_run, so the warning is per-affected-turn, not permanent."""
     if not getattr(tracer, "broken", False):

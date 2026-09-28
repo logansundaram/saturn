@@ -8,18 +8,17 @@ trust segment appears when the turn SENT something, was BLOCKED by air-gap, or f
 a fully-local turn adds nothing to the stats line. `posture_spans` is the session-level twin: a
 facet at its safe default (gate read_only, local inference, quarantine gate) says nothing, so a
 stock local install renders no posture line at all. The affirmative reassurance ("everything is
-local, here's proof") lives on demand behind `/privacy` and `/glass` — silence in the ambient
+local, here's proof") lives on demand behind `/privacy` — silence in the ambient
 flow means the defaults hold.
 
 Data sources: the egress ledger (`egress.py` — the turn's slice of it, marked at turn start) and
 the gated-call counter the approval UI increments. `trust_spans` is the pure builder (testable
 with synthetic events) — it returns `(text, kind)` spans so the renderer can color each fact
-semantically (the same green/yellow/red vocabulary the Glass Box uses for the identical facts);
+semantically (the same green/yellow/red vocabulary the posture line uses);
 `trust_parts` is its plain-text view, `turn_spans`/`turn_parts` the live wrappers the response
 renderer calls. The live wrappers treat an unusable mark (0, or one a `/privacy egress clear`
 wiped events past) as UNKNOWN — silence never makes a claim, but a slice that may be HIDING
-sends still says `egress unknown` rather than blending into the calm (the same contract
-`/trace answer` applies before trusting the slice).
+sends still says `egress unknown` rather than blending into the calm.
 
 `runtime.receipt` (read live, default on) switches the segment off for users who want the plain
 stats receipt back. Imports only config + egress + textutil (leaves), so the TUI can import it
@@ -47,7 +46,7 @@ def mark() -> int:
 
 # The live turn's mark. Receipt-domain state owned HERE (not a TUI module global): the turn
 # lifecycle (statusbar.reset_turn in the interactive loop) calls reset_turn(); the response
-# renderer and the Glass Box read turn_mark(). 0 = no turn marked yet (headless, or before the
+# renderer reads turn_mark(). 0 = no turn marked yet (headless, or before the
 # first turn) — consumers must treat that as UNKNOWN, never as "the whole ledger is this turn".
 _TURN_MARK = 0
 
@@ -75,7 +74,7 @@ def trust_spans(events: list, gated_calls: int = 0) -> list[tuple[str, str]]:
     Deviation-only: EMPTY when nothing was sent, blocked, or gated (the calm local turn — the
     receipt is then just the dim run stats); otherwise a compact send summary (count · bytes ·
     first host, `+n` for more), blocked attempts (air-gap), and the gated count. Accounting
-    comes from egress.summarize_events — the same aggregation the Glass Box and /privacy egress
+    comes from egress.summarize_events — the same aggregation /privacy egress
     use, so the receipt can never disagree with them."""
     agg = egress.summarize_events(events)
 
@@ -112,8 +111,7 @@ def turn_spans(since_mark: int, gated_calls: int = 0) -> list[tuple[str, str]]:
     `mark()` at turn start). A mark of 0 (no turn recorded — headless, or before the first turn)
     or one that `/privacy egress clear` wiped events past means the slice may be MISSING real
     sends — render the honest unknown (kind `unknown`) instead of blending into the calm
-    no-deviation silence, the same guard `/trace answer` applies before trusting the live
-    slice."""
+    no-deviation silence."""
     if since_mark <= 0 or egress.cleared_since(since_mark):
         spans: list[tuple[str, str]] = [("egress unknown", "unknown")]
         if gated_calls:

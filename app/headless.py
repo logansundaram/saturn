@@ -205,7 +205,7 @@ def run_headless(args) -> None:
                     # Human-gate record: how many calls were prompted + which tools were
                     # denied (headless denies gated calls by default, so this is the record
                     # of what the run was NOT allowed to do). Derived from the structured
-                    # gate_events accumulator — the same record /glass and exports read.
+                    # gate_events accumulator — the same record exports read.
                     "gates": summarize_gates(state.get("gate_events", [])),
                     "documents_retrieved": len(state.get("documents_retrieved", [])),
                     "iterations": state.get("iteration", 0),

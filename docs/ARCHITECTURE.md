@@ -6,8 +6,8 @@ where, why it's grouped that way, and the order that makes the code easiest to a
 
 Saturn (Saturday.ai) is a local-first, transparent terminal agent. The product thesis is the
 **trust stack**: every action is visible (trace), every risky action asks a human (gate),
-every byte that leaves the machine is accounted for (egress ledger), and every answer can
-show its provenance (/trace answer). The engine is **one ReAct loop** (v2, 2026-09-27): the
+every byte that leaves the machine is accounted for (egress ledger), and every run replays
+(/trace export). The engine is **one ReAct loop** (v2, 2026-09-27): the
 model makes one native tool-calling call per pass, every call faces the gate, and its first
 message without tool calls is the answer.
 
@@ -26,7 +26,7 @@ core/       the engine room: state, model factory, prompts, invoke options, the 
 nodes/      the graph nodes, one per file (ground → agent → approval → tools → agent …)
 tools/      the tool implementations + registry + MCP client (risk tiers declared at definition)
 notify/     scheduled desktop notifications: the platform seam, the macOS launchd/osascript backend, the menu bar item
-trust/      the trust stack: gate policy, egress ledger, redaction, quarantine, receipt, answer provenance
+trust/      the trust stack: gate policy, egress ledger, redaction, quarantine, receipt
 commands/   the slash-command layer (/help themes, one module each)
 stores/     data + persistence: RAG corpus, manifests, memory, snapshots, trace DB
 tui/        presentation: the rich-based terminal UI, type-ahead reader, system metrics
@@ -75,7 +75,7 @@ The whole product is one loop. Reading it end to end explains 80% of the repo:
 3. **The answer renders** — `tui/ui/response.py` streamed the agent's answer tokens as they
    generated (a preamble before a tool call is discarded and shown as the rail's agent leaf
    instead); the loop then closes with the trust
-   receipt (`trust/receipt.py`) and trust-colored sources (`trust/glassbox.py`). The trace of
+   receipt (`trust/receipt.py`). The trace of
    every node/tool landed in `stores/trace.py`'s SQLite as it happened (`/trace` replays it).
 
 ## Package by package
@@ -99,7 +99,7 @@ The whole product is one loop. Reading it end to end explains 80% of the repo:
 | `messages.py` | Every system prompt, in one place: `agent_sys_msg()` (the loop's one prompt — no tool catalog, the tools ride the native bind) plus the compaction, memory-review and /init prompts. |
 | `structured.py` | `_invoke_kwargs` — THE builder of the per-task decoding options every model call sends (num_ctx, num_predict, think) — plus the hardened structured-output call the memory review uses. |
 | `context.py` | `grounding_parts` (the stable / per-turn halves of the grounding block) and `clean` (workspace paths collapse in observations). |
-| `sources.py` | `build_sources` — the answer's source numbering, shared by the Sources footer, `/trace source` and the Glass Box. |
+| `sources.py` | `build_sources` — the answer's source numbering, shared by the Sources footer and `/trace source`. |
 | `pause.py` | The `PauseController`: the Esc pause / steer latch the agent node consults at the top of every pass. |
 | `prime.py` | The idle prefix prime: between turns (and once after the weights load) the agent's `[system][stable grounding]` prefix is re-sent through the bound model with one predicted token so the next turn's call resumes from that checkpoint. Off under tests and `runtime.prime: false`. |
 | `tool_args.py` | Tool-argument recovery: alias coercion onto real schemas + the schema hint the agent sends back on a rejected call (small-model tolerance). |
@@ -148,7 +148,6 @@ every check in the agent node. Note: `nodes/tools.py` is the *tool-execution nod
 | `redaction.py` | Secret stripping/warning at the cloud boundary (key patterns, JWTs, private keys); `scan_args` backs the gate's secret warning. |
 | `quarantine.py` | Prompt-injection quarantine: scan untrusted observations, fence instruction-shaped content as data, escalate the next tool batch to the gate. Also screens corpus/attachment admission. |
 | `receipt.py` | The ambient surfaces: per-answer trust receipt spans, the session posture line, one-time discovery hints. |
-| `glassbox.py` | Answer-level provenance (surfaced as `/trace answer`): per cited source — origin, trust, injection flag — live after each answer and reconstructed from recorded runs. |
 
 ### `commands/` — the slash-command layer
 `_framework.py` (dispatcher + `@command` registry), `_session.py` (autosave/session store),
@@ -158,8 +157,8 @@ modules: `conversation.py` (/clear /resume), `knowledge.py` (/docs
 /update), `config.py` (/config, incl. the `context` subview — the folded-in /context),
 `policy.py` (/policy — the legacy /risk /allow /autoapprove spellings were
 cut 2026-07-06 and print pointers), `privacy.py` (/privacy), `trace.py` (/trace — incl. the
-`answer` + `source` provenance subviews, the folded-in /glass and /source — + export/replay
-engine; the three folds landed 2026-07-07 and print _RENAMED pointers). Convention: one file
+`source` subview, the folded-in /source — + export/replay engine; the folds landed
+2026-07-07 and print _RENAMED pointers). Convention: one file
 owns every view of a feature.
 
 ### `stores/` — data + persistence
@@ -175,7 +174,7 @@ search` and the current-run seam `remember` stamps provenance from).
 re-exported flat (`from tui import ui`): `_base` (console plumbing), `statusbar`, `art`
 (the frozen Saturn splash), `prompt` (prompt_toolkit line editor), `trace` (the live rail),
 `plan` (the checklist panel), `approval` (the gate UI + the Esc pause prompt lives in `prompt`), `response` (streamed answer +
-receipt), `glass` (the /trace answer provenance renderer), `readouts`, `listing` (the shared table/section
+receipt), `readouts`, `listing` (the shared table/section
 vocabulary every listing command renders through).
 
 ## Same name, different file
@@ -191,7 +190,6 @@ deliberate name reuse. When you're jumping by filename, disambiguate here:
 | `approval` ×2 | `nodes/approval.py` decides + interrupts · `tui/ui/approval.py` renders the gate prompt. |
 | `config` ×2 | root `config.py` loads/persists config.yaml · `commands/config.py` is `/config`. |
 | `policy`/`privacy` | `trust/policy.py`/`trust/egress.py` are the mechanisms · `commands/policy.py`/`commands/privacy.py` are their front doors. |
-| `glass` | `trust/glassbox.py` assembles provenance · `tui/ui/glass.py` renders it. |
 | `knowledge` ×2 | `tools/knowledge.py` = the RAG/memory tools · `commands/knowledge.py` = /docs /memory /init /undo. |
 
 ## Suggested reading order
@@ -205,8 +203,7 @@ deliberate name reuse. When you're jumping by filename, disambiguate here:
 5. **`core/structured.py` + `core/tool_args.py`** — the small-model hardening and the
    per-task decoding options the agent leans on.
 6. **`trust/policy.py` → `nodes/approval.py` → `tui/ui/approval.py`** — the gate, end to end.
-7. **`trust/egress.py`, `quarantine.py`, `receipt.py`, `glassbox.py`** — the rest of the
-   trust stack.
+7. **`trust/egress.py`, `quarantine.py`, `receipt.py`** — the rest of the trust stack.
 8. **`app/repl.py` + `commands/_framework.py`** — the interactive shell around it all.
 9. Everything else (`tools/`, `stores/`, `tui/`) as reference when a node touches it.
 

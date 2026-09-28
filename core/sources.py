@@ -1,7 +1,7 @@
 """The answer's source numbering — one home (moved out of nodes/synthesize.py with the plan
 engine's removal, 2026-09-27). `build_sources` numbers everything the turn gathered, in the
 order it was gathered, and the same numbering serves the answer's Sources footer
-(nodes/agent.py), `/trace source` and the Glass Box, so [3] means the same thing everywhere."""
+(nodes/agent.py), `/trace source`, so [3] means the same thing everywhere."""
 
 from __future__ import annotations
 

@@ -17,7 +17,7 @@ def _ev(host="api.tavily.com", n_bytes=0, status=egress.SENT):
 
 def test_silent_when_nothing_sent():
     # Deviation-only (2026-07-06): a calm local turn emits NO trust spans — the receipt is then
-    # just the dim run stats. The affirmative "local" story lives in /privacy and /glass.
+    # just the dim run stats. The affirmative "local" story lives in /privacy.
     assert receipt.trust_parts([], 0) == []
 
 
@@ -94,7 +94,7 @@ def test_turn_parts_unknown_when_no_mark():
 
 def test_turn_parts_unknown_after_clear_past_mark(isolated_paths):
     # A `/privacy egress clear` that wiped events recorded AFTER the mark means the slice may be
-    # missing real sends — the honest unknown, never calm silence (the contract /trace answer
+    # missing real sends — the honest unknown, never calm silence (the contract /privacy
     # applies via egress.cleared_since before trusting the live slice).
     egress.clear()
     try:

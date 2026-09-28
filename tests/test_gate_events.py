@@ -2,8 +2,7 @@
 Structured human-gate records (state["gate_events"]) — the chain-of-custody piece this wave
 added: the approval node's per-prompt event shape (approve-all / reject-all / partial), the
 auto-approved-silence rule (no prompt -> no record), the headless --json "gates" derivation,
-and /trace why's always-on self-correction section (the negative case must print, matching the
-Glass Box). Offline: the LangGraph interrupt is stubbed; no LLM/graph/network runs.
+and /trace why's always-on self-correction section (the negative case must print). Offline: the LangGraph interrupt is stubbed; no LLM/graph/network runs.
 """
 
 import json
@@ -15,7 +14,7 @@ from nodes.approval import approval_node, gate_event
 from core.state import summarize_gates
 
 
-# --- the event builder: ONE shape for --json, the Glass Box, and the run export --------------
+# --- the event builder: ONE shape for --json and the run export --------------
 
 _CALLS = [
     {"id": "c1", "name": "run_shell", "args": {"command": "git status"}},

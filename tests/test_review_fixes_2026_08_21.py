@@ -36,34 +36,6 @@ def test_unchanged_requires_an_aged_verification():
     assert rag._unchanged(None, stat) is False
 
 
-# ── glassbox: a record truncated mid-footer still has the footer stripped ─────────────────────
-# end_run's write-time cap appends its truncation marker AFTER the cut, which fails the strict
-# shared parser; the per-source answer analysis must never run over source labels, so stripping
-# falls back to the lenient trailing strip in exactly that case.
-
-
-def test_strip_footer_strict_shape():
-    from trust import glassbox
-
-    ans = "The answer.\n\nSources:\n  [1] read_file(x)"
-    assert glassbox._strip_footer(ans) == "The answer."
-
-
-def test_strip_footer_truncated_record_still_stripped():
-    from trust import glassbox
-
-    ans = ("The answer.\n\nSources:\n  [1] read_file(x)\n"
-           "… [recorded answer truncated at 4000 chars]")
-    assert glassbox._strip_footer(ans) == "The answer."
-
-
-def test_strip_footer_prose_mention_is_not_a_footer():
-    from trust import glassbox
-
-    ans = "Discussing the Sources: section of a paper is fun."
-    assert glassbox._strip_footer(ans) == ans
-
-
 # ── approval: a persist grant that could not be persisted is logged as session ────────────────
 # The audit entry used to be written BEFORE set_risk_override could fail, so grant_log claimed a
 # durable grant while the next process started from the declared tier.

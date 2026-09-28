@@ -490,73 +490,6 @@ def _fmt_call_args(args) -> str:
     return fmt_args(args, 41) if isinstance(args, dict) else ""
 
 
-# --- /trace answer — answer-level provenance ---------------------------------------------------
-# /trace why explains HOW the agent worked; this shows whether you can trust WHAT it told you: each
-# cited source's origin (local vs network) and trust, and what left the machine. Bare reads the
-# live last turn (exact egress); #id reconstructs from the recorded run (egress inferred from
-# source tools).
-
-def _answer(ctx, args):
-    from tui import ui
-    from trust import glassbox
-
-    run_id, _count, _list = _parse_run_selector(args)
-
-    state = ctx.state or {}
-    # "Live" means THIS process ran the last turn: the per-turn accumulators (or current_query)
-    # are populated. Messages alone do NOT count — a /resume-restored conversation carries only
-    # messages, and rendering it against a fresh process's empty egress ledger would produce a
-    # false 'local-only, 0 sources' box for an answer that may have been cloud-composed from web
-    # sources last session. Such turns reconstruct from the recorded run below instead.
-    live = bool(state.get("tool_results") or state.get("documents_retrieved")
-                or state.get("tool_events") or state.get("current_query"))
-    # Bare + a live last turn → the live Glass Box. glassbox.build_live owns the turn-mark guard
-    # (the exact egress slice passes only when trustworthy — the same contract the native
-    # post-answer provenance applies), so this path can't drift from it.
-    if run_id is None and live:
-        from tui.ui import _base
-        gated = _base._status.get("gates", 0) if isinstance(_base._status, dict) else 0
-        ui.show_glassbox(glassbox.build_live(state, gated=gated))
-        return
-
-    # Otherwise reconstruct from the recorded run (last, or the requested #id).
-    with _connect(ctx.db_path) as conn:
-        run_id, run = _load_run(
-            conn, run_id, columns="run_id, query, response",
-            empty_msg="  (no runs recorded yet — ask something first)",
-        )
-        if run is None:
-            return
-        events = conn.execute(
-            "SELECT data FROM events WHERE run_id = ? ORDER BY seq, id", (run_id,)
-        ).fetchall()
-
-    _rid, query, response = run
-    # Decode with an explicit failure sentinel: a fat delta is stored truncated at the trace's
-    # _DATA_CAP and comes back undecodable — the Glass Box must know its inputs are incomplete
-    # rather than assert 'sources: 0 · no untrusted content' over data it silently dropped.
-    deltas = []
-    truncated = False
-    for (data,) in events:
-        d = decode_json(data, None)
-        if d is None and data:
-            truncated = True
-            continue
-        if isinstance(d, dict):
-            # The delta DECODED — but stores.trace._bound_delta may still have dropped keys to
-            # bring it under the record cap, and it says so in an explicit `truncated` record.
-            # Reading only the undecodable case left this disclosure unreachable for every
-            # write-time truncation since bounded deltas started always emitting valid JSON:
-            # the run rendered as complete while its inputs were missing whole keys. The rail
-            # already reads this marker (tui/ui/trace._render_trust_annotations); so does this.
-            if isinstance(d.get("truncated"), dict):
-                truncated = True
-            deltas.append(d)
-    gb = glassbox.build_from_record(query, response, deltas, complete=not truncated)
-    from tui import ui as _ui
-    _ui.show_glassbox(gb)
-
-
 @command(
     "trace",
     "Observability hub: drill-down of recorded runs + live trace control.",
@@ -584,10 +517,6 @@ Subviews:
   /trace why [#id]     decision provenance: not WHAT happened but WHY — the checklist it wrote
                        (if any), each pass's recorded thought + tool choice, the evidence the
                        answer was built from, and the cited sources. Defaults to the last run.
-  /trace answer [#id]  answer-level provenance — each cited source's origin (local vs network)
-                       and trust, and what left the machine. Bare = the live last turn; #id
-                       reconstructs a recorded run. (/trace source <n> prints the full text
-                       behind citation [n].)
   /trace source [n]    the FULL material behind a citation [n] of the last answer — the complete
                        tool observation or retrieved passage the agent read, under the same
                        numbering the answer used. Bare lists the numbered sources.
@@ -626,8 +555,6 @@ def _trace(ctx, args):
 
     if args and args[0].lower() in ("why", "--why"):
         return _why(ctx, args[1:])
-    if args and args[0].lower() in ("answer", "--answer", "glass", "glassbox"):
-        return _answer(ctx, args[1:])
     if args and args[0].lower() in ("source", "sources", "src"):
         return _source(ctx, args[1:])
     if args and args[0].lower() in ("invoke", "--invoke", "llm", "--llm", "model", "models"):

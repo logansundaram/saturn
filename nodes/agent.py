@@ -270,7 +270,7 @@ def _hygiene(call: dict, rounds: list, malformed: bool = False) -> "tuple[dict, 
 
 def sources_footer(tool_results, documents_retrieved) -> str:
     """The receipt of what informed the answer: one line per tool call / document, in the order
-    they were gathered (core.sources — the same numbering /trace source and the Glass Box use).
+    they were gathered (core.sources — the same numbering /trace source uses).
     '' when nothing was."""
     _tools, _docs, sources = build_sources(tool_results, documents_retrieved)
     if not sources:

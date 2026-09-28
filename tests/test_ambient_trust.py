@@ -5,8 +5,7 @@ The ambient-trust wave — the trust stack surfacing in the DEFAULT flow, no com
   - per-call egress attribution riding tool_events (nodes/tools._egress_slice + tool_node) and
     its rail leaf (trace._egress_leaf),
   - the gate-decision echo + judge-verdict leaf (trace._render_trust_annotations),
-  - native answer provenance (response._split_sources/_print_sources over a live Glass Box),
-    and the centralized live-slice guard (glassbox.build_live).
+  - the native Sources footer split (response._split_sources).
 
 (The taint-warning render and the status bar's session token spend left with the audit-crypto
 shelve / 2026-07-03 runtime trim; their tests went with them.)
@@ -20,7 +19,6 @@ import importlib
 import pytest
 
 from trust import egress
-from trust import glassbox
 from trust import receipt
 
 
@@ -238,99 +236,6 @@ def test_split_sources_leaves_anything_else_alone(text):
     resp = importlib.import_module("tui.ui.response")
 
     assert resp._split_sources(text) == (text, None)
-
-
-def _provenance_box():
-    """A live Glass Box with one network source ([1] web_extract) and one local trusted source
-    ([2] read_file) — built through the real assembler, no synthetic dict."""
-    from langchain.messages import AIMessage, HumanMessage
-
-    state = {
-        "current_query": "q",
-        "messages": [HumanMessage(content="q"), AIMessage(content="Answer [1][2].")],
-        "tool_results": [
-            "web_extract(url='u') -> some network page body of reasonable length here",
-            "read_file(path='x') -> a local trusted file body of reasonable length here",
-        ],
-        "documents_retrieved": [],
-        "tool_events": [{"name": "web_extract"}, {"name": "read_file"}],
-        "replans": 0,
-    }
-    return glassbox.build_from_state(state, egress_events=None, gated=0)
-
-
-def test_facet_annotation_vocabulary():
-    resp = importlib.import_module("tui.ui.response")
-    gb = _provenance_box()
-
-    glyph, style, note = resp._facet_annotation(gb.sources[0])  # web_extract: network/untrusted
-    assert (glyph, style) == ("◐", "yellow") and "web" in note
-    glyph, style, note = resp._facet_annotation(gb.sources[1])  # read_file: local + trusted
-    assert (glyph, style, note) == ("✓", "green", "local")
-
-
-def test_print_sources_colors_by_facet_and_dims_without_provenance(capsys):
-    resp = importlib.import_module("tui.ui.response")
-    gb = _provenance_box()
-
-    resp._print_sources(["  [1] web_extract(url='u')", "  [2] read_file(path='x')"], gb)
-    out = capsys.readouterr().out
-    assert "Sources:" in out
-    assert "◐ web" in out
-    assert "✓ local" in out
-
-    resp._print_sources(["  [1] web_extract(url='u')"], None)  # no provenance: text only
-    out = capsys.readouterr().out
-    assert "[1] web_extract(url='u')" in out
-    assert "◐" not in out and "✓" not in out
-
-
-def test_set_turn_provenance_pops_on_read(isolated_paths):
-    resp = importlib.import_module("tui.ui.response")
-
-    state = {
-        "current_query": "q",
-        "messages": [],
-        "tool_results": ["web_search(query='x') -> a result"],
-        "documents_retrieved": [],
-        "tool_events": [{"name": "web_search", "args": {}, "result": "r", "dur": 0.1, "ok": True}],
-        "replans": 0,
-    }
-    resp.set_turn_provenance(state)
-    gb = resp._pop_turn_provenance()
-    assert gb is not None and gb.sources[0].tool == "web_search"
-    assert resp._pop_turn_provenance() is None  # consumed — can never paint a later answer
-
-
-# --- the centralized live-slice guard (glassbox.build_live) --------------------------------------
-
-_EMPTY_STATE = {"current_query": "q", "messages": [], "tool_results": [],
-                "documents_retrieved": [], "tool_events": [], "replans": 0}
-
-
-def test_build_live_without_a_turn_mark_is_unknown(monkeypatch, isolated_paths):
-    monkeypatch.setattr(receipt, "_TURN_MARK", 0)
-    gb = glassbox.build_live(_EMPTY_STATE)
-    assert gb.sent_known is False  # never 'local-only' over a slice that may be missing sends
-
-
-def test_build_live_with_a_mark_uses_the_exact_slice(monkeypatch, isolated_paths):
-    monkeypatch.setattr(receipt, "_TURN_MARK", receipt._TURN_MARK)
-    receipt.reset_turn()
-    egress.record("llm", "anthropic API", "model", n_bytes=10)
-    gb = glassbox.build_live(_EMPTY_STATE)
-    assert gb.sent_known is True
-    assert gb.composed_local is False  # an llm-channel event in the slice
-
-
-def test_build_live_treats_a_cleared_slice_as_unknown(monkeypatch, isolated_paths):
-    monkeypatch.setattr(receipt, "_TURN_MARK", receipt._TURN_MARK)
-    monkeypatch.setattr(egress, "_CLEARED_AT", egress._CLEARED_AT)
-    receipt.reset_turn()
-    egress.record("http", "api.example.com", "x")
-    egress.clear()
-    gb = glassbox.build_live(_EMPTY_STATE)
-    assert gb.sent_known is False
 
 
 # --- the status bar's posture zone ---------------------------------------------------------------

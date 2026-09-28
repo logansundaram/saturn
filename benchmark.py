@@ -51,7 +51,7 @@ from tools.registry import risk_of
 #    The document is planted before the probes and removed after (a finally), so a benchmark
 #    run leaves the user's corpus as it found it.
 #
-# 3. Memory (2026-09-02, PLAN.md "memory as the learning layer"). Three tasks over
+# 3. Memory (2026-09-02, "memory as the learning layer"). Three tasks over
 #    an ISOLATED memory file (the user's memory.md is never touched):
 #      recall         "remember X" in one run, then "what is X?" in a FRESH run (new state, new
 #                     thread — a new session as far as the graph is concerned). Graded from the

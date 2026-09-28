@@ -197,6 +197,6 @@ from `app/` directly.
 ### Docs
 
 `docs/ARCHITECTURE.md` — code map. `docs/OPTIMIZATIONS.md` — latency techniques: shipped, next, and
-to-measure, with the numbers behind them. `PLAN.md` — product focus and verified gap list (moat vs. trim).
-`CHANGELOG.md` — user-visible history. `docs/FEATURE_INVENTORY.md` — historical, pre-transplant
-snapshot only. `docs/superpowers/` — planning specs from past feature work.
+to-measure, with the numbers behind them. `pivot.md` — the product goal since 2026-09-27 and the ranked
+work that closes the distance to it (it replaced `PLAN.md`). `CHANGELOG.md` — user-visible history.
+`docs/superpowers/` — planning specs from past feature work.

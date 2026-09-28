@@ -57,6 +57,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
   meaningful and goes with it.
 - **CPU / RAM / GPU gauges** on the status bar and under `/config context`, and the `psutil`
   dependency with them. The bar keeps the context gauge and tok/s.
+- **Stale documents.** `PLAN.md` (replaced by `pivot.md`), `docs/FEATURE_INVENTORY.md`, the
+  qwen-family-lock plan and specs, and the quick-path spec described mechanisms that no
+  longer exist; the quick-path and planner entries further down this section, which never
+  shipped in a release, are dropped rather than annotated.
 
 ### v2 — one loop replaces the engine (2026-09-27)
 
@@ -96,57 +100,8 @@ this section, which describe v1 mechanisms that no longer exist._
   print a pointer). Token steering (freeze-edit-continue) and confidence coloring are parked:
   their modules remain, the loop does not arm them.
 
-### Added
-
-- **The quick path: a simple turn skips the planner and the judge.** A request that reads as a
-  chat question or a single lookup — nothing to change, no figure to compute, no reference to
-  follow, at most one workspace path, one clause — no longer drafts a plan, executes a step,
-  and asks the rectify judge before answering. One grammar-bound call (think off) picks
-  "answer" or ONE read-only tool (web, files, the knowledge base, the calculator, the clock,
-  memory recall, the Apple Mail / Notes / Calendar readers; up to three calls), then the answer
-  streams as before. Every call still faces the approval gate, the egress ledger and the
-  quarantine scanner, and lands on the plan, so `/trace`, replay, citations and incident
-  disclosure are unchanged. Measured on the 9b: the decision costs 0.5–0.8 s
-  warm where the plan call alone cost 5–19 s of thinking; a chat turn drops from four model calls
-  to two, a lookup from four to three; the trust benchmark's graded suites ran in 379 s against
-  581 s the same morning with every gate, injection and memory verdict unchanged. Anything the quick path cannot finish — a tool
-  outside its read-only set (a write, an event, a reminder, a question to you), a failed call,
-  or its call budget — is handed to the plan engine with what it already read. `/plan <request>`
-  and `/quick <request>` (and `--plan` / `--quick` headless) override the check for one turn;
-  `/config runtime.quick_path false` plans every turn.
-
-- **The planner reasons inside its grammar instead of thinking.** Every plan call used to run
-  the model's free thinking (5–19 s on the 9b) because without any rationale it turned "write
-  me a story" into a lone question or a file write. The rationale is now a bounded first field
-  of the plan's JSON grammar — one to three sentences the model must write before it commits
-  to steps — and the planner runs think off like every other task. Measured on fifteen
-  requests: the story case answers directly four draws of four, twelve of fifteen plans are
-  identical to the thinking planner's and the rest defensible, at 1.7–3 s warm against 9–17 s.
-
 ### Fixed
 
-- **A plain editing request no longer refuses its own write on the quick path.** "Prepend a
-  header to notes.md", "make a file called todo.txt", "put today's date at the top of
-  notes.md", "set the title in notes.md", "export the list as todo.txt", "log that in
-  journal.md" read as simple lookups, so the quick path read the file, then handed the write
-  to the plan engine mid-turn — where the effect-authorization rule refused it as a write the
-  request never asked for. These verbs now plan from the start (next to a workspace path or a
-  file word; in conversation — "what makes Python slow", "put simply" — they stay quick), and
-  `prepend` authorizes a redrafted write the way `append` does.
-- **`/quick <request>` while a `/draft` is pending no longer runs the quick path on top of your
-  plan** (the lookup's result landed on your first drafted step and the draft never ran). The
-  command now says the draft is pending and points at `/draft clear`; a seeded plan also
-  outranks any forced route inside the engine.
-- **The quick path's iteration cap no longer abandons a tool call it just emitted.** At the
-  cap the router lands without deciding, so no step is left active with a call that never ran.
-- **`/plan <request>` beginning with `review`, `pause` or `draft` runs the request** ("/plan
-  review the ledger for duplicates") instead of being read as the subcommand and lost; the
-  bare forms and `review on|off` behave as before.
-- **`/trace why` counts a quick turn honestly:** each router decision that made a call is one
-  step, rendered as the call it chose, and the "answer" decision is no longer a numbered step
-  showing raw JSON.
-- **The trace rail names a guarded landing on the quick path** ("a guarded outcome ended the
-  turn: … was skipped") instead of "answering directly" next to the incident it just disclosed.
 - **Two Saturn sessions no longer erase each other's menu bar entry.** Each interactive session
   records its pid for the menu bar icon; the first session to exit removed the file even when a
   second session had since written its own, so the icon showed no agent running and its Quit
@@ -155,38 +110,6 @@ this section, which describe v1 mechanisms that no longer exist._
   `schedule_notification` under `message`, `text`, `details` or `note` alongside a `title`, the
   detail was silently dropped and the approval prompt showed a reminder with an empty body. Those
   names now fill the body whenever the title has its own key.
-- **The freeze editor no longer resumes on a split Alt+Enter.** Over ssh, mosh or a slow terminal
-  the Escape and Enter of an Alt/Shift+Enter newline can arrive separately; at the editor's 50 ms
-  Esc timeout that read as a bare Esc and resumed generation from a half-edited answer. The wait
-  is now 250 ms.
-- **A lone "ask the user" step no longer ends the turn.**
- When the planner drafted a question
-  with no step after it to use the answer (a calendar request missing its time, a delete it
-  wanted confirmed), the ask gate skipped the question and the run ended with "I cannot" and an
-  incident; the next message hit the same wall. The dangling question is now redrafted once —
-  keep the question, add the step that acts on the answer — and a second lone ask still lands
-  honestly through the no-call guard. Once the redraft has asked, the original refusal is
-  marked `superseded` on the plan itself — not an incident in the answer, the plan rail,
-  `/trace` or the headless status (it had the answer opening with "I cannot" under a turn that
-  asked and proceeded), and no longer arms the write gate as a "failed" step, which had a
-  "make a note in notes.md" turn refusing its own write. A lone ask refused after the redraft
-  budget is spent now lands the turn directly instead of spending two more model calls asking
-  the judge for a redraft it could not have.
-
-- **Calendar, reminder and mail effects are authorized by the words that ask for them.** A
-  replanned `create_calendar_event`, `schedule_notification` or `draft_mail` step was refused
-  as an "unauthorized effect" unless the request happened to say "create" or "write": the
-  authorization vocabulary knew only workspace verbs. "make an appointment", "remind me",
-  "schedule", "book", "draft/email Petra" now count; "my schedule", "the emails" and "send"
-  still do not — nor does a question ("is the appointment scheduled?", "did you notify Sam?")
-  or the "remind me what / of …" idiom, which asks to be told, not reminded: an effect verb in
-  those positions would otherwise have authorized a calendar or reminder step injected by a
-  file's contents. The planner prompt no longer calls reminders and email actions it has no tool
-
-  for. And effect authorization now arms only once a tool other than `ask_user` has actually
-  run this turn: a refusal the engine stamped, or the user's own typed answer, is not a result
-  a file or web page could have written, so a step redrafted before anything was read is no
-  longer refused as an effect of results that did not exist.
 
 ### Added
 

@@ -177,8 +177,8 @@ count per plan call.
 _Shipped 2026-09-08 as the quick path; §9 has the measurements and the ranking that replaces
 this section's "what survives" list._
 
-Supersedes the ordering in §7. The full statement of the principle is `PLAN.md` → "The
-common-case contract"; this section records only what it changes about the latency work.
+Supersedes the ordering in §7. The principle — a chat question is one call — is now the second
+knife in `pivot.md`; this section records only what it changed about the latency work.
 
 **Why §7's ranking was wrong.** Every item in §7 makes the plan engine cheaper for turns that
 still go through it. The traffic (41 of 46 plans single-step, 17 of 46 a lone reasoning step)
@@ -212,8 +212,8 @@ nothing. Rectify's branch count is held flat.
 
 ## 9. Shipped (2026-09-08) — the quick path, measured
 
-`nodes/quick.py` + `core/complexity.py`; design in
-`docs/superpowers/specs/2026-09-08-quick-path-design.md`. The route and the regex are **[have]**.
+`nodes/quick.py` + `core/complexity.py` (both deleted with the plan engine 2026-09-27, along
+with the quick-path spec; the numbers below are the historical record).
 
 **What is left, ranked after shipping.** A simple turn is now near its floor: one 0.5 s router
 call, then the answer's own decode at ~37 tokens/s (the story turn below spent 9.4 of its 11.7

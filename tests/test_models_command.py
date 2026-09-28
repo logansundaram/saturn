@@ -1,4 +1,4 @@
-"""/models — the family refusal and the metrics readout."""
+"""/models — binding, the legacy-tier advice, and the /config door."""
 
 import pytest
 
@@ -24,36 +24,8 @@ def cfg():
     })
 
 
-class TestBindRefusal:
-    def test_a_non_family_bind_is_refused(self, cfg, printed, monkeypatch):
-        from commands import runtime
-
-        monkeypatch.setattr("core.llms.reset_models", lambda: None)
-        runtime._bind(cfg, "tool_caller", "gemma4:e4b")
-
-        assert cfg.get("tiers.4b.roles.tool_caller") == "qwen3.5:4b"   # unchanged
-        blob = "\n".join(printed)
-        assert "gemma4:e4b" in blob
-        assert "qwen3.5:4b" in blob      # the ladder is shown as the fix
-
-    def test_the_refusal_never_persists_anything(self, cfg, printed, monkeypatch):
-        from commands import runtime
-        from config import MODEL_ROLES
-
-        before = {r: cfg.get(f"tiers.4b.roles.{r}") for r in MODEL_ROLES}
-        monkeypatch.setattr("core.llms.reset_models", lambda: None)
-        monkeypatch.setattr(
-            "commands.runtime._persist_bindings",
-            lambda *a, **k: pytest.fail("a refused bind must not persist"),
-        )
-        runtime._bind(cfg, "all", "qwen3-coder:30b")
-
-        # Not just "persist was not called": every role binding must be untouched in memory too,
-        # or the session runs something the file never said (an assertion-free test used to pass
-        # against a _bind that simply returned).
-        assert {r: cfg.get(f"tiers.4b.roles.{r}") for r in MODEL_ROLES} == before
-
-    def test_a_family_bind_still_works(self, cfg, printed, monkeypatch):
+class TestBind:
+    def test_a_bind_sets_the_role_key(self, cfg, printed, monkeypatch):
         from commands import runtime
 
         monkeypatch.setattr("core.llms.reset_models", lambda: None)
@@ -63,7 +35,7 @@ class TestBindRefusal:
 
         assert cfg.get("tiers.4b.roles.tool_caller") == "qwen3.5:9b"
 
-    def test_the_embedder_is_exempt_from_the_family_gate(self, cfg, printed, monkeypatch):
+    def test_the_embedder_binds_machine_wide(self, cfg, printed, monkeypatch):
         from commands import runtime
 
         monkeypatch.setattr("core.llms.reset_models", lambda: None)
@@ -104,18 +76,9 @@ def _legacy_config():
 
 
 class TestLegacyTierAdviceIsActionable:
-    """The migration warning's remediation must work for the population that SEES it — an
-    upgrading user whose config.yaml still has laptop/workstation. The listing used to render
-    six ladder rows none of which /models tier would accept, and the warning pointed at exactly
-    that command."""
-
-    @pytest.fixture(autouse=True)
-    def _clean_migrations(self):
-        import config
-
-        config.clear_migrations()
-        yield
-        config.clear_migrations()
+    """An upgrading user whose config.yaml still has laptop/workstation: the listing renders the
+    ladder rows, none of which /models tier would accept on that config, so the page must name
+    the bind that does work there."""
 
     def test_the_page_names_the_legacy_tiers_and_the_bind_that_works(self, printed, monkeypatch):
         from commands import runtime
@@ -139,53 +102,10 @@ class TestLegacyTierAdviceIsActionable:
         # …and what selecting the legacy tier would actually run, not what the file says
         assert runtime._tier_binding(cfg, "27b") == ("", "qwen3.8:27b")
 
-    def test_the_warning_points_at_a_command_that_works_here(self, monkeypatch):
-        import config as config_mod
-        from core import llms
 
-        cfg = _legacy_config()
-        monkeypatch.setattr(config_mod, "_config", cfg, raising=False)
-        cfg.model_for_role("tool_caller")
-
-        problem = llms._migration_problems()[0]
-        assert "/models tier" not in problem       # would answer "unknown tier" on this config
-        assert "/models all qwen3.8:27b" in problem
-
-    def test_the_advised_command_actually_rebinds_and_clears_the_warning(self, monkeypatch,
-                                                                        printed):
-        import config as config_mod
-        from commands import runtime
-        from config import MODEL_ROLES
-        from core import llms
-
-        cfg = _legacy_config()
-        monkeypatch.setattr(config_mod, "_config", cfg, raising=False)
-        monkeypatch.setattr("core.llms.reset_models", lambda: None)
-        monkeypatch.setattr("commands.runtime._persist_bindings", lambda *a, **k: None)
-        monkeypatch.setattr("commands.runtime._resync_rag_after_model_change", lambda: None)
-        for role in MODEL_ROLES:
-            cfg.model_for_role(role)
-        assert llms._migration_problems()          # the warning is live
-
-        runtime._bind(cfg, "all", "qwen3.8:27b")   # exactly what the warning advises
-
-        for role in MODEL_ROLES:
-            assert cfg.get(f"tiers.workstation.roles.{role}") == "qwen3.8:27b"
-            cfg.model_for_role(role)
-        assert llms._migration_problems() == []    # and the warning is gone
-
-    def test_a_ladder_config_still_gets_the_tier_advice(self, monkeypatch):
-        import config as config_mod
-        from core import llms
-
-        monkeypatch.setattr(config_mod, "_config", _template_config(), raising=False)
-        assert "/models tier" in llms._rebind_hint("qwen3.5:4b")
-
-
-class TestConfigDoorIsGatedToo:
-    """/config writes the very same `tiers.*.roles.*` keys /models refuses — and, unlike a trust
-    key, persists by default. It used to write a binding the product refuses straight into
-    config.yaml and read it back for the session."""
+class TestConfigDoorBinds:
+    """/config writes the very same `tiers.*.roles.*` keys /models does — and, unlike a trust
+    key, persists by default."""
 
     @pytest.fixture
     def wired(self, cfg, monkeypatch):
@@ -204,18 +124,7 @@ class TestConfigDoorIsGatedToo:
 
         _config(None, args)
 
-    def test_a_non_family_role_binding_is_refused_and_not_persisted(self, cfg, wired,
-                                                                    monkeypatch):
-        monkeypatch.setattr("commands.config._persist_key",
-                            lambda *a, **k: pytest.fail("a refused bind must not persist"))
-        self._run(["tiers.4b.roles.tool_caller", "gemma4:e4b"])
-
-        assert cfg.get("tiers.4b.roles.tool_caller") == "qwen3.5:4b"   # unchanged in memory too
-        blob = "\n".join(wired)
-        assert "outside the supported model family" in blob
-        assert "qwen3.5:4b" in blob                                    # the ladder as the fix
-
-    def test_a_family_role_binding_still_sets_and_persists(self, cfg, wired, monkeypatch):
+    def test_a_role_binding_sets_and_persists(self, cfg, wired, monkeypatch):
         saved = []
         monkeypatch.setattr("commands.config._persist_key",
                             lambda _cfg, key: saved.append(key))
@@ -224,8 +133,7 @@ class TestConfigDoorIsGatedToo:
         assert cfg.get("tiers.4b.roles.tool_caller") == "qwen3.5:9b"
         assert saved == ["tiers.4b.roles.tool_caller"]
 
-    def test_the_embedder_key_stays_exempt(self, cfg, wired, monkeypatch):
-        # Not a chat model: no raw-mode template, no logprobs, no calibration claim rides on it.
+    def test_the_embedder_key_binds_too(self, cfg, wired, monkeypatch):
         monkeypatch.setattr("commands.config._persist_key", lambda *a, **k: None)
         self._run(["tiers.4b.embedder", "nomic-embed-text:v2"])
 

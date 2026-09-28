@@ -1,34 +1,8 @@
-"""The supported-family gate: the predicate, the size ladder, and the migration map."""
+"""The size ladder: the class table, off-ladder pricing, and the shipped template."""
 
 import pytest
 
 from core import model_family as mf
-
-
-class TestInFamily:
-    def test_every_ladder_tag_is_in_family(self):
-        for _key, tag in mf.SIZE_LADDER:
-            assert mf.in_family(tag), tag
-
-    def test_bare_family_name_matches(self):
-        assert mf.in_family("qwen3.6")
-
-    def test_case_insensitive(self):
-        assert mf.in_family("QWEN3.5:0.8B")
-
-    def test_matching_is_anchored_not_a_loose_prefix(self):
-        # qwen3.50 must NOT satisfy a qwen3.5 test — the whole point of anchoring.
-        assert not mf.in_family("qwen3.50:1b")
-
-    @pytest.mark.parametrize(
-        "tag",
-        ["gemma4:e4b", "qwen3-coder:30b", "qwen3-embedding:8b", "qwen3.7:9b", "", "   "],
-    )
-    def test_outsiders_rejected(self, tag):
-        assert not mf.in_family(tag)
-
-    def test_none_is_not_in_family(self):
-        assert not mf.in_family(None)
 
 
 class TestLadder:
@@ -54,16 +28,15 @@ class TestLadder:
         assert mf.DEFAULT_CLASS in mf.classes()
 
     def test_the_parameter_table_covers_exactly_the_ladder(self):
-        # A stray or missing key makes tag_for(migrate(id)) raise KeyError inside model_for_role
-        # — i.e. on EVERY model resolution, for anyone with a legacy binding.
+        # A stray or missing key makes class_of() price an off-ladder tag against a class that
+        # does not exist.
         assert set(mf._CLASS_PARAMS) == set(mf.classes())
 
     def test_is_ladder_tag_matches_the_ladder_case_insensitively(self):
         for _key, tag in mf.SIZE_LADDER:
             assert mf.is_ladder_tag(tag)
             assert mf.is_ladder_tag(tag.upper())
-        # in_family is broader on purpose: a family tag we do not ship is not a ladder tag.
-        assert mf.in_family("qwen3.5:99b") and not mf.is_ladder_tag("qwen3.5:99b")
+        assert not mf.is_ladder_tag("qwen3.5:99b")  # a tag we do not ship is not a ladder tag
         assert not mf.is_ladder_tag("")
 
     def test_no_size_class_key_contains_a_dot(self):
@@ -73,49 +46,29 @@ class TestLadder:
             assert "." not in key, key
 
 
-class TestMigrate:
-    @pytest.mark.parametrize(
-        "old,expected",
-        [
-            ("gemma4:e2b", "2b"),
-            ("gemma4:e4b", "4b"),
-            ("gemma4:12b", "9b"),
-            ("gemma4:26b", "27b"),
-            ("gemma4:31b", "27b"),
-            ("qwen3-coder:30b", "27b"),
-        ],
-    )
-    def test_legacy_table_is_exact(self, old, expected):
-        assert mf.migrate(old) == expected
+class TestClassOf:
+    def test_a_ladder_tag_is_its_own_class(self):
+        for key, tag in mf.SIZE_LADDER:
+            assert mf.class_of(tag) == key, tag
 
-    def test_legacy_lookup_is_case_insensitive(self):
-        assert mf.migrate("GEMMA4:E4B") == "4b"
-
-    def test_the_legacy_table_takes_precedence_over_the_size_parse(self, monkeypatch):
-        """Every shipped _LEGACY row happens to agree with the size parse, so the table above is
-        tautological — deleting _LEGACY entirely would leave it green. This pins that the table
-        is CONSULTED and wins, which is the property the declared mapping exists for."""
-        # The size parse would put a 33B tag on 35b (|33-36| < |33-27.3|).
-        assert mf.migrate("mystery:33b") == "35b"
-        monkeypatch.setitem(mf._LEGACY, "mystery:33b", "2b")
-        assert mf.migrate("mystery:33b") == "2b"
-
-    def test_unknown_tag_falls_back_to_the_size_parse(self):
+    def test_an_off_ladder_tag_prices_as_the_nearest_size(self):
         # |33 - 27.3| = 5.7 vs |33 - 36.0| = 3.0 -> nearest class is 35b, not 27b.
-        assert mf.migrate("mystery:33b") == "35b"
-        assert mf.migrate("mystery:3b") == "2b"
+        assert mf.class_of("mystery:33b") == "35b"
+        assert mf.class_of("mystery:3b") == "2b"
+        assert mf.class_of("gemma4:e4b") == "4b"
+        assert mf.class_of("GEMMA4:31B") == "27b"
 
     def test_unparseable_tag_falls_back_to_the_default_class(self):
-        assert mf.migrate("devstral-small-2:latest") == mf.DEFAULT_CLASS
+        assert mf.class_of("devstral-small-2:latest") == mf.DEFAULT_CLASS
 
-    def test_migrate_always_returns_a_real_class(self):
+    def test_class_of_always_returns_a_real_class(self):
         for tag in ["gemma4:e4b", "mystery:33b", "junk", "", None]:
-            assert mf.migrate(tag) in mf.classes()
+            assert mf.class_of(tag) in mf.classes()
 
 
-class TestConfigMigrationSeam:
-    """config.model_for_role is THE migration seam: substitute in memory, record it, never
-    rewrite config.yaml."""
+class TestConfigResolution:
+    """config.model_for_role hands back what config.yaml binds — on or off the ladder — and
+    never rewrites the file."""
 
     def _cfg(self, synth="qwen3.8:27b"):
         from config import Config
@@ -128,69 +81,16 @@ class TestConfigMigrationSeam:
             "capabilities": {},
         })
 
-    def setup_method(self):
-        import config
-
-        config.clear_migrations()
-
-    def teardown_method(self):
-        # _MIGRATIONS is a module-level singleton: without this, a recorded substitution leaks
-        # into every later test FILE (llms.check_models and /models both read it).
-        import config
-
-        config.clear_migrations()
-
-    def test_family_binding_passes_through_untouched(self):
-        import config
-
+    def test_a_ladder_binding_passes_through_untouched(self):
         spec = self._cfg().model_for_role("tool_caller")
         assert spec.model == "qwen3.8:27b"
-        assert config.migrated_bindings() == {}
 
-    def test_non_family_binding_is_substituted(self):
+    def test_an_off_ladder_binding_passes_through_untouched(self):
         spec = self._cfg("gemma4:e4b").model_for_role("tool_caller")
-        assert spec.model == "qwen3.5:4b"
+        assert spec.model == "gemma4:e4b"
         assert spec.provider == "ollama"
 
-    def test_the_substitution_is_recorded(self):
-        import config
-
-        self._cfg("qwen3-coder:30b").model_for_role("tool_caller")
-        assert config.migrated_bindings() == {"qwen3-coder:30b": "qwen3.8:27b"}
-
-    def test_a_fixed_binding_stops_being_reported(self):
-        """migrated_bindings() is CURRENT STATE, not history. An append-only ledger kept every
-        readout claiming "'gemma4:e4b' in config.yaml is running as 'qwen3.5:4b'" for the rest
-        of the session after the user had already rebound it — a false claim about the file."""
-        import config
-
-        cfg = self._cfg("gemma4:e4b")
-        cfg.model_for_role("tool_caller")
-        assert config.migrated_bindings() == {"gemma4:e4b": "qwen3.5:4b"}
-
-        cfg.set("tiers.t.roles.tool_caller", "qwen3.5:9b")   # the user fixes the binding
-        assert cfg.model_for_role("tool_caller").model == "qwen3.5:9b"
-        assert config.migrated_bindings() == {}
-
-    def test_one_fixed_role_does_not_clear_another_still_diverging(self):
-        import config
-        from config import Config
-
-        cfg = Config({
-            "active_tier": "t",
-            "tiers": {"t": {"provider": "ollama", "roles": {
-                "tool_caller": "gemma4:e4b", "utility": "qwen3-coder:30b",
-            }}},
-        })
-        cfg.model_for_role("tool_caller")
-        cfg.model_for_role("utility")
-        cfg.set("tiers.t.roles.tool_caller", "qwen3.5:4b")
-        cfg.model_for_role("tool_caller")
-
-        assert config.migrated_bindings() == {"qwen3-coder:30b": "qwen3.8:27b"}
-
     def test_a_non_ollama_binding_is_left_for_the_cloud_shelve_refusal(self):
-        import config
         from config import Config
 
         cfg = Config({
@@ -202,15 +102,14 @@ class TestConfigMigrationSeam:
         spec = cfg.model_for_role("tool_caller")
         assert spec.provider == "anthropic"
         assert spec.model == "claude-sonnet-4"
-        assert config.migrated_bindings() == {}
 
     def test_the_embedder_is_exempt(self):
         cfg = self._cfg()
         assert cfg.embedder_model == "qwen3-embedding:8b"
 
     def test_a_config_without_an_active_tier_falls_back_to_the_default_class(self):
-        """The fallback used to be "workstation", a preset that stopped shipping with the family
-        lock — so a config missing the key named a tier that does not exist and hard-failed on
+        """The fallback used to be "workstation", a preset that stopped shipping with the size
+        ladder — so a config missing the key named a tier that does not exist and hard-failed on
         every model resolution."""
         from config import Config, MODEL_ROLES
         from core import model_family as mf
@@ -274,13 +173,6 @@ class TestShippedConfigMatchesTheLadder:
             roles = tiers[key]["roles"]
             assert set(roles) == set(MODEL_ROLES), key
             assert set(roles.values()) == {tag}, key
-
-    def test_every_role_binding_is_in_family(self):
-        from core import model_family as mf
-
-        for key, tier in self._template()["tiers"].items():
-            for role, tag in tier["roles"].items():
-                assert mf.in_family(tag), f"{key}.{role} = {tag}"
 
     def test_every_ladder_tag_has_a_capabilities_entry(self):
         from core import model_family as mf
@@ -359,54 +251,3 @@ class TestShippedConfigMatchesTheLadder:
     def test_the_embedder_is_unchanged_on_every_tier(self):
         for key, tier in self._template()["tiers"].items():
             assert tier["embedder"] == "qwen3-embedding:8b", key
-
-
-class TestStartupReportsMigrations:
-    def setup_method(self):
-        import config
-
-        config.clear_migrations()
-
-    def teardown_method(self):
-        import config
-
-        config.clear_migrations()
-
-    def test_no_migration_reports_nothing(self):
-        from core import llms
-
-        assert llms._migration_problems() == []
-
-    def test_a_migration_is_reported_with_both_ids_and_the_fix(self):
-        import config
-        from config import Config
-        from core import llms
-
-        cfg = Config({
-            "active_tier": "t",
-            "tiers": {"t": {"provider": "ollama", "roles": {"tool_caller": "gemma4:e4b"}}},
-        })
-        cfg.model_for_role("tool_caller")
-
-        problems = llms._migration_problems()
-        assert len(problems) == 1
-        line = problems[0]
-        assert "gemma4:e4b" in line          # what the file says
-        assert "qwen3.5:4b" in line          # what is actually running
-        assert "/models tier" in line        # how to make it permanent
-        assert "config.yaml" in line         # and that the file was NOT rewritten
-
-    def test_each_distinct_substitution_is_reported_once(self):
-        from config import Config
-        from core import llms
-
-        cfg = Config({
-            "active_tier": "t",
-            "tiers": {"t": {"provider": "ollama", "roles": {
-                "tool_caller": "gemma4:e4b", "utility": "qwen3-coder:30b",
-            }}},
-        })
-        for role in ("tool_caller", "utility"):
-            cfg.model_for_role(role)
-
-        assert len(llms._migration_problems()) == 2

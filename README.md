@@ -182,11 +182,9 @@ run — Enter takes the recommendation, and anything not pulled yet is pulled on
 `/models` anytime, or set `SATURDAY_TIER=9b` (or `27b`/`35b`) before installing.
 Other knobs: `SATURDAY_HOME` (install dir), `SATURDAY_MODELS` (models to pull), `SATURDAY_BRANCH`.
 
-Saturn runs the **qwen3.5–3.8 family only**, as one tier per parameter size. That is a
-deliberate limit, not a missing feature: confidence coloring marks what the model itself was
-least sure of, and "least sure" is calibrated per model — a threshold borrowed from a model of a
-different size is meaningless. `/models` shows the ladder; `/confidence` shows what your
-active model is calibrated at.
+Saturn ships one recommended tier per parameter size (the qwen3.5–3.8 ladder); `/models`
+shows the ladder priced against your machine. Any Ollama model with native tool-calling binds
+with `/models all <id>`.
 
 > Prefer to set it up by hand, or hacking on Saturn itself? Use the **Manual install** below.
 
@@ -229,10 +227,8 @@ saturn-agent` instead of `/update`.
   > More hardware to spare? The first launch runs `/models`, which reads your chip, RAM and VRAM
   > and offers the largest size class that fits (pulling it first); re-run `/models` any time,
   > or `/models list` to just see the fit table. Or edit `active_tier` in `config.yaml`
-  > yourself — `9b`, `27b`, or `35b` — and pull that class's tag instead (same embedder). Saturn binds the **qwen3.5–3.8 family only** — each size class is calibrated per
-  > model for confidence coloring (see `/confidence`; the 27b tier's thresholds are estimated
-  > from its measured 27.8B sibling pending daemon support for qwen3.8 logprobs), so this is a
-  > closed ladder, not an open model list.
+  > yourself — `9b`, `27b`, or `35b` — and pull that class's tag instead (same embedder). Any
+  > other Ollama model with native tool-calling works too: `/models all <id>`.
   > (Small models are still less reliable at tool-calling — see the gotchas in `CLAUDE.md`;
   > `/config setup` will say so too.)
 

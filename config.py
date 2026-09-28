@@ -53,30 +53,6 @@ TRUST_KEYS = frozenset({
     "runtime.grant_scope",  # session/persist lengthen how long an always-allow grant lives
 })
 
-# Non-family chat bindings being substituted RIGHT NOW: role -> (original id, replacement id).
-# Populated by model_for_role, read by llms.check_models and /models so no readout claims the
-# file's value is what is running. In-memory only — config.yaml is NEVER rewritten by the
-# migration path (rebinding is the permanent fix).
-#
-# Keyed by ROLE, not by original id, since 2026-08-16: this is CURRENT STATE, not history. An
-# append-only log kept every readout asserting "'gemma4:e4b' in config.yaml is running as
-# 'qwen3.5:4b'" for the rest of the session after the user had already fixed the binding — a
-# false claim about the file, from the surface whose entire job is to keep the file and the
-# running agent from diverging silently. A role that next resolves in-family drops its entry.
-_MIGRATIONS: dict[str, tuple] = {}
-
-
-def migrated_bindings() -> dict:
-    """The family substitutions in force right now (original id -> replacement id). Empty once
-    every role resolves in-family again."""
-    return {original: replacement for original, replacement in _MIGRATIONS.values()}
-
-
-def clear_migrations() -> None:
-    """Forget the recorded substitutions (a config reload, or a test)."""
-    _MIGRATIONS.clear()
-
-
 def _resolve_config_path() -> Path:
     """Locate the live config.yaml.
 
@@ -141,7 +117,7 @@ _REPO_ROOT = _CONFIG_PATH.parent
 # 2026-09-27; a config.yaml that still lists them is read fine — the keys are simply unused.)
 MODEL_ROLES = ("tool_caller", "utility")
 
-# The fallback window pair for a family tag a user's older config has no `capabilities:` entry
+# The fallback window pair for a ladder tag a user's older config has no `capabilities:` entry
 # for (see capability_of): the SMALLEST runtime window the ladder ships in config.default.yaml
 # (the windows step up the ladder — 32k/64k/128k — and a fallback must never over-allocate) and
 # the shared architectural ceiling. Kept in step with the template by tests/test_model_family.py.
@@ -200,7 +176,7 @@ class Config:
     @property
     def active_tier(self) -> str:
         # The fallback is the ladder's default CLASS, not a retired preset name: "workstation"
-        # stopped shipping with the family lock, so a config missing the key resolved to a tier
+        # stopped shipping with the size ladder, so a config missing the key resolved to a tier
         # that does not exist and hard-failed on every model resolution (2026-08-16).
         return self._data.get("active_tier", model_family.DEFAULT_CLASS)
 
@@ -213,25 +189,6 @@ class Config:
                 f"{list(tiers)}"
             )
         return tier
-
-    def _enforce_family(self, spec: "ModelSpec", role: str) -> "ModelSpec":
-        """Substitute a non-family CHAT binding with the ladder tag for its nearest size class,
-        and record the substitution. Saturday.ai supports one family (core/model_family) because
-        confidence coloring is calibrated per model; a binding outside it would be marked against
-        another model's numbers.
-
-        A non-ollama binding is left alone — the cloud-model shelve (2026-07-03) owns that
-        refusal, and quietly rewriting it would hide the real problem. The embedder never reaches
-        here (embedder_model is its own accessor).
-
-        The record is per ROLE and is CLEARED when that role resolves in-family again, so a
-        binding the user has since fixed stops being reported (see _MIGRATIONS)."""
-        if spec.provider != "ollama" or model_family.in_family(spec.model):
-            _MIGRATIONS.pop(role, None)
-            return spec
-        replacement = model_family.tag_for(model_family.migrate(spec.model))
-        _MIGRATIONS[role] = (spec.model, replacement)
-        return ModelSpec(provider=spec.provider, model=replacement)
 
     def model_for_role(self, role: str) -> ModelSpec:
         """Resolve a role to a concrete (provider, model). Falls back to the `utility`
@@ -252,12 +209,8 @@ class Config:
                     f"role '{role}' on tier '{self.active_tier}' is a mapping without a "
                     f"'model' key: {entry!r}"
                 )
-            return self._enforce_family(
-                ModelSpec(provider=entry.get("provider", default_provider), model=model), role
-            )
-        return self._enforce_family(
-            ModelSpec(provider=default_provider, model=str(entry)), role
-        )
+            return ModelSpec(provider=entry.get("provider", default_provider), model=model)
+        return ModelSpec(provider=default_provider, model=str(entry))
 
     @property
     def embedder_model(self) -> str:
@@ -278,9 +231,9 @@ class Config:
         spec = caps.get(model)
         if not spec:
             if model_family.is_ladder_tag(model):
-                # A config predating the family lock has no `capabilities:` entry for the tag a
-                # legacy binding was SUBSTITUTED with, and the conservative default would quarter
-                # its window to 8192 with nothing said (and render "8192 / 0" in /models tier).
+                # A config predating the ladder has no `capabilities:` entry for a ladder tag, and
+                # the conservative default would quarter its window to 8192 with nothing said
+                # (and render "8192 / 0" in /models tier).
                 # Every ladder tag ships the same pair in config.default.yaml — use it.
                 return Capability(context_window=FAMILY_CONTEXT_WINDOW,
                                   max_context_window=FAMILY_MAX_CONTEXT_WINDOW)
@@ -513,6 +466,5 @@ def get_config() -> Config:
 def reload() -> Config:
     """Re-read config.yaml from disk (used by /config reload)."""
     global _config
-    clear_migrations()  # a re-read may have fixed the binding — don't let a stale ledger survive
     _config = _load()
     return _config

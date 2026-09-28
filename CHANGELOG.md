@@ -27,6 +27,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
   `tool_caller` (the agent's call) and `utility` (compaction, the memory review, `/init`).
   An existing `config.yaml` that still lists the old three loads unchanged — the keys are
   simply unused; `/models all <id>` rewrites only the two that remain.
+- **The qwen-only model gate.** `/models` and `/config` no longer refuse a model outside the
+  qwen3.5–3.8 line, and a config binding one is no longer silently substituted with the nearest
+  ladder tag (the "is running as" startup warning goes with it). The gate existed for the
+  per-model confidence calibration; without it, any Ollama model with native tool-calling
+  binds. The size ladder stays as the recommended default per size and `/models` prices an
+  off-ladder tag by the size in its name.
 
 ### v2 — one loop replaces the engine (2026-09-27)
 

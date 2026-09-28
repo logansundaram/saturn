@@ -572,19 +572,18 @@ def test_ui_ask_hands_back_the_interrupt_value(monkeypatch):
     assert prompt_mod.ask("x » ", on_interrupt="n") == "n"
 
 
-def test_a_rebound_tier_pulls_the_model_it_runs_not_the_one_the_file_names(env, printed):
-    """A non-family declaration is substituted at the model_for_role seam: the ✓ column already
-    reports the substitute, so the pick must pull the substitute — never a model the agent
-    refuses to run — and must note the substitution even for a NON-active tier."""
+def test_a_rebound_tier_pulls_the_model_the_file_names(env, printed):
+    """An off-ladder declaration is what the tier runs: the pick pulls exactly that model, and
+    the row prices it by the size in its tag (31b costs what the 27b class costs)."""
     cfg = env["cfg"]
     for role in ("tool_caller", "utility"):
         cfg.set(f"tiers.27b.roles.{role}", "gemma4:31b")
     env["pick"] = "5"
     env["answer"] = "y"
     _run()
-    assert env["pull_calls"] == ["qwen3.8:27b"]
+    assert env["pull_calls"] == ["gemma4:31b"]
     assert env["cfg"].active_tier == "27b"
-    assert "'gemma4:31b' in config.yaml is running as 'qwen3.8:27b'" in "\n".join(printed)
+    assert "running as" not in "\n".join(printed)
 
 
 def test_the_page_renders_when_the_active_tier_has_no_embedder(env, printed):

@@ -78,7 +78,7 @@ HEADROOM_GB = 1.5
 EMBEDDER_WEIGHTS_GB: dict[str, float] = {"0.6b": 0.6, "4b": 2.5, "8b": 4.7}
 EMBEDDER_HEADROOM_GB = 0.5
 
-# When the caller has no config to read windows from (config.default.yaml's family fallback,
+# When the caller has no config to read windows from (config.default.yaml's ladder fallback,
 # config.FAMILY_CONTEXT_WINDOW — kept equal by tests/test_models_page.py).
 FALLBACK_WINDOW = 32768
 

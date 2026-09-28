@@ -217,15 +217,11 @@ shell:
 # review's proposals, /init's draft). `embedder` is separate.
 # ---------------------------------------------------------------------------
 tiers:
-  # One tier per parameter size, each binding the most advanced tag the qwen3.5-3.8 family
-  # offers at that size. The KEY is the size class, so a version bump (a future qwen3.9:27b)
-  # is a one-line edit to the binding below and `active_tier` never churns.
-  #
-  # Saturday.ai supports ONLY this family — see core/model_family.py. Confidence coloring is
-  # calibrated per model (core/confidence_calibration.py); a red run means "worse than 95 % of
-  # THIS model's clean output", which is only true for a model that was measured. A binding
-  # outside the family is substituted in memory with the nearest size class and warned about at
-  # startup; this file is never rewritten behind your back.
+  # One tier per parameter size, each binding the recommended qwen3.5-3.8 tag at that size
+  # (core/model_family.py). The KEY is the size class, so a version bump (a future qwen3.9:27b)
+  # is a one-line edit to the binding below and `active_tier` never churns. The ladder is a
+  # recommendation, not a gate: any Ollama model with native tool-calling binds here (or via
+  # `/models all <id>`); `/models` prices an off-ladder tag by the size in its name.
   #
   # The 800m and 2b tiers are offered for completeness. The loop leans on reliable native
   # tool-calling, and neither size has been through the trust benchmark — treat them as

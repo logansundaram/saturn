@@ -20,15 +20,6 @@ _TRUST_KEYS = TRUST_KEYS
 _MISSING = object()
 
 
-def _is_role_binding_key(key: str) -> bool:
-    """Whether a dotted key names a CHAT-role model binding (`tiers.<tier>.roles.<role>`) — the
-    keys /models' family gate guards. The EMBEDDER key (`tiers.<tier>.embedder`) is deliberately
-    NOT one of them: it is not a chat model, has no raw-mode template and produces no logprobs,
-    so no calibration claim rides on it (the same exemption _bind makes)."""
-    parts = str(key or "").split(".")
-    return len(parts) == 4 and parts[0] == "tiers" and parts[2] == "roles" and bool(parts[3])
-
-
 def _leaf_keys(node: dict, prefix: str = "") -> list[str]:
     """Every dotted path to a non-mapping leaf in the live config — the did-you-mean candidate
     list for a typo'd key. Callers snapshot this BEFORE a cfg.set, so a just-created typo can
@@ -198,19 +189,6 @@ def _config(ctx, args):
         return
 
     value = " ".join(values)
-
-    # The family gate, at the SECOND door (2026-08-16). `/models` refuses a non-family bind; this
-    # setter writes the very same `tiers.<t>.roles.<role>` keys and — unlike the trust keys —
-    # persists by default, so it used to write to config.yaml a binding the product refuses. The
-    # runtime seam still substitutes, so nothing uncalibrated ever ran; but the file then said one
-    # thing while the agent ran another, and the session read the refused value straight back.
-    # ONE message: commands.runtime.print_family_refusal, the same one /models prints.
-    if _is_role_binding_key(key) and not model_family.in_family(value):
-        from commands.runtime import print_family_refusal
-
-        _print(f"  {key} binds a model — nothing set.")
-        print_family_refusal(value)
-        return
 
     # Section guard: a dotted key naming a whole MAPPING must refuse — cfg.set would replace the
     # mapping with a scalar (every `web.*`-style read silently degrades to defaults for the rest

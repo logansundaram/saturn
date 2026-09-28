@@ -66,20 +66,6 @@ def _persist_bindings(cfg, keys: list[str]) -> None:
         _persist_key(cfg, key)
 
 
-def print_family_refusal(model: str) -> None:
-    """THE family-gate refusal, in one place. `/models` binds through _bind; `/config` writes the
-    same `tiers.*.roles.*` keys directly and must refuse identically — two hand-written messages
-    would drift, and the second door silently persisting what the first refuses is worse than a
-    wording drift (2026-08-16)."""
-    _print(f"  {model} is outside the supported model family.")
-    _print("  Saturday.ai binds qwen3.5 / qwen3.6 / qwen3.8 only — confidence coloring is")
-    _print("  calibrated per model, so a red run is only a true claim for a measured one.")
-    _print("  supported:")
-    for key, tag in model_family.SIZE_LADDER:
-        _print(f"    {key:<6} {tag}")
-    _print("  switch the whole tier with `/models tier <size>`.")
-
-
 def _bind(cfg, target: str, model: str, *, session: bool = False) -> None:
     """Bind a role / all roles / the embedder to a local Ollama model id (a bare scalar in
     config.yaml). The change PERSISTS to config.yaml by default (a model switch should stick);
@@ -87,12 +73,6 @@ def _bind(cfg, target: str, model: str, *, session: bool = False) -> None:
     simply overwritten — cloud support is shelved (2026-07-03), and rebinding is how a stale
     mapping gets fixed."""
     from core.llms import reset_models
-
-    # The family gate (2026-08-16). The EMBEDDER is exempt — it is not a chat model, has no
-    # raw-mode template and produces no logprobs, so no calibration claim rides on it.
-    if target != "embedder" and not model_family.in_family(model):
-        print_family_refusal(model)
-        return
 
     tag = " (session only)" if session else ""
 
@@ -124,7 +104,8 @@ def _bind(cfg, target: str, model: str, *, session: bool = False) -> None:
 # the six chat tiers and the three qwen3-embedding sizes — each priced against the budget at the
 # window this config gives it (core/hardware.py), marked pulled / recommended / too big, and
 # numbered so one keystroke picks a tier or an embedder. The old verbatim `ollama list` view is
-# gone: Saturn binds ONE family with the most advanced tag per size, so the ladder IS the list.
+# gone: the ladder is one recommended tag per size, priced against this machine — a model off
+# the ladder still binds (`/models all <id>`) and is priced by the size in its tag.
 # Bare /models prompts; `list` renders only; the probe itself is cached at startup (hardware
 # doesn't change mid-session) and `rescan` re-reads it.
 
@@ -160,24 +141,17 @@ def _active_embedder(cfg) -> "str | None":
 def _tier_binding(cfg, key: str) -> "tuple[str, str]":
     """(declared, running) for a size-class tier: what config.yaml literally binds to its chat
     roles (the tool_caller's entry; "" when the tier is not declared) and what selecting it would
-    actually RUN — a non-family declaration is substituted at the model_for_role seam, so the row
-    must show the substitute (the migration note under the table names the substitution). A class
-    this config never declared runs the ladder tag."""
+    RUN — the declaration itself, or the ladder tag for a class this config never declared."""
     declared = _tier_model(cfg, key)
     if not declared:
         return "", model_family.tag_for(key)
-    if model_family.in_family(declared):
-        return declared, declared
-    return declared, model_family.tag_for(model_family.migrate(declared))
+    return declared, declared
 
 
 def _tier_running_models(cfg, key: str) -> list[str]:
     """The chat models selecting a tier would RUN (roles only, deduplicated; the embedder is a
-    separate, machine-wide pick): each role's declared id, family-substituted the way
-    Config.model_for_role substitutes it — a non-family declaration never loads, so checking or
-    pulling IT would fetch a model the agent refuses to run while the tag that does run stays
-    missing. A tier declared without roles runs the ladder tag. Dict access, never the dotted
-    path — a tier key may contain a dot."""
+    separate, machine-wide pick): each role's declared id. A tier declared without roles runs
+    the ladder tag. Dict access, never the dotted path — a tier key may contain a dot."""
     tier = (cfg.get("tiers", {}) or {}).get(key) or {}
     out: list[str] = []
     for entry in (tier.get("roles", {}) or {}).values():
@@ -186,8 +160,6 @@ def _tier_running_models(cfg, key: str) -> list[str]:
         model = str(entry or "")
         if not model:
             continue
-        if not model_family.in_family(model):
-            model = model_family.tag_for(model_family.migrate(model))
         if model not in out:
             out.append(model)
     return out or [model_family.tag_for(key)]
@@ -362,7 +334,6 @@ def _render_page(cfg, prof, rec, *, up: bool, have: set) -> None:
     if legacy:
         ui.warn(f"legacy tiers in config.yaml: {', '.join(legacy)} — the names predate the size-class "
                 "ladder; rebind one in place with `/models all <tag>`")
-    _print_migration_notes(cfg)
 
 
 def _pick(rec, active: str) -> "list[tuple[str, str]] | None":
@@ -515,22 +486,6 @@ def _models_page(cfg, *, prompt: bool, session: bool = False, rescan: bool = Fal
         _apply_pick(cfg, kind, key, rec, have=have, session=session)
 
 
-def _print_migration_notes(cfg=None) -> None:
-    """Name the family substitutions the page shows, so a listing never claims the file's value
-    is what is running: this session's ledger (config.migrated_bindings — the ACTIVE tier's
-    roles, the only ones ever resolved) plus, given the config, every ladder tier whose declared
-    model the row substitutes (a non-active tier's binding is never resolved, so the ledger alone
-    would leave that row contradicting config.yaml with nothing said)."""
-    notes = dict(_config_migrations())
-    if cfg is not None:
-        for key in model_family.classes():
-            declared, running = _tier_binding(cfg, key)
-            if declared and declared != running:
-                notes.setdefault(declared, running)
-    for original, replacement in notes.items():
-        _print(f"  note: '{original}' in config.yaml is running as '{replacement}'.")
-
-
 def _tier_model(cfg, key: str) -> str:
     """What a tier actually binds, read straight off the tiers mapping (dict access, never the
     dotted cfg.get path — a legacy tier name may contain a dot)."""
@@ -542,14 +497,6 @@ def _tier_model(cfg, key: str) -> str:
     return str(entry or "")
 
 
-def _config_migrations() -> dict:
-    """This session's family substitutions, so the listing never claims the file's value is
-    what is running."""
-    import config as _config
-
-    return _config.migrated_bindings()
-
-
 @command(
     "models",
     "The model page: your hardware, the qwen ladder priced against it, pick a tier / embedder.",
@@ -557,8 +504,8 @@ def _config_migrations() -> dict:
     usage="/models [list|rescan] [--session] | /models tier <name> | /models <role|all|embedder> <id> [--session]",
     details="""
 Shows the machine (chip, cores, memory, VRAM), the memory budget the model runner can address,
-and the two ladders priced against it: the six chat tiers (one tag per size, the most advanced
-of the qwen3.5-3.8 family) and the three qwen3-embedding sizes. Each row carries its weights,
+and the two ladders priced against it: the six chat tiers (one recommended tag per size, the most
+advanced of the qwen3.5-3.8 line) and the three qwen3-embedding sizes. Each row carries its weights,
 the context window this config gives it, the memory it needs at that window, whether it is
 pulled (✓), and whether it fits — with the recommendation marked ▸.
 
@@ -579,7 +526,7 @@ on every tier (it is a machine choice).
   /models list               the page only (`ls` / --check work too)
   /models rescan             probe the hardware again (it is read once at startup and cached)
   /models tier <name>        switch the tier directly
-  /models all <id>           point every role at one family tag (a hidden/superseded tag works)
+  /models all <id>           point every role at one Ollama model (any tag with native tool-calling)
   /models <role> <id>        re-point one role — tool_caller (the agent) or utility
   /models embedder <id>      switch the embedding model by name (re-embeds the corpus)
 

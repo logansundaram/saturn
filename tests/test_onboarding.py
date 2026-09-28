@@ -15,41 +15,20 @@ from config import Config
 
 def test_doctor_key_machinery_left_with_the_config_key_cut():
     """The doctor's per-key rendering (_key_line/_required_keys/_OPTIONAL_KEY_NOTES) was CUT
-    2026-07-16 with /config key — nothing can require a key while cloud is shelved and the web
-    tools are keyless, so the doctor prints one honest line instead. A resurrected helper here
+    2026-07-16 with /config key — nothing needs a key (inference is local, the web tools are
+    keyless), so the doctor prints one honest line instead. A resurrected helper here
     means the cut regressed."""
     for gone in ("_key_line", "_required_keys", "_OPTIONAL_KEY_NOTES"):
         assert not hasattr(config_cmd, gone), gone
 
 
-def test_check_models_reports_a_shelved_cloud_binding(monkeypatch):
-    """A pre-shelve config with a cloud-bound role must surface at startup as an actionable
-    problem, not as a mid-turn failure."""
-    import config as config_mod
-    from core import llms
-
-    cfg = _cfg("hybrid", {
-        "hybrid": _tier("qwen3.5:2b", tool_caller={"provider": "anthropic", "model": "claude-x"}),
-    })
-    cfg._data["tiers"]["hybrid"]["embedder"] = "tiny-embed"
-    monkeypatch.setattr(config_mod, "_config", cfg, raising=False)
-    monkeypatch.setattr(llms, "list_local_models", lambda: [])
-    monkeypatch.setattr(llms, "ollama_reachable", lambda: True)
-    problems = llms.check_models()
-    assert any("cloud model support is shelved" in p and "tool_caller" in p for p in problems)
-    assert not any("ANTHROPIC" in p for p in problems)  # no key demand for a shelved binding
-
-
 # --- doctor: tier-honesty closing line ------------------------------------------------------
-# Convention under test: config.yaml's `tiers:` mapping is declared smallest -> largest (YAML
-# mapping order is preserved), so the FIRST declared tier is the smallest. The line fires when
-# the active tier is first-declared AND more than one tier exists — declaration order, never a
-# size heuristic.
+# The line fires when the active tier is a ladder class at or below the install default AND
+# more than one tier exists; a tier named outside the ladder never fires it.
 
 _CAPS = {
     "qwen3.5:2b": {"context_window": 8192},
     "qwen3.5:9b": {"context_window": 32768},
-    "cloud": {"context_window": 200000},
 }
 
 
@@ -58,25 +37,22 @@ def _tier(model, **role_overrides):
 
     roles = {r: model for r in MODEL_ROLES}
     roles.update(role_overrides)
-    return {"provider": "ollama", "roles": roles}
+    return {"roles": roles}
 
 
 def _cfg(active, tiers):
     return Config({"active_tier": active, "tiers": tiers, "capabilities": _CAPS})
 
 
-def test_tier_honesty_fires_on_the_first_declared_preset():
-    cfg = _cfg("laptop", {"laptop": _tier("qwen3.5:2b"), "workstation": _tier("qwen3.5:9b")})
-    line = config_cmd._tier_honesty_line(cfg)
+def test_tier_honesty_line_names_the_model_and_the_upgrade_pointer():
+    from core import model_family as mf
+
+    line = config_cmd._tier_honesty_line(_cfg(mf.DEFAULT_CLASS, _ladder_tiers()))
     assert line is not None
     assert "small model tier" in line
-    assert "qwen3.5:2b" in line    # the active tier's tool_caller model, derived live
-    assert "/models" in line       # the upgrade pointer
+    assert mf.tag_for(mf.DEFAULT_CLASS) in line   # the active tier's tool_caller model, derived live
+    assert "/models" in line                      # the upgrade pointer
 
-
-# The size-class ladder made the first-declared tier `800m` while the install default is `4b`,
-# so the first-declared rule alone meant the disclosure never printed for a fresh install — the
-# exact case it exists for. Every class at or below the default fires now.
 
 def _ladder_tiers():
     from core import model_family as mf
@@ -107,38 +83,14 @@ def test_tier_honesty_silent_on_the_classes_above_the_default():
         assert config_cmd._tier_honesty_line(_cfg(key, _ladder_tiers())) is None, key
 
 
-def test_tier_honesty_silent_on_a_later_declared_tier():
-    cfg = _cfg("workstation", {"laptop": _tier("qwen3.5:2b"), "workstation": _tier("qwen3.5:9b")})
-    assert config_cmd._tier_honesty_line(cfg) is None
+def test_tier_honesty_silent_on_a_tier_named_outside_the_ladder():
+    tiers = {"laptop": _tier("qwen3.5:2b"), "workstation": _tier("qwen3.5:9b")}
+    assert config_cmd._tier_honesty_line(_cfg("laptop", tiers)) is None
+    assert config_cmd._tier_honesty_line(_cfg("workstation", tiers)) is None
 
 
 def test_tier_honesty_silent_with_a_single_preset():
     assert config_cmd._tier_honesty_line(_cfg("only", {"only": _tier("qwen3.5:2b")})) is None
-
-
-def test_tier_honesty_is_declaration_order_not_window_sums():
-    # The old heuristic summed declared context windows — orthogonal to model size: a small
-    # model with a huge window outsummed a big model with a modest one, firing the line on the
-    # wrong tier. Declaration order decides now: the FIRST tier fires even when its windows
-    # outsum the second's, and the second never fires even when its windows are smaller.
-    tiers = {"small-but-big-window": _tier("cloud"), "big-but-small-window": _tier("qwen3.5:2b")}
-    assert config_cmd._tier_honesty_line(_cfg("small-but-big-window", tiers)) is not None
-    assert config_cmd._tier_honesty_line(_cfg("big-but-small-window", tiers)) is None
-
-
-def test_tier_honesty_silent_on_a_hybrid_declared_after_the_local_preset():
-    # The hybrid preset is declared after the all-local one (bigger by convention), so only the
-    # first-declared local preset triggers the line.
-    tiers = {
-        "laptop": _tier("qwen3.5:2b"),
-        "hybrid": _tier(
-            "qwen3.5:2b",
-            tool_caller={"provider": "anthropic", "model": "cloud"},
-            utility={"provider": "anthropic", "model": "cloud"},
-        ),
-    }
-    assert config_cmd._tier_honesty_line(_cfg("hybrid", tiers)) is None
-    assert config_cmd._tier_honesty_line(_cfg("laptop", tiers)) is not None
 
 
 # --- doctor: the inline-pull offer decision -------------------------------------------------

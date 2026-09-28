@@ -69,9 +69,7 @@ def _persist_bindings(cfg, keys: list[str]) -> None:
 def _bind(cfg, target: str, model: str, *, session: bool = False) -> None:
     """Bind a role / all roles / the embedder to a local Ollama model id (a bare scalar in
     config.yaml). The change PERSISTS to config.yaml by default (a model switch should stick);
-    session=True applies it live only. A legacy {provider, model} cloud mapping on the role is
-    simply overwritten — cloud support is shelved (2026-07-03), and rebinding is how a stale
-    mapping gets fixed."""
+    session=True applies it live only."""
     from core.llms import reset_models
 
     tag = " (session only)" if session else ""
@@ -177,13 +175,6 @@ def _cost_classes(cfg) -> dict:
     """The class each tier is PRICED as: that of the model it actually runs (a tier rebound to
     another size costs what it runs, not what its name says)."""
     return {key: model_family.class_of(_tier_binding(cfg, key)[1]) for key in model_family.classes()}
-
-
-def _legacy_tiers(cfg) -> list[str]:
-    """Tier names in config.yaml that are not size classes (laptop / workstation, from before
-    the ladder). They are what `/models tier` validates against on that config, so the page
-    names them with the bind that works there instead of pretending the ladder is selectable."""
-    return [k for k in (cfg.get("tiers", {}) or {}) if k not in model_family.classes()]
 
 
 def _switch_tier(cfg, key: str, *, session: bool) -> None:
@@ -330,10 +321,6 @@ def _render_page(cfg, prof, rec, *, up: bool, have: set) -> None:
         ui.warn(f"this machine is too small for any tier ({rec.budget_gb:g} GB budget; the smallest "
                 f"wants {rec.needs[rec.size_class]:.1f} GB) — {rec.size_class} is the best effort "
                 "and will be tight")
-    legacy = _legacy_tiers(cfg)
-    if legacy:
-        ui.warn(f"legacy tiers in config.yaml: {', '.join(legacy)} — the names predate the size-class "
-                "ladder; rebind one in place with `/models all <tag>`")
 
 
 def _pick(rec, active: str) -> "list[tuple[str, str]] | None":
@@ -488,7 +475,7 @@ def _models_page(cfg, *, prompt: bool, session: bool = False, rescan: bool = Fal
 
 def _tier_model(cfg, key: str) -> str:
     """What a tier actually binds, read straight off the tiers mapping (dict access, never the
-    dotted cfg.get path — a legacy tier name may contain a dot)."""
+    dotted cfg.get path — a tier name may contain a dot)."""
     tier = (cfg.get("tiers", {}) or {}).get(key) or {}
     roles = tier.get("roles", {}) or {}
     entry = roles.get("tool_caller") or next(iter(roles.values()), None)
@@ -531,8 +518,7 @@ on every tier (it is a machine choice).
   /models embedder <id>      switch the embedding model by name (re-embeds the corpus)
 
 Every switch PERSISTS to config.yaml by default; --session applies it live only. Runs on the
-very first launch (right before /config setup). Models are local Ollama ids only — cloud
-support is shelved (2026-07-03).
+very first launch (right before /config setup). Models are Ollama ids.
 """,
 )
 def _models(ctx, args):
@@ -540,13 +526,6 @@ def _models(ctx, args):
 
     cfg = get_config()
     args, session, save = split_persist_flags(args)
-
-    # The old cross-provider grammar (--provider <p> / a bare provider as 3rd arg) left with the
-    # cloud-model shelve (2026-07-03): refuse it loudly rather than binding something surprising.
-    if any(a.lower() == "--provider" for a in args):
-        _print("  --provider was removed with the cloud-model shelve — models are local Ollama "
-               "ids only; usage: /models <role|all> <model_id> [--save]")
-        return
 
     if not args:
         _models_page(cfg, prompt=True, session=session)
@@ -599,12 +578,8 @@ def _models(ctx, args):
         _print(f"  usage: /models {role} <model_id> [--session]")
         return
     if len(args) > 2:
-        # The old bare-positional provider spelling — gone with the cloud shelve.
-        _print(f"  too many arguments — usage: /models {role} <model_id> [--session] "
-               "(the provider argument was removed with the cloud-model shelve).")
+        _print(f"  too many arguments — usage: /models {role} <model_id> [--session]")
         return
-    # A scalar bind; if the role still carried a legacy {provider, model} cloud mapping
-    # (pre-shelve config.yaml), this simply replaces it — rebinding IS the fix.
     _bind(cfg, role, args[1], session=session)
 
 

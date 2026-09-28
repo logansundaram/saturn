@@ -39,7 +39,7 @@ def test_posture_spans_default_posture_is_silent(monkeypatch):
     monkeypatch.setitem(rt, "airgap", False)
     monkeypatch.setitem(rt, "quarantine", "gate")
 
-    monkeypatch.setattr(egress, "_inference", lambda: {"all_local": True, "cloud_providers": []})
+    monkeypatch.setattr(egress, "_inference", lambda: {"all_local": True})
 
     assert receipt.posture_spans() == []
 
@@ -52,15 +52,16 @@ def test_posture_spans_loud_states_lead_and_warn(monkeypatch):
     monkeypatch.setitem(rt, "redaction", "off")
 
     monkeypatch.setattr(
-        egress, "_inference", lambda: {"all_local": False, "cloud_providers": ["anthropic"]}
+        egress, "_inference",
+        lambda: {"all_local": False, "remote_ollama": "http://10.0.0.5:11434"},
     )
 
     spans = receipt.posture_spans()
     assert spans[0] == ("⚠ GATE OFF", "risk")
     assert ("⛓ airgap", "accent") in spans
-    assert ("inference cloud: anthropic", "warn") in spans
+    assert ("inference off-machine: ollama @ http://10.0.0.5:11434", "warn") in spans
     assert ("quarantine off", "warn") in spans
-    # redaction off only matters when a cloud boundary exists to redact for — here it does
+    # redaction off only matters when a network boundary exists to redact for — here it does
     assert ("redaction off", "warn") in spans
 
 
@@ -70,7 +71,7 @@ def test_posture_spans_state_the_effective_quarantine_mode(monkeypatch):
     none' rendered calm-dim over a system actually running 'gate' is a posture it didn't read."""
     rt = _runtime(monkeypatch)
 
-    monkeypatch.setattr(egress, "_inference", lambda: {"all_local": True, "cloud_providers": []})
+    monkeypatch.setattr(egress, "_inference", lambda: {"all_local": True})
 
     monkeypatch.setitem(rt, "quarantine", "none")  # invalid → the system runs gated (= default,
     spans = receipt.posture_spans()                # so deviation-only says nothing at all)

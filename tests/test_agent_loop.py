@@ -38,8 +38,6 @@ def test_grounding_parts_treats_old_context_as_stable():
 
 def test_agent_task_is_think_off_with_payload_bound(monkeypatch):
     from core import structured
-
-    monkeypatch.setattr(structured, "_role_is_ollama", lambda role: True)
     monkeypatch.setattr(structured, "_model_tag", lambda role: "m")
     kw = structured._invoke_kwargs("tool_caller", None, 0.0)
     assert kw["reasoning"] is False and kw["options"]["num_predict"] == 4096

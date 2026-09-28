@@ -355,19 +355,16 @@ def test_bare_policy_readout_names_the_grant_lifetime(gate, ctx, capsys):
     assert "always-allow lifetime" in out and "task" in out
 
 
-def test_airgap_offmachine_warning_names_a_tier_that_exists(gate, ctx, capsys, monkeypatch):
-    """The 'switch to a local tier first' remediation named `workstation`, a preset that stopped
-    shipping with the family lock — advice that answers "unknown tier"."""
+def test_airgap_offmachine_warning_names_the_remote_roles(gate, ctx, capsys, monkeypatch):
+    """Sealing the boundary while a role runs behind a remote OLLAMA_HOST says which roles will
+    fail and how to run local."""
     import config as config_mod
     from commands import privacy as privacy_cmd
-    from core import model_family
 
     monkeypatch.setattr(config_mod, "persist", lambda key: key)
     monkeypatch.setattr(privacy_cmd, "_offmachine_roles",
-                        lambda cfg: [("synthesizer", "anthropic", "claude-x")])
+                        lambda cfg: [("tool_caller", "ollama @ http://10.0.0.5:11434", "qwen3.5:9b")])
     dispatch("/privacy airgap on", ctx)
     out = capsys.readouterr().out
 
-    assert "/models tier" in out
-    named = out.split("/models tier", 1)[1].split()[0]
-    assert named in model_family.classes(), named
+    assert "will now FAIL" in out and "tool_caller" in out and "OLLAMA_HOST" in out

@@ -3,7 +3,7 @@ Ollama-locality boundary — a remote OLLAMA_HOST is network egress, never "loca
 
 The local-inference story (posture line, /privacy) keys on
 egress.ollama_is_local(): when the Ollama endpoint is off-machine, chat models are wrapped in
-the cloud boundary proxy (redacted + ledger-recorded), embeddings go through the embeddings
+the network boundary proxy (redacted + ledger-recorded), embeddings go through the embeddings
 boundary, the air-gap refuses both, and egress._inference classifies the bindings
 "remote" so no surface can claim the words were computed on this machine.
 """
@@ -50,7 +50,7 @@ def test_inference_classifies_remote_ollama(monkeypatch):
     assert inf["all_local"] is False
     assert inf["remote_ollama"] == "http://192.168.1.50:11434"
     # No binding may read "local" when the daemon is off-machine.
-    assert all(b["locality"] in ("remote", "cloud") for b in inf["bindings"])
+    assert all(b["locality"] == "remote" for b in inf["bindings"])
     # The embedder runs through Ollama too, so it classifies remote with the rest.
     embedder = [b for b in inf["bindings"] if b["role"] == "embedder"]
     assert embedder and embedder[0]["locality"] == "remote"
@@ -72,13 +72,13 @@ def test_build_wraps_remote_ollama_only(monkeypatch):
     from core import llms
 
     monkeypatch.setenv("OLLAMA_HOST", "http://192.168.1.50:11434")
-    m = llms._build("ollama", "qwen3.5:9b")
-    assert isinstance(m, llms._CloudBoundaryModel)
+    m = llms._build("qwen3.5:9b")
+    assert isinstance(m, llms._NetworkBoundaryModel)
     assert "192.168.1.50" in m._host
 
     monkeypatch.delenv("OLLAMA_HOST", raising=False)
-    m2 = llms._build("ollama", "qwen3.5:9b")
-    assert not isinstance(m2, llms._CloudBoundaryModel)
+    m2 = llms._build("qwen3.5:9b")
+    assert not isinstance(m2, llms._NetworkBoundaryModel)
 
 
 def test_build_sends_keep_alive_from_config(monkeypatch):
@@ -91,12 +91,12 @@ def test_build_sends_keep_alive_from_config(monkeypatch):
     cfg = get_config()
     monkeypatch.setattr(cfg, "get", lambda key, default=None: {"runtime.keep_alive": "2h"}.get(key, default))
     assert cfg.keep_alive == "2h"
-    assert llms._build("ollama", "qwen3.5:9b").keep_alive == "2h"
+    assert llms._build("qwen3.5:9b").keep_alive == "2h"
     monkeypatch.setattr(cfg, "get", lambda key, default=None: {"runtime.keep_alive": -1}.get(key, default))
-    assert llms._build("ollama", "qwen3.5:9b").keep_alive == -1
+    assert llms._build("qwen3.5:9b").keep_alive == -1
     monkeypatch.setattr(cfg, "get", lambda key, default=None: {"runtime.keep_alive": None}.get(key, default))
     assert cfg.keep_alive is None
-    assert llms._build("ollama", "qwen3.5:9b").keep_alive is None   # the daemon's own default
+    assert llms._build("qwen3.5:9b").keep_alive is None   # the daemon's own default
 
 
 def test_get_model_refuses_remote_ollama_under_airgap(monkeypatch, isolated_paths):
@@ -178,7 +178,7 @@ def test_get_embeddings_unwrapped_on_loopback(monkeypatch):
     assert isinstance(llms.get_embeddings(), llms._EmbeddingsBoundary)
 
 
-# ── cloud-boundary byte accounting ──────────────────────────────────────────────────────────
+# ── network-boundary byte accounting ──────────────────────────────────────────────────────────
 
 
 def test_boundary_records_post_redaction_bytes(monkeypatch, isolated_paths):
@@ -187,7 +187,7 @@ def test_boundary_records_post_redaction_bytes(monkeypatch, isolated_paths):
     from langchain_core.messages import HumanMessage
 
     from config import get_config
-    from core.llms import _CloudBoundaryModel, _approx_bytes
+    from core.llms import _NetworkBoundaryModel, _approx_bytes
 
     rt = get_config()._data.setdefault("runtime", {})
     monkeypatch.setitem(rt, "airgap", False)
@@ -195,7 +195,7 @@ def test_boundary_records_post_redaction_bytes(monkeypatch, isolated_paths):
     secret = "sk-ant-" + "a" * 60
     msgs = [HumanMessage(content=f"please use {secret} for this")]
 
-    b = _CloudBoundaryModel(inner=object(), provider="anthropic", model="claude-x")
+    b = _NetworkBoundaryModel(inner=object(), model="qwen3.5:9b", host="ollama @ http://10.0.0.5:11434")
     mark = egress.next_seq()
     to_send = b._outgoing(msgs)
 
@@ -216,7 +216,6 @@ def test_posture_line_names_remote_endpoint(monkeypatch):
         "_inference",
         lambda: {
             "all_local": False,
-            "cloud_providers": [],
             "remote_ollama": "http://192.168.1.50:11434",
         },
     )

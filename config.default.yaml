@@ -205,12 +205,7 @@ shell:
   env_scrub: [API_KEY, SECRET, TOKEN, PASSWORD, CREDENTIAL, ANTHROPIC, OPENAI, AWS_, GITHUB_]
 
 # ---------------------------------------------------------------------------
-# Hardware-tier presets. Each maps the agent's roles -> concrete models.
-#
-# A role value is a model id served by the tier's `provider` (ollama). The mapping form
-# ({provider: <name>, model: <id>}) still parses for old configs, but CLOUD PROVIDERS ARE
-# SHELVED (2026-07-03, local-first): a non-ollama binding refuses to run with a pointer at
-# /models. The cloud-hybrid preset left with the shelve.
+# Hardware-tier presets. Each maps the agent's roles -> concrete Ollama model ids.
 #
 # Roles: tool_caller (the agent's one native tool-calling call per pass — it reasons, calls
 # tools and writes the answer), utility (cheap background tasks: history compaction, the memory
@@ -230,14 +225,12 @@ tiers:
   # key silently splits it into two segments and corrupts a role bind. The MODEL TAG below is
   # still Ollama's own "qwen3.5:0.8B", unchanged.)
   800m:
-    provider: ollama
     roles:
       tool_caller: "qwen3.5:0.8B"       # capital B — the Ollama tag is case-sensitive
       utility: "qwen3.5:0.8B"
     embedder: qwen3-embedding:8b
 
   2b:
-    provider: ollama
     roles:
       tool_caller: "qwen3.5:2b"
       utility: "qwen3.5:2b"
@@ -247,28 +240,24 @@ tiers:
   # (install.sh / install.ps1 SATURDAY_MODELS) — a fresh install sets this tier active, so a
   # mismatch breaks the first run.
   4b:
-    provider: ollama
     roles:
       tool_caller: "qwen3.5:4b"
       utility: "qwen3.5:4b"
     embedder: qwen3-embedding:8b
 
   9b:
-    provider: ollama
     roles:
       tool_caller: "qwen3.5:9b"
       utility: "qwen3.5:9b"
     embedder: qwen3-embedding:8b
 
   27b:
-    provider: ollama
     roles:
       tool_caller: "qwen3.8:27b"
       utility: "qwen3.8:27b"
     embedder: qwen3-embedding:8b
 
   35b:
-    provider: ollama
     roles:
       tool_caller: "qwen3.6:35b"
       utility: "qwen3.6:35b"

@@ -27,7 +27,6 @@ class _Stub:
 def test_warm_model_sends_one_minimal_request_at_the_configured_window(monkeypatch):
     stub = _Stub()
     monkeypatch.setattr("core.llms.get_model", lambda role: stub)
-    monkeypatch.setattr(structured, "_role_is_ollama", lambda role: True)
     assert startup.warm_model("tool_caller") is True
     assert len(stub.calls) == 1
     opts = stub.calls[0][1]["options"]
@@ -42,7 +41,6 @@ def test_warm_model_never_raises(monkeypatch):
     import diag
     monkeypatch.setattr(diag, "log", lambda s: lines.append(s))
     monkeypatch.setattr("core.llms.get_model", lambda role: _Stub(fail=True))
-    monkeypatch.setattr(structured, "_role_is_ollama", lambda role: True)
     assert startup.warm_model("tool_caller") is False
     assert any("warm-up" in l for l in lines)
 

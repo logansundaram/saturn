@@ -7,7 +7,7 @@ chokepoint every outbound network operation reports through, so "nothing leaves 
 becomes an observable fact rather than a slogan:
 
   - `record(...)`     every successful egress (a web search, a page fetch, a remote MCP call,
-                      a cloud-model invocation) appends one `EgressEvent` to a process-wide,
+                      a remote-Ollama invocation) appends one `EgressEvent` to a process-wide,
                       append-only ledger. `/privacy egress` renders it; the status bar shows a
                       live count.
   - `check(...)`      the air-gap gate. When `runtime.airgap` is on, an outbound op calls this
@@ -18,7 +18,7 @@ becomes an observable fact rather than a slogan:
 Air-gap is read live from `runtime.airgap` (toggled by `/privacy airgap`), exactly like the budget
 and auto-approve knobs — so flipping it applies to the very next op. Cloud LLM egress is enforced
 separately in `llms.get_model` (it raises rather than returning a string, since a node can't run
-without its model); the `/privacy airgap` command drops the model cache so a cached cloud model
+without its model); the `/privacy airgap` command drops the model cache so a cached remote model
 can't sneak a call through.
 
 The ledger is per-process (one Saturn session), like `budget.py` — a live boundary monitor.
@@ -296,8 +296,8 @@ def cleared_since(mark: int) -> bool:
 
 
 # ── inference-locality classifier ────────────────────────────────────────────────────────────────
-# "Where do the words come from" — local (computed on this machine) vs off-machine (a cloud
-# provider, or an Ollama daemon behind a remote OLLAMA_HOST). THE one classifier: the session
+# "Where do the words come from" — local (computed on this machine) vs off-machine (an Ollama
+# daemon behind a remote OLLAMA_HOST). THE one classifier: the session
 # posture line (receipt.posture_spans) and `/privacy` both read this — never
 # re-rolled. Lives here because locality IS an egress question and the loopback test
 # (ollama_is_local) already lives in this module.
@@ -306,8 +306,7 @@ def cleared_since(mark: int) -> bool:
 def _inference() -> dict:
     """Local-vs-off-machine binding map. 'local' means the words are computed ON THIS MACHINE: an
     Ollama binding only earns it when the endpoint is loopback — a remote OLLAMA_HOST is network
-    inference and classifies 'remote' (off-machine, like 'cloud'), reported with the endpoint so
-    the reader can see where."""
+    inference and classifies 'remote', reported with the endpoint so the reader can see where."""
     cfg = get_config()
     ollama_local = ollama_is_local()
     ollama_loc = "local" if ollama_local else "remote"
@@ -317,22 +316,13 @@ def _inference() -> dict:
             spec = cfg.model_for_role(role)
         except KeyError:
             continue
-        bindings.append({
-            "role": role,
-            "provider": spec.provider,
-            "model": spec.model,
-            "locality": ollama_loc if spec.provider == "ollama" else "cloud",
-        })
+        bindings.append({"role": role, "model": spec.model, "locality": ollama_loc})
     try:
-        bindings.append({"role": "embedder", "provider": "ollama",
-                         "model": cfg.embedder_model, "locality": ollama_loc})
+        bindings.append({"role": "embedder", "model": cfg.embedder_model, "locality": ollama_loc})
     except Exception:
         pass
-    cloud = sorted({b["provider"] for b in bindings if b["locality"] == "cloud"})
-    remote = any(b["locality"] == "remote" for b in bindings)
-    out = {"bindings": bindings, "cloud_providers": cloud,
-           "all_local": not cloud and not remote}
-    if remote:
+    out = {"bindings": bindings, "all_local": ollama_local}
+    if not ollama_local:
         out["remote_ollama"] = ollama_endpoint()
     return out
 
@@ -344,14 +334,11 @@ def remote_ollama_label(inf: dict) -> str:
 
 
 def offmachine_destinations(inf: "dict | None" = None) -> list[str]:
-    """The off-machine inference destinations as display labels: cloud providers plus a remote
-    Ollama endpoint (`remote_ollama_label`). THE one assembly of the where-list — the session
+    """The off-machine inference destinations as display labels: the remote Ollama endpoint
+    (`remote_ollama_label`) when there is one. THE one assembly of the where-list — the session
     posture line (receipt.posture_spans), /privacy's verdict, all print this, so they can never
     name different destination sets for the identical posture. Takes the classifier's dict (or
     computes it fresh); empty when everything is local."""
     if inf is None:
         inf = _inference()
-    where = list(inf.get("cloud_providers") or [])
-    if inf.get("remote_ollama"):
-        where.append(remote_ollama_label(inf))
-    return where
+    return [remote_ollama_label(inf)] if inf.get("remote_ollama") else []

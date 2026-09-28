@@ -479,7 +479,7 @@ def call_tool(server: str, tool: str, args: dict) -> str:
         gblocked = egress.check("mcp", host, f"{server}.{tool}")
         if gblocked:
             return gblocked
-        # Redaction parity with the cloud-LLM boundary (llms._CloudBoundaryModel): tool args
+        # Redaction parity with the LLM boundary (llms._NetworkBoundaryModel): tool args
         # cross the wire too. `warn` counts secret-like values into the egress event; `redact`
         # replaces them in the args actually sent. The gate may have shown the human the call,
         # but a tier relaxed via /policy risk sends without a prompt — the boundary itself can't be blind.

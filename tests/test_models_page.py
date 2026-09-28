@@ -64,10 +64,14 @@ def test_need_is_weights_plus_cache_at_the_window_plus_headroom():
     assert need_gb("27b", 131072) > need_gb("27b", 65536) > need_gb("27b", 32768)
 
 
-def test_fallback_window_matches_the_config_family_fallback():
-    import config
+def test_fallback_window_is_the_smallest_shipped_window():
+    import pathlib
 
-    assert FALLBACK_WINDOW == config.FAMILY_CONTEXT_WINDOW
+    import yaml
+
+    root = pathlib.Path(__file__).resolve().parents[1]
+    caps = yaml.safe_load((root / "config.default.yaml").read_text(encoding="utf-8"))["capabilities"]
+    assert FALLBACK_WINDOW == min(c["context_window"] for c in caps.values())
 
 
 # --- the recommendation --------------------------------------------------------------------------
@@ -249,7 +253,7 @@ def _ladder_cfg(active="4b", windows=_W, num_ctx=None, embedder="qwen3-embedding
 
     tiers, caps = {}, {}
     for key, tag in model_family.SIZE_LADDER:
-        tiers[key] = {"provider": "ollama",
+        tiers[key] = {
                       "roles": {r: tag for r in ("tool_caller", "utility")},
                       "embedder": embedder}
         if windows:
@@ -604,7 +608,7 @@ def test_an_embedder_pick_aligns_every_tier_even_when_the_active_one_already_mat
 
 def test_an_embedder_switch_never_splits_a_dotted_tier_key(env, printed):
     tiers = env["cfg"].get("tiers")
-    tiers["0.8b"] = {"provider": "ollama", "roles": {"tool_caller": "qwen3.5:0.8B"},
+    tiers["0.8b"] = {"roles": {"tool_caller": "qwen3.5:0.8B"},
                      "embedder": "qwen3-embedding:8b"}
     env["pick"] = "8"
     env["answer"] = "y"
@@ -665,7 +669,7 @@ def test_a_config_without_the_recommended_tier_is_told_so(env, printed):
     from config import Config
 
     env["cfg"] = Config({"active_tier": "4b", "tiers": {
-        "4b": {"provider": "ollama", "roles": {"tool_caller": "qwen3.5:4b"},
+        "4b": {"roles": {"tool_caller": "qwen3.5:4b"},
                "embedder": "qwen3-embedding:8b"}}, "capabilities": {}})
     _run()
     assert env["cfg"].active_tier == "4b"

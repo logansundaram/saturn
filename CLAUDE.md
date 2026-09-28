@@ -111,8 +111,8 @@ When slicing conversation history, use `core.state.is_turn_start` — a mid-turn
 
 Code references model **roles** (`tool_caller` = the agent's call, `utility` = background work) via
 `core/llms.get_model(role)`; never name a model in graph code. Roles resolve through `active_tier` →
-`tiers` in `config.yaml`. Ollama is the only provider; cloud bindings refuse to build (shelved
-2026-07-03, reintroduction seam documented in `core/llms.py`). The qwen3.5/3.6/3.8 size ladder in
+`tiers` in `config.yaml`. Ollama is the only backend (cloud providers were cut 2026-09-27; a remote
+`OLLAMA_HOST` is the one network boundary, wrapped in `core/llms.py`). The qwen3.5/3.6/3.8 size ladder in
 `core/model_family.py` is the recommended default per size, not a gate: any Ollama tool-calling
 model binds.
 

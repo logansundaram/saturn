@@ -145,7 +145,7 @@ every check in the agent node. Note: `nodes/tools.py` is the *tool-execution nod
 |---|---|
 | `policy.py` | THE gate policy object. `approves(name, risk, args)` is the single question the approval node asks; `/policy risk`·`allow`·`open` and `--yolo` are all views of it. Durable state in `database/permissions.json`. |
 | `egress.py` | The network chokepoint: in-memory egress ledger (every exit calls `check` then `record`), the air-gap gate, and the inference-locality classifier (`ollama_is_local`). |
-| `redaction.py` | Secret stripping/warning at the cloud boundary (key patterns, JWTs, private keys); `scan_args` backs the gate's secret warning. |
+| `redaction.py` | Secret stripping/warning at the network boundary (a remote `OLLAMA_HOST`, MCP args) (key patterns, JWTs, private keys); `scan_args` backs the gate's secret warning. |
 | `quarantine.py` | Prompt-injection quarantine: scan untrusted observations, fence instruction-shaped content as data, escalate the next tool batch to the gate. Also screens corpus/attachment admission. |
 | `receipt.py` | The ambient surfaces: per-answer trust receipt spans, the session posture line, one-time discovery hints. |
 

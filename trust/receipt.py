@@ -178,15 +178,10 @@ def posture_spans() -> list[tuple[str, str]]:
         inf = _inference()
         all_local = bool(inf.get("all_local"))
         if not all_local:
-            if inf.get("remote_ollama"):
-                # A remote OLLAMA_HOST: the words come from another machine even though the
-                # provider says "ollama" — name the endpoint, never let it read as local.
-                spans.append(
-                    (f"inference off-machine: {', '.join(offmachine_destinations(inf))}", "warn")
-                )
-            else:
-                cloud = ", ".join(offmachine_destinations(inf)) or "cloud"
-                spans.append((f"inference cloud: {cloud}", "warn"))
+            # A remote OLLAMA_HOST: the words come from another machine — name the endpoint,
+            # never let it read as local.
+            where = ", ".join(offmachine_destinations(inf)) or "remote"
+            spans.append((f"inference off-machine: {where}", "warn"))
     except Exception:
         pass
 

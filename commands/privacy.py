@@ -16,12 +16,12 @@ One front door for the whole network boundary. Bare /privacy answers "what can l
 machine right now?"; the subcommands are its verifiable companions — what actually left and
 the seal:
 
-  /privacy                 the posture readout: which model serves each role (local vs cloud),
+  /privacy                 the posture readout: which model serves each role (local vs remote),
                            what the web tools send out, where your data lives on disk. The
                            privacy claim is meant to be checked, not believed.
 
   /privacy egress          the ledger: what ACTUALLY left this session — every web search, page
-                           fetch, remote MCP call, and cloud-model invocation, with
+                           fetch, remote MCP call, and remote-Ollama invocation, with
                            channel/host/bytes, plus every attempt BLOCKED by air-gap. Pair it
                            with a network monitor and the two agree.
     /privacy egress 20       just the last 20 events
@@ -29,7 +29,7 @@ the seal:
 
   /privacy airgap          seal the boundary. With no argument, prints the enforcement posture
                            (what is open vs sealed right now). When ON: web tools refuse, remote
-                           MCP calls refuse, and a cloud-bound role refuses to run.
+                           MCP calls refuse, and a remote-Ollama role refuses to run.
     /privacy airgap on|off   set; add --save to persist to config.yaml (`--save` with no value
                              persists the CURRENT setting without changing it)
 
@@ -187,7 +187,7 @@ def _egress(ctx, args):
             _print("  shown here.")
         else:
             ui.section("egress", "nothing has left this machine this session" + airgap)
-            _print("  the boundary has stayed closed — no web, http, MCP, or cloud-model egress.")
+            _print("  the boundary has stayed closed — no web, http, MCP, or remote-model egress.")
         return
 
     hosts = s["hosts"]
@@ -256,7 +256,7 @@ def _airgap(ctx, args):
         return
 
     cfg.set("runtime.airgap", new)
-    # Drop the model cache so a cloud model built while air-gap was OFF can't keep serving calls —
+    # Drop the model cache so a remote model built while air-gap was OFF can't keep serving calls —
     # the next get_model rebuild re-checks the gate and refuses. Web tools / MCP check the gate live
     # on every call, so they need nothing here.
     try:
@@ -282,10 +282,8 @@ def _airgap(ctx, args):
         if offmachine:
             roles = ", ".join(f"{r} ({p}:{m})" for r, p, m in offmachine)
             _print(f"  ⚠  off-machine role(s) will now FAIL: {roles}")
-            from core import model_family
-
-            _print("     switch to a local tier first:  /models tier "
-                   f"{model_family.DEFAULT_CLASS}   (/models tier lists them)")
+            _print("     point OLLAMA_HOST at this machine (or unset it) and restart to run "
+                   "local.")
     else:
         _print("  air-gap off — network access restored.")
     if save:
@@ -299,25 +297,18 @@ def _locality_cell(b: dict, inf: dict, ui):
 
     if b["locality"] == "local":
         return ("local", ui.risk_style("read_only"))
-    if b["locality"] == "remote":
-        return (f"remote — {remote_ollama_label(inf)}", ui.risk_style("side_effecting"))
-    return (f"cloud — {b['provider']}", ui.risk_style("side_effecting"))
+    return (f"remote — {remote_ollama_label(inf)}", ui.risk_style("side_effecting"))
 
 
 def _offmachine_roles(cfg):
-    """(role, where, model) for every role whose inference LEAVES this machine — cloud-bound
-    roles and Ollama roles behind a remote OLLAMA_HOST (egress._inference, the one locality
-    classifier; the endpoint label via remote_ollama_label, the one spelling)."""
+    """(role, where, model) for every role whose inference LEAVES this machine — roles behind
+    a remote OLLAMA_HOST (egress._inference, the one locality classifier; the endpoint label via
+    remote_ollama_label, the one spelling)."""
     from trust.egress import _inference, remote_ollama_label
 
     inf = _inference()
-    out = []
-    for b in inf["bindings"]:
-        if b["locality"] == "cloud":
-            out.append((b["role"], b["provider"], b["model"]))
-        elif b["locality"] == "remote":
-            out.append((b["role"], remote_ollama_label(inf), b["model"]))
-    return out
+    return [(b["role"], remote_ollama_label(inf), b["model"])
+            for b in inf["bindings"] if b["locality"] == "remote"]
 
 
 def _show_posture(ctx, cfg, ui, egress):
@@ -343,8 +334,7 @@ def _show_posture(ctx, cfg, ui, egress):
         if b["locality"] == "local":
             rows.append((b["role"], b["model"], ("local", ui.risk_style("read_only"))))
         else:
-            where = (f"remote — {remote_ollama_label(inf)}"
-                     if b["locality"] == "remote" else f"cloud — {b['provider']}")
+            where = f"remote — {remote_ollama_label(inf)}"
             label = f"BLOCKED — {where}" if on else where
             rows.append((b["role"], b["model"], (label, ui.risk_style("destructive"))))
     _print("  inference (off-machine roles refuse to run under air-gap)")
@@ -355,7 +345,7 @@ def _show_posture(ctx, cfg, ui, egress):
         [
             ("web tools", "web_search / web_extract", sealed()),
             ("remote MCP", "http/sse server calls (stdio = local process)", sealed()),
-            ("off-machine models", "prompts + context to a cloud provider or remote Ollama",
+            ("off-machine models", "prompts + context to a remote Ollama",
              ("sealed", ui.risk_style("read_only")) if (on or not offmachine)
              else ("open", ui.risk_style("destructive"))),
         ]
@@ -368,9 +358,9 @@ def _show_posture(ctx, cfg, ui, egress):
         _print("  seal it with  /privacy airgap on   (then re-run /privacy airgap to verify).")
 
 
-# (/privacy redact — the cloud-boundary secret-stripper front end — was CUT 2026-07-16: dormant
-# since the cloud shelve, it configured a boundary that exists only behind a remote OLLAMA_HOST.
-# The MACHINERY stays: trust/redaction.py still guards the remote-Ollama/cloud seam and the MCP
+# (/privacy redact — the secret-stripper front end — was CUT 2026-07-16: dormant, it configured
+# a boundary that exists only behind a remote OLLAMA_HOST.
+# The MACHINERY stays: trust/redaction.py still guards the remote-Ollama seam and the MCP
 # http/sse boundary, and the gate's secret-arg warning still uses redaction.scan_args. The mode
 # remains reachable as the config escape hatch: /config runtime.redaction <off|warn|redact> —
 # a trust key, so it persists only with an explicit --save.)

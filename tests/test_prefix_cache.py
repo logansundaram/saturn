@@ -107,7 +107,6 @@ def test_prime_sends_one_boundary_request_per_lineage(monkeypatch):
 
     model = M()
     monkeypatch.setattr("core.llms.get_model", lambda role: model)
-    monkeypatch.setattr(st, "_role_is_ollama", lambda role: True)
     monkeypatch.setattr(prime, "ENABLED", True)
     n = prime.prime("STABLE")
     assert n == 1 == len(model.calls) == model.bound
@@ -128,7 +127,6 @@ def test_prime_never_raises_and_reports_zero_when_the_daemon_is_down(monkeypatch
             raise RuntimeError("connection refused")
 
     monkeypatch.setattr("core.llms.get_model", lambda role: Down())
-    monkeypatch.setattr(st, "_role_is_ollama", lambda role: True)
     monkeypatch.setattr(prime, "ENABLED", True)
     assert prime.prime("STABLE") == 0
 
@@ -186,7 +184,6 @@ def test_prime_stops_between_lineages_when_a_turn_starts(monkeypatch):
 
     model = M()
     monkeypatch.setattr("core.llms.get_model", lambda role: model)
-    monkeypatch.setattr(st, "_role_is_ollama", lambda role: True)
     monkeypatch.setattr(prime, "ENABLED", True)
     try:
         assert prime.prime("STABLE") == 1 == model.calls

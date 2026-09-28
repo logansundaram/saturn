@@ -5,8 +5,8 @@ muscle memory transfers, so the audit's inversion ('/memory remove 3' failing wh
 x' worked) is gone. Plus /models: every binding form PERSISTS the SAME dotted key(s) the session
 edit sets via config.persist BY DEFAULT (settings should survive a restart), while --session opts
 a single edit out. The second audit pass added LIST_VERBS (`list`/`ls`, the `git stash
-list`/`docker ls` spelling) accepted identically by every enumerating command, /models --provider
-(the named-flag form of the bare positional), /mcp erroring on unknown subcommands, and /config
+list`/`docker ls` spelling) accepted identically by every enumerating command, /mcp erroring
+on unknown subcommands, and /config
 riding the shared split_persist_flags grammar (bare 'save' is data — refused with a pointer, never
 silently stored). Offline: the RAG drop is
 stubbed, memory/sessions ride isolated_paths, .env is a tmp file, and config.persist is recorded
@@ -325,59 +325,6 @@ def test_mcp_unknown_subcommand_errors_instead_of_silent_status(ctx, capsys):
     _mcp(ctx, ["relod"])  # the typo'd reload must not silently render status as if it reloaded
     out = _out(capsys)
     assert "unknown subcommand" in out and "/mcp [list | reload]" in out
-
-
-# --- /models: local-only binds (the --provider grammar left with the cloud shelve) -----------
-
-def test_models_provider_flag_refused_everywhere(ctx, capsys, monkeypatch, models_env,
-                                                 recording_persist):
-    """Cloud model support is shelved (2026-07-03) and the --provider grammar was swept with it:
-    the flag refuses loudly in ANY position/form, and nothing mutates."""
-    from config import get_config
-
-    cfg = get_config()
-    roles = cfg._data["tiers"][cfg.active_tier]["roles"]
-    monkeypatch.setitem(roles, "tool_caller", roles["tool_caller"])
-    before = cfg.get(f"tiers.{cfg.active_tier}.roles.tool_caller")
-
-    for form in (["tool_caller", "claude-x", "--provider", "anthropic"],
-                 ["tool_caller", "claude-x", "--provider"],
-                 ["tier", cfg.active_tier, "--provider", "anthropic"]):
-        _models(ctx, list(form))
-        out = _out(capsys)
-        assert "--provider was removed" in out and "local Ollama" in out
-    assert cfg.get(f"tiers.{cfg.active_tier}.roles.tool_caller") == before  # nothing bound
-    assert recording_persist == []
-
-
-def test_models_bare_positional_provider_refused(ctx, capsys, monkeypatch, models_env,
-                                                 recording_persist):
-    """The legacy bare 3rd-arg provider spelling is gone too — too many arguments, no bind."""
-    from config import get_config
-
-    cfg = get_config()
-    roles = cfg._data["tiers"][cfg.active_tier]["roles"]
-    monkeypatch.setitem(roles, "tool_caller", roles["tool_caller"])
-    before = cfg.get(f"tiers.{cfg.active_tier}.roles.tool_caller")
-
-    _models(ctx, ["tool_caller", "claude-x", "anthropic"])
-    out = _out(capsys)
-    assert "too many arguments" in out
-    assert cfg.get(f"tiers.{cfg.active_tier}.roles.tool_caller") == before
-
-
-def test_models_scalar_bind_replaces_a_legacy_cloud_mapping(ctx, capsys, monkeypatch, models_env,
-                                                            recording_persist):
-    """Rebinding a role that still carries a pre-shelve {provider, model} cloud mapping writes a
-    plain local scalar over it — rebinding IS how a stale mapping gets fixed."""
-    from config import get_config
-
-    cfg = get_config()
-    roles = cfg._data["tiers"][cfg.active_tier]["roles"]
-    monkeypatch.setitem(roles, "tool_caller", {"provider": "anthropic", "model": "claude-x"})
-
-    _models(ctx, ["tool_caller", "qwen3.5:9b"])
-    assert cfg.get(f"tiers.{cfg.active_tier}.roles.tool_caller") == "qwen3.5:9b"
 
 
 # --- /config rides the shared persist grammar (split_persist_flags) ---------------------------

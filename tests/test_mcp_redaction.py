@@ -1,7 +1,7 @@
 """
-Redaction parity at the MCP boundary — remote tool args are scanned like cloud-LLM messages.
+Redaction parity at the MCP boundary — remote tool args are scanned like remote-LLM messages.
 
-The cloud-LLM boundary (llms._CloudBoundaryModel) has had warn/redact for a while; MCP tool args
+The LLM boundary (llms._NetworkBoundaryModel) has had warn/redact for a while; MCP tool args
 crossed the wire blind. call_tool now scans outgoing args for http/sse servers: `warn` counts
 secret-like values into the egress event, `redact` replaces them in the args actually sent.
 stdio servers are local child processes — no boundary, no scan.

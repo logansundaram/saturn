@@ -87,7 +87,7 @@ def run_repl() -> None:
     _setup_sentinel = get_config().path("database") / ".setup_done"
     _first_run = not _setup_sentinel.exists()
 
-    # Health-check the active tier up front: a down daemon / un-pulled model / missing cloud key is
+    # Health-check the active tier up front: a down daemon / un-pulled model is
     # surfaced now with an actionable fix, rather than as a generic turn failure on the first query.
     # Non-fatal — the REPL still starts (commands work; an affected turn fails cleanly).
     if not _first_run:

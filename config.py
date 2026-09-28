@@ -3,8 +3,8 @@ Runtime configuration for Saturday.ai (Phase 3).
 
 Loads `config.yaml` once and exposes it through a small typed accessor so the rest of the
 codebase never hard-codes a model id or a filesystem path again. The agent references model
-*roles* (tool_caller, utility) and the factory in `llms.py`
-resolves each role to a concrete `(provider, model)` against the active hardware tier.
+*roles* (tool_caller, utility) and the factory in `llms.py` resolves each role to a concrete
+Ollama model id against the active hardware tier.
 
 Nothing here imports from the rest of the project, so it is safe to import from anywhere
 (no circular-import risk).
@@ -117,19 +117,10 @@ _REPO_ROOT = _CONFIG_PATH.parent
 # 2026-09-27; a config.yaml that still lists them is read fine — the keys are simply unused.)
 MODEL_ROLES = ("tool_caller", "utility")
 
-# The fallback window pair for a ladder tag a user's older config has no `capabilities:` entry
-# for (see capability_of): the SMALLEST runtime window the ladder ships in config.default.yaml
-# (the windows step up the ladder — 32k/64k/128k — and a fallback must never over-allocate) and
-# the shared architectural ceiling. Kept in step with the template by tests/test_model_family.py.
-FAMILY_CONTEXT_WINDOW = 32768
-FAMILY_MAX_CONTEXT_WINDOW = 262144
-
-
 @dataclass(frozen=True)
 class ModelSpec:
-    """A resolved role binding: which provider serves which model id."""
+    """A resolved role binding: the Ollama model id serving a role."""
 
-    provider: str
     model: str
 
 
@@ -191,8 +182,8 @@ class Config:
         return tier
 
     def model_for_role(self, role: str) -> ModelSpec:
-        """Resolve a role to a concrete (provider, model). Falls back to the `utility`
-        role, then to the first role defined, so a missing role never crashes the graph."""
+        """Resolve a role to a concrete model id. Falls back to the `utility` role, then to
+        the first role defined, so a missing role never crashes the graph."""
         tier = self._tier()
         roles = tier.get("roles", {})
         entry = roles.get(role) or roles.get("utility")
@@ -200,17 +191,12 @@ class Config:
             entry = next(iter(roles.values()))
         if entry is None:
             raise KeyError(f"tier '{self.active_tier}' defines no roles")
-
-        default_provider = tier.get("provider", "ollama")
         if isinstance(entry, dict):
-            model = entry.get("model")
-            if not model:
-                raise KeyError(
-                    f"role '{role}' on tier '{self.active_tier}' is a mapping without a "
-                    f"'model' key: {entry!r}"
-                )
-            return ModelSpec(provider=entry.get("provider", default_provider), model=model)
-        return ModelSpec(provider=default_provider, model=str(entry))
+            raise KeyError(
+                f"role '{role}' on tier '{self.active_tier}' is a mapping ({entry!r}) — bind a "
+                f"bare Ollama model id (the {{provider, model}} form left with cloud support)"
+            )
+        return ModelSpec(model=str(entry))
 
     @property
     def embedder_model(self) -> str:
@@ -230,13 +216,6 @@ class Config:
         caps = self._data.get("capabilities", {})
         spec = caps.get(model)
         if not spec:
-            if model_family.is_ladder_tag(model):
-                # A config predating the ladder has no `capabilities:` entry for a ladder tag, and
-                # the conservative default would quarter its window to 8192 with nothing said
-                # (and render "8192 / 0" in /models tier).
-                # Every ladder tag ships the same pair in config.default.yaml — use it.
-                return Capability(context_window=FAMILY_CONTEXT_WINDOW,
-                                  max_context_window=FAMILY_MAX_CONTEXT_WINDOW)
             return Capability()  # conservative defaults
         cw = spec.get("context_window", 8192)
         return Capability(

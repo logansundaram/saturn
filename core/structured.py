@@ -21,9 +21,7 @@ defensive plumbing around a judgment call:
     aborting the turn.
 
 Every call goes through `core.llms.get_model(role)`, so the trust boundary is preserved: a
-cloud-bound (or remote-Ollama) role is redacted + recorded to the egress ledger, and the air-gap
-guard applies. Constrained decoding (`format=`) and per-attempt temperature are passed only to
-Ollama-served roles — other providers get the shape hint + salvage path alone.
+remote-Ollama role is redacted + recorded to the egress ledger, and the air-gap guard applies.
 """
 
 from __future__ import annotations
@@ -57,13 +55,6 @@ def _extract_json(text: str) -> str:
     return text[start : end + 1] if start != -1 and end > start else text
 
 
-def _role_is_ollama(role: str) -> bool:
-    try:
-        return get_config().model_for_role(role).provider == "ollama"
-    except Exception:
-        return False
-
-
 def _model_tag(role: str) -> str:
     """The concrete model id serving `role`, '' when the binding can't be read."""
     try:
@@ -75,8 +66,7 @@ def _model_tag(role: str) -> str:
 def _invoke_kwargs(role: str, fmt: "dict | None", temp: float, task: "str | None" = None, *,
                    repetition: bool = False) -> dict:
     """Constrained decoding + per-attempt temperature + the per-TASK decisions ride the invoke
-    kwargs for Ollama roles (ChatOllama forwards `format`/`options`/`reasoning` to the daemon);
-    other providers take none — they get the shape hint + salvage parsing alone.
+    kwargs (ChatOllama forwards `format`/`options`/`reasoning` to the daemon).
 
     The options dict must carry `num_ctx` too: langchain_ollama treats an invoke-time `options`
     as a FULL REPLACEMENT for the constructor-built options (which is the only place the
@@ -86,8 +76,6 @@ def _invoke_kwargs(role: str, fmt: "dict | None", temp: float, task: "str | None
     EXPLICITLY OFF for every task — never the model's default — unless the daemon already
     rejected the flag for this tag (`llms._NO_THINK_SUPPORT`). `repetition=True` adds the
     retry-only repeat penalty after a degenerate draw."""
-    if not _role_is_ollama(role):
-        return {}
     from core import llms  # lazy: structured is imported by the registry's users
 
     task = task or _ROLE_TASK.get(role)

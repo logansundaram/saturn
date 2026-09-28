@@ -75,7 +75,7 @@ class TestConfigResolution:
 
         return Config({
             "active_tier": "t",
-            "tiers": {"t": {"provider": "ollama", "roles": {
+            "tiers": {"t": {"roles": {
                 "tool_caller": synth, "utility": synth,
             }, "embedder": "qwen3-embedding:8b"}},
             "capabilities": {},
@@ -88,20 +88,19 @@ class TestConfigResolution:
     def test_an_off_ladder_binding_passes_through_untouched(self):
         spec = self._cfg("gemma4:e4b").model_for_role("tool_caller")
         assert spec.model == "gemma4:e4b"
-        assert spec.provider == "ollama"
 
-    def test_a_non_ollama_binding_is_left_for_the_cloud_shelve_refusal(self):
+    def test_a_provider_mapping_from_a_pre_cut_config_refuses_actionably(self):
+        import pytest
         from config import Config
 
         cfg = Config({
             "active_tier": "t",
-            "tiers": {"t": {"provider": "ollama", "roles": {
+            "tiers": {"t": {"roles": {
                 "tool_caller": {"provider": "anthropic", "model": "claude-sonnet-4"},
             }}},
         })
-        spec = cfg.model_for_role("tool_caller")
-        assert spec.provider == "anthropic"
-        assert spec.model == "claude-sonnet-4"
+        with pytest.raises(KeyError, match="bare Ollama model id"):
+            cfg.model_for_role("tool_caller")
 
     def test_the_embedder_is_exempt(self):
         cfg = self._cfg()
@@ -114,7 +113,7 @@ class TestConfigResolution:
         from config import Config, MODEL_ROLES
         from core import model_family as mf
 
-        cfg = Config({"tiers": {key: {"provider": "ollama",
+        cfg = Config({"tiers": {key: {
                                       "roles": {r: tag for r in MODEL_ROLES},
                                       "embedder": "qwen3-embedding:8b"}
                                 for key, tag in mf.SIZE_LADDER}})
@@ -180,38 +179,6 @@ class TestShippedConfigMatchesTheLadder:
         caps = self._template()["capabilities"]
         for _key, tag in mf.SIZE_LADDER:
             assert tag in caps, tag
-
-    def test_the_family_capability_fallback_matches_the_template(self):
-        """A config predating the family lock has no capabilities entry for the tag a legacy
-        binding is SUBSTITUTED with; the generic default would quarter its window to 8192,
-        undisclosed. The fallback constants must therefore stay equal to what ships."""
-        import config
-
-        caps = self._template()["capabilities"]
-        # The runtime windows step up the ladder (2026-09-01); the fallback is the SMALLEST
-        # shipped window, so a tag with no entry is never handed more cache than any tier ships.
-        shipped = [caps[tag]["context_window"] for _key, tag in self._ladder()]
-        assert config.FAMILY_CONTEXT_WINDOW == min(shipped)
-        for _key, tag in self._ladder():
-            assert caps[tag]["max_context_window"] == config.FAMILY_MAX_CONTEXT_WINDOW, tag
-
-    def test_a_ladder_tag_with_no_capabilities_entry_gets_the_family_defaults(self):
-        import config
-        from config import Config
-        from core import model_family as mf
-
-        cfg = Config({"capabilities": {}})              # an upgrader's config.yaml
-        cap = cfg.capability_of(mf.tag_for(mf.DEFAULT_CLASS))
-        assert cap.context_window == config.FAMILY_CONTEXT_WINDOW
-        assert cap.max_context_window == config.FAMILY_MAX_CONTEXT_WINDOW
-        # Everything else keeps the conservative default — this is a family fallback, not a
-        # blanket one.
-        assert cfg.capability_of("something-else:7b").context_window == 8192
-
-    def _ladder(self):
-        from core import model_family as mf
-
-        return mf.SIZE_LADDER
 
     def test_capabilities_keep_the_runtime_window_off_the_architectural_max(self):
         # Collapsing these is a latent OOM: 262144 num_ctx exhausts consumer VRAM. The runtime

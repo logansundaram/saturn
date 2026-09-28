@@ -33,6 +33,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
   per-model confidence calibration; without it, any Ollama model with native tool-calling
   binds. The size ladder stays as the recommended default per size and `/models` prices an
   off-ladder tag by the size in its name.
+- **Windows.** The daily-life tools are AppleScript and notifications are launchd, so Windows
+  was a file-and-shell agent with none of the product. `install.ps1`, `saturn.cmd`, the
+  PowerShell shell branch and the Windows console readers are gone; CI runs macOS and Linux.
+- **The cloud-provider abstraction and the pre-ladder scaffolding.** A role binds a bare
+  Ollama model id; the `{provider, model}` mapping form, the shelved-cloud refusals, the
+  `--provider` grammar, the legacy-tier (`laptop` / `workstation`) advice and the pre-ladder
+  capability fallback are gone. A remote `OLLAMA_HOST` is still the one network boundary and
+  still shows on the posture line, in `/privacy` and on the ledger.
 
 ### v2 — one loop replaces the engine (2026-09-27)
 

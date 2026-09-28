@@ -2,10 +2,9 @@
 Outbound redaction — strip secrets from text before it leaves the machine to an off-machine model.
 
 An off-machine inference endpoint is the credibility gap in a privacy-first agent: the moment
-prompts + context cross the network, the boundary needs a guard. Today that boundary is a REMOTE
-Ollama (`OLLAMA_HOST` off-machine) plus the http/sse MCP arg scan and the gate's secret warning —
-cloud providers are SHELVED (2026-07-03), and when they return this module guards them again
-unchanged. It scans outgoing message content for things that should never leave — API keys, bearer
+prompts + context cross the network, the boundary needs a guard. That boundary is a REMOTE
+Ollama (`OLLAMA_HOST` off-machine) plus the http/sse MCP arg scan and the gate's secret warning.
+It scans outgoing message content for things that should never leave — API keys, bearer
 tokens, private-key blocks, JWTs, emails — and, depending on `runtime.redaction`, either reports
 them or replaces them with a `[REDACTED:<kind>]` placeholder before the send.
 
@@ -15,12 +14,11 @@ them or replaces them with a `[REDACTED:<kind>]` placeholder before the send.
           model sees.
   redact  scan and REPLACE each match with a placeholder, then send the redacted text.
 
-Wired in `llms.py`: every cloud model is wrapped so `process_messages` runs at the boundary, the
-ONE place all nodes funnel through (so a secret can't leak via the agent or a utility call
-independently). Local (Ollama) models are never wrapped — there is no boundary to
-guard. The mode is configured via `/config runtime.redaction` (a trust key — persists only with
-an explicit --save); the `/privacy redact` command front end was CUT 2026-07-16 as dormant since
-the cloud shelve.
+Wired in `llms.py`: a remote-Ollama model is wrapped so `process_messages` runs at the boundary,
+the ONE place all nodes funnel through (so a secret can't leak via the agent or a utility call
+independently). Loopback models are never wrapped — there is no boundary to guard. The mode is
+configured via `/config runtime.redaction` (a trust key — persists only with an explicit
+--save); the `/privacy redact` command front end was CUT 2026-07-16 as dormant.
 
 Patterns are deliberately conservative (high-signal prefixes, length floors) to avoid false
 positives that would mangle a legitimate prompt — this strips obvious secrets, it is not a DLP
@@ -114,7 +112,7 @@ def scan_args(args) -> list[Finding]:
 
 def redact(text: str) -> "tuple[str, list[Finding]]":
     """Replace every secret-like span in `text` with `[REDACTED:<kind>]`. Returns the new text and
-    the findings. Applied in `redact` mode at the cloud boundary."""
+    the findings. Applied in `redact` mode at the network boundary."""
     if not text:
         return text, []
     findings: list[Finding] = []
@@ -132,7 +130,7 @@ def redact(text: str) -> "tuple[str, list[Finding]]":
 
 
 def process_messages(messages: list) -> "tuple[list, int]":
-    """Apply the active mode to a list of LangChain messages bound for a cloud model.
+    """Apply the active mode to a list of LangChain messages bound for a remote model.
 
     Returns (messages_to_send, n_findings). In `off` it's a pure pass-through (0). In `warn` it
     scans every string content and returns the COUNT but the original messages (visibility only).

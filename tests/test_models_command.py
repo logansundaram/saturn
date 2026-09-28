@@ -1,4 +1,4 @@
-"""/models — binding, the legacy-tier advice, and the /config door."""
+"""/models — binding, and the /config door."""
 
 import pytest
 
@@ -17,7 +17,7 @@ def cfg():
 
     return Config({
         "active_tier": "4b",
-        "tiers": {"4b": {"provider": "ollama", "roles": {
+        "tiers": {"4b": {"roles": {
             "tool_caller": "qwen3.5:4b", "utility": "qwen3.5:4b",
         }, "embedder": "qwen3-embedding:8b"}},
         "capabilities": {},
@@ -44,63 +44,6 @@ class TestBind:
         runtime._bind(cfg, "embedder", "qwen3-embedding:4b")
 
         assert cfg.get("tiers.4b.embedder") == "qwen3-embedding:4b"
-
-
-def _template_config():
-    """A Config over the TRACKED template, never the developer's untracked config.yaml — the
-    metrics tests assert exact windows, which a local edit would otherwise decide."""
-    import pathlib
-
-    import yaml
-
-    from config import Config
-
-    root = pathlib.Path(__file__).resolve().parents[1]
-    return Config(yaml.safe_load((root / "config.default.yaml").read_text(encoding="utf-8")))
-
-
-def _legacy_config():
-    """What an upgrading user's config.yaml looks like: tier names from before the size ladder,
-    bound to models that no longer exist in the family."""
-    from config import Config, MODEL_ROLES
-
-    def tier(model):
-        return {"provider": "ollama", "roles": {r: model for r in MODEL_ROLES},
-                "embedder": "qwen3-embedding:8b"}
-
-    return Config({
-        "active_tier": "workstation",
-        "tiers": {"laptop": tier("gemma4:e4b"), "workstation": tier("gemma4:31b")},
-        "capabilities": {},
-    })
-
-
-class TestLegacyTierAdviceIsActionable:
-    """An upgrading user whose config.yaml still has laptop/workstation: the listing renders the
-    ladder rows, none of which /models tier would accept on that config, so the page must name
-    the bind that does work there."""
-
-    def test_the_page_names_the_legacy_tiers_and_the_bind_that_works(self, printed, monkeypatch):
-        from commands import runtime
-        from core.hardware import HardwareProfile
-
-        cfg = _legacy_config()
-        notes = []
-        monkeypatch.setattr("tui.ui.section", lambda *a, **k: None)
-        monkeypatch.setattr("tui.ui.table", lambda *a, **k: None)
-        monkeypatch.setattr("tui.ui.note", lambda m: notes.append(m))
-        monkeypatch.setattr("tui.ui.warn", lambda m: notes.append(m))
-        monkeypatch.setattr(runtime, "_probe",
-                            lambda: HardwareProfile("Darwin", "arm64", "Apple M2", 8, 16.0, "", None, "apple"))
-        monkeypatch.setattr("core.llms.ollama_reachable", lambda: False)
-
-        runtime._models_page(cfg, prompt=False)
-
-        blob = "\n".join(notes)
-        assert "laptop" in blob and "workstation" in blob
-        assert "/models all <tag>" in blob                 # the bind that works on this config
-        # …and what selecting the legacy tier would actually run, not what the file says
-        assert runtime._tier_binding(cfg, "27b") == ("", "qwen3.8:27b")
 
 
 class TestConfigDoorBinds:

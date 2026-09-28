@@ -323,9 +323,8 @@ def _persist_key(cfg, key: str) -> None:
 
 
 # (The doctor's api-key machinery — _OPTIONAL_KEY_NOTES, _required_keys, _key_line — left with
-# the /config key cut, 2026-07-16: nothing can require a key while cloud is shelved and the web
-# tools are keyless, so the doctor states that in one line below. When a keyed provider returns,
-# rebuild the required-key derivation with it.)
+# the /config key cut, 2026-07-16: nothing needs a key — inference is local and the web tools
+# are keyless — so the doctor states that in one line below.)
 
 
 def _small_classes() -> tuple:
@@ -345,23 +344,12 @@ def _tier_honesty_line(cfg) -> "str | None":
     structured plans and tool calls, and the first screen should say so instead of leaving it to
     be discovered.
 
-    Fires for any size class at or below the install DEFAULT (2026-08-16). It used to fire only
-    for the first-declared tier, which the size-class ladder made `800m` — so the line never
-    printed for a fresh install, whose default is `4b`: a dead surface guarding the exact case
-    it exists for. A legacy (non-ladder) tier name keeps the older declaration-order rule:
-    config.yaml's `tiers:` mapping is written smallest -> largest and YAML preserves order, so
-    the FIRST declared tier IS the smallest — never a size heuristic (summing context windows
-    ranks capacity, not model size: a 4B/128k model outsums a 32B/32k one). None when only one
-    tier exists (nothing to upgrade to)."""
+    Fires for any size class at or below the install DEFAULT (2026-08-16); a tier named outside
+    the ladder never fires it. None when only one tier exists (nothing to upgrade to)."""
     tiers = cfg.get("tiers", {}) or {}
-    names = list(tiers)
-    if len(names) < 2:
+    if len(tiers) < 2:
         return None
-    active = cfg.active_tier
-    if active in model_family.classes():
-        if active not in _small_classes():
-            return None
-    elif active != names[0]:
+    if cfg.active_tier not in _small_classes():
         return None
     model = cfg.model_for_role("tool_caller").model
     return (f"you are on a small model tier ({model}) - fine for trying Saturn; "
@@ -444,15 +432,9 @@ def _config_doctor(ctx) -> None:
     if not up:
         _print("        -> install from https://ollama.com, then run `ollama serve`")
 
-    # Local (Ollama-served) models the active tier binds (+ the embedder), and whether each is
-    # pulled. Cloud-bound roles don't belong in this list: their gaps (key, package) surface via
-    # check_models below, and `ollama pull` could never fix them.
+    # The models the active tier binds (+ the embedder), and whether each is pulled.
     have = {m.name for m in list_local_models()} if up else set()
-    bound = {
-        spec.model
-        for spec in (cfg.model_for_role(r) for r in _ROLES)
-        if spec.provider == "ollama"
-    }
+    bound = {cfg.model_for_role(r).model for r in _ROLES}
     bound.add(cfg.embedder_model)
     _print("    models")
     from core.llms import _model_present

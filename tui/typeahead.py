@@ -21,10 +21,9 @@ is the *one* reader live during a turn. The keys, by what they do to the line yo
 
 Steering vs. queuing is thus the same key story as Enter vs. Esc: Enter defers, Esc acts now.
 
-Degrades to a no-op when the console can't be polled (not a TTY, or neither msvcrt nor POSIX
-termios is available): the queue simply stays empty and the REPL blocks on the prompt exactly as
-before. On Windows the msvcrt path is used; on macOS/Linux the POSIX termios path runs instead
-(cbreak, restored on stop).
+Degrades to a no-op when the console can't be polled (not a TTY, or POSIX termios is
+unavailable): the queue simply stays empty and the REPL blocks on the prompt exactly as before.
+The reader puts the TTY in cbreak mode and restores it on stop.
 """
 
 from __future__ import annotations
@@ -36,23 +35,10 @@ from typing import Callable, Optional
 
 from core.pause import PauseController, get_pause_controller
 
-# Windows console key polling (msvcrt). On macOS/Linux this import fails and we fall back to
-# a POSIX termios reader; if that's also unavailable the queue degrades to a no-op.
-try:
-    import msvcrt  # type: ignore
-
-    _HAS_MSVCRT = True
-except Exception:  # pragma: no cover - non-Windows
-    _HAS_MSVCRT = False
-
-
 # Control characters the reader special-cases.
 _ENTER = ("\r", "\n")
 _BACKSPACE = ("\x08", "\x7f")
 _ESC = "\x1b"
-# Windows getwch() returns one of these as the first half of a two-char sequence for arrow / F-keys;
-# we read and discard the trailing scancode so a stray key never lands in the buffer.
-_WIN_PREFIX = ("\x00", "\xe0")
 
 
 class InputQueue:
@@ -93,7 +79,7 @@ class InputQueue:
                 return False
         except Exception:
             return False
-        return _HAS_MSVCRT or _posix_supported()
+        return _posix_supported()
 
     def start(self) -> None:
         """Spin up the reader for one graph-execution segment. No-op if it can't poll the console
@@ -201,31 +187,7 @@ class InputQueue:
                 self._buffer += ch
             self._notify()
 
-    def _loop(self) -> None:
-        if _HAS_MSVCRT:
-            self._loop_windows()
-        else:
-            self._loop_posix()
-
-    def _loop_windows(self) -> None:  # pragma: no cover - platform/IO specific
-        while not self._stop.is_set():
-            try:
-                if msvcrt.kbhit():
-                    ch = msvcrt.getwch()
-                    if ch in _WIN_PREFIX:
-                        if msvcrt.kbhit():
-                            msvcrt.getwch()  # discard the special key's trailing scancode
-                        continue
-                    if ch == _ESC:  # lone Esc on Windows — special keys arrive via _WIN_PREFIX
-                        self._on_escape()
-                        continue
-                    self._on_char(ch)
-                else:
-                    self._stop.wait(0.03)
-            except Exception:
-                return
-
-    def _loop_posix(self) -> None:  # pragma: no cover - platform/IO specific
+    def _loop(self) -> None:  # pragma: no cover - platform/IO specific
         import select
         import termios
         import tty

@@ -72,7 +72,7 @@ def _clear(ctx, args):
         if had_messages:
             clear_autosave()
 
-    subprocess.run("cls" if sys.platform == "win32" else "clear", shell=True, check=False)
+    subprocess.run("clear", shell=True, check=False)
 
     if screen_only:
         return

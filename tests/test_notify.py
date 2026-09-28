@@ -4,7 +4,7 @@ backend, the `schedule_notification` tool, and the `/notify` command.
 
 Fully offline and platform-independent: `launchctl` / `osascript` never run (the backend's
 process runner is captured), the LaunchAgents directory is a tmp path, and the platform selector
-is pinned per test so the macOS backend is exercised on the Linux/Windows CI matrix too.
+is pinned per test so the macOS backend is exercised on the Linux CI leg too.
 """
 
 import plistlib
@@ -239,7 +239,7 @@ def test_backend_selects_launchd_on_darwin(monkeypatch):
     assert isinstance(notify.backend(), macos.LaunchdBackend)
 
 
-@pytest.mark.parametrize("platform", ["linux", "win32"])
+@pytest.mark.parametrize("platform", ["linux", "freebsd"])
 def test_backend_is_honest_elsewhere(monkeypatch, platform):
     monkeypatch.setattr(notify.sys, "platform", platform)
     be = notify.backend()
@@ -362,9 +362,9 @@ def test_notify_help_and_unknown_verb(ctx, capsys):
 
 def test_notify_unsupported_platform_warns(ctx, capsys, monkeypatch):
     from commands._framework import dispatch
-    monkeypatch.setattr(notify, "backend", lambda: notify.Unsupported("win32"))
+    monkeypatch.setattr(notify, "backend", lambda: notify.Unsupported("linux"))
     dispatch("/notify", ctx)
-    assert "not supported on win32" in capsys.readouterr().out
+    assert "not supported on linux" in capsys.readouterr().out
 
 
 # ── arg recovery ─────────────────────────────────────────────────────────────────────────────

@@ -11,7 +11,7 @@ entry, lists it, and removes it.
   backend()     — picks the backend for `sys.platform`. Only macOS is implemented
                   (`notify/macos.py`, launchd + osascript); every other platform resolves to
                   `Unsupported`, whose methods raise an honest NotifyError instead of crashing.
-                  Adding Linux or Windows is one new module plus one branch here.
+                  Adding Linux is one new module plus one branch here.
   parse_when()  — the small deterministic time grammar the tool accepts (ISO 8601, relative
                   offsets, today/tomorrow at HH:MM, a bare clock time). Refuses the past.
 

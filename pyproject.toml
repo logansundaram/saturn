@@ -1,6 +1,6 @@
 # Packaging for pipx / uv / pip installs ("installed mode").
 #
-# The curl installers (install.sh / install.ps1) clone the repo and use requirements.txt —
+# The curl installer (install.sh) clones the repo and uses requirements.txt —
 # that file stays the source of truth for the clone install; keep `dependencies` below in
 # sync with it. In installed mode there is no repo: config.py seeds config.yaml into
 # SATURDAY_HOME (~/.saturday) from the packaged default (shipped via data-files below), and

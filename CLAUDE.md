@@ -42,7 +42,7 @@ SATURDAY_DEBUG=1 python agent.py     # echo logging/diag.log lines to stderr
 ```
 
 There is no linter or formatter configured. CI (`.github/workflows/tests.yml`) runs the suite on
-ubuntu + windows × Python 3.11–3.13 and smoke-tests the built wheel in a clean venv.
+ubuntu + macos × Python 3.11–3.13 and smoke-tests the built wheel in a clean venv.
 
 **Releases:** push a `v*` tag. `pyproject.toml` `version`, `app/__init__.py` `__version__`, and a
 `## [x.y.z]` section in `CHANGELOG.md` must all agree (`tests/test_version.py` pins the first pair on

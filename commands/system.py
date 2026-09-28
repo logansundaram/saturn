@@ -157,7 +157,7 @@ def _quit(ctx, args):
 
 
 # ── /update ──────────────────────────────────────────────────────────────────────────────────
-# Saturday ships as a git clone (install.sh / install.ps1), so the repo root IS the install.
+# Saturday ships as a git clone (install.sh), so the repo root IS the install.
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 
 

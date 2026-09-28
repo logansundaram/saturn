@@ -7,9 +7,7 @@ import sys
 from tools.shell import run_shell
 
 _PY = sys.executable
-# The platform shell differs (PowerShell vs /bin/sh): PowerShell needs the call operator `&` to
-# run a quoted executable path; POSIX shells take it bare (where `&` would mean background!).
-_CALL = f'& "{_PY}"' if sys.platform == "win32" else f'"{_PY}"'
+_CALL = f'"{_PY}"'
 
 
 def test_foreground_returns_output_and_exit_code(isolated_paths):

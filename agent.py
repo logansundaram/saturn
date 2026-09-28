@@ -19,8 +19,8 @@ that contract survives the split. New code should import from the app/ modules d
 
 import sys
 
-# Force UTF-8 console output. Node prints (plan glyphs, tool results, model output) routinely
-# contain non-cp1252 characters that crash print() on the default Windows console.
+# Force UTF-8 console output: rail glyphs, tool results and model output routinely carry
+# characters a non-UTF-8 locale's stdout would refuse.
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 if hasattr(sys.stderr, "reconfigure"):

@@ -163,17 +163,12 @@ One command. It installs [Ollama](https://ollama.com) if needed, clones Saturn i
 in an isolated virtualenv, pulls the small local models, and puts a `saturn` command on your PATH.
 
 ```bash
-# macOS / Linux / WSL2
+# macOS / Linux
 curl -fsSL https://raw.githubusercontent.com/logansundaram/saturn/main/install.sh | sh
 ```
 
-```powershell
-# Windows (PowerShell)
-irm https://raw.githubusercontent.com/logansundaram/saturn/main/install.ps1 | iex
-```
-
 Then open a new terminal and run `saturn`. The first run pulls a few GB of models, so it takes a
-minute. Prefer to read before you pipe? Both scripts are plain text at the URLs above — download
+minute. Prefer to read before you pipe? The script is plain text at the URL above — download
 and inspect first.
 
 The installer defaults to the lightweight **`4b`** size class (`qwen3.5:4b`). On the first launch
@@ -240,8 +235,7 @@ cd saturn
 
 # (recommended) a virtual environment
 python -m venv .venv
-# Windows:  .venv\Scripts\activate
-# macOS/Linux:  source .venv/bin/activate
+source .venv/bin/activate
 
 pip install -r requirements.txt
 ```
@@ -255,8 +249,8 @@ or in `~/.saturday/.env` for pipx installs.)
 ### 3. Run it
 
 ```bash
-python agent.py        # Windows / venv-activated
-python3 agent.py       # macOS/Linux without a venv (if `python` isn't in PATH)
+python agent.py        # inside the venv
+python3 agent.py       # without a venv (if `python` isn't in PATH)
 ```
 
 You'll get an interactive prompt (`»`). Just type. Anything starting with `/` is a command;
@@ -270,14 +264,11 @@ everything else is a turn for the agent.
 
 > **Shortcut launchers**
 >
-> Both launchers prefer the repo's own `.venv` interpreter when one exists, and no longer `cd`
+> The launcher prefers the repo's own `.venv` interpreter when one exists, and does not `cd`
 > into the repo — relative paths in your arguments resolve against *your* directory, and nothing
 > leaks a directory change into your shell.
 >
-> **Windows:** `saturn.cmd` launches from anywhere. Wire a `saturn` function into your PowerShell
-> profile to type just `saturn`.
->
-> **macOS/Linux:** make `saturn.sh` executable once, then run it directly or add the repo to your
+> Make `saturn.sh` executable once, then run it directly or add the repo to your
 > `PATH`:
 > ```bash
 > chmod +x saturn.sh
@@ -306,11 +297,12 @@ experimenting without restarting.
 
 ### macOS / Linux notes
 
-No platform-specific config is required — `config.yaml` works as-is on all platforms. The only
-differences to know about:
+Saturn runs on macOS (the native Notes / Calendar / Mail tools and notifications need it)
+and Linux (file, shell, web and knowledge-base tools). The `run_shell` tool hands commands to
+`/bin/sh`, so write Unix shell syntax (`ls`, `&&`, `|`, etc.). Windows support was dropped
+2026-09-27.
 
-| | Windows | macOS / Linux |
-|---|---|---|
+---|---|---|
 | Launcher | `saturn.cmd` | `./saturn.sh` (run `chmod +x saturn.sh` once) |
 | Shell tool syntax | PowerShell | `/bin/sh` (`bash`, `zsh`, etc.) |
 | Python command | `python` | `python3` (or `python` inside a venv) |

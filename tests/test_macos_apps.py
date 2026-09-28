@@ -5,7 +5,7 @@ Native macOS app tools (2026-09-06): the `tools/applescript.py` runner seam, the
 
 Fully offline and platform-independent: `osascript` never runs (the runner's process seam is
 captured and fed canned output) and the platform selector is pinned per test, so the macOS path
-is exercised on the Linux/Windows CI matrix and the honest-refusal path on a Mac.
+is exercised on the Linux CI leg and the honest-refusal path on a Mac.
 """
 
 import subprocess
@@ -226,9 +226,9 @@ def test_create_note_refuses_empty_title(mac):
 
 
 def test_notes_tools_report_non_mac_honestly(monkeypatch):
-    monkeypatch.setattr(applescript, "_platform", lambda: "win32")
+    monkeypatch.setattr(applescript, "_platform", lambda: "linux")
     out = _tool("search_notes").invoke({"query": "x"})
-    assert out.startswith("Error:") and "only available on macOS" in out and "win32" in out
+    assert out.startswith("Error:") and "only available on macOS" in out and "linux" in out
 
 
 # ── Calendar ─────────────────────────────────────────────────────────────────────────────────

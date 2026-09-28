@@ -13,8 +13,8 @@ Working directory — every call runs inside `config.path("workspace")` by defau
 call so a live `/config paths.workspace` change is honored, matching the file tools' sandbox
 (files.py). A shell can of course `cd` out of it; this is a sensible default, not a hard jail.
 
-Cross-platform — the raw command line is handed to the host's own shell (PowerShell on Windows,
-/bin/sh elsewhere) so the agent writes native syntax and chains with the shell's own operators.
+The raw command line is handed to /bin/sh so the agent writes shell syntax and chains with the
+shell's own operators.
 
 Bounded — the call is killed after `shell.timeout` seconds (config.yaml `shell:`) so a hung or
 interactive command can't wedge the turn, mirroring `runtime.llm_timeout`. stdout and stderr
@@ -32,7 +32,6 @@ import os
 import re
 import signal
 import subprocess
-import sys
 
 from config import get_config
 from tools.toolspec import register_tool
@@ -83,17 +82,10 @@ def _kill_tree(proc: "subprocess.Popen") -> None:
     """Terminate the command's whole process TREE, not just the shell. A bare proc.kill() (what
     subprocess.run's own timeout does) only takes out the direct child — a grandchild the command
     started (a server, a hung build step) would survive the 'timeout' and keep running unattended.
-    Windows: taskkill /T walks the tree. POSIX: the child runs in its own session (start_new_session
-    below), so killing its process group gets everything. Best-effort, falls back to a plain kill."""
+    The child runs in its own session (start_new_session below), so killing its process group
+    gets everything. Best-effort, falls back to a plain kill."""
     try:
-        if sys.platform == "win32":
-            subprocess.run(
-                ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
-                capture_output=True,
-                timeout=10,
-            )
-        else:
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
     except Exception:
         try:
             proc.kill()
@@ -120,43 +112,32 @@ def _format(returncode: int, stdout: str, stderr: str) -> str:
 
 @register_tool("destructive")
 def run_shell(command: str):
-    """Runs a shell command on the host machine and returns its combined stdout+stderr plus the exit code. Use this for anything no other tool covers: running scripts or quick one-off code, build/test commands, git, package managers, inspecting the system. `command` is a single command line interpreted by the host's default shell (PowerShell on Windows, /bin/sh on Unix) — chain steps with the shell's own operators (`;`, `&&`, `|`). It runs inside the workspace directory by default and is terminated if it outlives the shell timeout — never start a server or watcher with it. This is a powerful, irreversible action and always requires user approval; do not assume it succeeded — check the returned exit code."""
+    """Runs a shell command on the host machine and returns its combined stdout+stderr plus the exit code. Use this for anything no other tool covers: running scripts or quick one-off code, build/test commands, git, package managers, inspecting the system. `command` is a single command line interpreted by /bin/sh — chain steps with the shell's own operators (`;`, `&&`, `|`). It runs inside the workspace directory by default and is terminated if it outlives the shell timeout — never start a server or watcher with it. This is a powerful, irreversible action and always requires user approval; do not assume it succeeded — check the returned exit code."""
     timeout = _timeout()
     try:
         workspace = get_config().path("workspace")
         workspace.mkdir(parents=True, exist_ok=True)
 
-        # Hand the raw command line to the platform's own shell so native syntax works. On Windows
-        # we explicitly invoke PowerShell (the project's shell) rather than rely on shell=True,
-        # which would use cmd.exe; elsewhere shell=True is /bin/sh. -NonInteractive guards against a
-        # command that would otherwise block forever waiting on a prompt the agent can't answer.
-        if sys.platform == "win32":
-            argv = ["powershell", "-NoProfile", "-NonInteractive", "-Command", command]
-            use_shell = False
-        else:
-            argv = command
-            use_shell = True
-
+        # Hand the raw command line to /bin/sh (shell=True) so native syntax works.
         popen_kwargs = dict(
-            shell=use_shell,
+            shell=True,
             cwd=str(workspace),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            # The workspace holds arbitrary user content and shells emit non-cp1252 bytes;
-            # decode as UTF-8 and degrade undecodable bytes to a marker (matching files.py)
-            # rather than letting a UnicodeDecodeError crash the turn.
+            # The workspace holds arbitrary user content; decode as UTF-8 and degrade undecodable
+            # bytes to a marker (matching files.py) rather than letting a UnicodeDecodeError
+            # crash the turn.
             encoding="utf-8",
             errors="replace",
             env=scrubbed_env(),
-        )
-        if sys.platform != "win32":
             # Own session = own process group, so a timeout can kill the whole tree (_kill_tree).
-            popen_kwargs["start_new_session"] = True
+            start_new_session=True,
+        )
 
         # Popen + communicate (not subprocess.run): on timeout we need the child's pid to kill
         # its whole process tree — run() kills only the direct child, leaving grandchildren alive.
-        proc = subprocess.Popen(argv, **popen_kwargs)
+        proc = subprocess.Popen(command, **popen_kwargs)
         try:
             stdout, stderr = proc.communicate(timeout=timeout)
         except subprocess.TimeoutExpired:

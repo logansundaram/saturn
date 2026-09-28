@@ -1,8 +1,8 @@
 """
 The `»` input line + the startup banner. prompt_toolkit (when present) drives a live-highlighted
 input where a typed `/command` is colored by how it matches the command set, `@path` mentions stand
-out and Tab-complete, and input is multiline: Enter submits; Shift+Enter (Windows console — see
-`_make_ptk_input`), Ctrl+Enter, Ctrl+J, and Alt+Enter all insert a newline. A large paste is
+out and Tab-complete, and input is multiline: Enter submits; Shift+Enter (on terminals that
+distinguish it), Ctrl+Enter, Ctrl+J, Alt+Enter and backslash+Enter all insert a newline. A large paste is
 compacted to a `[paste #N +L lines]` chip so a wall of code doesn't flood the prompt — the full
 text is kept aside, re-expanded into the message at submit, and Ctrl+E with the cursor on the chip
 re-expands it in place for editing. Falls back to rich's (or plain) input() without prompt_toolkit.
@@ -12,7 +12,6 @@ the status bar that carries them mid-turn is torn down around every input(), exa
 user picks their next action; the plain fallback prints them as one line above the prompt.
 """
 
-import sys
 
 from . import _base
 from ._base import (
@@ -195,7 +194,7 @@ if _PTK:
     # binding as Alt+Enter. NOTE: prompt_toolkit ships `\x1b[27;2;13~` mapped to plain Enter —
     # without the override a Shift+Enter there would *submit*, the opposite of what the user
     # meant. Safe to extend at import: the parser's prefix cache is lazy, and nothing has parsed
-    # yet. (Windows console input never sees these; it gets `_make_ptk_input`'s reader instead.)
+    # yet.
     from prompt_toolkit.input.ansi_escape_sequences import ANSI_SEQUENCES as _PTK_ANSI_SEQ
 
     for _seq in ("\x1b[13;2u", "\x1b[13;5u", "\x1b[27;2;13~", "\x1b[27;5;13~"):
@@ -362,12 +361,11 @@ if _PTK:
                     )
 
     # Multiline input: Enter submits; Shift+Enter / Ctrl+Enter / Ctrl+J / Alt+Enter insert a
-    # newline. Shift+Enter reaches us three different ways depending on the platform: the Windows
-    # console reader subclass (`_make_ptk_input`), the CSI-u / modifyOtherKeys sequences taught to
-    # the vt100 parser above (kitty/foot/Ghostty/WezTerm/xterm), or — on terminals that simply
-    # can't distinguish it (Apple Terminal, default iTerm2/VS Code) — the backslash+Enter fallback
-    # below. A pasted multi-line block never submits: it arrives as ONE BracketedPaste event
-    # (native on vt100; burst-detected on the Windows console) and is compacted to a chip. When
+    # newline. Shift+Enter reaches us two ways depending on the terminal: the CSI-u /
+    # modifyOtherKeys sequences taught to the vt100 parser above (kitty/foot/Ghostty/WezTerm/
+    # xterm), or — on terminals that simply can't distinguish it (Apple Terminal, default
+    # iTerm2/VS Code) — the backslash+Enter fallback below. A pasted multi-line block never
+    # submits: it arrives as ONE BracketedPaste event and is compacted to a chip. When
     # the completion menu is open, Enter accepts the highlighted completion rather than submitting.
     _PTK_KB = _PTKKeyBindings()
 
@@ -380,20 +378,16 @@ if _PTK:
             buf.validate_and_handle()  # submit the line
 
     @_PTK_KB.add("escape", "enter")  # Alt/Option+Enter, Esc-then-Enter, and Shift/Ctrl+Enter
-    @_PTK_KB.add("escape", "c-j")    # Ctrl+Enter on the Windows console (arrives as Meta+LF)
     @_PTK_KB.add("c-j")              # Ctrl+J everywhere (LF byte); Ctrl+Enter in some terminals
     def _ptk_newline(event):
         event.current_buffer.insert_text("\n")
 
-    if sys.platform != "win32":
-        # Backslash+Enter -> newline (the Claude Code convention): the universal fallback for
-        # POSIX terminals where Shift+Enter is indistinguishable from Enter. The backslash is
-        # consumed (it was a line continuation, not text). POSIX-only: on Windows Shift+Enter
-        # works natively and backslash is the path separator — making it a binding prefix would
-        # lag every path keystroke against the ambiguity timeout.
-        @_PTK_KB.add("\\", "enter")
-        def _ptk_newline_backslash(event):
-            event.current_buffer.insert_text("\n")
+    # Backslash+Enter -> newline (the Claude Code convention): the universal fallback for
+    # terminals where Shift+Enter is indistinguishable from Enter. The backslash is consumed
+    # (it was a line continuation, not text).
+    @_PTK_KB.add("\\", "enter")
+    def _ptk_newline_backslash(event):
+        event.current_buffer.insert_text("\n")
 
     @_PTK_KB.add(_PTKKeys.BracketedPaste)
     def _ptk_paste(event):
@@ -469,46 +463,6 @@ if _PTK:
         """Gutter for continuation lines of a multiline entry — a dim `·` aligned under the `»`."""
         return [("class:prompt.cont", "· ".rjust(width))] if not is_soft_wrap else ""
 
-    def _make_ptk_input():
-        """Platform input for the PromptSession, or None for prompt_toolkit's default.
-
-        Windows console only: the stock reader throws away the shift state on Enter (the
-        KEY_EVENT_RECORD carries it; only Tab/arrows get shift mappings), so Shift+Enter is
-        indistinguishable from Enter. The subclass translates Shift+Enter into the same
-        (Escape, Enter) pair Alt+Enter produces — landing on the newline binding. POSIX needs
-        no custom input: Shift+Enter arrives as the escape sequences taught to the vt100
-        parser above. Best-effort — any failure (no console, VT-input mode, future ptk
-        internals change) degrades to the default input, losing only Shift+Enter."""
-        if sys.platform != "win32":
-            return None
-        try:
-            from prompt_toolkit.input.win32 import ConsoleInputReader, Win32Input
-            from prompt_toolkit.key_binding.key_processor import KeyPress as _KeyPress
-
-            class _ShiftEnterReader(ConsoleInputReader):
-                def _event_to_key_presses(self, ev):
-                    if (
-                        ev.VirtualKeyCode == 0x0D  # VK_RETURN
-                        and ev.ControlKeyState & self.SHIFT_PRESSED
-                        and not ev.ControlKeyState
-                        & (self.LEFT_CTRL_PRESSED | self.RIGHT_CTRL_PRESSED)
-                    ):
-                        return [
-                            _KeyPress(_PTKKeys.Escape, ""),
-                            _KeyPress(_PTKKeys.ControlM, "\r"),
-                        ]
-                    return super()._event_to_key_presses(ev)
-
-            inp = Win32Input()
-            # Only swap in the subclass over the exact reader it extends; a VT-input-mode
-            # console uses a different reader (and already speaks the escape sequences).
-            if type(inp.console_input_reader) is ConsoleInputReader:
-                inp.console_input_reader = _ShiftEnterReader()
-            return inp
-        except Exception:
-            return None
-
-
 def prompt(command_meta=None) -> str:
     """Read the `»` input line. With prompt_toolkit and a `command_meta` list of `(token, summary)`
     pairs, a typed `/command` is highlighted live (valid=cyan, typo=red), Tab completes the leading
@@ -523,7 +477,7 @@ def prompt(command_meta=None) -> str:
     if _PTK and command_meta is not None:
         global _ptk_session
         if _ptk_session is None:
-            _ptk_session = PromptSession(input=_make_ptk_input())
+            _ptk_session = PromptSession()
         names = {token for token, _ in command_meta}  # valid-command set for the live highlight
         return _expand_paste_tags(_ptk_session.prompt(
             [("class:prompt", "» ")],

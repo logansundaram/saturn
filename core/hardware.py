@@ -106,7 +106,7 @@ def embedder_need_gb(size_class: str) -> float:
 
 @dataclass
 class HardwareProfile:
-    os_name: str          # platform.system(): Darwin / Linux / Windows
+    os_name: str          # platform.system(): Darwin / Linux
     arch: str             # platform.machine() — informational only (Rosetta lies; see probe)
     chip: str             # CPU brand string, e.g. "Apple M4 Pro", "AMD Ryzen 9 7950X"
     cores: int

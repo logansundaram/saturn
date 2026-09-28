@@ -94,7 +94,7 @@ def test_nvidia_budget_is_the_card_vram_not_system_ram(vram, expected):
 def test_cpu_only_uses_half_of_ram_and_caps_at_9b():
     small = recommend(_profile(os_name="Linux", chip="Intel i5", backend="cpu", ram_gb=16.0), _W)
     assert small.size_class == "4b" and small.budget_gb == 8.0
-    big = recommend(_profile(os_name="Windows", chip="Intel i9", backend="cpu", ram_gb=128.0), _W)
+    big = recommend(_profile(os_name="Linux", chip="Intel i9", backend="cpu", ram_gb=128.0), _W)
     assert big.size_class == "9b" and "cpu" in big.reason.lower()
 
 
@@ -177,7 +177,7 @@ def test_probe_prefers_an_nvidia_card_when_present(monkeypatch):
 
 
 def test_probe_falls_back_to_cpu(monkeypatch):
-    hw = _wire_probe(monkeypatch, system="Windows", machine="AMD64", chip="Intel Core i7")
+    hw = _wire_probe(monkeypatch, system="Linux", machine="x86_64", chip="Intel Core i7")
     assert hw.probe().backend == "cpu"
 
 

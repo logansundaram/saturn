@@ -102,3 +102,38 @@ def test_host_of():
     # be lost (unlike ollama_is_local, which deliberately fails toward NOT-local instead).
     assert egress.host_of("not a url") == "not a url"
     assert egress.host_of("") == ""
+
+
+# ── check_or_raise is a view of check(), and the refusal reaches the ledger ───────────────────
+# The raising twin used to re-implement check()'s body, so a future rung added inside check()
+# would have silently bypassed every LLM/embedder exit.
+
+
+def test_check_or_raise_records_blocked_and_raises(isolated_paths, monkeypatch):
+    import pytest
+
+    from trust import egress
+
+    monkeypatch.setattr(egress, "airgap_on", lambda: True)
+    before = len(egress.events())
+    with pytest.raises(RuntimeError, match="air-gap"):
+        egress.check_or_raise("llm", "ollama @ http://10.0.0.5:11434", "tool_caller → m",
+                              provider="ollama", subject="role 'tool_caller' (m)")
+    evs = egress.events()
+    assert len(evs) == before + 1
+    assert evs[-1].status == egress.BLOCKED
+    assert evs[-1].provider == "ollama"
+
+
+def test_check_or_raise_delegates_to_check(monkeypatch):
+    from trust import egress
+
+    seen = {}
+
+    def fake_check(channel, host, detail="", *, provider=""):
+        seen["args"] = (channel, host, detail, provider)
+        return None
+
+    monkeypatch.setattr(egress, "check", fake_check)
+    egress.check_or_raise("llm", "h", "d", provider="p")  # allowed: returns without raising
+    assert seen["args"] == ("llm", "h", "d", "p")

@@ -168,3 +168,46 @@ def test_a_failing_restorer_is_named_never_swallowed(isolated_paths):
     out = policy.end_task()
     assert out["failed"] and "registry gone" in out["failed"][0]
     assert policy.grant_log()[-1]["failed"]
+
+
+# ── a persist grant that could not be persisted is logged as session (review fix, 2026-08-21) ──
+# The audit entry used to be written BEFORE set_risk_override could fail, so grant_log claimed a
+# durable grant while the next process started from the declared tier.
+
+
+def test_failed_persist_grant_logged_as_session(isolated_paths, monkeypatch):
+    import types
+
+    from config import get_config
+    from nodes.approval import _apply_always_grants
+    from trust import policy
+
+    monkeypatch.setitem(get_config()._data["runtime"], "grant_scope", "persist")
+    fake = types.SimpleNamespace(TOOL_RISK={"write_file": "side_effecting"})
+    monkeypatch.setattr("tools.registry", fake, raising=False)
+
+    def boom(_name, _tier):
+        raise OSError("read-only filesystem")
+
+    monkeypatch.setattr(policy, "set_risk_override", boom)
+    _apply_always_grants({"approved": True, "tools": ["write_file"], "shell_grants": []})
+    assert fake.TOOL_RISK["write_file"] == "read_only"  # the live drop stands
+    last = policy.grant_log()[-1]
+    assert last["event"] == "grant" and last["tool"] == "write_file"
+    assert last["scope"] == "session"  # the lifetime it actually got — never claimed durable
+
+
+def test_successful_persist_grant_logged_as_persist(isolated_paths, monkeypatch):
+    import types
+
+    from config import get_config
+    from nodes.approval import _apply_always_grants
+    from trust import policy
+
+    monkeypatch.setitem(get_config()._data["runtime"], "grant_scope", "persist")
+    fake = types.SimpleNamespace(TOOL_RISK={"write_file": "side_effecting"})
+    monkeypatch.setattr("tools.registry", fake, raising=False)
+    _apply_always_grants({"approved": True, "tools": ["write_file"], "shell_grants": []})
+    last = policy.grant_log()[-1]
+    assert last["event"] == "grant" and last["scope"] == "persist"
+    assert policy.risk_overrides() == {"write_file": "read_only"}

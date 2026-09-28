@@ -444,3 +444,18 @@ def test_the_streaming_tail_indents_every_visual_row_not_every_newline(monkeypat
     ]
     assert len(rows) > 1
     assert all(r.startswith("  ") for r in rows)
+
+
+# ── tui/ui/trace.py: nothing shadows the module-level textutil.clip import ────────────────────
+# Two locals named `clip` once survived the rename that made room for the import; a call to
+# clip() inside those bodies would raise TypeError only on the --preview/non-full path.
+
+
+def test_trace_module_does_not_shadow_textutil_clip():
+    import inspect
+    import re
+
+    from tui.ui import trace as trace_mod
+
+    src = inspect.getsource(trace_mod)
+    assert not re.search(r"^\s+clip\s*=", src, re.M)

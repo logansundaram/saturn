@@ -127,3 +127,34 @@ def test_fts_triggers_are_dropped_when_the_module_is_missing(tmp_path):
     assert t.conn.execute("SELECT count(*) FROM sqlite_master WHERE name LIKE 'runs_fts_a_'").fetchone()[0] == 0
     assert [h["run_id"] for h in trace.search_runs(db, "recording")] == [4]  # LIKE fallback
     t.conn.close()
+
+
+# ── /trace run-selector grammar (one parser for every subview) ────────────────────────────────
+
+
+def test_parse_run_selector_grammar(capsys):
+    from commands.trace import _parse_run_selector
+
+    assert _parse_run_selector(["#7"]) == (7, None, False)
+    assert _parse_run_selector(["-r", "9"]) == (9, None, False)
+    assert _parse_run_selector(["12"]) == (12, None, False)  # bare digits are RUN IDS…
+    assert _parse_run_selector(["-l", "20"]) == (None, 20, True)  # …except as the list COUNT
+    assert _parse_run_selector(["ls"]) == (None, None, True)
+    assert _parse_run_selector([]) == (None, None, False)
+    assert _parse_run_selector(["garbage"]) == (None, None, False)
+    assert "ignoring" in capsys.readouterr().out
+
+
+def test_parse_run_selector_consume_hook():
+    from commands.trace import _parse_run_selector
+
+    seen = {}
+
+    def consume(low, a, it):
+        if low == "--md":
+            seen["md"] = True
+            return True
+        return False
+
+    assert _parse_run_selector(["--md", "#3"], consume=consume) == (3, None, False)
+    assert seen == {"md": True}

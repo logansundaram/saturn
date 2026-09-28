@@ -49,3 +49,21 @@ def test_split_call_result_is_the_one_parser():
 
     assert split_call_result(f"calc(x=1){CALL_RESULT_SEP}1") == ("calc(x=1)", "1")
     assert split_call_result("no separator")[0] == "no separator"
+
+
+# ── the [source: …] marker pair ───────────────────────────────────────────────────────────────
+
+
+def test_doc_source_marker_round_trip():
+    """tools/knowledge builds the marker and the Sources receipt parses it back — one builder +
+    one parser, so the round trip must be lossless and dedupe in order."""
+    from textutil import doc_source_label, parse_doc_sources
+
+    obs = (
+        doc_source_label("a.md") + "\nchunk one\n\n"
+        + doc_source_label("b.pdf", 3) + "\nchunk two\n\n"
+        + doc_source_label("a.md") + "\nchunk three"
+    )
+    assert parse_doc_sources(obs) == ["a.md", "b.pdf, page 3"]
+    assert parse_doc_sources("no markers here") == []
+    assert doc_source_label(None) == "[source: unknown]"

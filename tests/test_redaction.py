@@ -100,3 +100,27 @@ def test_active_reflects_mode(monkeypatch):
 def test_unknown_mode_falls_back_to_off(monkeypatch):
     _set_mode(monkeypatch, "banana")
     assert redaction.mode() == "off"
+
+
+# ── textutil.mask_secret — THE one masking rule ───────────────────────────────────────────────
+
+
+def test_mask_secret_one_envelope():
+    from textutil import mask_secret
+
+    assert mask_secret("short") == "****"  # ≤8 chars: show nothing at all
+    long = "sk-abcdefghijklmnop"
+    m = mask_secret(long)
+    assert long not in m and "…" in m
+    assert m.startswith(long[:4]) and m.endswith(long[-2:])
+    assert mask_secret("") == "" and mask_secret(None) == ""
+
+
+def test_mask_surface_delegates_to_it():
+    """trust/redaction's findings render THE one masking rule."""
+    from textutil import mask_secret
+    from trust import redaction
+
+    secret = "tvly-0123456789abcdef"
+    assert redaction._mask(secret) == mask_secret(secret)
+    assert redaction._mask("tiny") == "****"  # short secrets show nothing

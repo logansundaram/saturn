@@ -224,3 +224,60 @@ def test_posture_line_names_remote_endpoint(monkeypatch):
         "inference off-machine: ollama @ http://192.168.1.50:11434",
         "warn",
     ) in spans
+
+
+# ── the network boundary covers every send path ───────────────────────────────────────────────
+
+
+class _FakeResp:
+    content = "ok"
+
+
+class _FakeInner:
+    def __init__(self):
+        self.invoked = []
+
+    def invoke(self, messages, *a, **k):
+        self.invoked.append(messages)
+        return _FakeResp()
+
+
+def test_network_boundary_batch_routes_through_the_boundary():
+    """batch() must cross the boundary one input at a time (each redacted + recorded) — the
+    inner model's batch would take the whole list past it in one unobserved call."""
+    from core.llms import _NetworkBoundaryModel
+
+    inner = _FakeInner()
+    wrapped = _NetworkBoundaryModel(inner, "m", host="remote:11434")
+    out = wrapped.batch([[], []])
+    assert len(out) == 2 and len(inner.invoked) == 2
+
+
+def test_network_boundary_refuses_unguarded_send_paths():
+    """__getattr__ used to hand generate/transform/… back bound to the INNER model — an
+    unredacted, unrecorded send. They fail closed now; benign attributes still delegate."""
+    from core.llms import _NetworkBoundaryModel
+
+    inner = _FakeInner()
+    wrapped = _NetworkBoundaryModel(inner, "m", host="remote:11434")
+    for name in ("generate", "agenerate", "transform", "abatch_as_completed"):
+        with pytest.raises(AttributeError):
+            getattr(wrapped, name)
+    assert wrapped.invoked == []  # non-network attributes still delegate to the inner model
+
+
+def test_embeddings_boundary_async_paths_gate_airgap(monkeypatch):
+    """The Embeddings base-class async default runs against the INNER object, skipping the
+    air-gap raise and the ledger — the explicit aembed_* overrides must gate first."""
+    import asyncio
+
+    from core import llms
+
+    class _E:
+        async def aembed_query(self, text):  # pragma: no cover — must never be reached
+            raise AssertionError("the air-gap must block before the inner send")
+
+    monkeypatch.setattr(egress, "airgap_on", lambda: True)
+    boundary = llms._EmbeddingsBoundary(_E(), "emb", "remote:11434")
+    with pytest.raises(RuntimeError, match="Air-gap"):
+        asyncio.run(boundary.aembed_query("hello"))

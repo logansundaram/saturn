@@ -5,17 +5,13 @@ from core.state import AgentState
 from config import get_config
 from textutil import clip
 from stores.memory_registry import memory_context_split, mark_used
-from stores.document_registry import (
-    read_workspace_manifest,
-    read_documents_manifest,
-    sync_workspace_manifest,
-)
+from stores.document_registry import read_documents_manifest
 
 """
 Grounding node (re-scoped from the old context_builder).
 
 Its ONLY job is to load the things that are NOT already available to the model:
-  - the document + workspace manifests (so the agent knows what docs/files exist),
+  - the knowledge-base manifest (so the agent knows what documents it can search),
   - the per-workspace SATURDAY.md instructions, and
   - persistent memory (stores/memory_registry): the user layer + open commitments + the recent
     memo digest always, agent/entities/negative facts by match against the request, all under
@@ -28,10 +24,10 @@ It deliberately does NOT include:
   - the chat history    -> `messages` is already passed to the model directly (the v2 loop
                            sees the real conversation, so the old recap section is gone).
 
-Built once per turn (manifests/memory are static within a turn). Dynamic information —
+Built once per turn (the manifest and memory are static within a turn). Dynamic information —
 tool results — flows through `messages`, never this frozen grounding string.
 
-The block is built in TWO halves (2026-09-04): `context_stable` — instructions, manifests, the
+The block is built in TWO halves (2026-09-04): `context_stable` — instructions, the manifest, the
 query-independent memory layers — is byte-identical across turns while nothing on disk
 changed, and `context_dynamic` — memory's by-match selection, attachments — changes every
 turn. Every node's prompt sends the stable half as its own message
@@ -64,7 +60,7 @@ def _read_instructions() -> str:
 def stable_grounding() -> str:
     """The query-independent half of the grounding block — what the idle prime re-sends between
     turns. Byte-identical to the `context_stable` the next turn's grounding_node builds unless
-    the workspace, the knowledge base, SATURDAY.md or the always-loaded memory layers changed
+    the knowledge base, SATURDAY.md or the always-loaded memory layers changed
     in between (in which case the prime simply misses and the turn prefills it, as before)."""
     sections = ["## Grounding context"]
 
@@ -79,23 +75,6 @@ def stable_grounding() -> str:
     sections.append(
         "### Knowledge base (searchable via `search_knowledge_base`)\n"
         + (docs_manifest or "No ingested documents yet.")
-    )
-
-    # Reconcile the manifest with the workspace on disk FIRST: a file deleted or dropped in
-    # outside the agent would otherwise leave this block naming a phantom (which the planner
-    # then reads and fails on) or missing a real file. Best-effort — a sync
-    # failure must never fail the first node of every turn.
-    try:
-        removed, added = sync_workspace_manifest()
-        if removed or added:
-            diag.log(f"grounding_node : workspace manifest synced "
-                     f"(-{len(removed)} phantom, +{len(added)} unregistered)")
-    except Exception as exc:
-        diag.log(f"grounding_node : workspace manifest sync failed: {exc}")
-    ws_manifest = read_workspace_manifest().strip()
-    sections.append(
-        "### Workspace files (accessible via read_file / write_file / list_directory)\n"
-        + (ws_manifest or "No workspace files yet.")
     )
 
     # The always-loaded memory layers (user, commitments, the memo digest) are query-independent

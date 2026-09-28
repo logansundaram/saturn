@@ -66,13 +66,10 @@ def _docs(ctx, args):
 
 def _list_docs() -> None:
     from config import get_config
-    from stores.document_registry import (
-        manifest_entries, read_documents_manifest, read_workspace_manifest,
-    )
+    from stores.document_registry import manifest_entries, read_documents_manifest
     from tui import ui
 
     corpus = manifest_entries(read_documents_manifest())
-    ws = manifest_entries(read_workspace_manifest())
 
     ui.section(
         "documents",
@@ -86,17 +83,6 @@ def _list_docs() -> None:
         )
     else:
         ui.note("none ingested — add one with /docs add <path>")
-
-    _print("")
-    ui.section("workspace", f"{len(ws)} file(s) the file tools can read/write")
-    if ws:
-        ui.table(
-            [(e["name"], (e["type"] or "·", "dim"), (e["size"] or "·", "dim"),
-              (e["added"] or "·", "dim"), (e["summary"], "dim"))
-             for e in ws]
-        )
-    else:
-        ui.note("empty — the agent writes here via write_file/edit_file")
 
 
 def _add(rest: list) -> None:
@@ -525,7 +511,7 @@ file onto the prompt (drag-and-drop offers ingest/attach), or copy them into the
 CLAUDE.md equivalent). The grounding node loads it into context EVERY turn, so whatever it says
 is standing guidance for the agent: what this workspace is for, its layout, your conventions.
 
-/init surveys the workspace (file listing + the manifest's file summaries) and drafts the file
+/init surveys the workspace (its file listing) and drafts the file
 with the utility model; if the workspace is empty or the model is unavailable, it writes a
 sensible template instead. Either way: open it and edit — it's your file, the draft is a start.
 
@@ -553,13 +539,9 @@ def _init(ctx, args):
             from langchain.messages import HumanMessage
             from core.llms import get_model
             from core.messages import INIT_DRAFT_PROMPT
-            from stores.document_registry import read_workspace_manifest
 
             _print("  surveying the workspace and drafting SATURDAY.md…")
-            prompt = INIT_DRAFT_PROMPT.format(
-                listing="\n".join(listing) or "(empty)",
-                summaries=read_workspace_manifest().strip() or "(none)",
-            )
+            prompt = INIT_DRAFT_PROMPT.format(listing="\n".join(listing) or "(empty)")
             draft = str(get_model("utility").invoke([HumanMessage(content=prompt)]).content).strip()
             # Models love to wrap file output in a code fence — unwrap it.
             if draft.startswith("```"):

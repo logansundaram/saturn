@@ -171,10 +171,6 @@ def undo_last() -> "tuple[str, list[str]]":
     batch_dir = batches[-1]
     manifest = _load_manifest(batch_dir)
     workspace = get_config().path("workspace")
-    # Imported here, not at module top: keeps the snapshot layer import-light (snapshot_file is
-    # called from every gated write) and avoids a stores-internal import cycle.
-    from stores.document_registry import register_workspace_file, remove_workspace_file
-
     actions: list[str] = []
     # Entries that did NOT resolve this pass (the restore raised — a locked file, permissions —
     # or the path fell outside the current workspace). Their saved bytes are the only copy of
@@ -201,16 +197,6 @@ def undo_last() -> "tuple[str, list[str]]":
             actions.append(f"FAILED to restore {rel}: {exc}")
             unresolved.append(entry)
             continue
-        # Keep the grounding manifest truthful about what's in the workspace now. Best-effort —
-        # a manifest hiccup must not fail the restore that already landed. Restored content was
-        # usually summarized before, so the hash-keyed cache makes this LLM-free.
-        try:
-            if entry.get("existed"):
-                register_workspace_file(rel, target.read_text(encoding="utf-8", errors="replace"))
-            else:
-                remove_workspace_file(rel)
-        except Exception as exc:
-            diag.log(f"undo manifest sync failed for {rel}: {exc}")
 
     label = manifest.get("created", "") or manifest.get("id", batch_dir.name)
     query = manifest.get("query", "")

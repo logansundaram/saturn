@@ -143,7 +143,7 @@ ground → plan → [review?] → agent → [approval?] → tools → update pla
 ```
 
 - **ground** loads SATURDAY.md, the memory facts relevant to this request, and the
-  document/workspace manifests.
+  knowledge-base manifest.
 - **plan** drafts a step-by-step plan (the transparency surface you can inspect and edit).
 - **agent** picks the next tool to call (or finishes).
 - **approval** pauses for your OK before anything side-effecting runs.
@@ -370,7 +370,7 @@ tools/              # the agent's tools (web, files, shell, calculator, knowledg
                     #   + the registry and MCP client
 nodes/              # the graph's nodes (ground, plan, execute, tools, rectify, synthesize, …)
 commands/           # slash commands (one module per /help theme)
-stores/             # persistence: RAG, document manifests, durable memory, trace
+stores/             # persistence: RAG + its manifest, durable memory, snapshots, trace
 tui/                # the terminal UI / live trace rail
 docs/               # ARCHITECTURE.md — the code map for reading the source by hand
 database/           # your data: documents/, workspace/, memory/, caches, trace DB

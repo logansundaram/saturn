@@ -139,11 +139,11 @@ def test_manifest_memo_is_mtime_honest(isolated_paths, monkeypatch):
     from stores import document_registry as dr
 
     monkeypatch.setattr(dr, "_summarize", lambda content, filename: "a summary")
-    dr.register_workspace_file("a.txt", "hello")
-    text1 = dr.read_workspace_manifest()
+    dr.register_rag_document("a.txt", "hello")
+    text1 = dr.read_documents_manifest()
     assert "### a.txt" in text1
 
     time.sleep(0.01)  # ensure a distinct mtime on coarse filesystems
-    p = dr._workspace_manifest()
+    p = dr._documents_manifest()
     p.write_text(text1 + "\n### hand-added\nmanual entry\n", encoding="utf-8")
-    assert "hand-added" in dr.read_workspace_manifest()
+    assert "hand-added" in dr.read_documents_manifest()

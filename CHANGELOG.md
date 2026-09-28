@@ -45,6 +45,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
   validated at native tool-calling and the hardware probe never recommended one; the ladder
   starts at `4b`. `supports_structured_output` and `supports_vision` were parsed and never
   read. An existing `config.yaml` that still carries them loads unchanged.
+- **The workspace manifest.** Saturn no longer writes a `.manifest.md` into the workspace or
+  re-scans the directory every turn to keep it current; the grounding block's "Workspace
+  files" section goes with it (the agent has `list_directory`), as does the workspace half of
+  `/docs`. A leftover `database/workspace/.manifest.md` is inert and can be deleted. The
+  knowledge-base manifest is unchanged.
 
 ### v2 — one loop replaces the engine (2026-09-27)
 

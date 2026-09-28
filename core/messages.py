@@ -101,14 +101,14 @@ MEMORY_REVIEW_SHAPE = (
 )
 
 # (DOC_SUMMARY_PROMPT left 2026-07-16 with the manifest-summary cut: document_registry's
-# manifests carry a mechanical first-line description now, so nothing summarizes untrusted
+# manifest carries a mechanical first-line description now, so nothing summarizes untrusted
 # document text through a model at ingest.)
 
 # commands/knowledge /init — drafts SATURDAY.md from the workspace survey.
 INIT_DRAFT_PROMPT = """You are initializing SATURDAY.md — a standing-instructions file that a local
 AI agent loads into context at the start of every turn it works in this workspace.
 
-Below are the workspace's file listing and (when available) one-line summaries of its files.
+Below is the workspace's file listing.
 Write a concise SATURDAY.md (under 60 lines) in markdown with exactly these sections:
 
 # SATURDAY.md
@@ -124,6 +124,4 @@ Output ONLY the markdown file content, no preamble.
 ## File listing
 {listing}
 
-## File summaries
-{summaries}
 """

@@ -12,11 +12,7 @@ from stores import snapshots
 
 @pytest.fixture
 def workspace(isolated_paths, monkeypatch):
-    """An isolated workspace + a neutered manifest sync (undo_last imports these lazily)."""
-    import stores.document_registry as dr
-
-    monkeypatch.setattr(dr, "register_workspace_file", lambda *a, **k: None)
-    monkeypatch.setattr(dr, "remove_workspace_file", lambda *a, **k: None)
+    """An isolated workspace."""
     ws = isolated_paths / "database" / "workspace"
     ws.mkdir(parents=True, exist_ok=True)
     return ws

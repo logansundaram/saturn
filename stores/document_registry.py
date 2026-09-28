@@ -1,14 +1,11 @@
 """
-Maintains per-directory markdown manifests that record metadata and a one-line description
-for every document the agent can see.
+Maintains the knowledge-base manifest: `database/documents/.manifest.md`, one entry with
+metadata and a one-line description per document ingested into the RAG vector store.
 
-Two manifests:
-  database/workspace/.manifest.md  — files the agent can read/write via tools
-  database/documents/.manifest.md  — files ingested into the RAG vector store
-
-The grounding (`ground`) node reads both at the start of each turn so the planning LLM
-knows exactly what documents exist before deciding whether to call read_file or trigger
-retrieval.
+The grounding (`ground`) node reads it at the start of each turn so the agent knows what the
+knowledge base holds before deciding whether to search it. (The workspace manifest — the same
+record for the files the tools read and write — was cut 2026-09-27: it wrote a `.manifest.md`
+into the working directory every turn, and `list_directory` answers the same question.)
 
 The description is MECHANICAL (first heading / first non-empty line) since 2026-07-16 — the
 per-document LLM summary + its content-hash cache (`cache/summaries.json`) were cut: an ingest
@@ -18,10 +15,9 @@ already answers. A legacy summaries.json is simply orphaned (cache/ is documente
 delete).
 """
 
-import os
 import re
 from datetime import date
-from pathlib import Path, PurePath
+from pathlib import Path
 
 from config import get_config
 from textutil import clip
@@ -29,12 +25,8 @@ from textutil import clip
 _MANIFEST_HEADER = "# Document manifest\n\n"
 
 
-# Manifest paths resolve from config at *call time*, not import time, so a live `/config
+# The manifest path resolves from config at *call time*, not import time, so a live `/config
 # paths.*` change is honored without a restart (config.py is the single source of truth).
-def _workspace_manifest() -> Path:
-    return get_config().path("workspace") / ".manifest.md"
-
-
 def _documents_manifest() -> Path:
     return get_config().path("documents") / ".manifest.md"
 
@@ -44,99 +36,15 @@ def _documents_manifest() -> Path:
 # ---------------------------------------------------------------------------
 
 
-def _workspace_key(file_path: str) -> str:
-    """Canonical workspace-manifest key: POSIX separators, './' segments dropped. Entries are
-    matched by exact string, and three writers share them — write_file, edit_file, and /undo's
-    manifest sync — so register and remove must land on ONE form or the manifest accumulates
-    duplicate/phantom entries the ground node then feeds the LLM every turn. Defense in depth
-    only: PurePath does NOT collapse '..' components, so the load-bearing canonicalization is the
-    callers passing a sandbox-RESOLVED relative path (tools/files.py derives it from the resolved
-    target); this just papers over separator and './' drift from any future caller."""
-    return PurePath(file_path).as_posix()
-
-
-def register_workspace_file(file_path: str, content: str) -> None:
-    """Called by write_file/edit_file after a successful write. Keyed by the full relative path
-    (not the basename) so files with the same name in different subdirs don't collide on one
-    entry; normalized via _workspace_key so the summary cache and the manifest share one
-    canonical key regardless of how the caller spelled the path."""
-    key = _workspace_key(file_path)
-    _upsert(_workspace_manifest(), key, content, PurePath(key).suffix)
-
-
-def remove_workspace_file(file_path: str) -> None:
-    """Strip a workspace file's manifest entry. Called by /undo (stores/snapshots.py) when it
-    deletes a file the undone turn created, so the grounding manifest never lists a file that is
-    gone. Normalized with the same _workspace_key as register, so a remove always finds the entry
-    the register created."""
-    _remove_entry(_workspace_manifest(), _workspace_key(file_path))
-
-
-# Reconciliation caps: a huge workspace must not turn the per-turn sync into a crawl, and a
-# binary or oversized file gets no entry (its first line is not a description of anything).
-_SYNC_MAX_WALK = 2000          # directory entries examined per sync
-_SYNC_MAX_ADDS = 100           # new entries registered per sync
-_SYNC_MAX_FILE_BYTES = 1_000_000
-_SYNC_SUMMARY_BYTES = 4096     # how much of a new file is read for its first-line summary
-
-
-def sync_workspace_manifest() -> "tuple[list[str], list[str]]":
-    """Reconcile the workspace manifest with the workspace ON DISK, both directions:
-    entries whose file is gone are dropped (a file deleted in Finder, a rename) and regular
-    files nothing registered are added with a first-line summary (a CSV dropped in). Returns
-    `(removed, added)` entry keys. Hidden files/directories, the manifest itself, binaries and
-    oversized files are skipped. Called by the ground node every turn, so the "Workspace files"
-    block the agent reads never names a file that is not there, and knows the ones that are
-    (measured 2026-09-02: a turn spent 2.5 minutes reading four phantom entries). Cheap: one
-    stat per entry plus a capped walk."""
-    workspace = get_config().path("workspace")
-    manifest_path = _workspace_manifest()
-    known = {e["name"] for e in manifest_entries(_read_manifest_text(manifest_path))}
-    removed: list[str] = []
-    for name in sorted(known):
-        if not (workspace / name).is_file():
-            _remove_entry(manifest_path, name)
-            removed.append(name)
-    added: list[str] = []
-    if not workspace.is_dir():
-        return removed, added
-    seen = 0
-    for dirpath, dirnames, filenames in os.walk(workspace):
-        dirnames[:] = sorted(d for d in dirnames if not d.startswith("."))
-        for fname in sorted(filenames):
-            seen += 1
-            if seen > _SYNC_MAX_WALK or len(added) >= _SYNC_MAX_ADDS:
-                return removed, added
-            if fname.startswith("."):
-                continue
-            path = Path(dirpath) / fname
-            key = _workspace_key(path.relative_to(workspace).as_posix())
-            if key in known:
-                continue
-            try:
-                if path.stat().st_size > _SYNC_MAX_FILE_BYTES:
-                    continue
-                with open(path, "rb") as fh:
-                    head = fh.read(_SYNC_SUMMARY_BYTES)
-            except OSError:
-                continue
-            if b"\0" in head:
-                continue
-            content = head.decode("utf-8", errors="replace")
-            _upsert(manifest_path, key, content, PurePath(key).suffix)
-            added.append(key)
-    return removed, added
-
-
 def register_rag_document(source: str, content: str) -> None:
     """Called by rag.sync for each new/changed document. `source` is the corpus-relative path;
     key the manifest by it (not the basename) so e.g. teamA/report.md and teamB/report.md get
     distinct entries instead of overwriting each other.
 
-    Deliberately NOT normalized (unlike the workspace pair): rag.sync keys register, remove, AND
-    its index.json `files` dict by the same str(path.relative_to(root)) form — normalizing only
-    this side would desync remove_rag_document's manifest deletion from the vector index. If
-    symmetry is ever wanted, both sides AND the index must move together."""
+    Deliberately NOT normalized: rag.sync keys register, remove, AND its index.json `files`
+    dict by the same str(path.relative_to(root)) form — normalizing only this side would desync
+    remove_rag_document's manifest deletion from the vector index. If symmetry is ever wanted,
+    both sides AND the index must move together."""
     _upsert(_documents_manifest(), source, content, Path(source).suffix)
 
 
@@ -144,10 +52,6 @@ def remove_rag_document(source: str) -> None:
     """Strip a document's entry from the RAG manifest. Called by rag.sync when a file is removed
     from the corpus, so the manifest never lists documents that are gone."""
     _remove_entry(_documents_manifest(), source)
-
-
-def read_workspace_manifest() -> str:
-    return _read_manifest_text(_workspace_manifest())
 
 
 def read_documents_manifest() -> str:
@@ -184,7 +88,7 @@ def manifest_entries(text: str) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
-# mtime-validated in-memory memo: ground re-reads both manifests every turn, and syncing N
+# mtime-validated in-memory memo: ground re-reads the manifest every turn, and syncing N
 # files used to re-read the whole manifest PER FILE. One stat per read validates the memo; the
 # mtime check (not a blind cache) keeps a hand-edited file honest. Keyed by path so isolated
 # test configs and a live `/config paths.*` change each get their own slot.

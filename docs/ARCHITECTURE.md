@@ -28,7 +28,7 @@ tools/      the tool implementations + registry + MCP client (risk tiers declare
 notify/     scheduled desktop notifications: the platform seam, the macOS launchd/osascript backend, the menu bar item
 trust/      the trust stack: gate policy, egress ledger, redaction, quarantine, receipt
 commands/   the slash-command layer (/help themes, one module each)
-stores/     data + persistence: RAG corpus, manifests, memory, snapshots, trace DB
+stores/     data + persistence: RAG corpus + its manifest, memory, snapshots, trace DB
 tui/        presentation: the rich-based terminal UI, type-ahead reader, system metrics
 
 tests/      offline pytest suite (no LLM, no network — conftest redirects all paths to tmp)
@@ -48,7 +48,7 @@ The whole product is one loop. Reading it end to end explains 80% of the repo:
 2. **The graph runs** — `app/turn.py::run_turn` streams the compiled graph that
    `app/graph.py::build_agent` assembled from `nodes/`:
    - `nodes/ground.py` builds `state["context"]` in two halves: `context_stable` (workspace
-     instructions from SATURDAY.md, document/workspace manifests, the always-loaded memory
+     instructions from SATURDAY.md, the knowledge-base manifest, the always-loaded memory
      layers — `stores/memory_registry`: user facts + open commitments + the memo digest) and
      `context_dynamic` (agent/entities/negative facts matched to this request, attachments).
      The agent sends the stable half as its own message right after its system prompt, and
@@ -162,7 +162,7 @@ cut 2026-07-06 and print pointers), `privacy.py` (/privacy), `trace.py` (/trace 
 owns every view of a feature.
 
 ### `stores/` — data + persistence
-`rag.py` (corpus sync + vector store), `document_registry.py` (workspace/doc manifests),
+`rag.py` (corpus sync + vector store), `document_registry.py` (the knowledge-base manifest),
 `memory_registry.py` (the layered memory file: six layers, per-fact metadata token, selection
 under a cap), `snapshots.py` (pre-write snapshots for /undo), `trace.py` (the run/event/LLM-call
 trace DB behind /trace and exports, plus the `runs_fts` index behind `recall_runs` / `/trace

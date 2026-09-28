@@ -65,7 +65,7 @@ ground → agent ─(no tool calls)─→ END
            └── tools ← approval      (a fully-rejected batch → agent)
 ```
 
-- `ground` assembles `state["context"]` in two halves (SATURDAY.md, manifests, the always-loaded
+- `ground` assembles `state["context"]` in two halves (SATURDAY.md, the knowledge-base manifest, the always-loaded
   memory layers = stable; memory matches + attachments = dynamic). No model call.
 - `agent` (`nodes/agent.py`) makes ONE native tool-calling call per pass (`tool_caller` role,
   `bind_tools(registry)`, think off, streamed). Prompt order is prefix-cache order:

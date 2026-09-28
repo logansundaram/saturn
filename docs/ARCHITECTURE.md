@@ -170,7 +170,7 @@ search` and the current-run seam `remember` stamps provenance from).
 
 ### `tui/` — presentation only
 `typeahead.py` (the in-turn console reader: type-ahead queue, Esc steer/pause),
-`system_monitor.py` (CPU/RAM/GPU for the status bar), and `ui/` split by screen concern,
+and `ui/` split by screen concern,
 re-exported flat (`from tui import ui`): `_base` (console plumbing), `statusbar`, `art`
 (the frozen Saturn splash), `prompt` (prompt_toolkit line editor), `trace` (the live rail),
 `plan` (the checklist panel), `approval` (the gate UI + the Esc pause prompt lives in `prompt`), `response` (streamed answer +

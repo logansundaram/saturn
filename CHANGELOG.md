@@ -55,6 +55,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
   `qwen3-embedding:8b`, and a launch with an empty knowledge base never touches the embedder.
   The one shipped corpus document (`welcome-to-saturn.md`) existed to make that first sync
   meaningful and goes with it.
+- **CPU / RAM / GPU gauges** on the status bar and under `/config context`, and the `psutil`
+  dependency with them. The bar keeps the context gauge and tok/s.
 
 ### v2 — one loop replaces the engine (2026-09-27)
 

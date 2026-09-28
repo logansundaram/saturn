@@ -1,9 +1,8 @@
 """
-The bottom-pinned live status bar + its off-thread system-metrics sampler, plus `reset_turn`
-(per-turn state seeding). One high-signal `rich.live.Live` line — posture · progress · session ·
-hardware — re-evaluated on every refresh so the elapsed clock and the sampled gauges tick even
-between node updates. The `Live` handle, the metrics snapshot, and the type-ahead preview stay
-private here; only the per-turn timing/plan state (in `_base`) is shared with the trace/plan/
+The bottom-pinned live status bar, plus `reset_turn` (per-turn state seeding). One
+high-signal `rich.live.Live` line — posture · progress · session — re-evaluated on every
+refresh so the elapsed clock ticks even between node updates. The `Live` handle and the
+type-ahead preview stay private here; only the per-turn timing/plan state (in `_base`) is shared with the trace/plan/
 response renderers.
 """
 
@@ -15,55 +14,6 @@ from ._base import (
     _ACCENT, _DIM, _NODE_STARTING, _RAIL, _RISK,
     _active_ctx_window, _fmt_dur, _meter_color, _mini_bar,
 )
-
-
-# ── live system-metrics sampler ───────────────────────────────────────────────
-# cpu/ram/gpu/vram are sampled off the render path: nvidia-smi can block up to 2s, which must
-# never stall the trace or the 4 Hz bar refresh. A lone daemon thread refreshes `_metrics` on a
-# slow cadence; the bar just reads the latest cached snapshot (None until the first sample lands).
-_METRICS_INTERVAL = 1.5  # seconds between samples
-_metrics = None          # latest system_monitor.SystemMetrics (or None)
-_metrics_thread = None
-_metrics_wanted = None   # threading.Event — set while the bar is live; the loop parks otherwise
-
-
-def _metrics_loop(interval: float) -> None:
-    from tui.system_monitor import get_system_metrics
-
-    global _metrics
-    while True:
-        # Park while the bar is torn down (idle at the input prompt between turns): each sample
-        # spawns an nvidia-smi subprocess, and an ungated loop would keep paying that ~2,400
-        # times an hour to feed a bar that isn't even displayed.
-        _metrics_wanted.wait()
-        try:
-            _metrics = get_system_metrics()
-        except Exception:
-            pass
-        time.sleep(interval)
-
-
-def _metrics_start() -> None:
-    """Lazily spin up the sampler (once per process) and un-park it. Daemon, so it dies with
-    the interpreter; _metrics_stop() parks it again whenever the bar is torn down."""
-    global _metrics_thread, _metrics_wanted
-    import threading
-
-    if _metrics_wanted is None:
-        _metrics_wanted = threading.Event()
-    _metrics_wanted.set()
-    if _metrics_thread is not None:
-        return
-    _metrics_thread = threading.Thread(
-        target=_metrics_loop, args=(_METRICS_INTERVAL,), daemon=True
-    )
-    _metrics_thread.start()
-
-
-def _metrics_stop() -> None:
-    """Park the sampler (the bar is gone; nobody reads the snapshot until the next turn)."""
-    if _metrics_wanted is not None:
-        _metrics_wanted.clear()
 
 
 # ── live status bar (bottom-pinned) ───────────────────────────────────────────
@@ -199,21 +149,6 @@ class _StatusBar:
                 bar.append("⇅ ", style=_DIM)
                 bar.append(f"{_ne} egress", style="default")
 
-        # ── hardware ── tertiary, bare load-colored percentages (sampled off-thread).
-        m = _metrics
-        if m is not None:
-            zone()
-            _append_meter(bar, "cpu", m.cpu_usage_percent)
-            ram_pct = m.ram_used_gb / m.total_ram_gb * 100 if m.total_ram_gb else 0.0
-            bar.append("  ", style=_DIM)
-            _append_meter(bar, "ram", ram_pct)
-            if m.gpu_usage_percent is not None:
-                bar.append("  ", style=_DIM)
-                _append_meter(bar, "gpu", m.gpu_usage_percent)
-            if m.vram_used_gb is not None and m.total_vram_gb:
-                bar.append("  ", style=_DIM)
-                _append_meter(bar, "vram", m.vram_used_gb / m.total_vram_gb * 100)
-
         # ── key legend ── the turn-time keys, taught ambiently while they're usable. Trails the
         # whole line ON PURPOSE: the bar trims from the right edge on a narrow terminal (no-wrap
         # + ellipsis), so the hint is the first thing sacrificed — never the posture or progress.
@@ -224,9 +159,7 @@ class _StatusBar:
 
 def _append_meter(bar: "Text", label: str, pct: float, cells: int = 0) -> None:
     """`label NN%` (load-colored), optionally trailed by a tiny `▰▱` fill bar when `cells > 0` —
-    the compact gauge form used in the bar. Meters are opt-in: only the context gauge carries one
-    (it's what drives the agent); the hardware readouts stay bare percentages so the resources zone
-    reads calm rather than like a dashboard."""
+    the compact gauge form used in the bar."""
     col = _meter_color(pct)
     bar.append(f"{label} ", style=_DIM)
     bar.append(f"{pct:.0f}%", style=col)
@@ -241,7 +174,6 @@ def _live_start() -> None:
     global _live
     if not _RICH or _live is not None:
         return
-    _metrics_start()  # ensure the off-thread cpu/ram/gpu sampler is running
     _live = Live(_StatusBar(), console=_console, transient=True,
                  auto_refresh=True, refresh_per_second=4)
     _live.start()
@@ -253,7 +185,6 @@ def _live_stop() -> None:
     if _live is not None:
         _live.stop()
         _live = None
-    _metrics_stop()  # no bar -> no reader; stop burning nvidia-smi spawns while idle
 
 
 def _live_refresh() -> None:

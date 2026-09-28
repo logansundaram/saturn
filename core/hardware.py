@@ -27,7 +27,7 @@ one full-attention layer — and only the full-attention layers keep a per-token
 why a 27b at 64k context costs 4 GB of cache rather than the 16+ GB a dense 27b would. The
 linear layers hold a small fixed recurrent state (tens of MB) that lives in the headroom.
 
-LEAF: stdlib + psutil (already a dependency for the status bar) + core.model_family. Never
+LEAF: stdlib + core.model_family. Never
 imports config or the TUI, so commands/ and app/ can call it from anywhere.
 """
 
@@ -157,9 +157,15 @@ def _cpu_brand() -> str:
 
 
 def _ram_gb() -> float:
-    import psutil
-
-    return round(psutil.virtual_memory().total / 1024**3, 1)
+    """Total physical memory in GB: sysctl on macOS, /proc/meminfo on Linux."""
+    system = platform.system()
+    if system == "Darwin":
+        return round(int(_run(["sysctl", "-n", "hw.memsize"])) / 1024**3, 1)
+    with open("/proc/meminfo", encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            if line.startswith("MemTotal:"):
+                return round(int(line.split()[1]) * 1024 / 1024**3, 1)
+    raise RuntimeError("MemTotal not found in /proc/meminfo")
 
 
 def _nvidia_vram_gb() -> tuple[str | None, float | None]:

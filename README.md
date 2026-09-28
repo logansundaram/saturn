@@ -320,7 +320,7 @@ Type `/help` for the full list, or `/<command> --help` for details on any one. H
 |---|---|
 | `/help` | The grouped command list, opening with the trust-stack map (posture · activity · proof); `/help <cmd>` details one. |
 | `/models` | The model page: your hardware, the qwen ladder (six chat sizes + three embedders) priced against it, pick a row to switch — pulling what's missing on consent. |
-| `/config` | View/edit settings; `/config setup` is the health check; `/config context` is the runtime readout (context window + fill, CPU/RAM/GPU) + window resize. |
+| `/config` | View/edit settings; `/config setup` is the health check; `/config context` is the runtime readout (context window + fill) + window resize. |
 | `/plan` | Show the plan; control review mode and the mid-run pause (bare subcommands report status). |
 | `/draft` | Write your OWN plan in the step editor — your next message executes YOUR steps instead of the agent's draft (same per-step reflection and approval gates). |
 | `/docs` | The knowledge base: list documents, `add <path>`, `remove <name>`, `sync`. |

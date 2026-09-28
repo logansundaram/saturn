@@ -13,44 +13,11 @@ from ._base import (
 from .listing import section
 
 
-# ── system metrics display ───────────────────────────────────────────────────────
-def show_system_metrics(metrics) -> None:
-    """Display a compact system-resource readout in the trace-rail style. Shares the one meter
-    glyph + threshold vocabulary (`_mini_bar` / `_meter_color`) with the status bar and /config context,
-    so a hot gauge reads identically everywhere; percentages are whole numbers (no false precision)."""
-
-    def _row(label: str, pct: float, detail: str = "") -> None:
-        bar = _mini_bar(pct, 20)
-        col = _meter_color(pct)
-        if _RICH:
-            line = _rail()
-            line.append(f"{label:<6}", style=_DIM)
-            line.append(f"  {bar}", style=col)
-            line.append(f"  {pct:>3.0f}%", style=col)
-            if detail:
-                line.append(f"   {detail}", style=_DIM)
-            _console.print(line)
-        else:
-            print(f"  {_RAIL_GLYPH} {label:<6}  {bar}  {pct:>3.0f}%{'   ' + detail if detail else ''}")
-
-    section("system")
-
-    _row("cpu", metrics.cpu_usage_percent)
-    ram_pct = metrics.ram_used_gb / metrics.total_ram_gb * 100
-    _row("ram", ram_pct, f"{metrics.ram_used_gb:.1f} / {metrics.total_ram_gb:.1f} GB")
-    if metrics.gpu_usage_percent is not None:
-        _row("gpu", metrics.gpu_usage_percent)
-    if metrics.vram_used_gb is not None and metrics.total_vram_gb is not None:
-        vram_pct = metrics.vram_used_gb / metrics.total_vram_gb * 100
-        _row("vram", vram_pct, f"{metrics.vram_used_gb:.1f} / {metrics.total_vram_gb:.1f} GB")
-
-
 # ── context-window readout (the /config context command) ──────────────────────────────────
 def show_context(window: int, used: int, source: str, per_role: dict[str, int]) -> None:
     """Detailed context-window readout for /config context: the active window + where it comes from, a
-    wide fill bar for the last measured usage, and the per-role windows. Same trace-rail
-    vocabulary as show_system_metrics; the compact form of this fill gauge also rides the live
-    status bar during a turn."""
+    wide fill bar for the last measured usage, and the per-role windows. The compact form of
+    this fill gauge also rides the live status bar during a turn."""
     pct = (used / window * 100) if window else 0.0
     col = _meter_color(pct)
     bar = _mini_bar(pct, width=28)

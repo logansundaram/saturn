@@ -79,7 +79,7 @@ an edit for this session only, without touching config.yaml:
 it stays session-only with a note.) `/config reload` re-reads config.yaml from disk, discarding
 any unsaved session-only edits.
 
-/config context — the runtime readout (context window + fill, per-role windows, CPU/RAM/GPU) and
+/config context — the runtime readout (context window + fill, per-role windows) and
 the live num_ctx setter (folded in from the old /context):
   /config context                   show the window + current fill + hardware snapshot
   /config context 16384 [--session] resize every local role's window (persists; --session = live only)
@@ -246,7 +246,7 @@ def _config(ctx, args):
 
 def _config_context(ctx, args):
     """`/config context [size|auto [--save]]` — the runtime readout (context window + fill,
-    per-role windows, CPU/RAM/GPU) and the live num_ctx setter. Folded in from the old standalone
+    per-role windows) and the live num_ctx setter. Folded in from the old standalone
     /context 2026-07-07: the readout and the setter both belong under /config, the one runtime-
     settings front door."""
     from config import get_config
@@ -264,10 +264,6 @@ def _config_context(ctx, args):
             source = f"auto · {model_id('tool_caller')} capability"
         per_role = {role: cfg.num_ctx_for(model_id(role)) for role in _ROLES}
         ui.show_context(window, used, source, per_role)
-        # The hardware half of the runtime readout (absorbed from the old /system).
-        from tui.system_monitor import get_system_metrics
-
-        ui.show_system_metrics(get_system_metrics())
         return
 
     args, session, save = split_persist_flags(args)

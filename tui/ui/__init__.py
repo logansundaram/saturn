@@ -109,7 +109,7 @@ from .response import response, ResponseStream
 
 # On-demand readouts + log lines.
 from .readouts import (
-    show_system_metrics, show_context,
+    show_context,
     note, warn, steer_note, pause_note, echo_queued,
 )
 
@@ -125,7 +125,7 @@ __all__ = [
     "render_plan", "show_plan",
     "ask_approval",
     "response", "ResponseStream",
-    "show_system_metrics", "show_context",
+    "show_context",
     "note", "warn", "steer_note", "pause_note", "echo_queued",
     "section", "table", "risk_style", "status_glyph",
 ]

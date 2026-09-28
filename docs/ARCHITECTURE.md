@@ -15,7 +15,7 @@ message without tool calls is the answer.
 
 ```
 agent.py            entry point — parses the CLI, routes into app/ (thin; re-exports for tests)
-benchmark.py        the graded trust benchmark + capability regression suites (dev-only)
+benchmark.py        the graded trust benchmark (dev-only)
 config.py/.yaml     the single source of truth for model bindings, paths, and runtime knobs
 diag.py             diagnostic logging to logging/diag.log (never print() — TUI-safe)
 textutil.py         leaf text helpers (truncation, head+tail clamping, byte formatting)

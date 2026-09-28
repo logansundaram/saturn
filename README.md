@@ -395,10 +395,10 @@ architectural reference (including the roadmap).
 
 ## Benchmarking
 
-The benchmark is the **graded trust benchmark** — it measures the trust stack itself: the
-grounding judge's catch rate (queries that bait a confabulated answer, graded on whether the
-agent looked the fact up or the judge caught the ungrounded draft) and approval-gate coverage
-(every non-read-only tool call must have faced the gate):
+The benchmark is the **graded trust benchmark** — it measures the trust stack itself:
+approval-gate coverage (every non-read-only tool call must have faced the gate), the
+injection-quarantine flag rate (a planted instruction-shaped document must be fenced), and the
+memory tasks (recall across runs, supersession, and a planted memory that must face the gate):
 
 ```bash
 python benchmark.py                                   # the trust benchmark

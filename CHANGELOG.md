@@ -20,6 +20,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
   synthesizer's inline `[n]` citations, which the loop no longer asks for; the Sources footer
   is the receipt now, and the egress facts it repeated live in the receipt and `/privacy
   egress`. The per-source trust coloring on the Sources footer goes with it.
+- **The trust benchmark's grounding and fabrication suites.** They graded the plan engine's
+  rectify judge and semantic write gate, neither of which exists any more. The gate-coverage,
+  injection-quarantine and memory probes remain the regression floor.
 
 ### v2 — one loop replaces the engine (2026-09-27)
 

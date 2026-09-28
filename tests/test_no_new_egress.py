@@ -2,7 +2,7 @@
 Saturn's declared boundary).
 
 The only ways anything leaves the machine are the chokepoints CLAUDE.md names: local Ollama
-inference (`core/llms.py`, the raw-mode continuation in `core/continuation.py`), a web search /
+inference (`core/llms.py`), a web search /
 page fetch (`tools/web.py`), a configured MCP server (`tools/mcp_client.py`) — every one of them
 routed through `trust/egress.py`'s check/record. This test pins that list: a network-client
 import anywhere else in the source tree fails, so a new egress path can never land silently. A
@@ -29,7 +29,6 @@ _NET_IMPORT = re.compile(
 # The declared egress chokepoints (relative POSIX paths) → the clients each may import.
 _ALLOWED = {
     "core/llms.py": {"httpx", "langchain_ollama", "ollama"},
-    "core/continuation.py": {"httpx"},
     "tools/web.py": {"httpx", "trafilatura", "ddgs"},
     "tools/mcp_client.py": {"mcp"},
     # RAG ingest uses trafilatura's HTML→text EXTRACTION on local files only — never its fetch.

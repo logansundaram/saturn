@@ -38,7 +38,7 @@ turn. Every node's prompt sends the stable half as its own message
 right after the system prompt and the dynamic half after it, and the idle prime (core/prime.py)
 re-sends exactly `stable_grounding()` between turns so the daemon holds a checkpoint at that
 message boundary: the next turn's agent call then prefills only what is new
-(core/serving.py, "the prefix cache"). `context` stays the joined block for every reader that
+(docs/OPTIMIZATIONS.md, "the prefix cache"). `context` stays the joined block for every reader that
 wants the whole thing (/trace context, older checkpoints).
 """
 

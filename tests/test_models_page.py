@@ -284,7 +284,6 @@ def env(monkeypatch, printed):
         "pick": "",          # the row prompt: Enter = take the recommended tier
         "answer": "n",       # the pull prompt
         "embedder": "n",     # the "switch the embedder too?" confirm after an Enter
-        "calibrated": {"qwen3.5:0.8B", "qwen3.5:2b", "qwen3.5:4b", "qwen3.5:9b", "qwen3.8:27b"},
         "persisted": [],
         "pull_calls": [],
         "pull_rc": 0,
@@ -310,7 +309,6 @@ def env(monkeypatch, printed):
         return env["pick"]
 
     monkeypatch.setattr("tui.ui.ask", ask)
-    monkeypatch.setattr(runtime, "_calibrated", lambda tag: tag in env["calibrated"])
     monkeypatch.setattr("commands.config._persist_key",
                         lambda cfg, key: env["persisted"].append((key, cfg.get(key))))
     monkeypatch.setattr(runtime, "_resync_rag_after_model_change",
@@ -427,14 +425,6 @@ def test_declining_the_pull_keeps_the_current_tier_and_names_the_command(env, pr
     _run()
     assert env["pull_calls"] == [] and env["cfg"].active_tier == "4b" and env["persisted"] == []
     assert "ollama pull qwen3.6:35b" in "\n".join(printed)
-
-
-def test_calibration_is_marked_per_chat_row_and_never_on_an_embedder(env, printed):
-    _run("list")
-    assert "calibrated" in _row(printed, "27b", "qwen3.8:27b")
-    assert "uncalibrated" in _row(printed, "35b", "qwen3.6:35b")
-    assert "calibrated" not in _row(printed, "8b", "qwen3-embedding:8b")
-    assert "/confidence" in "\n".join(printed)
 
 
 def test_enter_alone_never_moves_the_embedder(env, printed, monkeypatch):

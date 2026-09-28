@@ -1,6 +1,6 @@
 """
 The final answer: `response` renders a completed (non-streamed) answer as real markdown under a
-labeled rule plus a one-line receipt; `ResponseStream` renders the synthesize node's token-by-token
+labeled rule plus a one-line receipt; `ResponseStream` renders the agent node's token-by-token
 stream live (a transient, screen-bounded tail that always erases cleanly) then re-renders the whole
 answer once on finish. Both end on the same receipt — the permanent echo of the transient status bar.
 """
@@ -12,7 +12,7 @@ from textutil import SOURCE_ENTRY_RE, split_sources_footer
 from . import _base
 from ._base import (
     Constrain, Live, Markdown, Padding, Text, _console, _RICH,
-    _DIM, _HUMAN_STYLE, _LOW_CONF_STYLE, _fmt_dur, _term_width,
+    _DIM, _fmt_dur, _term_width,
 )
 from .statusbar import _live_stop
 from .listing import section
@@ -72,43 +72,6 @@ _GLASS_HINT = "/trace answer: answer provenance"
 # headline facts on every answer, no /trace answer required. Pop-on-read: a stale box can never paint a
 # later answer (error/Ctrl-C turns never set one; a consumer that doesn't render still clears it).
 _turn_glass = None
-
-# ── per-turn correction provenance (interrupt-and-correct) ─────────────────────────────────────
-# The same pop-on-read pattern for the answer buffer (core/provenance.py): when the finished turn
-# carries human-authored spans (the user froze the stream and corrected it), the final render
-# marks those characters distinctly and the receipt counts the corrections. The marking is for
-# the HUMAN and the audit trail only — the model saw clean text.
-_turn_buffer = None
-
-# The answer-marking styles live in _base (`_HUMAN_STYLE`, `_LOW_CONF_STYLE`) — imported above,
-# and re-exported by name here because trace.py's replay marking reads them from this module.
-
-
-def set_turn_buffer(state) -> None:
-    """Stash the finished turn's answer buffer for the final render (pop-on-read, like
-    set_turn_provenance): kept when the completed buffer carries human edits (the corrected
-    body renders span-marked) or a confidence overlay (the receipt counts the uncertain runs)
-    — a plain turn renders exactly as before."""
-    global _turn_buffer
-    _turn_buffer = None
-    try:
-        from core import provenance
-
-        buf = (state or {}).get("answer_buffer")
-        if (
-            isinstance(buf, dict)
-            and buf.get("state") == "complete"
-            and (provenance.corrected(buf) or buf.get("confidence"))
-        ):
-            _turn_buffer = buf
-    except Exception:
-        _turn_buffer = None
-
-
-def _pop_turn_buffer():
-    global _turn_buffer
-    buf, _turn_buffer = _turn_buffer, None
-    return buf
 
 def set_turn_provenance(state) -> None:
     """Build the live answer-provenance box for the turn that just finished (trust.glassbox.build_live
@@ -189,21 +152,14 @@ def _print_sources(entries: list[str], gb) -> None:
                 print(f"  {ln}   {glyph} {note}")
 
 
-def _print_receipt(corrections: int = 0, uncertain: int = 0) -> None:
+def _print_receipt() -> None:
     """The one-line receipt under every answer: the trust segment leads as semantically-colored
     spans WHEN the turn deviated (what was sent / blocked / gated — a calm local turn emits
-    none), then the human-control facts (`✎ n corrections` when the user froze and edited this
-    answer mid-stream; `◌ n uncertain` when the model's own logprobs marked low-confidence runs
-    — the red the stream showed live, surviving the markdown re-render as a count), then the dim
-    run stats. The plain (no-rich) path prints the identical text, unstyled. The first time the
-    trust segment shows egress or a gated count, a dim `/glass` pointer is appended once per
-    install."""
+    none), then the dim run stats. The plain (no-rich) path prints the identical text, unstyled.
+    The first time the trust segment shows egress or a gated count, a dim `/glass` pointer is
+    appended once per install."""
     stats = _stats_parts()
     spans = _trust_spans()
-    if corrections:
-        spans = spans + [(f"✎ {corrections} correction{'s' if corrections != 1 else ''}", "human")]
-    if uncertain:
-        spans = spans + [(f"◌ {uncertain} uncertain span{'s' if uncertain != 1 else ''}", "uncertain")]
     tail = None
     if any(kind in ("sent", "blocked", "gated") for _, kind in spans):
         try:
@@ -302,201 +258,34 @@ def response(text: str) -> None:
     _final_render(text, plain_body=text)
 
 
-def _print_marked_body(body: str, buf: dict) -> bool:
-    """The offset-faithful marked render for a CORRECTED answer: human-corrected characters cyan
-    and any surviving low-confidence runs marked (`_LOW_CONF_STYLE`; human cyan layered ON TOP —
-    an already-reviewed region
-    never re-alarms). Markdown is traded for exact character-position fidelity, because the
-    human's edit must be visible precisely where it landed and a markdown re-flow would lose
-    those offsets (the deliberate interrupt-and-correct choice — an uncorrected-but-uncertain
-    answer instead keeps its markdown via `_print_markdown_confidence`). Returns False (caller
-    falls back) when the buffer text doesn't prefix the body, or there is nothing to mark."""
-    try:
-        from core import confidence, provenance
-
-        prose = str(buf.get("text") or "").rstrip()
-        if not prose or not body.startswith(prose):
-            return False
-        human = provenance.human_spans(buf)
-        runs = confidence.buffer_runs(buf)
-        if not human and not runs:
-            return False
-        t = Text(body)
-        for s, e in runs:
-            s, e = min(s, len(prose)), min(e, len(prose))
-            if e > s:
-                t.stylize(_LOW_CONF_STYLE, s, e)
-        for s, e in human:  # after the mark: the later stylize wins, human cyan on top
-            s, e = min(s, len(prose)), min(e, len(prose))
-            if e > s:
-                t.stylize(_HUMAN_STYLE, s, e)
-        width = min(_term_width(), _BODY_WIDTH)
-        _console.print(Padding(t, (0, 0, 0, 2)), width=width)
-        return True
-    except Exception:
-        return False  # marking is additive — never lose the answer over it
-
-
-def _mark_segments(segments, phrases: list, style: str):
-    """Yield a Rich Segment stream with `phrases` marked WHERE THEY OCCUR, combining `style` into
-    each segment's existing style (so a bold low-confidence phrase stays bold AND marked). This
-    marks by CONTENT, not source offset — which is what lets markdown survive: Rich's markdown
-    reflow destroys source character offsets, but a phrase's text stays intact within a rendered
-    segment. A phrase split across a markdown style boundary or a soft-wrap simply isn't found in
-    any one segment and goes unmarked — an honest additive miss, never a mangled render.
-
-    (Named `_redden_segments` until the low-confidence mark stopped being red — see
-    `_base._LOW_CONF_STYLE`. It was always style-agnostic; only the name said otherwise.)"""
-    from rich.segment import Segment
-    from rich.style import Style
-
-    mark = Style.parse(style)
-    for seg in segments:
-        t = seg.text
-        if seg.control or not t or not phrases:
-            yield seg
-            continue
-        spans: list[list[int]] = []
-        for ph in phrases:
-            if not ph:
-                continue
-            start = 0
-            while (i := t.find(ph, start)) != -1:
-                spans.append([i, i + len(ph)])
-                start = i + len(ph)
-        if not spans:
-            yield seg
-            continue
-        spans.sort()
-        merged: list[list[int]] = []
-        for s, e in spans:
-            if merged and s <= merged[-1][1]:
-                merged[-1][1] = max(merged[-1][1], e)
-            else:
-                merged.append([s, e])
-        base = seg.style or Style()
-        pos = 0
-        for s, e in merged:
-            if s > pos:
-                yield Segment(t[pos:s], base)
-            yield Segment(t[s:e], base + mark)
-            pos = e
-        if pos < len(t):
-            yield Segment(t[pos:], base)
-
-
-class _ConfidenceMarkdown:
-    """A Markdown renderable whose low-confidence phrases render red with the markdown formatting
-    (headings, bold, lists, fenced code) fully preserved — because the marking happens on the
-    rendered SEGMENT stream by content (see _mark_segments), not on the source text by offset.
-    This is what lets an uncertain answer keep its markdown AND show its marks, unlike the
-    offset-faithful `_print_marked_body` (which a human correction still needs for exact edit
-    positions)."""
-
-    def __init__(self, markup: str, phrases: list, style: str):
-        self._md = Markdown(markup)
-        self._phrases = list(phrases)
-        self._style = style
-
-    def __rich_console__(self, console, options):
-        yield from _mark_segments(console.render(self._md, options), self._phrases, self._style)
-
-
-def _print_markdown_confidence(body: str, buf: dict) -> bool:
-    """Render `body` as real markdown with its low-confidence runs marked (markdown preserved —
-    the common uncorrected-but-uncertain case). Returns False (caller falls back to plain
-    markdown) when the buffer doesn't prefix the body or there is nothing to mark."""
-    try:
-        from core import confidence
-
-        prose = str(buf.get("text") or "").rstrip()
-        if not prose or not body.startswith(prose):
-            return False
-        phrases, seen = [], set()
-        for s, e in confidence.buffer_runs(buf):
-            ph = prose[min(s, len(prose)):min(e, len(prose))]
-            if ph and ph not in seen:
-                seen.add(ph)
-                phrases.append(ph)
-        if not phrases:
-            return False
-        width = min(_term_width(), _BODY_WIDTH)
-        _console.print(
-            Padding(_ConfidenceMarkdown(body, phrases, _LOW_CONF_STYLE), (0, 0, 0, 2)),
-            width=width,
-        )
-        return True
-    except Exception:
-        return False  # marking is additive — never lose the answer over it
-
-
-def _render_answer_body(body: str, buf) -> None:
-    """Render the answer body, choosing how to mark it: a CORRECTED answer keeps the
-    offset-faithful plain-text render (markdown traded for exact edit-position fidelity — the
-    deliberate interrupt-and-correct choice); an uncorrected-but-UNCERTAIN answer keeps its
-    markdown and marks the low-confidence runs by content; a plain confident answer renders as
-    markdown. All marking is additive — any failure falls through to plain markdown."""
-    if buf is not None:
-        try:
-            from core import confidence, provenance
-
-            has_human = bool(provenance.human_spans(buf))
-            has_runs = bool(confidence.buffer_runs(buf))
-        except Exception:
-            has_human = has_runs = False
-        if has_human and _print_marked_body(body, buf):
-            return
-        if has_runs and not has_human and _print_markdown_confidence(body, buf):
-            return
-    _print_markdown_body(body)
-
-
 def _final_render(text: str, *, plain_body: "str | None") -> None:
     """THE final-answer tail (provenance pop → sources split → markdown body → trust-colored
     Sources → receipt → first-answer hint), shared by `response()` and ResponseStream.finish()
     so streamed and non-streamed answers can never drift apart. `plain_body` is what the
     no-rich path prints as the body — the whole text for `response()`, only the trailer beyond
-    the already-typed stream for `finish()` (None = nothing left to print). Body marking is
-    dispatched by `_render_answer_body`: a corrected answer renders offset-faithfully, an
-    uncertain answer keeps markdown with its low-confidence runs marked, a plain answer is
-    markdown (the receipt counts corrections + uncertain spans) — see set_turn_buffer."""
+    the already-typed stream for `finish()` (None = nothing left to print)."""
     gb = _pop_turn_provenance()
-    buf = _pop_turn_buffer()
-    corrections = len(buf.get("edits") or []) if buf else 0
-    uncertain = _uncertain_count(buf)
     if _RICH:
         prose, src_lines = _split_sources(text)
         body = prose if src_lines else text
-        _render_answer_body(body, buf)
+        _print_markdown_body(body)
         if src_lines:
             _print_sources(src_lines, gb)
         _console.print()  # let the answer breathe before the receipt
-        _print_receipt(corrections, uncertain)
+        _print_receipt()
         _first_answer_hint()
         _console.print()  # trailing whitespace before the next prompt
     else:
         if plain_body:
             print(plain_body)
             print()
-        _print_receipt(corrections, uncertain)
+        _print_receipt()
         _first_answer_hint()
         print()
 
 
-def _uncertain_count(buf) -> int:
-    """How many low-confidence runs the finished buffer carries — the receipt's count (the
-    final body re-renders as markdown, which can't carry the red marks; the count keeps the
-    signal on the record). 0 for no buffer / no overlay / any failure."""
-    try:
-        from core import confidence
-
-        return len(confidence.buffer_runs(buf)) if buf else 0
-    except Exception:
-        return 0
-
-
 # ── streaming the final answer ─────────────────────────────────────────────────────
-# The synthesize node streams its answer token-by-token (LangGraph messages mode -> run_turn ->
+# The agent node streams its answer token-by-token (LangGraph messages mode -> run_turn ->
 # on_token). ResponseStream renders those tokens live, then finishes with the same finished look as
 # `response`. The hard part in a terminal is long output: a growing Live region that outgrows the
 # screen can't be erased cleanly. So during streaming we show a *transient* Live of only the last
@@ -511,115 +300,31 @@ class ResponseStream:
         self._live = None
         self._started = False
         self._last = 0.0  # last repaint time (throttle)
-        # The live confidence ledger: character-ranged logprob entries over "".join(_chars),
-        # graded per repaint so low-confidence runs render red AS THE ANSWER STREAMS — the
-        # whole point: the user sees where the model is unsure while Esc can still freeze it.
-        # (The buffer on state carries the canonical copy; this one only paints the live tail.)
-        self._conf: list[dict] = []
-        # The (enter, exit) threshold pair, resolved once per stream by _visible_runs — each
-        # resolution otherwise stats the calibration overlay on every repaint.
-        self._conf_th: "tuple[float, float] | None" = None
-        self._len = 0  # running char count of _chars (the ledger's offset base)
-        # Interrupt-and-correct bookkeeping. `_froze` is sticky for the whole turn (the answer
-        # needs its rule back at finish() whether or not tokens resumed — a `done` decision
-        # produces none); `_reopen_pending` is the one-shot "the next token reopens the tail"
-        # latch, which must NOT be inferred from `_live is None` (on the plain path it always is).
-        self._froze = False
-        self._reopen_pending = False
 
     @property
     def started(self) -> bool:
         return self._started
 
-    def feed(self, text: str, logprobs=None) -> None:
-        """Append a streamed answer token; opens the response section on the first one. After a
-        freeze (freeze_display tore the live tail down), the first resumed token quietly reopens
-        a live region — same transient-tail contract, no second section header. `logprobs`, when
-        the daemon reported them, extend the live confidence ledger (see __init__)."""
+    def feed(self, text: str) -> None:
+        """Append a streamed answer token; opens the response section on the first one."""
         if not text:
             return
         if not self._started:
             self._begin()
-        elif self._reopen_pending:
-            self._reopen_pending = False
-            self._reopen()
         self._chars.append(text)
-        if logprobs:
-            try:
-                from core import confidence
-
-                self._conf.extend(confidence.align_chunk(text, logprobs, offset=self._len))
-            except Exception:
-                pass  # the marking is additive — never let it cost the stream
-        self._len += len(text)
         if self._live is not None:
             now = time.perf_counter()
             if now - self._last >= 0.06:  # throttle (~16/s) so granular tokens don't thrash the live
                 self._live.update(_constrained(self._tail()), refresh=True)
                 self._last = now
-        else:  # plain (no-rich) path: just type it out (no styling to carry the marks)
+        else:  # plain (no-rich) path: just type it out
             print(text, end="", flush=True)
-
-    def _freeze_hint(self) -> None:
-        """One-time discovery hint for the freeze key (receipt.take_hint — sentinel-backed),
-        printed at the exact moment it's actionable: the answer just started streaming and the
-        status bar (whose legend would teach it) has left the screen. Only when the latch is
-        actually armed — never advertise a hotkey the model can't honor."""
-        try:
-            from core.continuation import get_freeze_controller
-            from trust import receipt
-
-            if not (get_freeze_controller().armed and receipt.take_hint("freeze")):
-                return
-        except Exception:
-            return
-        # The shared note line (readouts.note): this was a seventh hand-copy of the rich/plain
-        # block, and had already drifted — its plain fallback printed an ASCII "." where every
-        # other note prints "·".
-        from .readouts import note
-
-        note("esc freezes this answer mid-stream — edit it, and the model continues from your text")
-
-    def _reopen(self) -> None:
-        """Reopen the live tail after a freeze. The freeze editor owned the screen in between and
-        printed its own block, so the resumed tokens need parting from it — one blank line, the
-        same beat `_begin()` puts under the `── response` rule. (Before this the tail simply
-        reappeared flush against the editor's output, unheaded and unparted.) Rich only: the plain
-        path has no live region, just the blank line.
-
-        Stops the status bar first: the freeze editor restarts it on the way out (correction.
-        edit_answer) so the re-prime gap isn't a dead screen, and rich allows exactly one live
-        region at a time."""
-        _live_stop()
-        if _RICH:
-            _console.print()
-            self._live = Live(console=_console, transient=True, auto_refresh=False)
-            self._live.start()
-        else:
-            print()
-
-    def _resumed_header(self) -> None:
-        """Reopen the `── response` rule for an answer that was frozen. `_begin()`'s rule scrolled
-        up above the freeze editor's own `── answer frozen` block, so without this the final
-        answer lands bare, directly under the editor's output and indistinguishable from it. The
-        subtitle says what actually happened, read from the buffer's own edit record — never
-        "resumed after your edit" over a resume that changed nothing."""
-        if not self._froze:
-            return
-        try:
-            edited = bool(_turn_buffer and _turn_buffer.get("edits"))
-        except Exception:
-            edited = False
-        section("response", "resumed after your edit" if edited
-                            else "resumed — you kept the text unchanged")
-        _console.print() if _RICH else print()
 
     def _begin(self) -> None:
         self._started = True
         _live_stop()  # drop the turn's status bar — the answer takes over the bottom of the screen
         if _RICH:
             section("response")  # parts the answer from the trace rail above it
-            self._freeze_hint()
             _console.print()
             # transient + a screen-bounded tail => the live region always fits, so stop() erases it
             # cleanly no matter how long the answer runs. Manual refresh (throttled in feed).
@@ -627,7 +332,6 @@ class ResponseStream:
             self._live.start()
         else:
             section("response")  # one header vocabulary (listing.section has the plain branch)
-            self._freeze_hint()
             print()
 
     def _tail(self) -> "Text":
@@ -639,9 +343,6 @@ class ResponseStream:
         newline ends a line early, so the same budget spans far more rows than the screen has. The
         region then scrolls off the top and the transient erase corrupts the final render — eating
         the first lines of the answer (the data is fine; only the on-screen handoff breaks).
-
-        Low-confidence runs (the live ledger, graded here per repaint) render red inside the
-        tail — best-effort, and only over the visible slice.
 
         The row budget is computed against `_BODY_WIDTH` because that is the measure the tail is
         actually rendered at (`_constrained`, and the same one `finish()` uses) — counting rows
@@ -670,28 +371,7 @@ class ResponseStream:
             if used >= rows:
                 break
         chosen.reverse()
-        # The chosen lines are a SUFFIX of the joined text (a truncated lone top line keeps its
-        # tail), so the tail's start offset is just the length difference — which maps each
-        # low-confidence run onto per-line positions.
-        pos = len(joined) - len("\n".join(chosen))
-        runs: list[tuple[int, int]] = []
-        if self._conf:
-            try:
-                runs = self._visible_runs(pos, joined)
-            except Exception:
-                runs = []
-        t = Text()
-        for i, ln in enumerate(chosen):
-            if i:
-                t.append("\n")
-            lt = Text(ln)
-            for s, e in runs:
-                s, e = max(s, pos), min(e, pos + len(ln))
-                if e > s:
-                    lt.stylize(_LOW_CONF_STYLE, s - pos, e - pos)
-            t.append_text(lt)
-            pos += len(ln) + 1  # +1: the newline between physical lines
-        return t
+        return Text("\n".join(chosen))
 
     def finish(self, final_text: "str | None" = None) -> None:
         """Close out a successful turn: tear down the live tail, render the full answer once as
@@ -699,21 +379,15 @@ class ResponseStream:
 
         `final_text`, when given, is rendered instead of the streamed chars — the loop passes the
         RECORDED final message, which may carry mechanically-appended trailers the token stream
-        never saw (the citations Sources footer from synthesize). Falls back to the streamed text
-        when absent/empty so a caller without the final message loses nothing.
-
-        An answer that was FROZEN reopens its `── response` rule first (`_resumed_header`): the
-        original scrolled up above the freeze editor's block, so the answer would otherwise land
-        bare underneath the editor's output. The status bar is dropped here too, because the
-        freeze editor restarts it on exit and it must not be live across the final render."""
+        never saw (the Sources receipt, the incidents note). Falls back to the streamed text
+        when absent/empty so a caller without the final message loses nothing."""
         text = final_text if isinstance(final_text, str) and final_text else "".join(self._chars)
         if self._live is not None:
             self._live.stop()  # transient: erases the streaming tail
             self._live = None
-        _live_stop()  # …and the status bar, if the freeze editor restarted it (see edit_answer)
+        _live_stop()
         if not _RICH:
             print()  # close the typed-out line
-        self._resumed_header()  # a frozen answer gets its `── response` rule back
         # The plain path typed the streamed tokens out already — its body is only what the
         # recorded final text appends beyond them (e.g. the Sources footer), never the whole
         # thing twice. The rich path re-renders the full text (the live tail was transient).
@@ -721,73 +395,7 @@ class ResponseStream:
         trailer = None
         if text.rstrip() != streamed and text.startswith(streamed):
             trailer = text[len(streamed):].strip("\n")
-        if not _RICH and getattr(self, "_plain_stale", False):
-            # A freeze-edit happened on the plain path: the terminal shows the PRE-edit tokens
-            # (typed as they streamed; nothing transient to erase) while the record was
-            # reset_to() the edited text — re-render the corrected answer in full like the rich
-            # path does, or the user's correction never appears on screen.
-            trailer = text
         _final_render(text, plain_body=trailer)
-
-    def freeze_display(self) -> None:
-        """A freeze (interrupt-and-correct): tear down the live tail so the freeze editor owns
-        the screen, KEEPING the streamed chars — feed() reopens a live region on the first
-        resumed token. The transient Live erases cleanly; the editor shows the frozen text.
-
-        Latches both interrupt-and-correct flags: `_reopen_pending` (one-shot — the next token
-        reopens the tail, parted from the editor's block) and `_froze` (sticky for the turn — the
-        final answer needs its `── response` rule back even when the user chose `done` and no
-        token ever resumes)."""
-        self._froze = True
-        self._reopen_pending = True
-        if self._live is not None:
-            try:
-                self._live.stop()
-            except Exception:
-                pass
-            self._live = None
-        if not _RICH and self._started:
-            print()  # close the typed-out line before the editor prompts
-
-    def reset_to(self, text: str, confidence=None) -> None:
-        """Replace the streamed record with the (human-edited) buffer text so the resumed live
-        tail and finish()'s trailer math continue from what the user actually kept — never from
-        the pre-edit stream. `confidence` reseeds the live ledger with the edit-shifted overlay
-        (the caller runs the ONE edit-diff implementation, provenance.apply_edit, over the
-        pre-edit entries); absent, the kept text simply streams on unmarked."""
-        self._chars = [text] if text else []
-        self._len = len(text) if text else 0
-        self._conf = list(confidence or [])
-        self._conf_th = None  # a freeze-edit may span a /confidence change; re-resolve
-        if not _RICH:
-            # The plain path already typed the pre-edit tokens to the terminal and can't erase
-            # them — mark the transcript stale so finish() re-renders the corrected answer in
-            # full instead of printing only the trailer beyond the (now edited) record.
-            self._plain_stale = True
-
-    def _visible_runs(self, pos: int, joined: str) -> "list[tuple[int, int]]":
-        """Low-confidence runs over the VISIBLE tail only. `_tail` runs on every repaint (~16/s)
-        while the ledger grows one entry per generated token, so grading the whole ledger each
-        time is quadratic in answer length — on the same thread that pulls tokens out of the
-        graph stream. `confidence.grade_start` owns the boundary question (where can grading
-        begin without cutting a run that reaches the window — hysteresis runs have no length
-        bound, so a fixed margin would drop the red tail of a long uncertain stretch); offsets
-        stay absolute (the full `joined` text is passed), so the runs map onto the tail exactly
-        as before. Only runs entirely above the window are lost, and those were discarded by
-        the caller anyway."""
-        from core import confidence
-
-        entries = self._conf
-        if self._conf_th is None:
-            # Resolve the enter/exit PAIR once per stream: each call otherwise walks
-            # calibration_for -> confidence_store.read() -> a stat() syscall, per repaint. The
-            # pair must be resolved together (see confidence.low_runs) — a bare enter pins the
-            # derived-exit fallback shut.
-            enter = confidence.threshold()
-            self._conf_th = (enter, confidence.exit_threshold())
-        enter, exit_p = self._conf_th
-        start = confidence.grade_start(entries, joined, pos, threshold_p=enter, exit_p=exit_p)
-        return confidence.low_runs(entries[start:], joined, threshold_p=enter, exit_p=exit_p)
 
     def discard(self) -> None:
         """Drop a stream that turned out NOT to be the answer (the model prefaced a tool call
@@ -802,8 +410,6 @@ class ResponseStream:
         elif self._started and not _RICH:
             print()
         self._chars = []
-        self._len = 0
-        self._conf = []
         self._started = False
 
     def abort(self) -> None:

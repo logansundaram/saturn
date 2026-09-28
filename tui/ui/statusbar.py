@@ -217,16 +217,8 @@ class _StatusBar:
         # ── key legend ── the turn-time keys, taught ambiently while they're usable. Trails the
         # whole line ON PURPOSE: the bar trims from the right edge on a narrow terminal (no-wrap
         # + ellipsis), so the hint is the first thing sacrificed — never the posture or progress.
-        # While the answer is streaming, Esc means freeze (interrupt-and-correct) — the legend
-        # reads the live latch so it teaches the key's CURRENT meaning.
         zone()
-        try:
-            from core.continuation import get_freeze_controller
-
-            esc = "esc freeze+edit" if get_freeze_controller().armed else "esc pause"
-        except Exception:
-            esc = "esc pause"
-        bar.append(f"{esc} · ctrl-c cancel", style=_DIM)
+        bar.append("esc pause · ctrl-c cancel", style=_DIM)
         return bar
 
 

@@ -178,7 +178,6 @@ def _initial_state() -> AgentState:
         "documents_retrieved": [],
         "tool_events": [],
         "gate_events": [],
-        "answer_buffer": None,
         "tok_per_sec": 0.0,
         "context_tokens": 0,
     }

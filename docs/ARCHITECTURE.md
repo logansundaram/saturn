@@ -54,7 +54,7 @@ The whole product is one loop. Reading it end to end explains 80% of the repo:
      The agent sends the stable half as its own message right after its system prompt, and
      `core/prime.py` re-sends exactly that prefix — through the same bound model, so the tool
      schemas the chat template renders are inside it — between turns so the daemon's prompt
-     cache resumes there (see `core/serving.py`, "the prefix cache").
+     cache resumes there (see `docs/OPTIMIZATIONS.md`, "the prefix cache").
    - `nodes/agent.py` makes ONE native tool-calling call per pass (`bind_tools` over the
      registry, think off, streamed) over `[system][stable][history…][dynamic + request][turn…]`.
      Around the call, deterministic checks in a fixed order: a steer (Esc + text) lands as a
@@ -202,8 +202,8 @@ deliberate name reuse. When you're jumping by filename, disambiguate here:
 4. **`nodes/` in graph order** — ground, agent, approval, tools. This is the heart; take it
    slowly at `agent.py` (the check order around the call is load-bearing — the module
    docstring and `tests/test_agent_loop.py` pin it).
-5. **`core/structured.py` + `core/tool_args.py` + `core/serving.py`** — the small-model
-   hardening and the per-task decoding options the agent leans on.
+5. **`core/structured.py` + `core/tool_args.py`** — the small-model hardening and the
+   per-task decoding options the agent leans on.
 6. **`trust/policy.py` → `nodes/approval.py` → `tui/ui/approval.py`** — the gate, end to end.
 7. **`trust/egress.py`, `quarantine.py`, `receipt.py`, `glassbox.py`** — the rest of the
    trust stack.

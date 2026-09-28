@@ -19,20 +19,16 @@ def run_turn(graph, payload, config, approver, on_update=None, pause=None, on_to
     `approver(interrupt_value) -> decision` resolves each interrupt — for the approval gate a bool,
     for the plan-review gate the editor's `{action, plan}` dict — and the result is fed back as the
     `Command(resume=...)` value. `on_update(node, delta)` is called for every node update (the trace
-    + live plan panel). `on_token(text, logprobs=None)`, if given, receives the *agent* node's
-    answer tokens as they generate (LangGraph `stream_mode="messages"`, filtered to that node) plus
-    each chunk's raw token logprobs when the daemon reported them (the live confidence marking), so
-    the UI can render the final answer live. `pause`, if given, is a `typeahead.InputQueue` (any start()/stop() console
+    + live plan panel). `on_token(text)`, if given, receives the *agent* node's answer tokens as
+    they generate (LangGraph `stream_mode="messages"`, filtered to that node) so the UI can render
+    the final answer live. `pause`, if given, is a `typeahead.InputQueue` (any start()/stop() console
     reader): it's started only while the graph is executing and stopped before any blocking input(),
     so it can capture type-ahead + the Esc pause without ever stealing the prompt's keystrokes (the
     queued lines themselves are drained by the REPL loop, not here). Returns the final state.
 
-    Streams three modes at once: "updates" drives the trace/plan and carries the interrupt marker
+    Streams two modes at once: "updates" drives the trace/plan and carries the interrupt marker
     (unchanged routing — pause/resume is still decided by get_state below); "messages" carries the
-    per-token answer stream; "custom" is the parked token-steering seam (`{"answer_token": …}`
-    payloads from a raw-mode continuation — nothing writes them since the v2 loop, but the
-    channel stays so re-adding the feature is one node-side change). Each streamed item is a
-    `(mode, data)` pair."""
+    per-token answer stream. Each streamed item is a `(mode, data)` pair."""
     # The loop visits three nodes per tool round; LangGraph's default recursion_limit (25) would
     # kill a healthy multi-step turn mid-flight. Generous but finite — the REAL bound is
     # runtime.max_iterations (agent passes), which lands at an honest answer long before this.
@@ -44,18 +40,13 @@ def run_turn(graph, payload, config, approver, on_update=None, pause=None, on_to
         # Tokens flow to on_token the moment they generate — NEVER buffered until the node's
         # updates event: LangGraph emits a node's update only after the node COMPLETES, so
         # holding chunks for it delivers the whole answer in one burst and silently kills the
-        # token-by-token streaming the ResponseStream exists for. The synthesize rail line
+        # token-by-token streaming the ResponseStream exists for. The agent rail line
         # (metrics from the update) consequently prints after the stream opens; rich inserts
         # it above the live tail, and the final render follows it.
         try:
             for mode, data in graph.stream(
-                pending, config, stream_mode=["updates", "messages", "custom"]
+                pending, config, stream_mode=["updates", "messages"]
             ):
-                if mode == "custom":
-                    # Continuation-path answer tokens (the raw-mode resume after a freeze-edit).
-                    if on_token and isinstance(data, dict) and data.get("answer_token"):
-                        on_token(str(data["answer_token"]), data.get("logprobs"))
-                    continue
                 if mode == "messages":
                     # (message_chunk, metadata) — stream only the agent node's tokens. Filters:
                     # skip other nodes' model calls, and require an AIMessageChunk (a streaming
@@ -70,10 +61,7 @@ def run_turn(graph, payload, config, approver, on_update=None, pause=None, on_to
                     ):
                         text = getattr(message_chunk, "content", "")
                         if text:
-                            lp = (getattr(message_chunk, "response_metadata", None) or {}).get(
-                                "logprobs"
-                            )
-                            on_token(text if isinstance(text, str) else str(text), lp)
+                            on_token(text if isinstance(text, str) else str(text))
                     continue
                 # mode == "updates"
                 if "__interrupt__" in data:

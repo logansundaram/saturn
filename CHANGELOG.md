@@ -7,6 +7,16 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
 
 ## [Unreleased]
 
+### The v2 cut (2026-09-27)
+
+#### Removed
+
+- **Confidence coloring and token steering (freeze-edit-continue).** Parked with the v2 loop
+  and never armed by it; deleted rather than carried: `/confidence`, `runtime.confidence`,
+  `runtime.confidence_threshold`, the per-model calibration table, the freeze editor, the
+  `calibrated` column on `/models`, and the answer buffer on state. Every model call stops
+  requesting per-token logprobs — a chat turn no longer pays for a marking nothing rendered.
+
 ### v2 — one loop replaces the engine (2026-09-27)
 
 _The entries under this heading supersede the quick-path / planner / rectify entries further down

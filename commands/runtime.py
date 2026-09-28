@@ -260,14 +260,6 @@ def _switch_embedder(cfg, model: str, *, session: bool) -> None:
     _resync_rag_after_model_change()
 
 
-def _calibrated(tag: str) -> bool:
-    """Whether the tag has a confidence calibration behind it (the user overlay, then the
-    shipped table). A seam the tests replace."""
-    from core import confidence
-
-    return confidence.calibration_for(tag) is not None
-
-
 def _pulled_cell(models: list, up: bool, have: set) -> tuple:
     from core.llms import _model_present
 
@@ -321,11 +313,10 @@ def _render_page(cfg, prof, rec, *, up: bool, have: set) -> None:
             (f"{_k(rec.windows[key]):>4} ctx", "dim"),
             f"{rec.needs[key]:>5.1f} GB",
             _pulled_cell([running], up, have),
-            ("calibrated", "dim") if _calibrated(running) else ("uncalibrated", "yellow"),
             status,
         ))
     rows.append(("",))
-    rows.append(dim("", "embedder", "model", "weights", "", "need", "", "", ""))
+    rows.append(dim("", "embedder", "model", "weights", "", "need", "", ""))
     for key in model_family.embedder_classes():
         n += 1
         tag = model_family.embedder_tag_for(key)
@@ -343,7 +334,6 @@ def _render_page(cfg, prof, rec, *, up: bool, have: set) -> None:
             "",
             f"{rec.embedder_needs[key]:>5.1f} GB",
             _pulled_cell([tag], up, have),
-            "",                                   # no calibration claim rides on an embedder
             status,
         ))
     ui.table(rows)
@@ -351,8 +341,7 @@ def _render_page(cfg, prof, rec, *, up: bool, have: set) -> None:
     override = cfg.num_ctx_override
     src = (f"runtime.num_ctx = {override} overrides every window" if override
            else "windows from config.yaml context_window (/config context to change)")
-    ui.note(f"* active · ✓ pulled · need = weights + KV cache at that window + {HEADROOM_GB:g} GB headroom"
-            " · calibrated = confidence coloring measured for this model (/confidence)")
+    ui.note(f"* active · ✓ pulled · need = weights + KV cache at that window + {HEADROOM_GB:g} GB headroom")
     ui.note(src)
     if not up:
         ui.warn("ollama daemon not reachable — start it with `ollama serve` (pulled state unknown)")
@@ -585,9 +574,6 @@ differs from the active one, Enter then asks — y/N, default no — whether to 
 because an embedder switch re-embeds the whole corpus. A pick whose model isn't pulled asks
 first — y/N, default no — and only switches after the pull succeeds. An embedder pick is set
 on every tier (it is a machine choice).
-
-Each chat row also says whether the model is calibrated: confidence coloring is measured per
-model (/confidence), and an uncalibrated tier colors nothing.
 
   /models                    the page, then the prompt
   /models list               the page only (`ls` / --check work too)

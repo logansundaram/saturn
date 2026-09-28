@@ -16,7 +16,7 @@ judge is a deterministic check here, in this order, and each costs the common ca
   6. answer     a message without tool calls gets the mechanical trailers (the Sources
                 receipt, the incidents note) on the RECORDED message — never on the stream.
 
-Prompt order is prefix-cache order (core/serving.py "the prefix cache"):
+Prompt order is prefix-cache order (docs/OPTIMIZATIONS.md, "the prefix cache"):
     [system][user: stable grounding][history…][user: dynamic grounding + request][turn…]
 The first two are the primed lineage (core/prime.py); the bound tools render into the chat
 template's system section, so the catalog is part of that cached prefix.
@@ -196,9 +196,7 @@ def _generate(llm_input: list, *, tools: bool) -> AIMessage:
         calls.append({"name": tc.get("name"), "args": tc.get("args"),
                       "id": tc.get("id") or f"call_{uuid.uuid4().hex[:12]}",
                       "type": "tool_call"})
-    meta = {k: v for k, v in (getattr(full, "response_metadata", None) or {}).items()
-            if k != "logprobs"}
-    kw = {"response_metadata": meta}
+    kw = {"response_metadata": dict(getattr(full, "response_metadata", None) or {})}
     if getattr(full, "usage_metadata", None):
         kw["usage_metadata"] = full.usage_metadata
     return AIMessage(content=content, tool_calls=calls,

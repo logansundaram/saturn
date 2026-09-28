@@ -97,23 +97,6 @@ runtime:
   # many calls faced the approval gate. Every answer proves the posture; false restores the plain
   # stats receipt.
   receipt: true
-  # Token-confidence grading (core/confidence.py): while the final answer streams, the daemon's
-  # per-token logprobs are captured and runs of consecutive low-probability tokens render RED —
-  # live in the streaming tail, in the freeze editor (Esc), and on a corrected answer's final
-  # render; the receipt counts the uncertain spans. The model's own uncertainty, made visible
-  # where it lands. false stops requesting logprobs entirely (nothing is captured or marked).
-  confidence: true
-  # A token counts LOW below this sampled probability (0-1). `auto` (the default) uses the
-  # synthesizer model's CALIBRATED threshold (core/confidence_calibration.py — "worse than 95% of
-  # this model's clean output"; regenerate with utilities/confidence_calibrate.py) and falls back
-  # to 0.20 for an uncalibrated model. Set a NUMBER to pin it: RAISE to mark more aggressively,
-  # LOWER to mark only the model's wildest guesses. A run needs 3+ consecutive low tokens —
-  # single uncertain tokens (an open word choice) are never marked.
-  confidence_threshold: auto
-  # Hysteresis: once a run is open it keeps extending through tokens under this LOOSER exit
-  # probability (default: 1.5x the threshold, capped at 0.95) instead of one merely-unlikely
-  # token closing it mid-phrase. Closed-class words (the/of/is/...) are never graded on their own.
-  # confidence_exit_threshold: 0.30
   # How long a gate `a` (always-allow) grant lives: task (dies at the end of the turn — the
   # default), session (dies when Saturn exits), persist (written to permissions.json). The
   # /policy allow COMMAND always persists. A trust setting: session-only unless --save.

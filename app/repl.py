@@ -2,7 +2,7 @@
 
 Startup (splash, banner, posture line, health checks, first-run setup), the one input reader
 (type-ahead + Esc steering/pause), drag-and-drop file offers, slash-command dispatch, the
-turn lifecycle (trace run, interrupts, streaming answer, provenance), checkpoint pruning,
+turn lifecycle (trace run, interrupts, streaming answer), checkpoint pruning,
 autosave, and auto-compaction. One call — `run_repl()` — owns the whole session.
 """
 
@@ -171,7 +171,6 @@ def run_repl() -> None:
     # (see typeahead.InputQueue).
     input_queue = InputQueue(
         on_change=ui.set_input_preview, on_steer=ui.steer_note, on_pause=ui.pause_note,
-        on_freeze=ui.freeze_note,  # Esc while the answer streams = interrupt-and-correct
     )
     pause_controller = get_pause_controller()
 
@@ -392,9 +391,6 @@ def run_repl() -> None:
         # the Sources footer renders trust-colored (local green / network yellow, injection flags
         # named) — the /glass headline facts, native on every answer. Best-effort inside ui.
         ui.set_turn_provenance(state)
-        # And the interrupt-and-correct buffer: a turn the user froze + corrected renders its
-        # human-authored spans marked, with the correction count on the receipt.
-        ui.set_turn_buffer(state)
         # The answer streamed live during the agent's last pass — close it out (final markdown
         # render + receipt). If nothing streamed (the model yielded no content, an abort at the
         # pause prompt), fall back to rendering the recorded final message.

@@ -38,10 +38,6 @@ python -m pytest tests/test_policy.py -q -k prefix       # one test by name
 # trust benchmark — needs a running Ollama with the active tier pulled
 python benchmark.py [--strict]       # reports to logging/benchmarks/trust_<ts>.json
 
-# dev utilities (live daemon, not shipped in the wheel)
-python utilities/confidence_calibrate.py --models qwen3.8:27b   # regenerates core/confidence_calibration.py
-python utilities/continuation_contract.py                       # the "supported model" contract for token steering
-
 SATURDAY_DEBUG=1 python agent.py     # echo logging/diag.log lines to stderr
 ```
 
@@ -147,7 +143,7 @@ accept). The benchmark's memory tasks and `tests/test_memory_*.py` pin this.
 - `policy.py` — one object behind `/policy risk|allow|open`, `runtime.auto_approve`, and `--yolo`.
   Shell prefix matching is token-based and refuses metacharacters. Persisted in `database/permissions.json`.
 - `egress.py` — every outbound network op calls `check()` (air-gap) then `record()`. The complete list
-  of egress chokepoints is `core/llms.py`, `core/continuation.py`, `tools/web.py`, `tools/mcp_client.py`;
+  of egress chokepoints is `core/llms.py`, `tools/web.py`, `tools/mcp_client.py`;
   `tests/test_no_new_egress.py` fails on a network-client import anywhere else. A new chokepoint is a
   deliberate edit to that test plus check/record wiring. A remote `OLLAMA_HOST` counts as egress.
 - `quarantine.py` — untrusted output (web, MCP, corpus) is scanned, fenced as data, and the next tool

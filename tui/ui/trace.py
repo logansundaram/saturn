@@ -458,15 +458,11 @@ def show_run(run, events) -> None:
     saved_seen = _base._plan_seen
     _base._plan_seen = {}  # let show_plan diff afresh over this run's plan events
     prev = start_dt
-    corrected_buf = None  # the turn's completed answer buffer, when the user froze + edited it
     try:
         for _seq, ts, node, _summary, data in events:
             if node == "plan_gate":
                 continue
             delta = decode_json(data, {})
-            b = delta.get("answer_buffer")
-            if isinstance(b, dict) and b.get("state") == "complete" and b.get("edits"):
-                corrected_buf = b  # replay re-shows the human edits in place (below)
             cur = parse_ts(ts)
             dur = (cur - prev).total_seconds() if (cur and prev) else 0.0
             if cur:
@@ -510,23 +506,9 @@ def show_run(run, events) -> None:
             # column 0. Rich's wrap preserves intra-line leading whitespace (code blocks / nested
             # lists keep their shape), and the measure IS the live answer's _BODY_WIDTH — imported,
             # not copied, so tuning it can never leave the replay wrapping at a stale width.
-            from .response import _BODY_WIDTH, _HUMAN_STYLE
+            from .response import _BODY_WIDTH
 
             body = Text(response_text, style=_DIM)
-            # Interrupt-and-correct: re-show the human-authored spans in place, exactly as the
-            # live answer marked them (the recorded prose is the buffer text plus mechanical
-            # trailers, so the character offsets still index it; clamp defends the write-time
-            # response cap). Only when the buffer text actually prefixes the record — never
-            # mark by guesswork.
-            if corrected_buf is not None:
-                prose = str(corrected_buf.get("text") or "").rstrip()
-                if prose and response_text.startswith(prose):
-                    for sp in corrected_buf.get("spans") or []:
-                        if sp.get("author") == "human":
-                            s = min(int(sp.get("start", 0)), len(response_text))
-                            e = min(int(sp.get("end", 0)), len(response_text))
-                            if e > s:
-                                body.stylize(_HUMAN_STYLE, s, e)
             _console.print(Padding(body, (0, 0, 0, 2)),
                            width=min(_term_width(), _BODY_WIDTH))
         else:

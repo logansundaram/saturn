@@ -174,7 +174,7 @@ def run_headless(args) -> None:
 
         _synth_seen = {"done": False}
 
-        def on_token(_text, _logprobs=None):
+        def on_token(_text):
             if not _synth_seen["done"]:
                 _synth_seen["done"] = True
                 print("synthesizing…", file=sys.stderr)

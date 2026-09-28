@@ -36,12 +36,14 @@ def test_grounding_parts_treats_old_context_as_stable():
     assert grounding_parts({"context_stable": "s", "context_dynamic": "d"}) == ("s", "d")
 
 
-def test_agent_task_is_think_off_with_payload_bound():
-    from core import serving
+def test_agent_task_is_think_off_with_payload_bound(monkeypatch):
+    from core import structured
 
-    t = serving.task_of("agent")
-    assert t.think is False and t.num_predict == 4096 and t.strict is False
-    assert serving.task_for_role("tool_caller") == "agent"
+    monkeypatch.setattr(structured, "_role_is_ollama", lambda role: True)
+    monkeypatch.setattr(structured, "_model_tag", lambda role: "m")
+    kw = structured._invoke_kwargs("tool_caller", None, 0.0)
+    assert kw["reasoning"] is False and kw["options"]["num_predict"] == 4096
+    assert structured._ROLE_TASK["tool_caller"] == "agent"
 
 
 def test_agent_sys_msg_is_stable_and_names_plan_tool():

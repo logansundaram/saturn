@@ -20,14 +20,12 @@ frame. Specifics:
     `synthesize`'s ROW is suppressed the same way but for a different reason: its update fires
     after the answer has already begun streaming, and rich prints above a live region, so drawing
     it would shove the streaming answer down. Only the row goes — the node's metrics still feed
-    the bar (and the receipt), and a freeze/correction/bounded-record leaf keeps its row so no
-    annotation is ever orphaned.
+    the bar (and the receipt), and a bounded-record leaf keeps its row so no annotation is
+    ever orphaned.
   - Color is **semantic only**: green = done, cyan = active, yellow/red = risk tier. Structure
     is dim. Nothing is colored just to look nice — if it has color, it means something. And
     because color is the first thing a terminal drops, the MARKER carries the state and color only
-    reinforces it: everything must still read under `NO_COLOR=1`. (Hence `_base._LOW_CONF_STYLE`
-    is `dim underline`, not a hue — an uncertain phrase is a caution, not a failure, and a pure
-    color would leave the receipt counting spans the body no longer shows.)
+    reinforces it: everything must still read under `NO_COLOR=1`.
   - The plan re-renders **in full** — every row carrying its status glyph AND intended tool —
     each time it materially changes (2026-07-06 faithful-rendering rework): the first draft,
     each completed step of the execute → update_plan loop, a replan's redraft, a rectify
@@ -111,15 +109,12 @@ from .approval import ask_approval, _diff_lines
 
 # Final answer (streamed + non-streamed) + the per-turn provenance handoffs (Glass Box sources
 # + the interrupt-and-correct answer buffer).
-from .response import response, ResponseStream, set_turn_provenance, set_turn_buffer
-
-# The freeze editor (interrupt-and-correct's freeze-then-edit interaction).
-from .correction import edit_answer
+from .response import response, ResponseStream, set_turn_provenance
 
 # On-demand readouts + log lines.
 from .readouts import (
     show_system_metrics, show_context,
-    note, warn, steer_note, pause_note, freeze_note, echo_queued,
+    note, warn, steer_note, pause_note, echo_queued,
 )
 
 # Shared listing vocabulary (the section rule + aligned table every readout command uses).
@@ -134,9 +129,8 @@ __all__ = [
     "show_glassbox",
     "render_plan", "show_plan",
     "ask_approval",
-    "response", "ResponseStream", "set_turn_provenance", "set_turn_buffer",
-    "edit_answer",
+    "response", "ResponseStream", "set_turn_provenance",
     "show_system_metrics", "show_context",
-    "note", "warn", "steer_note", "pause_note", "freeze_note", "echo_queued",
+    "note", "warn", "steer_note", "pause_note", "echo_queued",
     "section", "table", "risk_style", "status_glyph",
 ]

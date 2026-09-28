@@ -176,15 +176,6 @@ class AgentState(TypedDict):
     # append-reducer; reset per turn.
     gate_events: Annotated[List[dict], operator.add]
 
-    # Interrupt-and-correct: the provenance-tagged answer buffer (core/provenance.py — plain
-    # dicts, gotcha #4: {"text", "spans", "edits", "state", ...}). None until the user freezes
-    # the streaming answer (Esc while it streams); then it carries the frozen/edited text
-    # between `synthesize` and the `answer_gate` edit interrupt, with `state` driving the
-    # routing: "frozen" -> answer_gate, "resume"/"done" -> back into synthesize (continue /
-    # finalize), "complete" on the finished turn (kept so the answer render + trace carry the
-    # human-authored spans). Reset to None per turn.
-    answer_buffer: Optional[dict]
-
     # Tokens/second from the most recent LLM call (execute or synthesizer). Overwritten
     # each LLM step; reset to 0.0 at the start of each turn. Only populated for Ollama
     # models (response_metadata carries eval_count + eval_duration); other providers

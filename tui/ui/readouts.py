@@ -126,15 +126,6 @@ def pause_note() -> None:
     _glyph_line("  ⏸ ", f"bold {_ACCENT}", "pausing at the next pass…", _ACCENT)
 
 
-def freeze_note() -> None:
-    """Acknowledge an Esc that froze the streaming answer (interrupt-and-correct) the moment
-    it's captured — the stream stops at the next token and the freeze editor opens, but on a
-    slow local model that beat can lag the keypress; this is the immediate feedback, printed
-    above the live answer region exactly like steer_note/pause_note."""
-    _glyph_line("  ✂ ", f"bold {_ACCENT}",
-                "freezing the answer — the editor opens when the stream stops…", _ACCENT)
-
-
 def echo_queued(line: str) -> None:
     """Echo a type-ahead line as the REPL pulls it off the queue to run, so a query/command the
     user typed while a previous turn was working shows up in the transcript just like a line typed

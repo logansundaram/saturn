@@ -1,8 +1,8 @@
 # Latency optimizations for a local agent
 
 A working list of techniques for making Saturn faster on a local model, with what is already
-in place, what was measured, and what to try next. Companion to `core/serving.py` ("the prefix
-cache") and `tests/test_prefix_cache.py`. Numbers are from the 9b tier on an Apple M4 Pro under
+in place, what was measured, and what to try next. Companion to `core/prime.py` and
+`tests/test_prefix_cache.py`. Numbers are from the 9b tier on an Apple M4 Pro under
 Ollama 0.33 (prefill ~400 tokens/s, decode ~37 tokens/s) unless stated otherwise.
 
 Status markers: **[have]** shipped · **[next]** a concrete candidate · **[measure]** plausible,
@@ -62,10 +62,8 @@ everything that changed sits after such a checkpoint.
 
 ## 3. Cheaper tokens
 
-- **[closed — §7] Speculative decoding.** Ollama supports a draft model; `draft_num_predict` is
-  pinned to 0 because logprob grading (the confidence marking) conflicts with drafting.
-  Structured JSON is where a small draft shines — measure with confidence off, or enable
-  drafting only for the judge and argument tasks that are never graded.
+- **[closed — §7] Speculative decoding.** Ollama supports a draft model; measured slower on
+  this Mac for the 27b, and the 9b has no drafter.
 - **[closed — §7] KV cache quantization and flash attention** (`OLLAMA_KV_CACHE_TYPE=q8_0`,
   `OLLAMA_FLASH_ATTENTION=1`). Cuts cache memory and usually speeds decode on Metal; the gain
   is smaller for a hybrid model than for a pure transformer.
@@ -157,12 +155,11 @@ turn for 21–30 output tokens (thinking, not prefill), and the rectify judge sa
 
 **Close or drop**
 
-- Speculative decoding: already measured negative in `core/confidence.py` (drafting ran SLOWER
-  on this Mac for the 27b; the 9b has no drafter). Measured, not pending.
+- Speculative decoding: already measured negative (drafting ran SLOWER on this Mac for the
+  27b; the 9b has no drafter). Measured, not pending.
 - Flash attention: the runner log already shows `Flash Attention enabled` (`flash_attn = auto`).
-- KV cache q8_0: memory is not the constraint, only one in four layers of a hybrid model has a
-  KV cache, and quantizing it shifts the logits the per-model confidence calibration was
-  measured against.
+- KV cache q8_0: memory is not the constraint, and only one in four layers of a hybrid model
+  has a KV cache.
 - Exact-prompt memoization: prompts do not repeat within a session (the results block changes);
   they DO repeat across benchmark runs, which would stop the benchmark measuring the model.
 - Batch mechanical steps: concrete-step fill already removed the model call from planned reads
@@ -269,7 +266,7 @@ by what it saves there:
   grammars, logprobs and the think flag all work on MLX. A ~7–9 GB dense-ish 9b is memory-
   bandwidth-bound on this chip at ~38 tok/s whichever runner serves it; the published 1.4–3x
   MLX gains come from MoE models (few active parameters) and the M5's accelerators. Nothing to
-  gain here, and switching would cost the per-model confidence calibration. The MLX runner's
+  gain here. The MLX runner's
   prompt cache does honor the prime boundary, so the §1 design would survive a future switch.
 - **[closed — §9] Retire the judge deterministically on clean web turns.** Web lookups no
   longer reach the judge.

@@ -2,7 +2,9 @@
 Hardened structured-output layer (transplanted from the agentic_benchmark harness, 2026-07-03).
 Its engine callers left with the plan engine (2026-09-27); it still serves the out-of-loop
 judgment calls (the memory review's proposals) and owns `_invoke_kwargs`, the ONE builder of
-the per-task decoding options every model call sends.
+the per-task decoding options every model call sends (the task table below — think is OFF for
+every task, explicitly, never the model's default; `num_predict` is a circuit breaker well above
+a healthy generation, so a repetition loop lands as a truncated draw instead of a full window).
 
 Small local models mis-handle the full Pydantic JSON schema (`$ref`/`$defs`) that
 `.with_structured_output` sends, and intermittently wrap their JSON in prose. This layer is the
@@ -37,6 +39,18 @@ from config import get_config
 
 _ATTEMPT_TEMPS = (0.0, 0.3, 0.3)  # deterministic first; a resample often parses when 0.0 didn't
 
+# The output-token bound per task. `agent` is the loop's one call (nodes/agent.py): prose OR a
+# tool call, so it must fit a write_file payload (4096 tokens is ~12-16 KB of text). `judge` is
+# the memory review's structured proposal.
+NUM_PREDICT: dict = {"agent": 4096, "judge": 1024}
+# The default task per model ROLE for call sites that don't name one; the utility role's calls
+# name no task and keep the daemon's defaults.
+_ROLE_TASK = {"tool_caller": "agent"}
+# The retry-only repeat penalty, applied to the next rung only after a degenerate draw
+# (`textutil.looks_repetitive`) — never globally, which would corrupt outputs that legitimately
+# repeat (a JSON schema's punctuation, an `old_string` that must reproduce a file verbatim).
+_REPETITION_OPTIONS = {"repeat_penalty": 1.15, "repeat_last_n": 128}
+
 
 def _extract_json(text: str) -> str:
     """Salvage the outermost {...} from prose-wrapped model output."""
@@ -61,23 +75,23 @@ def _model_tag(role: str) -> str:
 
 def _invoke_kwargs(role: str, fmt: "dict | None", temp: float, task: "str | None" = None, *,
                    repetition: bool = False) -> dict:
-    """Constrained decoding + per-attempt temperature + the serving layer's per-TASK decisions
-    ride the invoke kwargs for Ollama roles (ChatOllama forwards `format`/`options`/`reasoning`
-    to the daemon); other providers take none — they get the shape hint + salvage parsing alone.
+    """Constrained decoding + per-attempt temperature + the per-TASK decisions ride the invoke
+    kwargs for Ollama roles (ChatOllama forwards `format`/`options`/`reasoning` to the daemon);
+    other providers take none — they get the shape hint + salvage parsing alone.
 
     The options dict must carry `num_ctx` too: langchain_ollama treats an invoke-time `options`
     as a FULL REPLACEMENT for the constructor-built options (which is the only place the
     configured context window lives), so temperature alone would silently revert the daemon to
     its ~2048 default and front-truncate long prompts. Since 2026-08-15 (from the engine
     isolate) it also carries the task's `num_predict` bound, and `reasoning` (think) is set
-    EXPLICITLY per task (`core/serving.thinks`) — never the model's default — unless the daemon
-    already rejected the flag for this tag (`llms._NO_THINK_SUPPORT`). `repetition=True` adds
-    the retry-only repeat penalty after a degenerate draw."""
+    EXPLICITLY OFF for every task — never the model's default — unless the daemon already
+    rejected the flag for this tag (`llms._NO_THINK_SUPPORT`). `repetition=True` adds the
+    retry-only repeat penalty after a degenerate draw."""
     if not _role_is_ollama(role):
         return {}
-    from core import llms, serving  # lazy: structured is imported by the registry's users
+    from core import llms  # lazy: structured is imported by the registry's users
 
-    task = task or serving.task_for_role(role)
+    task = task or _ROLE_TASK.get(role)
     options: dict = {"temperature": temp}
     tag = _model_tag(role)
     try:
@@ -86,12 +100,12 @@ def _invoke_kwargs(role: str, fmt: "dict | None", temp: float, task: "str | None
     except Exception:  # a broken binding must not fail the call that would surface it
         pass
     if task is not None:
-        options["num_predict"] = serving.num_predict(task)
+        options["num_predict"] = NUM_PREDICT.get(task, 512)
     if repetition:
-        options.update(serving.repetition_options())
+        options.update(_REPETITION_OPTIONS)
     kwargs: dict = {"options": options}
     if task is not None and tag not in llms._NO_THINK_SUPPORT:
-        kwargs["reasoning"] = serving.thinks(task)
+        kwargs["reasoning"] = False
     if fmt is not None:
         kwargs["format"] = fmt
     return kwargs

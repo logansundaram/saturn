@@ -263,15 +263,10 @@ def _json_default(o):
 # Per-string-leaf cap when a delta overruns _DATA_CAP (see _summarize).
 _LEAF_CAP = 2000
 
-# Entries kept from an oversized list of NON-string leaves. The shape that makes this necessary
-# is answer_buffer["confidence"]: one small numeric dict per GENERATED TOKEN, which map_strings
-# cannot shrink by a single byte. Past roughly 320 tokens the overlay alone clears _DATA_CAP, so
-# the halving string ladder below spun to its floor without progress and per-key salvage dropped
-# the whole answer_buffer — taking the provenance spans and edit records with it. The delta stayed
-# parseable (that invariant always held), but /trace replay and the "complete replayable record"
-# an export promises lost the corrected-answer history for essentially every non-trivial answer.
-# Truncating the ledger degrades gracefully by design: core.confidence.low_runs already treats a
-# GAP as a run break, so a shortened overlay marks less, never something wrong.
+# Entries kept from an oversized list of NON-string leaves (a long list of small numeric dicts,
+# which map_strings cannot shrink by a byte): without this rung the halving string ladder below
+# spins to its floor without progress and per-key salvage drops the whole key. A shortened list
+# with the loss NAMED beats losing the key entirely.
 _LIST_CAP = 400
 
 
@@ -342,10 +337,9 @@ def _bound_delta(data: str, original: int) -> str:
     fitted = _string_ladder(obj)
     if fitted is not None:
         return fitted
-    # Clipping strings could not do it, so the bulk is in NON-string leaves (the confidence
-    # overlay). Thin the long lists before falling back to dropping whole keys — a shortened list
-    # with the loss NAMED beats losing answer_buffer entirely — and re-run the string ladder at
-    # each rung, so text is only clipped as hard as that rung actually needs.
+    # Clipping strings could not do it, so the bulk is in NON-string leaves. Thin the long
+    # lists before falling back to dropping whole keys, and re-run the string ladder at each
+    # rung, so text is only clipped as hard as that rung actually needs.
     if isinstance(obj, dict):
         list_cap = _LIST_CAP
         while list_cap >= 25:

@@ -2,7 +2,6 @@
 reproduced on the perf/consolidation working-tree wave (see documentation.md's changelog entry).
 """
 
-import math
 import types
 
 import pytest
@@ -12,58 +11,6 @@ import pytest
 # resolve_tool claimed parity with /draft's normalization but skipped the _NO_TOOL_MARKERS half,
 # so `add Summarize the findings ::none` minted intended_tool="none" — an unknown-tool ERROR
 # incident at execute — while the identical spelling in /draft made a genuine reasoning step.
-
-
-# ── confidence: grade_start walks to a real run boundary (not a fixed margin) ─────────────────
-# A run OPENS on _MIN_RUN tokens under enter but EXTENDS indefinitely through hysteresis, so a
-# fixed entry margin dropped the red tail of any run longer than the margin: the live tail and
-# the final render disagreed about the model's most uncertain passage.
-
-
-def _entries(probs):
-    return [
-        {"start": 2 * i, "end": 2 * i + 2, "logprob": math.log(p)}
-        for i, p in enumerate(probs)
-    ]
-
-
-def test_grade_start_covers_a_long_hysteresis_run():
-    from core import confidence
-
-    n = 600
-    text = "qx" * n
-    probs = [0.05] * 3 + [0.25] * (n - 3)  # opens on 3 enter-low, extends via hysteresis only
-    entries = _entries(probs)
-    full = confidence.low_runs(entries, text, threshold_p=0.2, exit_p=0.3)
-    assert full == [(0, 2 * n)]
-
-    pos = 2 * (n - 50)  # the visible window starts far past any fixed margin from the opening
-    start = confidence.grade_start(entries, text, pos, threshold_p=0.2, exit_p=0.3)
-    assert start == 0  # no breaker between the run's opening and the window
-    assert confidence.low_runs(entries[start:], text, threshold_p=0.2, exit_p=0.3) == full
-
-
-def test_grade_start_stops_at_a_confident_breaker():
-    from core import confidence
-
-    n = 20
-    text = "qx" * n
-    probs = [0.9] * 10 + [0.05] * 10  # a confident stretch closes every possible run
-    entries = _entries(probs)
-    start = confidence.grade_start(entries, text, 2 * 15, threshold_p=0.2, exit_p=0.3)
-    assert start == 10  # just past the last confident content token
-    assert confidence.low_runs(entries[start:], text, threshold_p=0.2, exit_p=0.3) == [
-        (20, 40)
-    ]
-
-
-def test_grade_start_tolerates_empty_and_garbage():
-    from core import confidence
-
-    assert confidence.grade_start([], "", 0, threshold_p=0.2, exit_p=0.3) == 0
-    junk = [{"start": 0, "end": 2, "logprob": "?"}, {"start": 2, "end": 4, "logprob": -3.0}]
-    # The malformed entry is a safe boundary (low_runs closes every run there).
-    assert confidence.grade_start(junk, "qxqx", 3, threshold_p=0.2, exit_p=0.3) == 1
 
 
 # ── rag: the racy-clean guard on the stat fast path ───────────────────────────────────────────

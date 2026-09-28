@@ -7,18 +7,14 @@ from core import model_family as mf
 
 class TestLadder:
     def test_classes_match_the_ladder_order(self):
-        assert mf.classes() == ("800m", "2b", "4b", "9b", "27b", "35b")
+        assert mf.classes() == ("4b", "9b", "27b", "35b")
 
     def test_tag_for_round_trips(self):
         for key, tag in mf.SIZE_LADDER:
             assert mf.tag_for(key) == tag
 
     def test_tag_for_is_case_insensitive(self):
-        assert mf.tag_for("800M") == "qwen3.5:0.8B"
-
-    def test_tag_for_preserves_the_capital_b_tag(self):
-        # Ollama tags are case-sensitive: the 0.8B tag must survive verbatim.
-        assert mf.tag_for("800m") == "qwen3.5:0.8B"
+        assert mf.tag_for("27B") == "qwen3.8:27b"
 
     def test_tag_for_unknown_class_raises(self):
         with pytest.raises(KeyError):
@@ -54,7 +50,7 @@ class TestClassOf:
     def test_an_off_ladder_tag_prices_as_the_nearest_size(self):
         # |33 - 27.3| = 5.7 vs |33 - 36.0| = 3.0 -> nearest class is 35b, not 27b.
         assert mf.class_of("mystery:33b") == "35b"
-        assert mf.class_of("mystery:3b") == "2b"
+        assert mf.class_of("mystery:3b") == "4b"
         assert mf.class_of("gemma4:e4b") == "4b"
         assert mf.class_of("GEMMA4:31B") == "27b"
 
@@ -186,7 +182,7 @@ class TestShippedConfigMatchesTheLadder:
         from core import model_family as mf
 
         caps = self._template()["capabilities"]
-        expected = {"800m": 32768, "2b": 32768, "4b": 32768,
+        expected = {"4b": 32768,
                     "9b": 65536, "27b": 65536, "35b": 131072}
         for key, tag in mf.SIZE_LADDER:
             assert caps[tag]["context_window"] == expected[key], tag
@@ -200,7 +196,7 @@ class TestShippedConfigMatchesTheLadder:
 
         caps = self._template()["capabilities"]
         windows = {key: caps[tag]["context_window"] for key, tag in mf.SIZE_LADDER}
-        home = {"800m": 3.0, "2b": 6.0, "4b": 6.0, "9b": 12.0, "27b": 22.5, "35b": 27.0}
+        home = {"4b": 6.0, "9b": 12.0, "27b": 22.5, "35b": 27.0}
         for key, budget in home.items():
             assert hardware.need_gb(key, windows[key]) <= budget, key
 

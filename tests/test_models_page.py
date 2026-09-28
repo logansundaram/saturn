@@ -22,7 +22,7 @@ from core.hardware import (
 )
 
 # The windows config.default.yaml ships per class (tests/test_model_family.py pins the template).
-_W = {"800m": 32768, "2b": 32768, "4b": 32768, "9b": 65536, "27b": 65536, "35b": 131072}
+_W = {"4b": 32768, "9b": 65536, "27b": 65536, "35b": 131072}
 
 
 def _profile(**over) -> HardwareProfile:
@@ -48,8 +48,6 @@ def test_weights_grow_with_size():
 
 def test_kv_bytes_per_token_follow_the_hybrid_architecture():
     """K+V, f16, on the full-attention layers only (1 in 4): 2 * layers * kv_heads * 256 * 2."""
-    assert CLASS_COSTS["800m"].kv_bytes_per_token == 12 * 1024
-    assert CLASS_COSTS["2b"].kv_bytes_per_token == 12 * 1024
     assert CLASS_COSTS["4b"].kv_bytes_per_token == 32 * 1024
     assert CLASS_COSTS["9b"].kv_bytes_per_token == 32 * 1024
     assert CLASS_COSTS["27b"].kv_bytes_per_token == 64 * 1024
@@ -467,25 +465,25 @@ def test_enter_moves_the_embedder_on_a_yes(env, printed):
 
 def test_a_row_number_picks_one_tier(env, printed):
     env["pulled"] += ["qwen3.8:27b"]
-    env["pick"] = "5"
+    env["pick"] = "3"
     _run()
     assert env["cfg"].active_tier == "27b"
     assert env["persisted"] == [("active_tier", "27b")]
 
 
 def test_a_row_number_picks_one_embedder_and_pulls_it_on_consent(env, printed):
-    env["pick"] = "8"                        # qwen3-embedding:4b, not pulled
+    env["pick"] = "6"                        # qwen3-embedding:4b, not pulled
     env["answer"] = "y"
     _run()
     assert env["pull_calls"] == ["qwen3-embedding:4b"]
     assert env["cfg"].embedder_model == "qwen3-embedding:4b"
     assert env["cfg"].active_tier == "4b"                       # the tier was not touched
-    assert len([k for k, _v in env["persisted"] if k.endswith(".embedder")]) == 6
+    assert len([k for k, _v in env["persisted"] if k.endswith(".embedder")]) == 4
     assert env["resyncs"] == 1
 
 
 def test_picking_the_active_embedder_changes_nothing(env, printed):
-    env["pick"] = "9"
+    env["pick"] = "7"
     _run()
     assert env["persisted"] == [] and env["reset"] == 0
     assert "already on embedder" in "\n".join(printed)
@@ -503,7 +501,7 @@ def test_picking_the_active_tier_still_pulls_its_missing_model(env, printed):
 def test_a_too_big_pick_is_honored_with_a_warning(env, printed):
     env["profile"] = _profile(ram_gb=32.0)
     env["pulled"] += ["qwen3.6:35b"]
-    env["pick"] = "6"
+    env["pick"] = "4"
     _run()
     assert env["cfg"].active_tier == "35b"
     assert "may fail to load" in "\n".join(printed)
@@ -582,7 +580,7 @@ def test_a_rebound_tier_pulls_the_model_the_file_names(env, printed):
     cfg = env["cfg"]
     for role in ("tool_caller", "utility"):
         cfg.set(f"tiers.27b.roles.{role}", "gemma4:31b")
-    env["pick"] = "5"
+    env["pick"] = "3"
     env["answer"] = "y"
     _run()
     assert env["pull_calls"] == ["gemma4:31b"]
@@ -599,7 +597,7 @@ def test_the_page_renders_when_the_active_tier_has_no_embedder(env, printed):
 
 def test_an_embedder_pick_aligns_every_tier_even_when_the_active_one_already_matches(env, printed):
     env["cfg"].get("tiers")["27b"]["embedder"] = "qwen3-embedding:0.6b"
-    env["pick"] = "9"                                          # the 8b embedder, active on 4b
+    env["pick"] = "7"                                          # the 8b embedder, active on 4b
     _run()
     assert all(env["cfg"].get("tiers")[k]["embedder"] == "qwen3-embedding:8b"
                for k in model_family.classes())
@@ -608,15 +606,15 @@ def test_an_embedder_pick_aligns_every_tier_even_when_the_active_one_already_mat
 
 def test_an_embedder_switch_never_splits_a_dotted_tier_key(env, printed):
     tiers = env["cfg"].get("tiers")
-    tiers["0.8b"] = {"roles": {"tool_caller": "qwen3.5:0.8B"},
+    tiers["4.5b"] = {"roles": {"tool_caller": "qwen3.5:4b"},
                      "embedder": "qwen3-embedding:8b"}
-    env["pick"] = "8"
+    env["pick"] = "6"
     env["answer"] = "y"
     _run()
-    assert tiers["0.8b"]["embedder"] == "qwen3-embedding:4b"
+    assert tiers["4.5b"]["embedder"] == "qwen3-embedding:4b"
     assert "0" not in tiers or tiers.get("0") is None           # no phantom nested tier
-    assert not any(k == "tiers.0.8b.embedder" for k, _v in env["persisted"])
-    assert "not persisted for tier(s) 0.8b" in "\n".join(printed)
+    assert not any(k == "tiers.4.5b.embedder" for k, _v in env["persisted"])
+    assert "not persisted for tier(s) 4.5b" in "\n".join(printed)
 
 
 def test_typed_embedder_bind_is_machine_wide_too(env, printed):

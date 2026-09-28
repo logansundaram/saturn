@@ -16,14 +16,13 @@ from __future__ import annotations
 
 import re
 
-# size class -> the recommended tag at that size. Tags are stored VERBATIM: Ollama tags are
-# case-sensitive and the 0.8B tag really does carry a capital B. The class KEY is "800m", not
-# "0.8b" — config.get/set/persist parse dotted paths, so a "." inside a tier key silently splits
-# it into two segments and corrupts a role bind (fixed 2026-08-16; see
-# tests/test_model_family.py::test_no_size_class_key_contains_a_dot).
+# size class -> the recommended tag at that size. Tags are stored VERBATIM (Ollama tags are
+# case-sensitive). A class KEY never contains a "." — config.get/set/persist parse dotted paths,
+# so a "." inside a tier key would split it into two segments and corrupt a role bind (see
+# tests/test_model_family.py::test_no_size_class_key_contains_a_dot). The 800m and 2b classes
+# left 2026-09-27: unvalidated at native tool-calling, and never what the hardware probe
+# recommends.
 SIZE_LADDER: tuple[tuple[str, str], ...] = (
-    ("800m", "qwen3.5:0.8B"),
-    ("2b", "qwen3.5:2b"),
     ("4b", "qwen3.5:4b"),
     ("9b", "qwen3.5:9b"),
     ("27b", "qwen3.8:27b"),
@@ -39,14 +38,12 @@ EMBEDDER_LADDER: tuple[tuple[str, str], ...] = (
     ("8b", "qwen3-embedding:8b"),
 )
 
-# The fresh-install tier. Small on purpose: the first pull should be light.
+# The fresh-install tier — the smallest class. The first pull should be light.
 DEFAULT_CLASS = "4b"
 
 # Real parameter counts (billions, from `ollama show`) — the nearest-size yardstick class_of
 # prices an off-ladder tag with.
-_CLASS_PARAMS: dict[str, float] = {
-    "800m": 0.87, "2b": 2.3, "4b": 4.7, "9b": 9.7, "27b": 27.3, "35b": 36.0,
-}
+_CLASS_PARAMS: dict[str, float] = {"4b": 4.7, "9b": 9.7, "27b": 27.3, "35b": 36.0}
 
 # `:30b`, `:e4b`, `:0.8b` — the parameter count Ollama bakes into a tag.
 _SIZE_RE = re.compile(r":e?(\d+(?:\.\d+)?)b\b", re.IGNORECASE)

@@ -61,8 +61,6 @@ class ClassCost:
 # rest (num_key_value_heads, layer_types). tests/test_models_page.py asserts this table and SIZE_LADDER
 # carry the same classes.
 CLASS_COSTS: dict[str, ClassCost] = {
-    "800m": ClassCost(weights_gb=1.0, full_layers=6, kv_heads=2),    # 24 layers
-    "2b": ClassCost(weights_gb=2.7, full_layers=6, kv_heads=2),      # 24 layers
     "4b": ClassCost(weights_gb=3.4, full_layers=8, kv_heads=4),      # 32 layers
     "9b": ClassCost(weights_gb=6.6, full_layers=8, kv_heads=4),      # 32 layers
     "27b": ClassCost(weights_gb=17.0, full_layers=16, kv_heads=4),   # 65 layers

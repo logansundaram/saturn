@@ -41,6 +41,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
   `--provider` grammar, the legacy-tier (`laptop` / `workstation`) advice and the pre-ladder
   capability fallback are gone. A remote `OLLAMA_HOST` is still the one network boundary and
   still shows on the posture line, in `/privacy` and on the ledger.
+- **The `800m` and `2b` tiers and two dead capability fields.** Neither small tier was
+  validated at native tool-calling and the hardware probe never recommended one; the ladder
+  starts at `4b`. `supports_structured_output` and `supports_vision` were parsed and never
+  read. An existing `config.yaml` that still carries them loads unchanged.
 
 ### v2 — one loop replaces the engine (2026-09-27)
 

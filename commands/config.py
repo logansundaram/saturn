@@ -328,9 +328,8 @@ def _persist_key(cfg, key: str) -> None:
 
 
 def _small_classes() -> tuple:
-    """The size classes the shipped config does not vouch for at the loop's structured work:
-    every class at or below the install default (config.default.yaml's own comment calls 800m
-    and 2b "offered for completeness", and 4b IS the default that a fresh install pulls)."""
+    """The size classes the shipped config does not vouch for at the loop's tool-calling:
+    every class at or below the install default (4b, the one a fresh install pulls)."""
     classes = model_family.classes()
     try:
         return classes[:classes.index(model_family.DEFAULT_CLASS) + 1]

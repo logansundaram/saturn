@@ -281,11 +281,11 @@ everything else is a turn for the agent.
 
 Everything lives in **`config.yaml`**:
 
-- **`active_tier`** — which size-class preset is live (`800m`, `2b`, `4b`, `9b`, `27b`, `35b`).
+- **`active_tier`** — which size-class preset is live (`4b`, `9b`, `27b`, `35b`).
 - **`tiers`** — maps each role (`tool_caller`, the agent; `utility`, background work) to a concrete model, so
   swapping hardware is a one-line change. Every tag is qwen3.5/3.6/3.8 — `/models` lists the
   ladder with weights, context window, and what each needs on your machine. The shipped windows
-  step up the ladder (32k for 800m–4b, 64k for 9b/27b, 128k for 35b), sized so each tier fits
+  step up the ladder (32k for 4b, 64k for 9b/27b, 128k for 35b), sized so each tier fits
   its hardware; `/models` prices any window you set against your memory.
 - **`runtime`** — loop and safety knobs: `max_iterations`, `auto_approve` (the approval policy),
   `num_ctx` (context window), `citations` (inline source citations in answers).

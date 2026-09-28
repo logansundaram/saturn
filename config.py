@@ -126,13 +126,11 @@ class ModelSpec:
 
 @dataclass(frozen=True)
 class Capability:
-    """What a model can do. The MVP requires tools + structured output for the roles that
-    drive the loop; the factory warns when a bound model falls short."""
+    """What a model can do. The loop requires native tool-calling; the factory warns when a
+    bound model does not advertise it."""
 
     supports_tools: bool = True
-    supports_structured_output: bool = True
     context_window: int = 8192
-    supports_vision: bool = False
     # The model's ARCHITECTURAL maximum — display only (the /models metrics columns). Kept
     # separate from context_window on purpose: context_window is what num_ctx_for hands
     # ChatOllama, and every qwen3.x tag reports a 262144 maximum that would exhaust VRAM on any
@@ -220,9 +218,7 @@ class Config:
         cw = spec.get("context_window", 8192)
         return Capability(
             supports_tools=spec.get("supports_tools", True),
-            supports_structured_output=spec.get("supports_structured_output", True),
             context_window=cw,
-            supports_vision=spec.get("supports_vision", False),
             max_context_window=spec.get("max_context_window", cw),
         )
 

@@ -376,7 +376,12 @@ def check_models() -> list[str]:
             problems.append(exc.args[0] if exc.args else str(exc))
 
     try:
-        need_ollama.append(cfg.embedder_model)  # embeddings always run through Ollama
+        # The embedder is only required once the knowledge base holds a document: it is pulled
+        # lazily by the first /docs add, so an empty corpus must not report it missing.
+        from stores.rag import iter_documents
+
+        if any(True for _ in iter_documents()):
+            need_ollama.append(cfg.embedder_model)
     except KeyError as exc:
         # A tier without an `embedder:` (no hard-coded fallback id — config.yaml is the one
         # home for model ids) is a health-report problem, not a startup crash. args[0], not

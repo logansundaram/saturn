@@ -18,10 +18,11 @@ MIN_PY_MINOR=10
 # Active tier for a fresh install. '4b' uses qwen3.5:4b (a light download that runs on modest
 # hardware); switch to a larger size class later via /models tier.
 TIER="${SATURDAY_TIER:-4b}"
-# Local models the 4b tier needs (qwen3.5:4b + the RAG embedder). Must match the `4b` tier
-# bindings in config.yaml — pulling different models than the tier binds breaks the first run.
-# If you override this, rebind the roles afterwards with /models.
-MODELS="${SATURDAY_MODELS:-qwen3.5:4b qwen3-embedding:8b}"
+# The chat model the 4b tier binds. Must match the `4b` tier binding in config.yaml — pulling
+# a different model than the tier binds breaks the first run. If you override this, rebind
+# the roles afterwards with /models. The knowledge-base embedder (qwen3-embedding:8b) is NOT
+# pulled here: `/docs add` offers to pull it the first time a document is ingested.
+MODELS="${SATURDAY_MODELS:-qwen3.5:4b}"
 # Minimum Ollama daemon version. Older daemons can't pull the current model formats (the pull
 # fails or the model runs wrong), so we update below if the installed one is behind this.
 MIN_OLLAMA="${SATURDAY_MIN_OLLAMA:-0.6.0}"

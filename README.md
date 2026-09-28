@@ -215,8 +215,8 @@ saturn-agent` instead of `/update`.
   pull starts):
 
   ```bash
-  ollama pull qwen3.5:4b           # all five roles (~4B)
-  ollama pull qwen3-embedding:8b   # the embedder (RAG)
+  ollama pull qwen3.5:4b           # the chat model (~4B)
+  # the knowledge-base embedder (qwen3-embedding:8b) is pulled on consent by the first /docs add
   ```
 
   > More hardware to spare? The first launch runs `/models`, which reads your chip, RAM and VRAM

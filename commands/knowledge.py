@@ -85,6 +85,24 @@ def _list_docs() -> None:
         ui.note("none ingested — add one with /docs add <path>")
 
 
+def _ensure_embedder() -> bool:
+    """The lazy embedder pull: the install never pulls the embedding model, so the first
+    `/docs add` (or `/docs sync`) offers it here — the same consented `ollama pull` the /models
+    page runs. True when the embedder is available (or the daemon is down, in which case the
+    ingest's own error explains); False when the user declined the pull."""
+    from app.startup import embedder_missing
+    from commands.runtime import _offer_pull
+
+    missing = embedder_missing()
+    if not missing:
+        return True
+    _print(f"  the knowledge base needs the embedding model {missing}, which is not pulled.")
+    if _offer_pull([missing], "the knowledge base"):
+        return True
+    _print("  nothing ingested.")
+    return False
+
+
 def _add(rest: list) -> None:
     from stores.rag import ingest_file, screen_file, SUPPORTED_EXTENSIONS
     from tui import ui
@@ -117,6 +135,8 @@ def _add(rest: list) -> None:
         if ui.ask("ingest anyway? [y/N] ").lower() not in ("y", "yes"):
             _print("  not ingested.")
             return
+    if not _ensure_embedder():
+        return
     s = ingest_file(str(path))
     failed = dict(s.get("failed") or [])
     # Compare BASENAMES, never an unanchored suffix: "my-notes.md".endswith("notes.md") is True,
@@ -151,6 +171,8 @@ def _sync(*, force: bool) -> None:
     from tui import ui
 
     n = sum(1 for _ in iter_documents())
+    if n and not _ensure_embedder():
+        return
     if force:
         ui.note(
             f"full rebuild — re-embedding {n} document(s) with "

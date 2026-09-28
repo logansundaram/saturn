@@ -11,7 +11,7 @@ import diag
 from app.graph import build_agent
 
 # RAG ingest (reconciles the disk-cached vector store the search_knowledge_base tool reads).
-from stores.rag import sync
+from stores.rag import iter_documents, sync
 
 
 def startup_load(interactive: bool = True):
@@ -32,14 +32,38 @@ def startup_load(interactive: bool = True):
         except Exception:
             pass
     # Reconcile the knowledge base against the disk cache at startup: only new/changed
-    # documents are embedded, the rest load from the persisted store. Non-fatal if it fails
-    # (e.g. embedding model not pulled) — search_knowledge_base just returns "no documents";
-    # the warning is shaped by _ingest_warning (one line, daemon-down stated plainly).
+    # documents are embedded, the rest load from the persisted store. An EMPTY corpus (the
+    # fresh-install state — the embedder is pulled lazily on the first /docs add) skips the
+    # sync entirely, so a launch never touches the embedder it may not have. Non-fatal if it
+    # fails — search_knowledge_base just returns "no documents"; the warning is shaped by
+    # _ingest_warning (one line, daemon-down and embedder-missing stated plainly).
     try:
-        sync(verbose=False)
+        if any(True for _ in iter_documents()):
+            missing = embedder_missing()
+            if missing:
+                warn = (f"knowledge base not synced: the embedder {missing} is not pulled — "
+                        "`/docs sync` pulls it on consent")
+            else:
+                sync(verbose=False)
     except Exception as exc:
         warn = _ingest_warning(exc, interactive=interactive)
     return build_agent(), warn
+
+
+def embedder_missing() -> "str | None":
+    """The active tier's embedder tag when the daemon is reachable and has NOT pulled it; None
+    when it is pulled, the daemon is down (the sync's own error says so), or the check fails."""
+    try:
+        from config import get_config
+        from core.llms import _model_present, list_local_models, ollama_reachable
+
+        tag = get_config().embedder_model
+        local = list_local_models()
+        if not local and not ollama_reachable():
+            return None
+        return None if _model_present(tag, {m.name for m in local}) else tag
+    except Exception:
+        return None
 
 
 def warm_model(role: str = "tool_caller") -> bool:

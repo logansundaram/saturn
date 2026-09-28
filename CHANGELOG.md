@@ -50,6 +50,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
   files" section goes with it (the agent has `list_directory`), as does the workspace half of
   `/docs`. A leftover `database/workspace/.manifest.md` is inert and can be deleted. The
   knowledge-base manifest is unchanged.
+- **The embedder from the installer, and the seeded welcome document.** A fresh install pulls
+  the chat model only; the first `/docs add` (or `/docs sync`) offers to pull
+  `qwen3-embedding:8b`, and a launch with an empty knowledge base never touches the embedder.
+  The one shipped corpus document (`welcome-to-saturn.md`) existed to make that first sync
+  meaningful and goes with it.
 
 ### v2 — one loop replaces the engine (2026-09-27)
 

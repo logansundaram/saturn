@@ -134,10 +134,10 @@ def test_models_role_save_persists_the_dotted_key(ctx, capsys, monkeypatch, mode
 
     cfg = get_config()
     roles = cfg._data["tiers"][cfg.active_tier]["roles"]
-    monkeypatch.setitem(roles, "planner", roles["planner"])
-    key = f"tiers.{cfg.active_tier}.roles.planner"
+    monkeypatch.setitem(roles, "tool_caller", roles["tool_caller"])
+    key = f"tiers.{cfg.active_tier}.roles.tool_caller"
 
-    _models(ctx, ["planner", "qwen3.5:9b", "--save"])
+    _models(ctx, ["tool_caller", "qwen3.5:9b", "--save"])
     assert cfg.get(key) == "qwen3.5:9b"
     assert recording_persist == [key]
     assert "(session only)" not in _out(capsys)
@@ -150,10 +150,10 @@ def test_models_save_flag_case_insensitive_any_position(ctx, capsys, monkeypatch
 
     cfg = get_config()
     roles = cfg._data["tiers"][cfg.active_tier]["roles"]
-    monkeypatch.setitem(roles, "planner", roles["planner"])
-    key = f"tiers.{cfg.active_tier}.roles.planner"
+    monkeypatch.setitem(roles, "tool_caller", roles["tool_caller"])
+    key = f"tiers.{cfg.active_tier}.roles.tool_caller"
 
-    _models(ctx, ["planner", "-S", "qwen3.5:9b"])
+    _models(ctx, ["tool_caller", "-S", "qwen3.5:9b"])
     assert cfg.get(key) == "qwen3.5:9b"
     assert recording_persist == [key]
 
@@ -165,10 +165,10 @@ def test_models_role_persists_by_default(ctx, capsys, monkeypatch, models_env,
 
     cfg = get_config()
     roles = cfg._data["tiers"][cfg.active_tier]["roles"]
-    monkeypatch.setitem(roles, "planner", roles["planner"])
-    key = f"tiers.{cfg.active_tier}.roles.planner"
+    monkeypatch.setitem(roles, "tool_caller", roles["tool_caller"])
+    key = f"tiers.{cfg.active_tier}.roles.tool_caller"
 
-    _models(ctx, ["planner", "qwen3.5:9b"])
+    _models(ctx, ["tool_caller", "qwen3.5:9b"])
     assert cfg.get(key) == "qwen3.5:9b"
     assert recording_persist == [key]
     assert "(session only)" not in _out(capsys)
@@ -181,10 +181,10 @@ def test_models_role_session_flag_stays_session_only(ctx, capsys, monkeypatch, m
 
     cfg = get_config()
     roles = cfg._data["tiers"][cfg.active_tier]["roles"]
-    monkeypatch.setitem(roles, "planner", roles["planner"])
+    monkeypatch.setitem(roles, "tool_caller", roles["tool_caller"])
 
-    _models(ctx, ["planner", "qwen3.5:9b", "--session"])
-    assert cfg.get(f"tiers.{cfg.active_tier}.roles.planner") == "qwen3.5:9b"
+    _models(ctx, ["tool_caller", "qwen3.5:9b", "--session"])
+    assert cfg.get(f"tiers.{cfg.active_tier}.roles.tool_caller") == "qwen3.5:9b"
     assert recording_persist == []
     out = _out(capsys)
     assert "(session only)" in out and "--session" in out  # the note points at the flag
@@ -337,16 +337,16 @@ def test_models_provider_flag_refused_everywhere(ctx, capsys, monkeypatch, model
 
     cfg = get_config()
     roles = cfg._data["tiers"][cfg.active_tier]["roles"]
-    monkeypatch.setitem(roles, "planner", roles["planner"])
-    before = cfg.get(f"tiers.{cfg.active_tier}.roles.planner")
+    monkeypatch.setitem(roles, "tool_caller", roles["tool_caller"])
+    before = cfg.get(f"tiers.{cfg.active_tier}.roles.tool_caller")
 
-    for form in (["planner", "claude-x", "--provider", "anthropic"],
-                 ["planner", "claude-x", "--provider"],
+    for form in (["tool_caller", "claude-x", "--provider", "anthropic"],
+                 ["tool_caller", "claude-x", "--provider"],
                  ["tier", cfg.active_tier, "--provider", "anthropic"]):
         _models(ctx, list(form))
         out = _out(capsys)
         assert "--provider was removed" in out and "local Ollama" in out
-    assert cfg.get(f"tiers.{cfg.active_tier}.roles.planner") == before  # nothing bound
+    assert cfg.get(f"tiers.{cfg.active_tier}.roles.tool_caller") == before  # nothing bound
     assert recording_persist == []
 
 
@@ -357,13 +357,13 @@ def test_models_bare_positional_provider_refused(ctx, capsys, monkeypatch, model
 
     cfg = get_config()
     roles = cfg._data["tiers"][cfg.active_tier]["roles"]
-    monkeypatch.setitem(roles, "planner", roles["planner"])
-    before = cfg.get(f"tiers.{cfg.active_tier}.roles.planner")
+    monkeypatch.setitem(roles, "tool_caller", roles["tool_caller"])
+    before = cfg.get(f"tiers.{cfg.active_tier}.roles.tool_caller")
 
-    _models(ctx, ["planner", "claude-x", "anthropic"])
+    _models(ctx, ["tool_caller", "claude-x", "anthropic"])
     out = _out(capsys)
     assert "too many arguments" in out
-    assert cfg.get(f"tiers.{cfg.active_tier}.roles.planner") == before
+    assert cfg.get(f"tiers.{cfg.active_tier}.roles.tool_caller") == before
 
 
 def test_models_scalar_bind_replaces_a_legacy_cloud_mapping(ctx, capsys, monkeypatch, models_env,
@@ -374,10 +374,10 @@ def test_models_scalar_bind_replaces_a_legacy_cloud_mapping(ctx, capsys, monkeyp
 
     cfg = get_config()
     roles = cfg._data["tiers"][cfg.active_tier]["roles"]
-    monkeypatch.setitem(roles, "planner", {"provider": "anthropic", "model": "claude-x"})
+    monkeypatch.setitem(roles, "tool_caller", {"provider": "anthropic", "model": "claude-x"})
 
-    _models(ctx, ["planner", "qwen3.5:9b"])
-    assert cfg.get(f"tiers.{cfg.active_tier}.roles.planner") == "qwen3.5:9b"
+    _models(ctx, ["tool_caller", "qwen3.5:9b"])
+    assert cfg.get(f"tiers.{cfg.active_tier}.roles.tool_caller") == "qwen3.5:9b"
 
 
 # --- /config rides the shared persist grammar (split_persist_flags) ---------------------------

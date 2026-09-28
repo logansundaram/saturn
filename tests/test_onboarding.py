@@ -29,14 +29,14 @@ def test_check_models_reports_a_shelved_cloud_binding(monkeypatch):
     from core import llms
 
     cfg = _cfg("hybrid", {
-        "hybrid": _tier("qwen3.5:2b", planner={"provider": "anthropic", "model": "claude-x"}),
+        "hybrid": _tier("qwen3.5:2b", tool_caller={"provider": "anthropic", "model": "claude-x"}),
     })
     cfg._data["tiers"]["hybrid"]["embedder"] = "tiny-embed"
     monkeypatch.setattr(config_mod, "_config", cfg, raising=False)
     monkeypatch.setattr(llms, "list_local_models", lambda: [])
     monkeypatch.setattr(llms, "ollama_reachable", lambda: True)
     problems = llms.check_models()
-    assert any("cloud model support is shelved" in p and "planner" in p for p in problems)
+    assert any("cloud model support is shelved" in p and "tool_caller" in p for p in problems)
     assert not any("ANTHROPIC" in p for p in problems)  # no key demand for a shelved binding
 
 
@@ -133,8 +133,8 @@ def test_tier_honesty_silent_on_a_hybrid_declared_after_the_local_preset():
         "laptop": _tier("qwen3.5:2b"),
         "hybrid": _tier(
             "qwen3.5:2b",
-            planner={"provider": "anthropic", "model": "cloud"},
-            synthesizer={"provider": "anthropic", "model": "cloud"},
+            tool_caller={"provider": "anthropic", "model": "cloud"},
+            utility={"provider": "anthropic", "model": "cloud"},
         ),
     }
     assert config_cmd._tier_honesty_line(_cfg("hybrid", tiers)) is None

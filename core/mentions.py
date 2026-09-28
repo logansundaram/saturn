@@ -6,7 +6,7 @@ terminal after typing `@` produces. `dropped_path` recognizes the other drag sha
 a bare file path, which the loop turns into an ingest/attach offer. Before the turn runs, `agent.py` calls `expand()` to resolve each `@token`
 to a readable file under the current working directory, read it (clamped), and format it as a
 context block. The block is appended to `state["attachments"]`, which the grounding node folds into
-`state["context"]` — so every node that reads context (planner, agent, synthesize) sees the file
+`state["context"]` — so every node that reads context sees the file
 without a tool round-trip or an approval prompt.
 
 Design choices:

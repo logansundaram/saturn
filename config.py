@@ -3,7 +3,7 @@ Runtime configuration for Saturday.ai (Phase 3).
 
 Loads `config.yaml` once and exposes it through a small typed accessor so the rest of the
 codebase never hard-codes a model id or a filesystem path again. The agent references model
-*roles* (planner, tool_caller, synthesizer, utility, judge) and the factory in `llms.py`
+*roles* (tool_caller, utility) and the factory in `llms.py`
 resolves each role to a concrete `(provider, model)` against the active hardware tier.
 
 Nothing here imports from the rest of the project, so it is safe to import from anywhere
@@ -133,12 +133,13 @@ _CONFIG_PATH = _resolve_config_path()
 # they deliberately import nothing project-side, so keep the three in step.)
 _REPO_ROOT = _CONFIG_PATH.parent
 
-# THE five model roles the loop binds (config.yaml `roles:`, llms.get_model's vocabulary). One
-# home so every surface that iterates roles (the readout commands, llms.check_models, the
-# locality classifier behind the posture line) walks the SAME tuple — a role added to one stale
-# copy would silently vanish from the others (e.g. a posture line claiming `all_local` without
-# ever seeing the new binding).
-MODEL_ROLES = ("planner", "tool_caller", "synthesizer", "utility", "judge")
+# THE two model roles the loop binds (config.yaml `roles:`, llms.get_model's vocabulary):
+# `tool_caller` is the agent's one call per pass, `utility` the out-of-loop background work
+# (compaction, the memory review's proposals, /init's draft). One home so every surface that
+# iterates roles (the readout commands, llms.check_models, the locality classifier behind the
+# posture line) walks the SAME tuple. (planner / synthesizer / judge left with the plan engine
+# 2026-09-27; a config.yaml that still lists them is read fine — the keys are simply unused.)
+MODEL_ROLES = ("tool_caller", "utility")
 
 # The fallback window pair for a family tag a user's older config has no `capabilities:` entry
 # for (see capability_of): the SMALLEST runtime window the ladder ships in config.default.yaml

@@ -159,7 +159,7 @@ def _active_embedder(cfg) -> "str | None":
 
 def _tier_binding(cfg, key: str) -> "tuple[str, str]":
     """(declared, running) for a size-class tier: what config.yaml literally binds to its chat
-    roles (the synthesizer's entry; "" when the tier is not declared) and what selecting it would
+    roles (the tool_caller's entry; "" when the tier is not declared) and what selecting it would
     actually RUN — a non-family declaration is substituted at the model_for_role seam, so the row
     must show the substitute (the migration note under the table names the substitution). A class
     this config never declared runs the ladder tag."""
@@ -536,7 +536,7 @@ def _tier_model(cfg, key: str) -> str:
     dotted cfg.get path — a legacy tier name may contain a dot)."""
     tier = (cfg.get("tiers", {}) or {}).get(key) or {}
     roles = tier.get("roles", {}) or {}
-    entry = roles.get("synthesizer") or next(iter(roles.values()), None)
+    entry = roles.get("tool_caller") or next(iter(roles.values()), None)
     if isinstance(entry, dict):
         entry = entry.get("model", "")
     return str(entry or "")
@@ -580,7 +580,7 @@ on every tier (it is a machine choice).
   /models rescan             probe the hardware again (it is read once at startup and cached)
   /models tier <name>        switch the tier directly
   /models all <id>           point every role at one family tag (a hidden/superseded tag works)
-  /models <role> <id>        re-point one role — planner, tool_caller, synthesizer, utility, judge
+  /models <role> <id>        re-point one role — tool_caller (the agent) or utility
   /models embedder <id>      switch the embedding model by name (re-embeds the corpus)
 
 Every switch PERSISTS to config.yaml by default; --session applies it live only. Runs on the
@@ -669,7 +669,7 @@ def _models(ctx, args):
     details="""
 Saturn is an MCP client: servers declared under `mcp.servers:` in config.yaml are connected at
 startup and every remote tool they expose registers behind the SAME risk-tier approval gate as
-the local tools (named `mcp_<server>_<tool>`; they show in /tools and the planner sees them).
+the local tools (named `mcp_<server>_<tool>`; they show in /tools and the agent sees them).
 
 Trust model — a remote tool never picks its own tier. Every MCP tool fails closed to
 `destructive` (always prompts) unless YOU relax it: per server with `risk:` in config.yaml, or

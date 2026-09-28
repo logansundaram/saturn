@@ -23,6 +23,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
 - **The trust benchmark's grounding and fabrication suites.** They graded the plan engine's
   rectify judge and semantic write gate, neither of which exists any more. The gate-coverage,
   injection-quarantine and memory probes remain the regression floor.
+- **The `planner`, `synthesizer` and `judge` model roles.** Every tier binds two roles now:
+  `tool_caller` (the agent's call) and `utility` (compaction, the memory review, `/init`).
+  An existing `config.yaml` that still lists the old three loads unchanged — the keys are
+  simply unused; `/models all <id>` rewrites only the two that remain.
 
 ### v2 — one loop replaces the engine (2026-09-27)
 

@@ -98,7 +98,7 @@ def read_file(file_path: str):
         # RAISED, not returned: a missing file is a failed step (status error, disclosed as an
         # incident) exactly as before — only the text changed. The raw OSError told a redraft
         # nothing; the two namespaces (workspace vs. knowledge base, one tool each) are the
-        # confusion a small planner actually has, so the refusal names the namespace and, when
+        # confusion a small model actually has, so the refusal names the namespace and, when
         # the name matches an ingested document, the tool that reads it (2026-09-02).
         raise FileNotFoundError(_not_found_text(file_path))
     # Always UTF-8: the workspace holds user docs/notes that routinely carry non-cp1252

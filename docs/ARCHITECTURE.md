@@ -95,7 +95,7 @@ The whole product is one loop. Reading it end to end explains 80% of the repo:
 | File | What it does |
 |---|---|
 | `state.py` | `AgentState` + the step-dict vocabulary of the model's checklist. `current_step` (first item with `result is None`) is the gate's step context; `gate_events` is the one non-recomputable record (human decisions); `is_turn_start` is THE turn-boundary predicate. |
-| `llms.py` | `get_model(role)` — the five-role model factory (planner / tool_caller / synthesizer / utility / judge) over Ollama; locality boundary wrapping for a remote `OLLAMA_HOST`; startup health check. Cloud providers are shelved (refuse actionably). |
+| `llms.py` | `get_model(role)` — the two-role model factory (`tool_caller` = the agent's call, `utility` = background work) over Ollama; locality boundary wrapping for a remote `OLLAMA_HOST`; startup health check. Cloud providers are shelved (refuse actionably). |
 | `messages.py` | Every system prompt, in one place: `agent_sys_msg()` (the loop's one prompt — no tool catalog, the tools ride the native bind) plus the compaction, memory-review and /init prompts. |
 | `structured.py` | `_invoke_kwargs` — THE builder of the per-task decoding options every model call sends (num_ctx, num_predict, think) — plus the hardened structured-output call the memory review uses. |
 | `context.py` | `grounding_parts` (the stable / per-turn halves of the grounding block) and `clean` (workspace paths collapse in observations). |

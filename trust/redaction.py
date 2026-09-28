@@ -16,8 +16,8 @@ them or replaces them with a `[REDACTED:<kind>]` placeholder before the send.
   redact  scan and REPLACE each match with a placeholder, then send the redacted text.
 
 Wired in `llms.py`: every cloud model is wrapped so `process_messages` runs at the boundary, the
-ONE place all nodes funnel through (so a secret can't leak via the planner, agent, judge, or
-synthesizer independently). Local (Ollama) models are never wrapped — there is no boundary to
+ONE place all nodes funnel through (so a secret can't leak via the agent or a utility call
+independently). Local (Ollama) models are never wrapped — there is no boundary to
 guard. The mode is configured via `/config runtime.redaction` (a trust key — persists only with
 an explicit --save); the `/privacy redact` command front end was CUT 2026-07-16 as dormant since
 the cloud shelve.

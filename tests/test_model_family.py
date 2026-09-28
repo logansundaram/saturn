@@ -123,8 +123,7 @@ class TestConfigMigrationSeam:
         return Config({
             "active_tier": "t",
             "tiers": {"t": {"provider": "ollama", "roles": {
-                "planner": synth, "tool_caller": synth, "synthesizer": synth,
-                "utility": synth, "judge": synth,
+                "tool_caller": synth, "utility": synth,
             }, "embedder": "qwen3-embedding:8b"}},
             "capabilities": {},
         })
@@ -144,19 +143,19 @@ class TestConfigMigrationSeam:
     def test_family_binding_passes_through_untouched(self):
         import config
 
-        spec = self._cfg().model_for_role("synthesizer")
+        spec = self._cfg().model_for_role("tool_caller")
         assert spec.model == "qwen3.8:27b"
         assert config.migrated_bindings() == {}
 
     def test_non_family_binding_is_substituted(self):
-        spec = self._cfg("gemma4:e4b").model_for_role("synthesizer")
+        spec = self._cfg("gemma4:e4b").model_for_role("tool_caller")
         assert spec.model == "qwen3.5:4b"
         assert spec.provider == "ollama"
 
     def test_the_substitution_is_recorded(self):
         import config
 
-        self._cfg("qwen3-coder:30b").model_for_role("synthesizer")
+        self._cfg("qwen3-coder:30b").model_for_role("tool_caller")
         assert config.migrated_bindings() == {"qwen3-coder:30b": "qwen3.8:27b"}
 
     def test_a_fixed_binding_stops_being_reported(self):
@@ -166,11 +165,11 @@ class TestConfigMigrationSeam:
         import config
 
         cfg = self._cfg("gemma4:e4b")
-        cfg.model_for_role("synthesizer")
+        cfg.model_for_role("tool_caller")
         assert config.migrated_bindings() == {"gemma4:e4b": "qwen3.5:4b"}
 
-        cfg.set("tiers.t.roles.synthesizer", "qwen3.5:9b")   # the user fixes the binding
-        assert cfg.model_for_role("synthesizer").model == "qwen3.5:9b"
+        cfg.set("tiers.t.roles.tool_caller", "qwen3.5:9b")   # the user fixes the binding
+        assert cfg.model_for_role("tool_caller").model == "qwen3.5:9b"
         assert config.migrated_bindings() == {}
 
     def test_one_fixed_role_does_not_clear_another_still_diverging(self):
@@ -180,13 +179,13 @@ class TestConfigMigrationSeam:
         cfg = Config({
             "active_tier": "t",
             "tiers": {"t": {"provider": "ollama", "roles": {
-                "planner": "gemma4:e4b", "synthesizer": "qwen3-coder:30b",
+                "tool_caller": "gemma4:e4b", "utility": "qwen3-coder:30b",
             }}},
         })
-        cfg.model_for_role("planner")
-        cfg.model_for_role("synthesizer")
-        cfg.set("tiers.t.roles.planner", "qwen3.5:4b")
-        cfg.model_for_role("planner")
+        cfg.model_for_role("tool_caller")
+        cfg.model_for_role("utility")
+        cfg.set("tiers.t.roles.tool_caller", "qwen3.5:4b")
+        cfg.model_for_role("tool_caller")
 
         assert config.migrated_bindings() == {"qwen3-coder:30b": "qwen3.8:27b"}
 
@@ -197,10 +196,10 @@ class TestConfigMigrationSeam:
         cfg = Config({
             "active_tier": "t",
             "tiers": {"t": {"provider": "ollama", "roles": {
-                "synthesizer": {"provider": "anthropic", "model": "claude-sonnet-4"},
+                "tool_caller": {"provider": "anthropic", "model": "claude-sonnet-4"},
             }}},
         })
-        spec = cfg.model_for_role("synthesizer")
+        spec = cfg.model_for_role("tool_caller")
         assert spec.provider == "anthropic"
         assert spec.model == "claude-sonnet-4"
         assert config.migrated_bindings() == {}
@@ -221,7 +220,7 @@ class TestConfigMigrationSeam:
                                       "embedder": "qwen3-embedding:8b"}
                                 for key, tag in mf.SIZE_LADDER}})
         assert cfg.active_tier == mf.DEFAULT_CLASS
-        assert cfg.model_for_role("synthesizer").model == mf.tag_for(mf.DEFAULT_CLASS)
+        assert cfg.model_for_role("tool_caller").model == mf.tag_for(mf.DEFAULT_CLASS)
 
     def test_capability_max_context_window_defaults_to_the_runtime_window(self):
         from config import Config
@@ -385,9 +384,9 @@ class TestStartupReportsMigrations:
 
         cfg = Config({
             "active_tier": "t",
-            "tiers": {"t": {"provider": "ollama", "roles": {"synthesizer": "gemma4:e4b"}}},
+            "tiers": {"t": {"provider": "ollama", "roles": {"tool_caller": "gemma4:e4b"}}},
         })
-        cfg.model_for_role("synthesizer")
+        cfg.model_for_role("tool_caller")
 
         problems = llms._migration_problems()
         assert len(problems) == 1
@@ -404,11 +403,10 @@ class TestStartupReportsMigrations:
         cfg = Config({
             "active_tier": "t",
             "tiers": {"t": {"provider": "ollama", "roles": {
-                "planner": "gemma4:e4b", "synthesizer": "gemma4:e4b",
-                "judge": "qwen3-coder:30b",
+                "tool_caller": "gemma4:e4b", "utility": "qwen3-coder:30b",
             }}},
         })
-        for role in ("planner", "synthesizer", "judge"):
+        for role in ("tool_caller", "utility"):
             cfg.model_for_role(role)
 
         assert len(llms._migration_problems()) == 2

@@ -75,7 +75,7 @@ def _warm_and_prime(role: str) -> None:
 
 
 def start_warm_up(role: str = "tool_caller") -> threading.Thread:
-    """`warm_model` + the planner prime on a daemon thread: the REPL keeps starting while the
+    """`warm_model` + the agent prime on a daemon thread: the REPL keeps starting while the
     weights load, and a first query typed early simply queues behind the load at the daemon —
     as it did before, minus the second load it used to pay."""
     t = threading.Thread(target=_warm_and_prime, args=(role,), name="model-warm-up", daemon=True)

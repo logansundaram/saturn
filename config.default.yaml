@@ -64,7 +64,7 @@ runtime:
   auto_compact: true
   compact_threshold: 0.85
   # Answer provenance: number the gathered tool results/retrieved documents handed to the
-  # synthesizer, ask it to cite the matching [n] inline, and append a mechanical "Sources" footer
+  # agent, ask it to cite the matching [n] inline, and append a mechanical "Sources" footer
   # mapping each number to the tool call/document behind it. false restores unadorned answers.
   citations: true
   # Air-gap: when true, every network egress is blocked and recorded — web tools refuse, remote MCP
@@ -212,11 +212,9 @@ shell:
 # SHELVED (2026-07-03, local-first): a non-ollama binding refuses to run with a pointer at
 # /models. The cloud-hybrid preset left with the shelve.
 #
-# Roles: planner (drafts + redrafts the plan, structured output), tool_caller (the execute
-# node: per-step reasoning + single-tool constrained calls, native tool-calling), synthesizer
-# (final answer), utility (cheap background tasks like document summaries), judge (the engine's
-# judgment calls: the rectify verdict, the resolution presence check, the semantic write gate).
-# `embedder` is separate.
+# Roles: tool_caller (the agent's one native tool-calling call per pass — it reasons, calls
+# tools and writes the answer), utility (cheap background tasks: history compaction, the memory
+# review's proposals, /init's draft). `embedder` is separate.
 # ---------------------------------------------------------------------------
 tiers:
   # One tier per parameter size, each binding the most advanced tag the qwen3.5-3.8 family
@@ -229,30 +227,24 @@ tiers:
   # outside the family is substituted in memory with the nearest size class and warned about at
   # startup; this file is never rewritten behind your back.
   #
-  # The 800m and 2b tiers are offered for completeness. The plan/execute engine leans on
-  # reliable structured output and native tool-calling, and neither size has been through the
-  # trust benchmark — treat them as unvalidated.
+  # The 800m and 2b tiers are offered for completeness. The loop leans on reliable native
+  # tool-calling, and neither size has been through the trust benchmark — treat them as
+  # unvalidated.
   # (Key is "800m", not "0.8b" — config.get/set/persist parse dotted paths, and a "." in a tier
   # key silently splits it into two segments and corrupts a role bind. The MODEL TAG below is
   # still Ollama's own "qwen3.5:0.8B", unchanged.)
   800m:
     provider: ollama
     roles:
-      planner: "qwen3.5:0.8B"       # capital B — the Ollama tag is case-sensitive
-      tool_caller: "qwen3.5:0.8B"
-      synthesizer: "qwen3.5:0.8B"
+      tool_caller: "qwen3.5:0.8B"       # capital B — the Ollama tag is case-sensitive
       utility: "qwen3.5:0.8B"
-      judge: "qwen3.5:0.8B"
     embedder: qwen3-embedding:8b
 
   2b:
     provider: ollama
     roles:
-      planner: "qwen3.5:2b"
       tool_caller: "qwen3.5:2b"
-      synthesizer: "qwen3.5:2b"
       utility: "qwen3.5:2b"
-      judge: "qwen3.5:2b"
     embedder: qwen3-embedding:8b
 
   # The fresh-install default. Must stay in sync with the model list the install scripts pull
@@ -261,41 +253,29 @@ tiers:
   4b:
     provider: ollama
     roles:
-      planner: "qwen3.5:4b"
       tool_caller: "qwen3.5:4b"
-      synthesizer: "qwen3.5:4b"
       utility: "qwen3.5:4b"
-      judge: "qwen3.5:4b"
     embedder: qwen3-embedding:8b
 
   9b:
     provider: ollama
     roles:
-      planner: "qwen3.5:9b"
       tool_caller: "qwen3.5:9b"
-      synthesizer: "qwen3.5:9b"
       utility: "qwen3.5:9b"
-      judge: "qwen3.5:9b"
     embedder: qwen3-embedding:8b
 
   27b:
     provider: ollama
     roles:
-      planner: "qwen3.8:27b"
       tool_caller: "qwen3.8:27b"
-      synthesizer: "qwen3.8:27b"
       utility: "qwen3.8:27b"
-      judge: "qwen3.8:27b"
     embedder: qwen3-embedding:8b
 
   35b:
     provider: ollama
     roles:
-      planner: "qwen3.6:35b"
       tool_caller: "qwen3.6:35b"
-      synthesizer: "qwen3.6:35b"
       utility: "qwen3.6:35b"
-      judge: "qwen3.6:35b"
     embedder: qwen3-embedding:8b
 
 # ---------------------------------------------------------------------------

@@ -515,7 +515,7 @@ class Tracer:
 # A LangChain callback handler that records the raw input messages + output of every model call in
 # a turn. Attached run-scoped in the graph stream config (agent.run_turn); it rides LangChain's
 # contextvar callback propagation down into each node's model.invoke()/stream(), so it sees the
-# planner, agent, judge, and synthesizer calls without any node having to thread it through. Read
+# agent and utility calls without any node having to thread it through. Read
 # back by `/trace invoke`.
 
 _LLM_MSG_CAP = 8000  # per-message content cap stored to the DB (the display truncates further)

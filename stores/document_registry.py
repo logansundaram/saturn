@@ -86,7 +86,7 @@ def sync_workspace_manifest() -> "tuple[list[str], list[str]]":
     files nothing registered are added with a first-line summary (a CSV dropped in). Returns
     `(removed, added)` entry keys. Hidden files/directories, the manifest itself, binaries and
     oversized files are skipped. Called by the ground node every turn, so the "Workspace files"
-    block the planner reads never names a file that is not there, and knows the ones that are
+    block the agent reads never names a file that is not there, and knows the ones that are
     (measured 2026-09-02: a turn spent 2.5 minutes reading four phantom entries). Cheap: one
     stat per entry plus a capped walk."""
     workspace = get_config().path("workspace")

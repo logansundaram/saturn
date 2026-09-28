@@ -1,7 +1,7 @@
 """
 Model factory (Phase 3) — `get_model(role)` instead of hard-coded globals.
 
-The agent references model ROLES (planner, tool_caller, synthesizer, utility, judge); this
+The agent references model ROLES (tool_caller, utility); this
 module resolves each role to a concrete model against the active hardware tier in
 `config.yaml` and builds the LangChain chat model. Swapping hardware is a config edit; graph
 code never names a model.

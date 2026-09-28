@@ -4,7 +4,7 @@ The ambient-trust wave — the trust stack surfacing in the DEFAULT flow, no com
   - the session-start posture line (receipt.posture_spans + ui.posture_line),
   - per-call egress attribution riding tool_events (nodes/tools._egress_slice + tool_node) and
     its rail leaf (trace._egress_leaf),
-  - the gate-decision echo + judge-verdict leaf (trace._render_trust_annotations),
+  - the gate-decision echo (trace._render_trust_annotations),
   - the native Sources footer split (response._split_sources).
 
 (The taint-warning render and the status bar's session token spend left with the audit-crypto

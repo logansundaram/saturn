@@ -110,7 +110,7 @@ def test_get_model_refuses_remote_ollama_under_airgap(monkeypatch, isolated_path
     mark = egress.next_seq()
     try:
         with pytest.raises(RuntimeError, match="OLLAMA_HOST"):
-            llms.get_model("planner")
+            llms.get_model("tool_caller")
     finally:
         llms.reset_models()
     blocked = [e for e in egress.events_since(mark) if e.status == egress.BLOCKED]

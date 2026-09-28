@@ -5,7 +5,7 @@ Web tools — everything that reaches the live internet.
   web_extract   — fetch + extract the readable content behind a URL.
 
 (There is deliberately no monolithic `deep_research` tool: multi-source research is the
-plan/execute loop's job — the planner composes web_search + web_extract steps, each visible in
+plan/execute loop's job — the agent composes web_search + web_extract calls, each visible in
 the plan rail, gated, and traced. A single opaque research call would hide exactly the steps
 this product exists to show; it was removed June 2026 as a scope cut. `http_request` — the
 one-call-to-any-REST-API "universal integration" — was CUT 2026-07-16: the MCP client is the

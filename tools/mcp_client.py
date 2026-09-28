@@ -4,7 +4,7 @@ MCP client — remote Model Context Protocol tools inside the trust envelope (ro
 Servers are declared in config.yaml under `mcp.servers:` (stdio command, or a streamable-HTTP/SSE
 url). At startup, registry.py calls `startup()` here: each enabled server is connected, its tools
 listed, and every remote tool registered through `toolspec.register_tool_object` as a LangChain
-StructuredTool — so the planner catalog, the native tool binding, /tools, /policy risk, the trace, and
+StructuredTool — so the tool catalog, the native tool binding, /tools, /policy risk, the trace, and
 above all the APPROVAL GATE treat a remote tool exactly like a local one. Nothing downstream knows
 or cares that the implementation lives in another process.
 

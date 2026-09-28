@@ -138,7 +138,7 @@ class AgentState(TypedDict):
 
     # Per-turn @file attachments: the contents of files the user referenced with `@path` in their
     # message, pre-formatted as a context section by `mentions.expand` and appended to `context` by
-    # the grounding node — so the planner/execute/synthesize (which read `context`, not raw
+    # the grounding node — so the agent (which reads `context`, not raw
     # `messages`) all see the file inline. Empty when the message had no resolvable @mentions.
     attachments: str
 
@@ -176,7 +176,7 @@ class AgentState(TypedDict):
     # append-reducer; reset per turn.
     gate_events: Annotated[List[dict], operator.add]
 
-    # Tokens/second from the most recent LLM call (execute or synthesizer). Overwritten
+    # Tokens/second from the most recent LLM call. Overwritten
     # each LLM step; reset to 0.0 at the start of each turn. Only populated for Ollama
     # models (response_metadata carries eval_count + eval_duration); other providers
     # leave it 0.0.

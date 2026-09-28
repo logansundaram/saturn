@@ -12,7 +12,7 @@ from tools.toolspec import _TOOLS, _RISK, _RETRIEVAL  # collected as the imports
 # Importing each module runs its @register_tool decorators, populating the toolspec collections.
 # Module imports on purpose (not per-name): registration needs the module to RUN, not its names,
 # so a new tool in an existing module truly requires no edit here. Import order is purely
-# cosmetic — it sets the order the planner lists tools in.
+# cosmetic — it sets the order the tools bind in.
 import tools.calculator  # noqa: E402,F401  (calculate + current_time)
 import tools.web  # noqa: E402,F401
 import tools.files  # noqa: E402,F401
@@ -27,7 +27,7 @@ import tools.mail  # noqa: E402,F401  (list_mail / search_mail / read_mail / dra
 
 # Remote MCP tools (roadmap #12): connect the servers declared under `mcp.servers` in config.yaml
 # and register each remote tool through toolspec.register_tool_object, so they land in the same
-# collections as the local tools above — same gate, same /tools, same planner catalog. Runs HERE,
+# collections as the local tools above — same gate, same /tools, same catalog. Runs HERE,
 # after the local registrations (collisions resolve in the local tools' favour) and BEFORE the
 # persisted /policy risk overrides below (so a saved override on an MCP tool name applies). Every MCP
 # tool fails closed to `destructive` unless the user's own config/overrides relax it. No servers
@@ -38,7 +38,7 @@ from tools import mcp_client  # noqa: E402
 mcp_client.startup()
 
 # --- collected views (established public names) ---------------------------------------------
-tool = _TOOLS                      # the active tool list (bound to the agent, listed by the planner)
+tool = _TOOLS                      # the active tool list (bound to the agent)
 tools_by_name = {t.name: t for t in tool}
 TOOL_RISK = _RISK                  # name -> risk tier; mutable — /policy risk edits this live
 RETRIEVAL_TOOLS = _RETRIEVAL       # names whose results are recorded as retrieved documents

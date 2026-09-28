@@ -250,8 +250,7 @@ def _ladder_cfg(active="4b", windows=_W, num_ctx=None, embedder="qwen3-embedding
     tiers, caps = {}, {}
     for key, tag in model_family.SIZE_LADDER:
         tiers[key] = {"provider": "ollama",
-                      "roles": {r: tag for r in ("planner", "tool_caller", "synthesizer",
-                                                 "utility", "judge")},
+                      "roles": {r: tag for r in ("tool_caller", "utility")},
                       "embedder": embedder}
         if windows:
             caps[tag] = {"context_window": windows[key], "max_context_window": 262144}
@@ -383,7 +382,7 @@ def test_a_too_big_tier_and_a_swapping_embedder_are_marked(env, printed):
 
 def test_a_rebound_tier_shows_and_prices_the_model_it_runs(env, printed):
     cfg = env["cfg"]
-    for role in ("planner", "tool_caller", "synthesizer", "utility", "judge"):
+    for role in ("tool_caller", "utility"):
         cfg.set(f"tiers.4b.roles.{role}", "qwen3.8:27b")
     _run("list")
     row = _row(printed, "* 4b", "qwen3.8:27b")
@@ -578,7 +577,7 @@ def test_a_rebound_tier_pulls_the_model_it_runs_not_the_one_the_file_names(env, 
     reports the substitute, so the pick must pull the substitute — never a model the agent
     refuses to run — and must note the substitution even for a NON-active tier."""
     cfg = env["cfg"]
-    for role in ("planner", "tool_caller", "synthesizer", "utility", "judge"):
+    for role in ("tool_caller", "utility"):
         cfg.set(f"tiers.27b.roles.{role}", "gemma4:31b")
     env["pick"] = "5"
     env["answer"] = "y"
@@ -606,7 +605,7 @@ def test_an_embedder_pick_aligns_every_tier_even_when_the_active_one_already_mat
 
 def test_an_embedder_switch_never_splits_a_dotted_tier_key(env, printed):
     tiers = env["cfg"].get("tiers")
-    tiers["0.8b"] = {"provider": "ollama", "roles": {"planner": "qwen3.5:0.8B"},
+    tiers["0.8b"] = {"provider": "ollama", "roles": {"tool_caller": "qwen3.5:0.8B"},
                      "embedder": "qwen3-embedding:8b"}
     env["pick"] = "8"
     env["answer"] = "y"
@@ -667,7 +666,7 @@ def test_a_config_without_the_recommended_tier_is_told_so(env, printed):
     from config import Config
 
     env["cfg"] = Config({"active_tier": "4b", "tiers": {
-        "4b": {"provider": "ollama", "roles": {"planner": "qwen3.5:4b"},
+        "4b": {"provider": "ollama", "roles": {"tool_caller": "qwen3.5:4b"},
                "embedder": "qwen3-embedding:8b"}}, "capabilities": {}})
     _run()
     assert env["cfg"].active_tier == "4b"

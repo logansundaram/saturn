@@ -18,8 +18,7 @@ def cfg():
     return Config({
         "active_tier": "4b",
         "tiers": {"4b": {"provider": "ollama", "roles": {
-            "planner": "qwen3.5:4b", "tool_caller": "qwen3.5:4b",
-            "synthesizer": "qwen3.5:4b", "utility": "qwen3.5:4b", "judge": "qwen3.5:4b",
+            "tool_caller": "qwen3.5:4b", "utility": "qwen3.5:4b",
         }, "embedder": "qwen3-embedding:8b"}},
         "capabilities": {},
     })
@@ -30,9 +29,9 @@ class TestBindRefusal:
         from commands import runtime
 
         monkeypatch.setattr("core.llms.reset_models", lambda: None)
-        runtime._bind(cfg, "synthesizer", "gemma4:e4b")
+        runtime._bind(cfg, "tool_caller", "gemma4:e4b")
 
-        assert cfg.get("tiers.4b.roles.synthesizer") == "qwen3.5:4b"   # unchanged
+        assert cfg.get("tiers.4b.roles.tool_caller") == "qwen3.5:4b"   # unchanged
         blob = "\n".join(printed)
         assert "gemma4:e4b" in blob
         assert "qwen3.5:4b" in blob      # the ladder is shown as the fix
@@ -60,9 +59,9 @@ class TestBindRefusal:
         monkeypatch.setattr("core.llms.reset_models", lambda: None)
         monkeypatch.setattr("commands.runtime._persist_bindings", lambda *a, **k: None)
         monkeypatch.setattr("commands.runtime._resync_rag_after_model_change", lambda: None)
-        runtime._bind(cfg, "synthesizer", "qwen3.5:9b")
+        runtime._bind(cfg, "tool_caller", "qwen3.5:9b")
 
-        assert cfg.get("tiers.4b.roles.synthesizer") == "qwen3.5:9b"
+        assert cfg.get("tiers.4b.roles.tool_caller") == "qwen3.5:9b"
 
     def test_the_embedder_is_exempt_from_the_family_gate(self, cfg, printed, monkeypatch):
         from commands import runtime
@@ -146,7 +145,7 @@ class TestLegacyTierAdviceIsActionable:
 
         cfg = _legacy_config()
         monkeypatch.setattr(config_mod, "_config", cfg, raising=False)
-        cfg.model_for_role("synthesizer")
+        cfg.model_for_role("tool_caller")
 
         problem = llms._migration_problems()[0]
         assert "/models tier" not in problem       # would answer "unknown tier" on this config
@@ -209,9 +208,9 @@ class TestConfigDoorIsGatedToo:
                                                                     monkeypatch):
         monkeypatch.setattr("commands.config._persist_key",
                             lambda *a, **k: pytest.fail("a refused bind must not persist"))
-        self._run(["tiers.4b.roles.synthesizer", "gemma4:e4b"])
+        self._run(["tiers.4b.roles.tool_caller", "gemma4:e4b"])
 
-        assert cfg.get("tiers.4b.roles.synthesizer") == "qwen3.5:4b"   # unchanged in memory too
+        assert cfg.get("tiers.4b.roles.tool_caller") == "qwen3.5:4b"   # unchanged in memory too
         blob = "\n".join(wired)
         assert "outside the supported model family" in blob
         assert "qwen3.5:4b" in blob                                    # the ladder as the fix
@@ -220,10 +219,10 @@ class TestConfigDoorIsGatedToo:
         saved = []
         monkeypatch.setattr("commands.config._persist_key",
                             lambda _cfg, key: saved.append(key))
-        self._run(["tiers.4b.roles.synthesizer", "qwen3.5:9b"])
+        self._run(["tiers.4b.roles.tool_caller", "qwen3.5:9b"])
 
-        assert cfg.get("tiers.4b.roles.synthesizer") == "qwen3.5:9b"
-        assert saved == ["tiers.4b.roles.synthesizer"]
+        assert cfg.get("tiers.4b.roles.tool_caller") == "qwen3.5:9b"
+        assert saved == ["tiers.4b.roles.tool_caller"]
 
     def test_the_embedder_key_stays_exempt(self, cfg, wired, monkeypatch):
         # Not a chat model: no raw-mode template, no logprobs, no calibration claim rides on it.

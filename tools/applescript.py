@@ -7,7 +7,7 @@ keys (iTerm does, Terminal.app and VS Code don't), and the request fails silentl
 prompting. Apple-event automation is uniform: one "Terminal wants to control Notes" dialog per
 target app on first use, from any terminal, then it works. Measured 2026-09-06: Notes queries
 sub-second warm, a two-week Calendar window across eight calendars ~6.5s — slow but bounded, and
-it is one planner step.
+it is one tool call.
 
   run(script)   — `osascript -e script`, stdout stripped; every failure is an AppleScriptError
                   whose message is written for the model to relay (not macOS, Automation denied,

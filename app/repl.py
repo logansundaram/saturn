@@ -95,7 +95,7 @@ def run_repl() -> None:
         for problem in problems:
             ui.warn(problem)
         # A healthy tier gets its weights loaded NOW, on a background thread, so the first
-        # query does not pay the model load inside its planner call (app.startup.warm_model).
+        # query does not pay the model load inside its first agent call (app.startup.warm_model).
         # First launch skips it: /models below may change the tier before the first query.
         if not problems:
             start_warm_up()

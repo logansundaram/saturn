@@ -40,9 +40,8 @@ from config import get_config
 _ATTEMPT_TEMPS = (0.0, 0.3, 0.3)  # deterministic first; a resample often parses when 0.0 didn't
 
 # The output-token bound per task. `agent` is the loop's one call (nodes/agent.py): prose OR a
-# tool call, so it must fit a write_file payload (4096 tokens is ~12-16 KB of text). `judge` is
-# the memory review's structured proposal.
-NUM_PREDICT: dict = {"agent": 4096, "judge": 1024}
+# tool call, so it must fit a write_file payload (4096 tokens is ~12-16 KB of text).
+NUM_PREDICT: dict = {"agent": 4096}
 # The default task per model ROLE for call sites that don't name one; the utility role's calls
 # name no task and keep the daemon's defaults.
 _ROLE_TASK = {"tool_caller": "agent"}

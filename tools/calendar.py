@@ -11,7 +11,7 @@ Why not EventKit: a terminal-launched Python only gets calendar access if the te
 itself carries Apple's usage-description key, and the request fails silently otherwise (probed
 2026-09-06 — see tools/applescript.py). AppleScript prompts uniformly. It is slow for range
 queries (6.5s warm, 15s cold, for a window across eight calendars; 0.7s narrowed to two), so
-the tool lets the planner narrow by calendar name, and the default window is one week.
+the tool lets the agent narrow by calendar name, and the default window is one week.
 
 Times go through the notify grammar (`notify.parse_when`, `allow_past` so a query can look
 backward). AppleScript dates are built field by field (`mkdate`) — the `date "…"` literal form
@@ -40,7 +40,7 @@ on mkdate(y, m, d, secs)
 end mkdate
 """
 
-_QUERY_TIMEOUT = 90.0   # the whose-filter is slow on big calendars; one planner step may wait
+_QUERY_TIMEOUT = 90.0   # the whose-filter is slow on big calendars; one tool call may wait
 
 
 def _now() -> datetime:

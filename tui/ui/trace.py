@@ -142,7 +142,7 @@ _REASONING_CAP = 280
 
 def _node_leaf(text: str, style: str) -> None:
     """One wrapped `└ …` annotation leaf directly under a node's rail line — the shared shape for
-    the agent's reasoning preview, the judge's verdict, and the gate-decision echo."""
+    the agent's reasoning preview and the gate-decision echo."""
     import textwrap
 
     avail = max(20, _term_width() - 10)
@@ -477,7 +477,7 @@ def show_run(run, events) -> None:
             if tev:
                 _render_tool_events(_enrich_results(tev, delta.get("tool_results") or []),
                                     always_show_results=True)
-            # judge verdicts + human gate decisions replay exactly as the live rail showed them
+            # human gate decisions replay exactly as the live rail showed them
             _render_trust_annotations(node, delta)
     finally:
         _base._plan_seen = saved_seen

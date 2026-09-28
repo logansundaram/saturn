@@ -109,7 +109,7 @@ When slicing conversation history, use `core.state.is_turn_start` — a mid-turn
 
 ### Models and config
 
-Code references model **roles** (`planner`, `tool_caller`, `synthesizer`, `utility`, `judge`) via
+Code references model **roles** (`tool_caller` = the agent's call, `utility` = background work) via
 `core/llms.get_model(role)`; never name a model in graph code. Roles resolve through `active_tier` →
 `tiers` in `config.yaml`. Ollama is the only provider; cloud bindings refuse to build (shelved
 2026-07-03, reintroduction seam documented in `core/llms.py`). The qwen3.5/3.6/3.8 ladder is closed

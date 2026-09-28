@@ -180,7 +180,7 @@ def check_or_raise(channel: str, host: str, detail: str = "", *, subject: str = 
     """The raising twin of `check()`, for the exits that CANNOT hand a refusal string back: an
     LLM role, an embedder, a raw-mode continuation. Delegates to check() — one gate, one
     recording site, so a future rung added inside check() refuses these exits too — then raises
-    instead of returning. `subject` names what was refused ("role 'planner' (qwen3.5:9b)",
+    instead of returning. `subject` names what was refused ("role 'tool_caller' (qwen3.5:9b)",
     "embedding", "continuing the answer on <model>") so the message stays specific.
 
     Callers must not re-implement this: an inference exit that hand-rolls the check is one the

@@ -89,7 +89,7 @@ def register_tool_object(t, risk: str = "destructive", *, retrieval: bool = Fals
     The dynamic-source counterpart of @register_tool: a tool that can't be written as a decorated
     local function — e.g. a remote MCP tool built at runtime from a server's listing
     (mcp_client.py) — registers through here and flows into the exact same collections, so the
-    approval gate, /tools, /policy risk, and the planner catalog treat it like any local tool.
+    approval gate, /tools, /policy risk, and the tool catalog treat it like any local tool.
 
     Unlike @register_tool (a developer-facing decorator, where an unknown tier is a programming
     error worth crashing on), `risk` here may originate from user config or a remote source, so an

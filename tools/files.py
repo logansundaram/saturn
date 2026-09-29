@@ -119,7 +119,7 @@ def write_file(file_path: str, content: str, overwrite: bool = True):
     # FileNotFoundError. Safe: target_path is already verified to be inside the sandbox above.
     target_path.parent.mkdir(parents=True, exist_ok=True)
     # Capture the turn-start state (or the file's absence) so /undo can reverse this write.
-    snapshot_file(str(target_path.relative_to(workspace)), target_path)
+    snapshot_file(target_path)
     existed = target_path.exists()
     if overwrite:
         with open(target_path, "w", encoding="utf-8") as file:
@@ -183,7 +183,7 @@ def edit_file(file_path: str, old_string: str, new_string: str, replace_all: boo
         )
 
     # Capture the turn-start state so /undo can reverse this edit.
-    snapshot_file(str(target_path.relative_to(workspace)), target_path)
+    snapshot_file(target_path)
     new_content = content.replace(old_string, new_string)
     target_path.write_text(new_content, encoding="utf-8")
     n = count if replace_all else 1

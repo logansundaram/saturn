@@ -1,7 +1,7 @@
 """
 Workspace snapshots — the undo layer behind the mutating file tools (`/undo`).
 
-Before `write_file` / `edit_file` changes a workspace file, the file's current bytes are copied
+Before `write_file` / `edit_file` changes a file, the file's current bytes are copied
 into a per-turn snapshot batch under `config.path("snapshots")` (a file that does not exist yet is
 recorded too, so undoing a creation deletes it). `/undo` restores the most recent batch and removes
 it — unless a restore FAILED, in which case the batch survives (shrunk to the failed entries) so
@@ -91,29 +91,59 @@ def _ensure_batch() -> "Path | None":
     return _active_dir
 
 
-def snapshot_file(rel_path: str, target: Path) -> None:
-    """Record `target` (a sandbox-resolved workspace file at workspace-relative `rel_path`) before
-    it is mutated. Existing file -> its bytes are copied into the batch; missing file -> recorded
-    as not-existing so an undo deletes the file the tool is about to create. First snapshot of a
-    path in a batch wins (it is the turn-start state); later writes to the same file are no-ops.
-    Best-effort: any failure is logged and swallowed — the write itself must not be blocked."""
+def _key(entry: dict) -> str:
+    """An entry's identity: its absolute path (since 2026-09-29), else the legacy
+    workspace-relative path."""
+    return entry.get("abs") or entry["path"]
+
+
+def _saved(batch_dir: Path, entry: dict) -> Path:
+    """Where an entry's turn-start bytes live inside its batch."""
+    rel = entry["abs"].lstrip("/") if entry.get("abs") else entry["path"]
+    return batch_dir / _FILES_DIR / rel
+
+
+def _target(entry: dict) -> "tuple[Path | None, str | None]":
+    """The file an entry restores, or (None, why) when it is skipped. A new entry names its
+    absolute path: /undo is typed by the user, so it restores exactly the file that was written,
+    whatever folder Saturn runs in now (like @file mentions, it is not a model action, so the
+    containment check does not apply). A legacy entry resolves against the configured workspace
+    it was recorded under and keeps the old containment check."""
+    if entry.get("abs"):
+        return Path(entry["abs"]), None
+    workspace = get_config().path("workspace")
+    target = (workspace / entry["path"]).resolve()
+    if not target.is_relative_to(workspace):
+        return None, "outside the current workspace"
+    return target, None
+
+
+def snapshot_file(target: Path) -> None:
+    """Record `target` (an absolute, containment-checked path) before it is mutated. Existing file
+    -> its bytes are copied into the batch; missing file -> recorded as not-existing so an undo
+    deletes the file the tool is about to create. First snapshot of a path in a batch wins (it is
+    the turn-start state); later writes to the same file are no-ops. Best-effort: any failure is
+    logged and swallowed — the write itself must not be blocked."""
+    from core import workspace
+
     try:
         batch_dir = _ensure_batch()
         if batch_dir is None:
             return
+        target = Path(target)
+        entry = {"path": workspace.relative(target), "abs": target.as_posix(),
+                 "existed": target.exists()}
         manifest = _load_manifest(batch_dir)
-        rel = Path(rel_path).as_posix()
-        if any(f["path"] == rel for f in manifest["files"]):
+        if any(_key(f) == entry["abs"] for f in manifest["files"]):
             return  # turn-start state already captured
-        existed = target.exists()
-        if existed:
-            saved = batch_dir / _FILES_DIR / rel
+        if entry["existed"]:
+            saved = _saved(batch_dir, entry)
             saved.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(target, saved)  # byte copy — workspace files may not be UTF-8
-        manifest["files"].append({"path": rel, "existed": existed})
+            shutil.copy2(target, saved)  # byte copy — user files may not be UTF-8
+        manifest["files"].append(entry)
         _save_manifest(batch_dir, manifest)
     except Exception as exc:
-        diag.log(f"snapshot_file failed for {rel_path}: {exc}")
+        diag.log(f"snapshot_file failed for {target}: {exc}")
 
 
 def _batch_dirs() -> list[Path]:
@@ -158,8 +188,9 @@ def undo_last() -> "tuple[str, list[str]]":
 
     Returns (batch_summary, action_lines); raises RuntimeError when there is nothing to undo.
     Each touched file is restored to its turn-start bytes; a file the batch recorded as
-    not-existing (the tool created it) is deleted. Restore paths are re-resolved against the
-    CURRENT workspace and sandbox-checked, mirroring the file tools.
+    not-existing (the tool created it) is deleted. A new entry restores its recorded
+    absolute path; a legacy entry is re-resolved against the configured workspace and
+    containment-checked.
 
     A fully-clean pass deletes the batch (each /undo pops one). A pass with any FAILED or
     sandbox-skipped entry KEEPS the batch, shrunk to just those entries (`_shrink_batch`) —
@@ -170,24 +201,22 @@ def undo_last() -> "tuple[str, list[str]]":
         raise RuntimeError("no snapshots to undo — nothing has written to the workspace yet")
     batch_dir = batches[-1]
     manifest = _load_manifest(batch_dir)
-    workspace = get_config().path("workspace")
     actions: list[str] = []
     # Entries that did NOT resolve this pass (the restore raised — a locked file, permissions —
-    # or the path fell outside the current workspace). Their saved bytes are the only copy of
-    # the turn-start state, so they decide below whether the batch may be deleted.
+    # or a legacy path fell outside the configured workspace). Their saved bytes are the only
+    # copy of the turn-start state, so they decide below whether the batch may be deleted.
     unresolved: list[dict] = []
     for entry in reversed(manifest.get("files", [])):
         rel = entry["path"]
-        target = (workspace / rel).resolve()
-        if not target.is_relative_to(workspace):
-            actions.append(f"skipped {rel} (outside the current workspace)")
+        target, problem = _target(entry)
+        if target is None:
+            actions.append(f"skipped {rel} ({problem})")
             unresolved.append(entry)
             continue
         try:
             if entry.get("existed"):
-                saved = batch_dir / _FILES_DIR / rel
                 target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(saved, target)
+                shutil.copy2(_saved(batch_dir, entry), target)
                 actions.append(f"restored {rel}")
             else:
                 if target.exists():
@@ -218,15 +247,15 @@ def _shrink_batch(batch_dir: Path, manifest: dict, unresolved: "list[dict]",
     this undo — so the succeeded entries leave the manifest and their saved bytes are pruned
     to match. /undo always pops the newest batch with no skip affordance, so the action line
     names the directory: a permanently unrestorable entry is resolved by removing it by hand."""
-    keep = {e["path"] for e in unresolved}  # paths are unique per batch (first snapshot wins)
+    keep = {_key(e) for e in unresolved}  # keys are unique per batch (first snapshot wins)
     for entry in manifest.get("files", []):
-        if entry["path"] in keep or not entry.get("existed"):
+        if _key(entry) in keep or not entry.get("existed"):
             continue
         try:  # best-effort: a leftover saved file is harmless once it left the manifest
-            (batch_dir / _FILES_DIR / entry["path"]).unlink(missing_ok=True)
+            _saved(batch_dir, entry).unlink(missing_ok=True)
         except OSError as exc:
             diag.log(f"undo saved-bytes prune failed for {entry['path']}: {exc}")
-    manifest["files"] = [e for e in manifest.get("files", []) if e["path"] in keep]
+    manifest["files"] = [e for e in manifest.get("files", []) if _key(e) in keep]
     _save_manifest(batch_dir, manifest)
     actions.append(
         f"kept this snapshot batch — run /undo again to retry the {len(unresolved)} "

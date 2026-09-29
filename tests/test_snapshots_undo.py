@@ -22,7 +22,7 @@ def test_undo_restores_overwritten_file(workspace):
     target = workspace / "a.txt"
     target.write_text("original", encoding="utf-8")
     snapshots.begin_turn("overwrite a.txt")
-    snapshots.snapshot_file("a.txt", target)
+    snapshots.snapshot_file(target)
     target.write_text("mutated", encoding="utf-8")
 
     summary, actions = snapshots.undo_last()
@@ -34,7 +34,7 @@ def test_undo_restores_overwritten_file(workspace):
 def test_undo_deletes_created_file(workspace):
     target = workspace / "new.txt"
     snapshots.begin_turn("create new.txt")
-    snapshots.snapshot_file("new.txt", target)  # recorded as not-existing
+    snapshots.snapshot_file(target)  # recorded as not-existing
     target.write_text("created", encoding="utf-8")
 
     _, actions = snapshots.undo_last()
@@ -47,9 +47,9 @@ def test_first_snapshot_wins(workspace):
     target = workspace / "a.txt"
     target.write_text("turn-start", encoding="utf-8")
     snapshots.begin_turn("double write")
-    snapshots.snapshot_file("a.txt", target)
+    snapshots.snapshot_file(target)
     target.write_text("first write", encoding="utf-8")
-    snapshots.snapshot_file("a.txt", target)  # no-op: turn-start already captured
+    snapshots.snapshot_file(target)  # no-op: turn-start already captured
     target.write_text("second write", encoding="utf-8")
 
     snapshots.undo_last()
@@ -60,10 +60,10 @@ def test_each_undo_pops_one_batch(workspace):
     target = workspace / "a.txt"
     target.write_text("v1", encoding="utf-8")
     snapshots.begin_turn("turn one")
-    snapshots.snapshot_file("a.txt", target)
+    snapshots.snapshot_file(target)
     target.write_text("v2", encoding="utf-8")
     snapshots.begin_turn("turn two")
-    snapshots.snapshot_file("a.txt", target)
+    snapshots.snapshot_file(target)
     target.write_text("v3", encoding="utf-8")
 
     assert len(snapshots.list_batches()) == 2
@@ -81,7 +81,7 @@ def test_unarmed_snapshot_noops(workspace, monkeypatch):
     monkeypatch.setattr(snapshots, "_active_dir", None)
     target = workspace / "a.txt"
     target.write_text("x", encoding="utf-8")
-    snapshots.snapshot_file("a.txt", target)
+    snapshots.snapshot_file(target)
     assert snapshots.list_batches() == []
 
 
@@ -94,7 +94,7 @@ def test_failed_restore_keeps_batch_for_retry(workspace, monkeypatch):
     target = workspace / "a.txt"
     target.write_text("original", encoding="utf-8")
     snapshots.begin_turn("locked file")
-    snapshots.snapshot_file("a.txt", target)
+    snapshots.snapshot_file(target)
     target.write_text("mutated", encoding="utf-8")
 
     real_copy2 = shutil.copy2
@@ -127,8 +127,8 @@ def test_partial_failure_shrinks_manifest_to_unresolved(workspace, monkeypatch):
     a.write_text("a-orig", encoding="utf-8")
     b.write_text("b-orig", encoding="utf-8")
     snapshots.begin_turn("two files")
-    snapshots.snapshot_file("a.txt", a)
-    snapshots.snapshot_file("b.txt", b)
+    snapshots.snapshot_file(a)
+    snapshots.snapshot_file(b)
     a.write_text("a-mut", encoding="utf-8")
     b.write_text("b-mut", encoding="utf-8")
 
@@ -147,8 +147,9 @@ def test_partial_failure_shrinks_manifest_to_unresolved(workspace, monkeypatch):
     batches = snapshots.list_batches()
     assert len(batches) == 1 and batches[0]["files"] == ["a.txt"]  # shrunk to the failure
     batch_dir = snapshots._root() / batches[0]["id"]
-    assert (batch_dir / snapshots._FILES_DIR / "a.txt").exists()      # failed bytes retained
-    assert not (batch_dir / snapshots._FILES_DIR / "b.txt").exists()  # resolved bytes pruned
+    kept = snapshots._load_manifest(batch_dir)["files"]
+    assert (snapshots._saved(batch_dir, kept[0])).exists()                       # failed bytes retained
+    assert not (batch_dir / snapshots._FILES_DIR / str(b).lstrip("/")).exists()  # resolved bytes pruned
 
     # State written AFTER the partial undo must survive the retry untouched.
     b.write_text("b-newer", encoding="utf-8")
@@ -159,20 +160,62 @@ def test_partial_failure_shrinks_manifest_to_unresolved(workspace, monkeypatch):
     assert snapshots.list_batches() == []
 
 
-def test_sandbox_skipped_entry_keeps_batch(workspace):
-    """An entry the sandbox check skips (path outside the CURRENT workspace) is unresolved
-    too: the batch survives for the user to retry or remove by hand, never silently dropped."""
+def test_sandbox_skipped_legacy_entry_keeps_batch(workspace):
+    """A LEGACY entry (workspace-relative, written before 2026-09-29) whose path escapes the
+    configured workspace is unresolved: the batch survives for a retry or removal by hand."""
     target = workspace / "a.txt"
     target.write_text("original", encoding="utf-8")
     snapshots.begin_turn("escapee")
-    snapshots.snapshot_file("a.txt", target)
-    # Hand-corrupt the manifest path so the restore target resolves outside the workspace.
+    snapshots.snapshot_file(target)
     batch_dir = snapshots._batch_dirs()[-1]
     manifest = snapshots._load_manifest(batch_dir)
-    manifest["files"][0]["path"] = "../escapee.txt"
+    manifest["files"] = [{"path": "../escapee.txt", "existed": False}]
     snapshots._save_manifest(batch_dir, manifest)
 
     _, actions = snapshots.undo_last()
     assert any("skipped ../escapee.txt" in a for a in actions)
     assert any("kept this snapshot batch" in a for a in actions)
     assert len(snapshots.list_batches()) == 1
+
+
+def test_legacy_relative_entry_still_restores(workspace):
+    target = workspace / "old.txt"
+    target.write_text("original", encoding="utf-8")
+    snapshots.begin_turn("legacy")
+    snapshots.snapshot_file(target)
+    batch_dir = snapshots._batch_dirs()[-1]
+    # Rewrite the batch in the pre-2026-09-29 layout: relative path, bytes under files/<rel>.
+    saved_new = snapshots._saved(batch_dir, snapshots._load_manifest(batch_dir)["files"][0])
+    legacy_saved = batch_dir / snapshots._FILES_DIR / "old.txt"
+    legacy_saved.write_bytes(saved_new.read_bytes())
+    manifest = snapshots._load_manifest(batch_dir)
+    manifest["files"] = [{"path": "old.txt", "existed": True}]
+    snapshots._save_manifest(batch_dir, manifest)
+    target.write_text("mutated", encoding="utf-8")
+
+    _, actions = snapshots.undo_last()
+    assert target.read_text(encoding="utf-8") == "original"
+    assert any("restored old.txt" in a for a in actions)
+
+
+def test_undo_restores_the_recorded_file_from_another_folder(tmp_path, isolated_paths):
+    """A write made while Saturn ran in one folder is undone in THAT folder, even after Saturn
+    is relaunched somewhere else holding a same-named file."""
+    from core import workspace
+
+    first, second = tmp_path / "first", tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    workspace.set_root(first)
+    a = first / "notes.txt"
+    a.write_text("first-original", encoding="utf-8")
+    snapshots.begin_turn("edit in first")
+    snapshots.snapshot_file(a)
+    a.write_text("first-mutated", encoding="utf-8")
+
+    workspace.set_root(second)
+    b = second / "notes.txt"
+    b.write_text("second-untouched", encoding="utf-8")
+    snapshots.undo_last()
+    assert a.read_text(encoding="utf-8") == "first-original"
+    assert b.read_text(encoding="utf-8") == "second-untouched"

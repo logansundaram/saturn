@@ -348,11 +348,17 @@ def _display_entry(e: dict) -> str:
 
 def _list_memory(mr, ui, layer_filter=None):
     items = mr.entries(layer_filter) if layer_filter else mr.entries()
+    from config import get_config
+
+    # The store is one markdown file the user owns: say where, every time (grep it, edit it,
+    # git-version it — a cloud agent's memory is opaque; this one is not).
+    memory_file = get_config().path("memory")
     if not items:
         if layer_filter:
             ui.note(f"nothing in the {mr.normalize_layer(layer_filter)} layer yet.")
         else:
             ui.note("no persistent memory yet — say `remember that ...` or use /memory add.")
+        _print(f"  file: {memory_file}")
         return
     from core.memory_review import load_pending
 
@@ -363,6 +369,7 @@ def _list_memory(mr, ui, layer_filter=None):
         f"{len(items)} fact(s) · user + commitments + recent memo load every turn, the rest by "
         f"match · /memory why <n> for provenance{pending_note}",
     )
+    _print(f"  file: {memory_file}  (yours — plain markdown, hand-editable)")
     if layer_filter:
         layers = [mr.normalize_layer(layer_filter)]
     else:  # the six standard layers first, then any section a hand edit / layer= introduced
@@ -538,6 +545,11 @@ with the utility model; if the workspace is empty or the model is unavailable, i
 sensible template instead. Either way: open it and edit — it's your file, the draft is a start.
 
 Refuses to overwrite an existing SATURDAY.md unless --force is passed.
+
+Standing rules that should follow you into EVERY workspace (tone, "always metric", "never draft
+to my boss without asking") go in ~/.saturn/SATURN.md instead — hand-written, loaded every turn
+under the workspace file, which wins where the two conflict. A workspace SATURN.md is read in
+preference to SATURDAY.md when both exist.
 """,
 )
 def _init(ctx, args):

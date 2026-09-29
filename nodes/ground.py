@@ -1,4 +1,7 @@
+import os
 import time
+from pathlib import Path
+
 import diag
 
 from core.state import AgentState
@@ -12,7 +15,7 @@ Grounding node (re-scoped from the old context_builder).
 
 Its ONLY job is to load the things that are NOT already available to the model:
   - the knowledge-base manifest (so the agent knows what documents it can search),
-  - the per-workspace SATURDAY.md instructions, and
+  - the standing instructions (~/.saturn/SATURN.md, then the workspace's SATURN.md), and
   - persistent memory (stores/memory_registry): the user layer + open commitments + the recent
     memo digest always, agent/entities/negative facts by match against the request, all under
     one cap. (The old user_profile.md / agent_profile.md files were folded into the user and
@@ -38,37 +41,76 @@ message boundary: the next turn's agent call then prefills only what is new
 wants the whole thing (/trace context, older checkpoints).
 """
 
-# Per-workspace instructions (the CLAUDE.md/AGENTS.md equivalent): a SATURDAY.md at the workspace
-# root is loaded into context EVERY turn, so the user can durably steer how the agent treats this
-# workspace (conventions, goals, what matters) without re-typing it. Drafted by /init, hand-edited
-# freely. Capped so a runaway instructions file can't eat the context window.
-_INSTRUCTIONS_FILE = "SATURDAY.md"
+# Standing instructions (the CLAUDE.md equivalent), loaded into context EVERY turn so the user
+# can durably steer the agent without re-typing it. Two files (2026-09-28):
+#   ~/.saturn/SATURN.md            global — tone, standing rules, "always metric", "never draft
+#                                  to my boss without asking"; hand-written, follows the user
+#                                  everywhere ($SATURN_HOME overrides the directory);
+#   <workspace>/SATURN.md          per-workspace — conventions, goals, what matters here; drafted
+#                                  by /init (which still writes the old name, SATURDAY.md — read
+#                                  when no SATURN.md exists). Where the two conflict the
+#                                  workspace file wins, and the prompt says so.
+# Each is capped so a runaway file can't eat the context window.
+_INSTRUCTIONS_FILES = ("SATURN.md", "SATURDAY.md")
+_GLOBAL_INSTRUCTIONS_ENV = "SATURN_HOME"
 _INSTRUCTIONS_CAP = 6000
 
 
-def _read_instructions() -> str:
-    path = get_config().path("workspace") / _INSTRUCTIONS_FILE
-    if not path.exists():
+def global_instructions_path() -> Path:
+    """Where the global standing instructions live: `$SATURN_HOME/SATURN.md`, else
+    `~/.saturn/SATURN.md`."""
+    home = os.environ.get(_GLOBAL_INSTRUCTIONS_ENV) or (Path.home() / ".saturn")
+    return Path(home).expanduser() / _INSTRUCTIONS_FILES[0]
+
+
+def _read_capped(path: Path) -> str:
+    if not path.is_file():
         return ""
     # errors="replace": a hand-edited file with a stray non-UTF-8 byte must not fail every turn
     # at the first node.
     text = path.read_text(encoding="utf-8", errors="replace").strip()
     if len(text) > _INSTRUCTIONS_CAP:
-        text = text[:_INSTRUCTIONS_CAP] + "\n… (SATURDAY.md truncated — keep it concise)"
+        text = text[:_INSTRUCTIONS_CAP] + f"\n… ({path.name} truncated — keep it concise)"
     return text
+
+
+def _read_instructions() -> "tuple[str, str]":
+    """The workspace instructions as (file name, text) — SATURN.md first, the old SATURDAY.md
+    when only it exists; ("", "") when neither does."""
+    workspace = get_config().path("workspace")
+    for name in _INSTRUCTIONS_FILES:
+        text = _read_capped(workspace / name)
+        if text:
+            return name, text
+    return "", ""
+
+
+def _read_global_instructions() -> str:
+    try:
+        return _read_capped(global_instructions_path())
+    except Exception as exc:  # an unreadable home must not fail the first node of every turn
+        diag.log(f"grounding_node : global SATURN.md unreadable: {exc}")
+        return ""
 
 def stable_grounding() -> str:
     """The query-independent half of the grounding block — what the idle prime re-sends between
     turns. Byte-identical to the `context_stable` the next turn's grounding_node builds unless
-    the knowledge base, SATURDAY.md or the always-loaded memory layers changed
+    the knowledge base, the instructions files or the always-loaded memory layers changed
     in between (in which case the prime simply misses and the turn prefills it, as before)."""
     sections = ["## Grounding context"]
 
-    instructions = _read_instructions()
+    global_instructions = _read_global_instructions()
+    if global_instructions:
+        sections.append(
+            "### Standing instructions (~/.saturn/SATURN.md — the user's standing guidance "
+            "everywhere; follow it)\n" + global_instructions
+        )
+    name, instructions = _read_instructions()
     if instructions:
         sections.append(
-            "### Workspace instructions (SATURDAY.md — the user's standing guidance "
-            "for this workspace; follow it)\n" + instructions
+            f"### Workspace instructions ({name} — the user's standing guidance for this "
+            "workspace; follow it, and where it conflicts with the standing instructions above "
+            "it wins)\n" + instructions
         )
 
     docs_manifest = read_documents_manifest().strip()

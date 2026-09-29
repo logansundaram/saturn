@@ -1,7 +1,7 @@
 """The interactive loop: prompt → turn → answer, with everything that makes it a session.
 
 Startup (splash, banner, posture line, health checks, first-run setup), the one input reader
-(type-ahead + Esc steering/pause), drag-and-drop file offers, slash-command dispatch, the
+(type-ahead + Esc steering/pause), drag-and-drop file offers, `!command` passthrough, slash-command dispatch, the
 turn lifecycle (trace run, interrupts, streaming answer), checkpoint pruning,
 autosave, and auto-compaction. One call — `run_repl()` — owns the whole session.
 """
@@ -15,6 +15,7 @@ from pathlib import Path
 
 import commands
 import diag
+from app import bang
 from app.graph import DB_PATH
 from app.session import _fresh_turn, _initial_state, _maybe_autocompact
 from app.startup import startup_load, start_warm_up, _warn_flagged_attachments
@@ -192,8 +193,10 @@ def run_repl() -> None:
         return ui.prompt(commands.command_completions())
 
     # Files dropped on the prompt and queued for the next turn (the drag-and-drop "[a]ttach"
-    # choice below); consumed and cleared when that turn starts.
+    # choice below); consumed and cleared when that turn starts. `pending_blocks` are ready-made
+    # context blocks queued the same way — the output of a `!command` the user ran.
     pending_attachments: list[str] = []
+    pending_blocks: list[str] = []
 
     while True:
         # The idle prompt's exit semantics mirror the gate/ask: Ctrl-C is a soft no (drop the
@@ -208,6 +211,17 @@ def run_repl() -> None:
         except EOFError:
             commands.dispatch("/quit", cmd_ctx)  # the one quit path (autosave + farewell)
             break
+
+        # `!command` runs the command in the user's own shell — their action, not the agent's —
+        # prints the output, and attaches it to the next message (app/bang.py).
+        if bang.is_bang(user_input):
+            cmd = bang.command_of(user_input)
+            output, code = bang.run(cmd)
+            if output:
+                print(output)
+            pending_blocks.append(bang.attachment(cmd, output, code))
+            ui.note(f"exit {code} · the output is attached to your next message")
+            continue
 
         # A line that is nothing but an existing file path is a drag-and-drop onto the terminal
         # (the terminal pastes the path, quoted when it has spaces) — offer the two things a file
@@ -250,9 +264,13 @@ def run_repl() -> None:
         # text itself is left untouched — the @mention stays visible.
         attach_block, attached = mentions.expand(user_input, extra_paths=pending_attachments)
         pending_attachments = []
-        if attached:
+        if pending_blocks:
+            attach_block = "\n\n".join(b for b in [attach_block, *pending_blocks] if b)
+            pending_blocks = []
+        if attach_block:
             state["attachments"] = attach_block
-            ui.note("attached " + ", ".join(mentions.display(p) for p in attached))
+            if attached:
+                ui.note("attached " + ", ".join(mentions.display(p) for p in attached))
             _warn_flagged_attachments(attach_block, ui.warn)
         # Fresh thread per turn: gives the interrupts a stable thread to pause/resume on,
         # while cross-turn memory rides on the manually-carried `messages`.

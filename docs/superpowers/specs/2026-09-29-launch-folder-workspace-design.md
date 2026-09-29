@@ -170,3 +170,29 @@ the folder, ask for one on the Desktop (expect the `/add-dir` suggestion), run `
   entry cap never fires because home holds fewer than 50,000 entries. Startup is unaffected —
   nothing is walked until the model calls a search tool. The fix when it matters: stop
   `search_files` after a few seconds and add the same "narrow the directory or pattern" note.
+
+## Known follow-ups (from the 2026-09-29 implementation reviews)
+
+Parked by ruling, none blocking:
+
+- **Tool-coercion false positives on source code (decide first).** `read_file` and `search_files`
+  are quarantine-scanned since the launch folder became the workspace. The tool-coercion pattern
+  (a gated tool name followed by `(`) flags ordinary source files: 22 of 191 files in this repo.
+  In the TUI that costs a warning and one extra gate prompt; in headless `-p` without `--yolo`
+  the escalated batch is denied, and so is every later batch that turn. Options: keep it, or
+  exempt file contents from the tool-coercion pattern while keeping the instruction-override
+  patterns.
+- `find_files` path patterns: `*` crosses `/`, so `notes/*.txt` also matches `notes/deep/a.txt`.
+- `Path.is_dir()` in `resolve()`'s refusal branch can raise `PermissionError` on Python 3.11–3.13
+  (fails closed; callers catch it).
+- The walk budget counts only yielded entries, so a tree of empty or hidden-only folders is not
+  bounded by it (the content-search time budget above is the bigger gap).
+- `run_shell` recreates a deleted launch folder via `mkdir`; the shell docstring says the gate
+  shows the working directory, which it does not.
+- `relative()` ignores the case-only fallback, so such paths display absolute.
+- `core.context.clean` has no production caller since the v2 cut; delete it.
+- Cosmetic: unused `os` imports in `tools/files.py` and `tui/ui/_base.py`; "workspace" wording
+  left in `/init`'s help and `_not_found_text`; one blank line before `_working_folder_section`.
+- Test gaps: prefix look-alike (`../proj2`) and dangling-symlink escapes at the resolver level,
+  command-level `/add-dir` no-op cases, the banner's fallback note, legacy undo under a different
+  launch folder.

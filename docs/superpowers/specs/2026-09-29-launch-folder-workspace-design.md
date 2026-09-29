@@ -161,3 +161,9 @@ the folder, ask for one on the Desktop (expect the `/add-dir` suggestion), run `
 - A folder listing in the prompt.
 - Persisting added folders across sessions.
 - A `--workspace` flag. `cd` does the job, including in scripts.
+- **A time budget on content search (known slow case).** Measured 2026-09-29 on a real home
+  folder with the pruning above: a name search walks 27,090 entries in 0.7 s, but a content
+  search that matches nothing reads every text file (17,101 files, 796 MB) and takes 80 s. The
+  entry cap never fires because home holds fewer than 50,000 entries. Startup is unaffected —
+  nothing is walked until the model calls a search tool. The fix when it matters: stop
+  `search_files` after a few seconds and add the same "narrow the directory or pattern" note.

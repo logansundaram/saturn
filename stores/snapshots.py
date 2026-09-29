@@ -163,6 +163,16 @@ def _prune(keep: int = _KEEP_BATCHES) -> None:
         diag.log(f"snapshot prune failed: {exc}")
 
 
+def _label(entry: dict) -> str:
+    """How the entry is named NOW: relative inside the current folder, ~/… or absolute elsewhere.
+    A legacy entry (no "abs") keeps the path recorded at snapshot time."""
+    if entry.get("abs"):
+        from core import workspace
+
+        return workspace.relative(Path(entry["abs"]))
+    return entry["path"]
+
+
 def list_batches() -> list[dict]:
     """Summaries of the stored batches, newest first:
     {"id", "created", "query", "files": [rel, ...]}."""
@@ -175,7 +185,7 @@ def list_batches() -> list[dict]:
                     "id": m.get("id", batch_dir.name),
                     "created": m.get("created", ""),
                     "query": m.get("query", ""),
-                    "files": [f["path"] for f in m.get("files", [])],
+                    "files": [_label(f) for f in m.get("files", [])],
                 }
             )
         except Exception as exc:
@@ -184,7 +194,7 @@ def list_batches() -> list[dict]:
 
 
 def undo_last() -> "tuple[str, list[str]]":
-    """Restore the most recent snapshot batch into the workspace.
+    """Restore the most recent snapshot batch, each file to where it was written.
 
     Returns (batch_summary, action_lines); raises RuntimeError when there is nothing to undo.
     Each touched file is restored to its turn-start bytes; a file the batch recorded as
@@ -198,7 +208,7 @@ def undo_last() -> "tuple[str, list[str]]":
     never destroy the recovery data it exists to provide. Run /undo again to retry."""
     batches = _batch_dirs()
     if not batches:
-        raise RuntimeError("no snapshots to undo — nothing has written to the workspace yet")
+        raise RuntimeError("no snapshots to undo — no turn has written a file yet")
     batch_dir = batches[-1]
     manifest = _load_manifest(batch_dir)
     actions: list[str] = []
@@ -207,7 +217,7 @@ def undo_last() -> "tuple[str, list[str]]":
     # copy of the turn-start state, so they decide below whether the batch may be deleted.
     unresolved: list[dict] = []
     for entry in reversed(manifest.get("files", [])):
-        rel = entry["path"]
+        rel = _label(entry)
         target, problem = _target(entry)
         if target is None:
             actions.append(f"skipped {rel} ({problem})")

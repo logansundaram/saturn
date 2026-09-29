@@ -595,10 +595,10 @@ def _init(ctx, args):
 # ── /undo ────────────────────────────────────────────────────────────────────────────────────
 @command(
     "undo",
-    "Revert the file changes the last turn made to the workspace.",
+    "Revert the file changes the last turn made.",
     usage="/undo [list]",
     details="""
-Restores the workspace files touched by the most recent turn that wrote anything, using the
+Restores the files touched by the most recent turn that wrote anything, using the
 pre-write snapshots taken automatically by write_file / edit_file (stores/snapshots.py). A file
 the turn created is deleted; a file it overwrote or edited is restored to its turn-start bytes.
 Each /undo pops one batch, so repeating it walks further back (up to the retained history).
@@ -617,7 +617,7 @@ def _undo(ctx, args):
     if args and is_list_verb(args[0]):
         batches = snapshots.list_batches()
         if not batches:
-            _print("  no snapshots stored — no turn has written to the workspace yet.")
+            _print("  no snapshots stored — no turn has written a file yet.")
             return
         _print(f"  {len(batches)} snapshot batch(es), newest first:")
         for i, b in enumerate(batches, 1):

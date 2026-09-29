@@ -219,3 +219,45 @@ def test_undo_restores_the_recorded_file_from_another_folder(tmp_path, isolated_
     snapshots.undo_last()
     assert a.read_text(encoding="utf-8") == "first-original"
     assert b.read_text(encoding="utf-8") == "second-untouched"
+
+
+def test_undo_names_the_file_relative_to_the_current_folder(tmp_path, isolated_paths):
+    from core import workspace
+
+    first, second = tmp_path / "first", tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    workspace.set_root(first)
+    a = first / "notes.txt"
+    a.write_text("orig", encoding="utf-8")
+    snapshots.begin_turn("edit in first")
+    snapshots.snapshot_file(a)
+    a.write_text("mutated", encoding="utf-8")
+
+    workspace.set_root(second)
+    listed = snapshots.list_batches()[0]["files"]
+    assert listed != ["notes.txt"] and listed[0].endswith("first/notes.txt")
+    _, actions = snapshots.undo_last()
+    line = next(x for x in actions if x.startswith("restored"))
+    assert line != "restored notes.txt" and line.endswith("first/notes.txt")
+
+
+def test_undo_deletes_a_created_file_in_its_own_folder_only(tmp_path, isolated_paths):
+    from core import workspace
+
+    first, second = tmp_path / "first", tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    workspace.set_root(first)
+    a = first / "new.txt"
+    snapshots.begin_turn("create in first")
+    snapshots.snapshot_file(a)
+    a.write_text("created", encoding="utf-8")
+
+    workspace.set_root(second)
+    b = second / "new.txt"
+    b.write_text("keep me", encoding="utf-8")
+    _, actions = snapshots.undo_last()
+    assert not a.exists()
+    assert b.read_text(encoding="utf-8") == "keep me"
+    assert any(x.startswith("deleted") and x.split()[1].endswith("first/new.txt") for x in actions)

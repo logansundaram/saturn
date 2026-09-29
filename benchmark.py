@@ -1,5 +1,6 @@
 import argparse
 import json
+import re
 import sys
 import time
 import uuid
@@ -7,15 +8,16 @@ from collections import Counter
 from datetime import datetime
 from pathlib import Path
 
-from langchain.messages import HumanMessage
+from langchain.messages import HumanMessage, ToolMessage
 
 from agent import build_agent, run_turn, _initial_state
 from config import get_config
 from tools.registry import risk_of
 
-# The TRUST BENCHMARK — the graded headline artifact, and since 2026-07-16 the ONLY thing this
-# harness runs. Measures the trust stack itself (approval-gate coverage + injection-quarantine
-# flag rate + the memory tasks) and writes logging/benchmarks/trust_<ts>.json; --strict exits 1
+# The TRUST BENCHMARK — the graded headline artifact and the default run (the LOOP BENCHMARK,
+# `--loop`, measures the engine's shape on daily requests — see its section below). Measures
+# the trust stack itself (approval-gate coverage + injection-quarantine flag rate + the
+# memory tasks) and writes logging/benchmarks/trust_<ts>.json; --strict exits 1
 # on any graded FAIL. (The grounding and fabrication suites graded the plan engine's rectify
 # judge and semantic write gate; both left with the engine 2026-09-27 and the suites with them.)
 #
@@ -391,6 +393,309 @@ def run_trust_benchmark(graph) -> dict:
     }
 
 
+# ---------------------------------------------------------------------------
+# The LOOP BENCHMARK (2026-09-28, pivot.md "Loop improvements" #1) — `--loop`. Measures the
+# engine's shape on daily requests, so every loop change has a number instead of a guess.
+# Each task names the tool sequence it should take; the grader reads the turn record only:
+#
+#   over_passes:n/max  more agent passes than the shape allows (chat = 1, lookup = 2, multi ≤ N)
+#   wrong_tool:<name>  an executed call outside the task's allowed set
+#   missing_tool:a|b   none of a required group ran (any one of the group satisfies it)
+#   phantom            no tool ran and the answer DESCRIBES the action ("I'll read the file now")
+#   stub               an empty answer or one of the loop's honest-failure texts
+#   capped             the turn hit runtime.max_iterations (the budget answer)
+#   hygiene:n          n calls the agent node refused (unknown tool, bad arguments, a repeat)
+#   wrong_answer       none of the task's expected tokens appears in the answer
+#   file_missing /     the file a write task should have produced is absent / lacks its token
+#   file_wrong
+#   no_question        an under-specified request neither asked ask_user nor ended in a question
+#   error              the turn raised
+#
+# A task passes with no tags. The suite is a MEASUREMENT (no --strict): the summary reports
+# pass rate and mean passes / latency per shape, and counts the failure shapes the pivot's
+# loop items target (phantom, hygiene, capped). Fixtures are planted in the workspace under
+# the `bench_` prefix and removed afterwards; the suite refuses to run over existing files of
+# that name. Offline-safe on purpose: files, calculator, time and plan only — no web (egress,
+# air-gap) and no AppleScript readers (a benchmark must not read the user's mail).
+# ---------------------------------------------------------------------------
+LOOP_SHAPES = ("chat", "lookup", "multi", "robust")
+
+_LONG_FILLER = ("The reservoir log records water levels, weather and the birds seen on each visit. "
+                "Levels held steady through the week and the weather stayed overcast. ")
+_LONG_MID = "On Thursday the bird seen at the reservoir was a kestrel, hunting over the north bank. "
+# ~30k chars with the fact past the midpoint: a head+tail clamp (nodes/tools._MAX_OBSERVATION)
+# drops it, which is exactly what pivot loop item 6 (compress, don't clip) is about.
+_LONG_TEXT = _LONG_FILLER * 110 + _LONG_MID + _LONG_FILLER * 90
+
+LOOP_FIXTURES = {
+    "bench_notes.txt": ("Dentist appointment moved to the 14th.\n"
+                        "The gate code for the garage is 4471.\n"),
+    "bench_a.txt": "Invoice 7731 — paid.\nReference 120.\n",
+    "bench_b.txt": "Order 7731 shipped.\nReference 45.\n",
+    "bench_lease_summary.txt": ("Lease summary: the apartment lease ends in March; "
+                                "rent is due on the 1st.\n"),
+    "bench_expenses.txt": ("Expenses this week:\ncoffee 12.50\ngroceries 48.00\n"
+                           "parking 7.25\nutilities 130.00\n"),
+    "bench_edit.txt": "Status: draft\nOwner: me\n",
+    "bench_long.txt": _LONG_TEXT,
+}
+# Files the write tasks produce; removed with the fixtures.
+LOOP_OUTPUTS = ("bench_out.txt", "bench_plan.txt", "bench_index.txt")
+
+_FILE_LOOKUP = {"list_directory", "find_files", "search_files", "read_file"}
+_CANT = ["can't", "cannot", "can not", "unable", "not able", "no way", "don't have",
+         "do not have", "not possible", "isn't possible", "not something i"]
+_NOT_FOUND = ["not", "no such", "doesn't", "does not", "couldn't", "could not", "missing",
+              "exist", "unable"]
+
+
+def _task(id, shape, query, tools=(), required=(), max_passes=1, **extra):
+    t = {"id": id, "shape": shape, "query": query, "tools": set(tools),
+         "required": [set(g) for g in required], "max_passes": max_passes}
+    t.update(extra)
+    return t
+
+
+LOOP_TASKS: list[dict] = [
+    # chat — one call, no tools
+    _task("chat_greeting", "chat", "Hi there!"),
+    _task("chat_explain", "chat",
+          "Explain the difference between a lease and a sublease in two sentences."),
+    _task("chat_rewrite", "chat", "Rewrite this more politely: give me the report by noon."),
+    _task("chat_about_tools", "chat", "What can you do with my email?"),
+    _task("chat_joke", "chat", "Tell me a joke about spreadsheets."),
+    # lookup — one tool round, then the answer
+    _task("date_weekday", "lookup", "What day of the week is it today?",
+          tools={"current_time"}, required=[{"current_time"}], max_passes=2,
+          answer_any=[datetime.now().strftime("%A").lower()]),
+    _task("calc_arith", "lookup", "What is 847 * 293 + 12450?",
+          tools={"calculate"}, required=[{"calculate"}], max_passes=2, answer_any=["260621"]),
+    _task("calc_split", "lookup",
+          "If four of us split a $184.50 dinner with an 18% tip, what does each person pay?",
+          tools={"calculate"}, required=[{"calculate"}], max_passes=3,
+          answer_any=["54.43", "54.42", "54.4"]),
+    _task("calc_chain", "lookup", "What's 15% of 80, doubled?",
+          tools={"calculate"}, required=[{"calculate"}], max_passes=3, answer_any=["24"]),
+    _task("file_read", "lookup", "What is the garage gate code in bench_notes.txt?",
+          tools={"read_file"}, required=[{"read_file"}], max_passes=2, answer_any=["4471"]),
+    _task("file_exists", "lookup", "Is there a file called bench_notes.txt in my workspace?",
+          tools=_FILE_LOOKUP, required=[_FILE_LOOKUP], max_passes=2, answer_any=["yes"]),
+    _task("file_grep", "lookup", "Which of my workspace files mentions the lease?",
+          tools=_FILE_LOOKUP, required=[{"search_files", "read_file"}], max_passes=3,
+          answer_any=["bench_lease_summary"]),
+    _task("file_long_middle", "lookup",
+          "In bench_long.txt, what bird was seen at the reservoir?",
+          tools={"read_file", "search_files", "run_shell"},
+          required=[{"read_file", "search_files", "run_shell"}], max_passes=3,
+          answer_any=["kestrel"]),
+    _task("file_write", "lookup", "Create a file called bench_out.txt containing just the word ready.",
+          tools={"write_file"}, required=[{"write_file"}], max_passes=2,
+          check_file=("bench_out.txt", "ready")),
+    # multi — several rounds; `plan` is allowed, never required
+    _task("multi_compare", "multi",
+          "Compare bench_a.txt and bench_b.txt: what number appears in both?",
+          tools={"read_file", "search_files", "plan"}, required=[{"read_file"}], max_passes=3,
+          answer_any=["7731"]),
+    _task("multi_sum", "multi", "Add up the amounts listed in bench_expenses.txt.",
+          tools={"read_file", "calculate", "plan"}, required=[{"read_file"}, {"calculate"}],
+          max_passes=4, answer_any=["197.75"]),
+    _task("multi_read_then_calc", "multi",
+          "What's in bench_notes.txt, and what is that gate code times 3?",
+          tools={"read_file", "calculate", "plan"}, required=[{"read_file"}, {"calculate"}],
+          max_passes=4, answer_any=["13413"]),
+    _task("multi_write_read", "multi",
+          "Create bench_plan.txt listing three things to pack for a beach trip, then read it "
+          "back to confirm.",
+          tools={"write_file", "read_file", "plan"}, required=[{"write_file"}], max_passes=4,
+          check_file=("bench_plan.txt", None)),
+    _task("multi_index", "multi",
+          "List my workspace files, then create bench_index.txt with their names one per line.",
+          tools={"list_directory", "find_files", "write_file", "plan"},
+          required=[{"list_directory", "find_files"}, {"write_file"}], max_passes=4,
+          check_file=("bench_index.txt", "bench_a.txt")),
+    _task("multi_edit", "multi", "In bench_edit.txt change the status from draft to final.",
+          tools={"read_file", "edit_file", "plan"}, required=[{"edit_file"}], max_passes=4,
+          check_file=("bench_edit.txt", "status: final")),
+    # robust — the shapes a small model gets wrong
+    _task("robust_missing", "robust", "Read bench_missing.txt and tell me what it says.",
+          tools=_FILE_LOOKUP, required=[{"read_file"}], max_passes=3, answer_any=_NOT_FOUND),
+    _task("robust_no_tool", "robust", "Send a text message to Petra saying I'm running late.",
+          answer_any=_CANT),
+    _task("robust_underspecified", "robust", "Rename the file.",
+          tools={"ask_user", "list_directory", "find_files"}, max_passes=2, must_ask=True),
+    _task("robust_no_math_in_head", "robust", "Is 391 a prime number?",
+          tools={"calculate", "run_shell"}, required=[{"calculate", "run_shell"}], max_passes=3,
+          answer_any=["17", "23", "not prime", "not a prime", "composite"]),
+]
+
+# The phantom shape: an answer that narrates an action instead of calling the tool.
+_PHANTOM_RE = re.compile(
+    r"\b(i'?ll|i will|let me|i'?m going to|i am going to|going to|now i|first,? i)\b"
+    r".{0,60}\b(read|check|open|look|search|create|write|list|find|run|calculate|fetch|get|"
+    r"edit|rename|make)\b",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _stub_texts() -> tuple:
+    from nodes.agent import ABORT_TEXT, MALFORMED_TEXT, NO_ANSWER_TEXT
+    return (ABORT_TEXT, MALFORMED_TEXT, NO_ANSWER_TEXT)
+
+
+def _norm(text: str) -> str:
+    """Lower-case with thousands separators dropped, so `260,621` matches `260621`."""
+    return str(text or "").lower().replace(",", "")
+
+
+def grade_loop_task(task: dict, entry: dict) -> list[str]:
+    """The failure tags for ONE task's run_query entry (empty = pass). Pure: reads the entry
+    and, for a write task, the produced file."""
+    if entry.get("status") != "ok":
+        return ["error"]
+    tags: list[str] = []
+    answer = str(entry.get("response") or "")
+    executed = list(entry.get("tools_called") or [])
+    passes = int(entry.get("iterations") or 0)
+
+    stripped = answer.strip()
+    if not stripped or any(stripped.startswith(s) for s in _stub_texts()):
+        tags.append("stub")
+    if entry.get("capped"):
+        tags.append("capped")
+    if passes > task["max_passes"]:
+        tags.append(f"over_passes:{passes}/{task['max_passes']}")
+    for name in dict.fromkeys(executed):
+        if name not in task["tools"]:
+            tags.append(f"wrong_tool:{name}")
+    for group in task["required"]:
+        if not group & set(executed):
+            tags.append("missing_tool:" + "|".join(sorted(group)))
+    if task["required"] and not executed and _PHANTOM_RE.search(answer):
+        tags.append("phantom")
+    hygiene = int(entry.get("hygiene") or 0)
+    if hygiene:
+        tags.append(f"hygiene:{hygiene}")
+    if task.get("answer_any"):
+        norm = _norm(answer)
+        if not any(_norm(tok) in norm for tok in task["answer_any"]):
+            tags.append("wrong_answer")
+    if task.get("must_ask") and "ask_user" not in executed and not stripped.endswith("?"):
+        tags.append("no_question")
+    check = task.get("check_file")
+    if check:
+        target, token = check
+        path = Path(target) if not isinstance(target, str) else get_config().path("workspace") / target
+        if not path.is_file():
+            tags.append("file_missing")
+        elif token is not None and _norm(token) not in _norm(path.read_text(encoding="utf-8", errors="replace")):
+            tags.append("file_wrong")
+    return tags
+
+
+def summarize_loop(results: list[dict]) -> dict:
+    """Pass rate overall and per shape, mean passes / latency per shape, the tag counter
+    (by tag family), and the three counts the pivot's loop items target."""
+    by_shape: dict = {}
+    tags: Counter = Counter()
+    for r in results:
+        s = by_shape.setdefault(r["shape"], {"n": 0, "passed": 0, "_passes": 0, "_lat": 0.0})
+        s["n"] += 1
+        s["passed"] += int(not r["tags"])
+        s["_passes"] += int(r.get("iterations") or 0)
+        s["_lat"] += float(r.get("latency_s") or 0.0)
+        for t in r["tags"]:
+            tags[t.split(":", 1)[0]] += 1
+    for s in by_shape.values():
+        n = s["n"]
+        s["mean_passes"] = round(s.pop("_passes") / n, 2)
+        s["mean_latency_s"] = round(s.pop("_lat") / n, 2)
+    return {
+        "total": len(results),
+        "passed": sum(1 for r in results if not r["tags"]),
+        "failed": [r["id"] for r in results if r["tags"]],
+        "by_shape": by_shape,
+        "tags": dict(tags),
+        "phantom": tags.get("phantom", 0),
+        "hygiene": sum(int(r.get("hygiene") or 0) for r in results),
+        "capped": sum(1 for r in results if r.get("capped")),
+    }
+
+
+class _loop_fixtures:
+    """Plant the loop fixtures in the workspace for the suite; remove them and the write
+    tasks' outputs afterwards. Refuses to run over a user's own `bench_*` files."""
+
+    def __enter__(self):
+        self.workspace = get_config().path("workspace")
+        self.workspace.mkdir(parents=True, exist_ok=True)
+        existing = sorted(p.name for p in self.workspace.glob("bench_*"))
+        if existing:
+            raise RuntimeError(
+                f"the loop benchmark plants bench_* files in {self.workspace} and found "
+                f"{existing} already there — move them aside first"
+            )
+        for name, body in LOOP_FIXTURES.items():
+            (self.workspace / name).write_text(body, encoding="utf-8")
+        return self
+
+    def __exit__(self, *exc):
+        for name in list(LOOP_FIXTURES) + list(LOOP_OUTPUTS):
+            try:
+                (self.workspace / name).unlink()
+            except FileNotFoundError:
+                pass
+        return False
+
+
+def run_loop_benchmark(graph) -> dict:
+    """Run every LOOP_TASK through the live loop and grade it. Returns {"results", "summary"}."""
+    results = []
+    with _loop_fixtures():
+        for i, task in enumerate(LOOP_TASKS, 1):
+            entry = run_query(graph, task["query"])
+            tags = grade_loop_task(task, entry)
+            result = {
+                "id": task["id"],
+                "shape": task["shape"],
+                "query": task["query"],
+                "tags": tags,
+                "iterations": entry.get("iterations"),
+                "tools_called": entry.get("tools_called", []),
+                "hygiene": entry.get("hygiene", 0),
+                "capped": entry.get("capped", False),
+                "latency_s": entry.get("latency_s"),
+                "context_tokens": entry.get("context_tokens"),
+                "response": str(entry.get("response") or entry.get("error") or "")[:400],
+            }
+            results.append(result)
+            verdict = "PASS" if not tags else "FAIL " + ", ".join(tags)
+            print(f"  [{i:2d}/{len(LOOP_TASKS)}] {task['id']:<24} {verdict}  "
+                  f"({result['iterations']} passes, {result['latency_s']}s, "
+                  f"tools={','.join(result['tools_called']) or '-'})")
+    return {"results": results, "summary": summarize_loop(results)}
+
+
+def run_loop(output_path: Path | None = None) -> "tuple[Path, dict]":
+    """`--loop`: the loop benchmark, written to loop_<timestamp>.json."""
+    graph = _build_graph()
+    print(f"Running the loop benchmark: {len(LOOP_TASKS)} tasks\n")
+    out = run_loop_benchmark(graph)
+    s = out["summary"]
+    print(f"\n{s['passed']}/{s['total']} passed · phantom {s['phantom']} · "
+          f"hygiene bounces {s['hygiene']} · capped {s['capped']}")
+    for shape, v in s["by_shape"].items():
+        print(f"  {shape:<7} {v['passed']}/{v['n']}  mean passes {v['mean_passes']}  "
+              f"mean latency {v['mean_latency_s']}s")
+    if output_path is None:
+        output_path = _log_dir() / f"loop_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    payload = {"timestamp": datetime.now().isoformat(),
+               "model": str(get_config().get("active_tier", "")),
+               "loop_summary": s, "loop": out["results"]}
+    output_path.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
+    print(f"Loop benchmark report written to {output_path}")
+    return output_path, s
+
+
 def _prune_checkpoints(graph, thread_id: str) -> None:
     """Best-effort checkpoint prune, mirroring agent.py's per-turn delete_thread. The benchmark
     builds the REAL graph (checkpointed by SqliteSaver against the production db.sqlite) and runs
@@ -449,11 +754,21 @@ def run_query(graph, query: str) -> dict:
             for e in (result.get("tool_events") or [])
             if e.get("quarantine")
         ]
+        # Loop-shape facts (the loop benchmark grades these): calls the agent node answered
+        # itself — a ToolMessage with no tool_events record (hygiene: unknown tool, bad
+        # arguments, a repeat; the harness auto-approves, so no gate declines land here) —
+        # and whether the turn ran into the pass cap.
+        n_tool_msgs = sum(1 for m in result["messages"] if isinstance(m, ToolMessage))
+        hygiene = max(0, n_tool_msgs - len(result.get("tool_events") or []))
+        iterations = int(result.get("iteration") or 0)
         return {
             "status": "ok",
             "query": query,
             "response": last_msg.content,
             "latency_s": elapsed,
+            "hygiene": hygiene,
+            "capped": iterations >= get_config().max_iterations,
+            "context_tokens": result.get("context_tokens"),
             "plan": [
                 {"label": s["label"], "status": s["status"]} for s in plan
             ],
@@ -555,9 +870,9 @@ def run_trust(output_path: Path | None = None) -> "tuple[Path, dict]":
 def main():
     parser = argparse.ArgumentParser(
         description="The Saturn trust benchmark — the graded headline artifact: approval-gate "
-                    "coverage, injection-quarantine flag rate, and the memory tasks. (The "
-                    "ungraded capability suites were cut 2026-07-16; loop regressions live in "
-                    "tests/.)",
+                    "coverage, injection-quarantine flag rate, and the memory tasks. "
+                    "--loop runs the loop benchmark instead (the engine's shape on daily "
+                    "requests).",
     )
     parser.add_argument(
         "--output",
@@ -571,7 +886,18 @@ def main():
         help="Exit 1 when the trust benchmark records any FAIL — a gate-coverage miss, an "
              "unflagged injection, or a memory task miss.",
     )
+    parser.add_argument(
+        "--loop",
+        action="store_true",
+        help="Run the loop benchmark instead: daily requests graded on passes per shape, "
+             "tool choice, phantom actions, stubs, hygiene bounces and capped turns. A "
+             "measurement, not a --strict gate; report at logging/benchmarks/loop_<ts>.json.",
+    )
     args = parser.parse_args()
+
+    if args.loop:
+        run_loop(Path(args.output) if args.output else None)
+        return
 
     _path, trust_summary = run_trust(Path(args.output) if args.output else None)
 

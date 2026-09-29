@@ -489,3 +489,135 @@ def test_benchmark_is_trust_only():
                  "GROUNDING_BAIT", "FABRICATION_PROBES"):  # the engine suites left 2026-09-27
         assert not hasattr(benchmark, gone), gone
     assert benchmark.GATE_PROBES and benchmark.INJECTION_PROBES  # the graded probes remain
+
+
+# --- loop-benchmark grading (2026-09-28, pivot "Loop improvements" #1) ---------------------
+
+def _loop_entry(**over):
+    """A clean run_query entry for a loop task: one pass, no tools, a real answer."""
+    base = {"status": "ok", "response": "Here is the answer.", "iterations": 1,
+            "tools_called": [], "hygiene": 0, "capped": False, "latency_s": 1.0,
+            "context_tokens": 100}
+    base.update(over)
+    return base
+
+
+def test_loop_grade_clean_chat_passes():
+    import benchmark
+
+    task = {"id": "t", "shape": "chat", "query": "hi", "tools": set(), "required": [],
+            "max_passes": 1}
+    assert benchmark.grade_loop_task(task, _loop_entry()) == []
+
+
+def test_loop_grade_tool_shape_tags():
+    import benchmark
+
+    task = {"id": "t", "shape": "lookup", "query": "q", "tools": {"read_file"},
+            "required": [{"read_file"}], "max_passes": 2, "answer_any": ["7731"]}
+    # The right tool, the right value (commas in the answer are ignored), two passes: clean.
+    assert benchmark.grade_loop_task(
+        task, _loop_entry(tools_called=["read_file"], iterations=2, response="It is 7,731.")
+    ) == []
+    tags = benchmark.grade_loop_task(
+        task, _loop_entry(tools_called=["read_file", "web_search"], iterations=4,
+                          response="not sure", hygiene=2))
+    assert "wrong_tool:web_search" in tags
+    assert "over_passes:4/2" in tags
+    assert "wrong_answer" in tags
+    assert "hygiene:2" in tags
+    # A required tool never executed.
+    assert "missing_tool:read_file" in benchmark.grade_loop_task(
+        task, _loop_entry(tools_called=[], iterations=1, response="It is 7731."))
+
+
+def test_loop_grade_phantom_stub_capped_error():
+    import benchmark
+    from nodes.agent import NO_ANSWER_TEXT
+
+    task = {"id": "t", "shape": "lookup", "query": "q", "tools": {"read_file"},
+            "required": [{"read_file"}], "max_passes": 2}
+    # Text that describes the action with no call is the phantom shape — tagged on top of
+    # the missing tool so the summary can count it.
+    tags = benchmark.grade_loop_task(task, _loop_entry(response="I'll read the file now."))
+    assert "phantom" in tags and "missing_tool:read_file" in tags
+    assert "phantom" not in benchmark.grade_loop_task(
+        task, _loop_entry(response="The file says 7731."))
+    assert "stub" in benchmark.grade_loop_task(
+        task, _loop_entry(response=NO_ANSWER_TEXT, tools_called=["read_file"], iterations=2))
+    assert "stub" in benchmark.grade_loop_task(task, _loop_entry(response="  "))
+    assert "capped" in benchmark.grade_loop_task(
+        task, _loop_entry(capped=True, iterations=16, tools_called=["read_file"]))
+    assert benchmark.grade_loop_task(task, {"status": "error", "error": "boom"}) == ["error"]
+
+
+def test_loop_grade_required_any_of_and_file_check(tmp_path):
+    import benchmark
+
+    task = {"id": "t", "shape": "multi", "query": "q",
+            "tools": {"list_directory", "find_files", "write_file"},
+            "required": [{"list_directory", "find_files"}, {"write_file"}], "max_passes": 3,
+            "check_file": (tmp_path / "out.txt", "ready")}
+    entry = _loop_entry(tools_called=["find_files", "write_file"], iterations=3)
+    assert "file_missing" in benchmark.grade_loop_task(task, entry)
+    (tmp_path / "out.txt").write_text("not it")
+    assert "file_wrong" in benchmark.grade_loop_task(task, entry)
+    (tmp_path / "out.txt").write_text("all READY\n")
+    assert benchmark.grade_loop_task(task, entry) == []
+
+
+def test_loop_summary_by_shape():
+    import benchmark
+
+    results = [
+        {"id": "a", "shape": "chat", "tags": [], "iterations": 1, "latency_s": 1.0,
+         "hygiene": 0, "capped": False},
+        {"id": "b", "shape": "chat", "tags": ["phantom", "missing_tool:x"], "iterations": 1,
+         "latency_s": 3.0, "hygiene": 0, "capped": False},
+        {"id": "c", "shape": "multi", "tags": ["hygiene:2", "capped"], "iterations": 16,
+         "latency_s": 40.0, "hygiene": 2, "capped": True},
+    ]
+    s = benchmark.summarize_loop(results)
+    assert s["total"] == 3 and s["passed"] == 1
+    assert s["by_shape"]["chat"] == {"n": 2, "passed": 1, "mean_passes": 1.0, "mean_latency_s": 2.0}
+    assert s["by_shape"]["multi"]["passed"] == 0
+    assert s["phantom"] == 1 and s["hygiene"] == 2 and s["capped"] == 1
+    assert s["tags"]["missing_tool"] == 1 and s["tags"]["hygiene"] == 1
+    assert s["failed"] == ["b", "c"]
+
+
+def test_loop_tasks_are_well_formed():
+    """Every task names an existing tool, a shape the summary groups by, and a pass bound;
+    each required group is a subset of the allowed set; ids are unique."""
+    import benchmark
+    from tools.registry import tools_by_name
+
+    ids = [t["id"] for t in benchmark.LOOP_TASKS]
+    assert 20 <= len(ids) <= 30 and len(set(ids)) == len(ids)
+    for t in benchmark.LOOP_TASKS:
+        assert t["shape"] in benchmark.LOOP_SHAPES, t["id"]
+        assert t["max_passes"] >= 1
+        assert t["tools"] <= set(tools_by_name), (t["id"], t["tools"] - set(tools_by_name))
+        for group in t["required"]:
+            assert group and group <= t["tools"], t["id"]
+
+
+def test_loop_benchmark_run_is_offline_gradable(monkeypatch, isolated_paths):
+    """run_loop_benchmark plants its fixtures in the (isolated) workspace, grades every task
+    from run_query's entry, removes what it planted, and never touches a model."""
+    import benchmark
+
+    seen = []
+
+    def fake_run_query(graph, q):
+        seen.append(q)
+        return _loop_entry(response="I'll get right on that.")
+
+    monkeypatch.setattr(benchmark, "run_query", fake_run_query)
+    out = benchmark.run_loop_benchmark(object())
+    assert len(seen) == len(benchmark.LOOP_TASKS)
+    assert out["summary"]["total"] == len(benchmark.LOOP_TASKS)
+    assert {r["id"] for r in out["results"]} == {t["id"] for t in benchmark.LOOP_TASKS}
+    from config import get_config
+    leftovers = sorted(p.name for p in get_config().path("workspace").glob("bench_*"))
+    assert leftovers == []

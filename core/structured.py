@@ -64,7 +64,7 @@ def _model_tag(role: str) -> str:
 
 
 def _invoke_kwargs(role: str, fmt: "dict | None", temp: float, task: "str | None" = None, *,
-                   repetition: bool = False) -> dict:
+                   repetition: bool = False, think: bool = False) -> dict:
     """Constrained decoding + per-attempt temperature + the per-TASK decisions ride the invoke
     kwargs (ChatOllama forwards `format`/`options`/`reasoning` to the daemon).
 
@@ -74,8 +74,10 @@ def _invoke_kwargs(role: str, fmt: "dict | None", temp: float, task: "str | None
     its ~2048 default and front-truncate long prompts. Since 2026-08-15 (from the engine
     isolate) it also carries the task's `num_predict` bound, and `reasoning` (think) is set
     EXPLICITLY OFF for every task — never the model's default — unless the daemon already
-    rejected the flag for this tag (`llms._NO_THINK_SUPPORT`). `repetition=True` adds the
-    retry-only repeat penalty after a degenerate draw."""
+    rejected the flag for this tag (`llms._NO_THINK_SUPPORT`). `think=True` is the agent's
+    adaptive thinking pass (nodes/agent.py, 2026-09-28): the flag goes ON and the task's
+    `num_predict` widens by `runtime.think_budget`, since thinking tokens count against the
+    bound. `repetition=True` adds the retry-only repeat penalty after a degenerate draw."""
     from core import llms  # lazy: structured is imported by the registry's users
 
     task = task or _ROLE_TASK.get(role)
@@ -88,11 +90,13 @@ def _invoke_kwargs(role: str, fmt: "dict | None", temp: float, task: "str | None
         pass
     if task is not None:
         options["num_predict"] = NUM_PREDICT.get(task, 512)
+        if think:
+            options["num_predict"] += max(0, int(get_config().get("runtime.think_budget", 4096) or 0))
     if repetition:
         options.update(_REPETITION_OPTIONS)
     kwargs: dict = {"options": options}
     if task is not None and tag not in llms._NO_THINK_SUPPORT:
-        kwargs["reasoning"] = False
+        kwargs["reasoning"] = bool(think)
     if fmt is not None:
         kwargs["format"] = fmt
     return kwargs

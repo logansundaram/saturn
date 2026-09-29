@@ -1,15 +1,20 @@
 """
 The agent node — the v2 loop (2026-09-27; spec: docs/superpowers/specs/2026-09-27-v2-react-loop-design.md).
 
-One native tool-calling call per pass, think off, streamed. Its message either carries tool
-calls (→ approval → tools → back here) or is the answer (→ END). Everything that used to be a
+One native tool-calling call per pass, streamed. Its message either carries tool calls
+(→ approval → tools → back here) or is the answer (→ END). Everything that used to be a
 judge is a deterministic check here, in this order, and each costs the common case nothing:
 
   1. steer      a mid-turn correction (Esc + text) lands as a STEER_PREFIX HumanMessage;
   2. pause      an Esc pause interrupt()s for the pause prompt: continue / steer / abort;
   3. cap        past runtime.max_iterations the pass runs with tools UNBOUND and a budget note
                 — a real answer, never a stub;
-  4. generate   the call (the `_generate` seam the tests replace);
+  4. generate   the call (the `_generate` seam the tests replace). Adaptive thinking
+                (`runtime.think`, on evidence since 2026-09-29): a pass thinks, under
+                `runtime.think_budget`, only when the tool round just before it had an error —
+                the one place the model needs a new approach. Pass one, a clean round, a
+                declined or blocked call and the capped pass stay think-off. A thinking pass
+                that returns neither text nor a call is rerun once think-off;
   5. hygiene    on each emitted call: unknown tool, missing arguments (core/tool_args),
                 a repeat of a call the user DECLINED this turn, or a third identical call —
                 each answered with an error ToolMessage that routes straight back here;
@@ -42,7 +47,7 @@ from core.llms import extract_prompt_tokens, extract_tok_per_sec, generate, get_
 from core.llms import stream as llm_stream
 from core.messages import agent_sys_msg
 from core.pause import get_pause_controller
-from core.state import STEER_PREFIX, AgentState, is_turn_start
+from core.state import STEER_PREFIX, AgentState, is_steer_message, is_turn_start
 from core.structured import _invoke_kwargs, _model_tag
 from core.tool_args import coerce_args, schema_hint
 from core.sources import build_sources
@@ -175,16 +180,18 @@ def _calls_of(ai) -> "tuple[list, set]":
 # ── the call ──────────────────────────────────────────────────────────────────────────────────
 
 
-def _generate(llm_input: list, *, tools: bool) -> AIMessage:
+def _generate(llm_input: list, *, tools: bool, think: bool = False) -> AIMessage:
     """ONE streamed call (the test seam). Tokens reach the UI through LangGraph's messages
     mode (app/turn.py filters this node); the chunks are folded into one AIMessage here so
     state/trace/autosave see exactly what the model produced. `tools=False` is the capped last
-    pass: no bind, so the model can only answer."""
+    pass: no bind, so the model can only answer. `think=True` is an adaptive thinking pass:
+    the reasoning rides the chunks' `reasoning_content`, never `content`, so the response
+    stream stays the answer."""
     from tools.registry import tool as registered
 
     model = get_model(ROLE)
     runnable = model.bind_tools(list(registered)) if tools else model
-    kwargs = _invoke_kwargs(ROLE, None, 0.0, task="agent")
+    kwargs = _invoke_kwargs(ROLE, None, 0.0, task="agent", think=think)
     full = None
     for chunk in llm_stream(runnable, llm_input, tag=_model_tag(ROLE), **kwargs):
         full = chunk if full is None else full + chunk
@@ -216,22 +223,66 @@ def _is_parse_failure(exc: Exception) -> bool:
     return "tool call" in text and ("pars" in text or "invalid" in text or "malformed" in text)
 
 
-def _generate_or_retry(llm_input: list, *, tools: bool) -> "AIMessage | None":
+def _generate_or_retry(llm_input: list, *, tools: bool, think: bool = False) -> "AIMessage | None":
     """`_generate`, retried ONCE with the malformed-call note when the model's output could not
     be parsed; None when the retry failed the same way (the caller answers honestly)."""
     try:
-        return _generate(llm_input, tools=tools)
+        return _generate(llm_input, tools=tools, think=think)
     except Exception as exc:
         if not _is_parse_failure(exc):
             raise
         diag.log(f"agent_node : malformed model output ({type(exc).__name__}: {exc}) — retrying once")
     try:
-        return _generate(llm_input + [HumanMessage(content=MALFORMED_NOTE)], tools=tools)
+        return _generate(llm_input + [HumanMessage(content=MALFORMED_NOTE)], tools=tools, think=think)
     except Exception as exc:
         if not _is_parse_failure(exc):
             raise
         diag.log(f"agent_node : malformed model output twice ({type(exc).__name__}) — answering honestly")
         return None
+
+
+# ── adaptive thinking ─────────────────────────────────────────────────────────────────────────
+
+# Evidence that the next move needs a new approach: a call in the latest round failed — a tool
+# error or a hygiene refusal. A declined ("skipped") or air-gapped ("blocked") call is NOT
+# evidence: its next move is already known (say it was not done), and a thinking pass whose
+# right move is a short answer is exactly the shape that comes back empty (below).
+_EVIDENCE_STATUS = "error"
+
+
+def _latest_round(this_turn: list) -> list:
+    """The ToolMessages answering the last tool-calling message this turn — the round the
+    coming pass reacts to. A steer note the user typed after it is skipped, not a boundary."""
+    out = []
+    for m in reversed(this_turn):
+        if isinstance(m, ToolMessage):
+            out.append(m)
+        elif isinstance(m, HumanMessage) and is_steer_message(m):
+            continue
+        else:
+            break
+    return out
+
+
+def _wants_think(this_turn: list, capped: bool) -> bool:
+    """Whether THIS pass thinks (`runtime.think`). `adaptive` thinks only on the pass right
+    after a round with an error, so a chat question, a clean lookup and every wrap-up answer
+    cost nothing, and the thinking lands on the one decision that proved hard. Not sticky: a
+    later clean round turns it off again. `on` thinks on every uncapped pass; `off` never
+    does; the capped pass never does."""
+    mode = str(get_config().get("runtime.think", "adaptive") or "off").strip().lower()
+    if capped or mode == "off":
+        return False
+    if mode == "on":
+        return True
+    return any((getattr(m, "additional_kwargs", None) or {}).get("saturn_status") == _EVIDENCE_STATUS
+               for m in _latest_round(this_turn))
+
+
+def _is_empty(ai: AIMessage) -> bool:
+    """A pass that produced neither answer text nor a call (valid or malformed)."""
+    return (not str(ai.content or "").strip() and not getattr(ai, "tool_calls", None)
+            and not getattr(ai, "invalid_tool_calls", None))
 
 
 # ── hygiene ───────────────────────────────────────────────────────────────────────────────────
@@ -362,7 +413,16 @@ def agent_node(state: AgentState):
     # 4. generate — a malformed model output is retried once, then answered honestly; any
     # other failure propagates (the REPL reports "Turn failed").
     this_turn = _this_turn(messages + new)
-    ai = _generate_or_retry(_llm_input(state, messages + new, extra), tools=not capped)
+    think = _wants_think(this_turn, capped)
+    llm_input = _llm_input(state, messages + new, extra)
+    ai = _generate_or_retry(llm_input, tools=not capped, think=think)
+    if think and ai is not None and _is_empty(ai):
+        # On a pass whose right move is a short answer, a thinking model can write the answer
+        # inside its reasoning and emit nothing (qwen3.5 4b and 9b, 2026-09-29). The same
+        # pass think-off answers; its prefix is already cached, so the rerun is cheap.
+        diag.log("agent_node : thinking pass returned nothing — rerunning think-off")
+        think = False
+        ai = _generate_or_retry(llm_input, tools=not capped, think=False)
     if ai is None:
         updates["messages"] = new + [AIMessage(content=_with_trailers(MALFORMED_TEXT, state, this_turn))]
         diag.log(f"agent_node : {time.perf_counter() - start:.4f}s (malformed output twice)")
@@ -379,7 +439,8 @@ def agent_node(state: AgentState):
                           response_metadata=ai.response_metadata,
                           usage_metadata=ai.usage_metadata)
         updates["messages"] = new + [final]
-        diag.log(f"agent_node : {time.perf_counter() - start:.4f}s (answer, iter {iteration})")
+        diag.log(f"agent_node : {time.perf_counter() - start:.4f}s (answer, iter {iteration}"
+                 f"{', think' if think else ''})")
         return updates
 
     # 5. hygiene
@@ -405,7 +466,8 @@ def agent_node(state: AgentState):
                    usage_metadata=ai.usage_metadata)
     updates["messages"] = new + [ai] + answered
     diag.log(f"agent_node : {time.perf_counter() - start:.4f}s -> "
-             f"{', '.join(str(c.get('name')) for c in kept)} ({len(answered)} answered here)")
+             f"{', '.join(str(c.get('name')) for c in kept)} ({len(answered)} answered here"
+             f"{', think' if think else ''})")
     return updates
 
 

@@ -44,6 +44,122 @@ def test_agent_task_is_think_off_with_payload_bound(monkeypatch):
     assert structured._ROLE_TASK["tool_caller"] == "agent"
 
 
+def test_think_flag_rides_invoke_kwargs_with_its_budget(monkeypatch):
+    """A thinking pass sends `reasoning=True` and widens num_predict by runtime.think_budget
+    (thinking tokens count against the bound; the answer must still fit after them)."""
+    from core import structured
+    monkeypatch.setattr(structured, "_model_tag", lambda role: "m")
+    _think_cfg(monkeypatch, think_budget=1000)
+    kw = structured._invoke_kwargs("tool_caller", None, 0.0, task="agent", think=True)
+    assert kw["reasoning"] is True and kw["options"]["num_predict"] == 4096 + 1000
+
+
+def _think_cfg(monkeypatch, **runtime):
+    from config import get_config
+    cfg = get_config()
+    monkeypatch.setattr(cfg, "_data", {**cfg._data, "runtime": {**cfg._data.get("runtime", {}), **runtime}})
+
+
+def test_first_pass_never_thinks(monkeypatch):
+    from nodes import agent
+    _think_cfg(monkeypatch, think="adaptive")
+    seen = []
+    monkeypatch.setattr(agent, "_generate", lambda i, *, tools, think=False: seen.append(think) or AIMessage(content="a"))
+    agent.agent_node(_state([HumanMessage(content="q")], plan=[{"step_id": 1}]))
+    assert seen == [False]
+
+
+def test_think_follows_an_error_in_the_latest_round(monkeypatch):
+    """Thinking is spent on evidence, not on pass count (2026-09-29): a pass thinks only when
+    the tool round just before it had an error (a tool failure or a hygiene refusal), because
+    that is where the model needs a new approach. A clean round, a plan, a declined or blocked
+    call (whose next move is already known: say it was not done), a high pass count, or an
+    error further back in the turn all leave the pass think-off."""
+    from nodes import agent
+    _think_cfg(monkeypatch, think="adaptive")
+    seen = []
+    monkeypatch.setattr(agent, "_generate", lambda i, *, tools, think=False: seen.append(think) or AIMessage(content="a"))
+    q = [HumanMessage(content="q")]
+    clean = q + _round("read_file", {"file_path": "a"}, "c1")
+    failed = q + _round("read_file", {"file_path": "a"}, "c1", "err", "error")
+    cases = [
+        (clean, {}, False),
+        (clean, {"plan": [{"step_id": 1, "label": "x", "status": "pending"}]}, False),
+        (failed, {}, True),
+        (q + _round("write_file", {"file_path": "a"}, "c1", "no", "skipped"), {}, False),
+        (q + _round("web_search", {"query": "a"}, "c1", "blocked", "blocked"), {}, False),
+        (clean, {"iteration": 8}, False),
+        (failed + _round("search_files", {"pattern": "a"}, "c2"), {}, False),
+    ]
+    for msgs, extra, _want in cases:
+        agent.agent_node(_state(msgs, **{"iteration": 1, **extra}))
+    assert seen == [want for _m, _e, want in cases]
+
+
+def test_an_error_anywhere_in_a_batch_or_behind_a_steer_counts(monkeypatch):
+    """The latest round is every ToolMessage after the last tool-calling message — one failed
+    call in a two-call batch is evidence — and a steer note the user typed after it does not
+    hide it."""
+    from core.state import STEER_PREFIX
+    from nodes import agent
+    _think_cfg(monkeypatch, think="adaptive")
+    seen = []
+    monkeypatch.setattr(agent, "_generate", lambda i, *, tools, think=False: seen.append(think) or AIMessage(content="a"))
+    batch = [HumanMessage(content="q"),
+             AIMessage(content="", tool_calls=[_call("read_file", {"file_path": "a"}, "c1"),
+                                               _call("read_file", {"file_path": "b"}, "c2")]),
+             ToolMessage(content="ok", tool_call_id="c1", name="read_file",
+                         additional_kwargs={"saturn_status": "done"}),
+             ToolMessage(content="err", tool_call_id="c2", name="read_file",
+                         additional_kwargs={"saturn_status": "error"})]
+    agent.agent_node(_state(batch, iteration=1))
+    agent.agent_node(_state(batch + [HumanMessage(content=STEER_PREFIX + " use b2")], iteration=1))
+    assert seen == [True, True]
+
+
+def test_an_empty_thinking_pass_is_rerun_without_thinking(monkeypatch):
+    """On a pass whose right move is a short answer, qwen3.5 in thinking mode writes the answer
+    inside its reasoning and emits no content (reproduced on the 4b and 9b, 2026-09-29). A
+    thinking pass that returns neither text nor a call is run ONCE more think-off; a pass
+    that produced a call, or a think-off pass, is never rerun."""
+    from nodes import agent
+    _think_cfg(monkeypatch, think="adaptive")
+    failed = [HumanMessage(content="q")] + _round("read_file", {"file_path": "a"}, "c1", "err", "error")
+
+    seen = []
+    monkeypatch.setattr(agent, "_generate", lambda i, *, tools, think=False: seen.append(think) or AIMessage(
+        content="" if think else "It is not there."))
+    out = agent.agent_node(_state(failed, iteration=1))
+    assert seen == [True, False]
+    assert out["messages"][-1].content.startswith("It is not there.")
+
+    seen.clear()
+    monkeypatch.setattr(agent, "_generate", lambda i, *, tools, think=False: seen.append(think) or AIMessage(
+        content="", tool_calls=[_call("search_files", {"pattern": "a"}, "c2")]))
+    agent.agent_node(_state(failed, iteration=1))
+    assert seen == [True]
+
+    seen.clear()
+    monkeypatch.setattr(agent, "_generate", lambda i, *, tools, think=False: seen.append(think) or AIMessage(content=""))
+    agent.agent_node(_state([HumanMessage(content="q")] + _round("read_file", {"file_path": "a"}, "c1"), iteration=1))
+    assert seen == [False]
+
+
+def test_capped_pass_and_the_off_knob_never_think(monkeypatch):
+    from config import get_config
+    from nodes import agent
+    seen = []
+    monkeypatch.setattr(agent, "_generate", lambda i, *, tools, think=False: seen.append((tools, think)) or AIMessage(content="a"))
+    hard = [HumanMessage(content="q")] + _round("read_file", {"file_path": "a"}, "c1", "err", "error")
+    _think_cfg(monkeypatch, think="adaptive")
+    agent.agent_node(_state(hard, iteration=get_config().max_iterations - 1))
+    _think_cfg(monkeypatch, think="off")
+    agent.agent_node(_state(hard, iteration=5))
+    _think_cfg(monkeypatch, think="on")
+    agent.agent_node(_state([HumanMessage(content="q")]))
+    assert seen == [(False, False), (True, False), (True, True)]
+
+
 def test_agent_sys_msg_is_stable_and_names_plan_tool():
     from core.messages import agent_sys_msg
 
@@ -114,7 +230,7 @@ def test_agent_answers_directly_with_trailers(monkeypatch):
 
     seen = {}
 
-    def fake(llm_input, *, tools):
+    def fake(llm_input, *, tools, think=False):
         seen["tools"] = tools
         seen["input"] = llm_input
         return AIMessage(content="42", response_metadata={
@@ -138,7 +254,7 @@ def test_agent_prompt_keeps_prior_history_before_the_request(monkeypatch):
     from nodes import agent
 
     seen = {}
-    monkeypatch.setattr(agent, "_generate", lambda i, *, tools: seen.setdefault("input", i) and AIMessage(content="ok"))
+    monkeypatch.setattr(agent, "_generate", lambda i, *, tools, think=False: seen.setdefault("input", i) and AIMessage(content="ok"))
     msgs = [HumanMessage(content="first"), AIMessage(content="one"), HumanMessage(content="second")]
     agent.agent_node(_state(msgs, context_stable="S"))
     contents = [m.content for m in seen["input"]]
@@ -148,7 +264,7 @@ def test_agent_prompt_keeps_prior_history_before_the_request(monkeypatch):
 def test_agent_emits_tool_calls_to_approval(monkeypatch):
     from nodes import agent
 
-    monkeypatch.setattr(agent, "_generate", lambda i, *, tools: AIMessage(
+    monkeypatch.setattr(agent, "_generate", lambda i, *, tools, think=False: AIMessage(
         content="", tool_calls=[_call("read_file", {"path": "a.txt"})]))
     out = agent.agent_node(_state([HumanMessage(content="q")]))
     ai = out["messages"][-1]
@@ -159,7 +275,7 @@ def test_agent_emits_tool_calls_to_approval(monkeypatch):
 def test_hygiene_unknown_tool_and_missing_args(monkeypatch):
     from nodes import agent
 
-    monkeypatch.setattr(agent, "_generate", lambda i, *, tools: AIMessage(
+    monkeypatch.setattr(agent, "_generate", lambda i, *, tools, think=False: AIMessage(
         content="", tool_calls=[_call("nope", {}, "a"), _call("read_file", {}, "b")]))
     out = agent.agent_node(_state([HumanMessage(content="q")]))
     tms = [m for m in out["messages"] if isinstance(m, ToolMessage)]
@@ -175,7 +291,7 @@ def test_hygiene_malformed_call_gets_a_schema_hint(monkeypatch):
     from nodes import agent
 
     bad = {"name": "read_file", "args": "a.txt", "id": "c1", "error": "not json"}
-    monkeypatch.setattr(agent, "_generate", lambda i, *, tools: AIMessage(
+    monkeypatch.setattr(agent, "_generate", lambda i, *, tools, think=False: AIMessage(
         content="", invalid_tool_calls=[bad]))
     out = agent.agent_node(_state([HumanMessage(content="q")]))
     tm = out["messages"][-1]
@@ -190,7 +306,7 @@ def test_declined_repeat_is_auto_declined(monkeypatch):
 
     args = {"file_path": "x", "content": "y"}
     prior = [HumanMessage(content="q")] + _round("write_file", args, "c1", DECLINE_TEXT, "skipped")
-    monkeypatch.setattr(agent, "_generate", lambda i, *, tools: AIMessage(
+    monkeypatch.setattr(agent, "_generate", lambda i, *, tools, think=False: AIMessage(
         content="", tool_calls=[_call("write_file", args, "c2")]))
     out = agent.agent_node(_state(prior))
     assert out["messages"][-1].content == agent.ALREADY_DECLINED_TEXT
@@ -202,7 +318,7 @@ def test_stall_refuses_third_identical_call(monkeypatch):
 
     args = {"file_path": "a"}
     prior = [HumanMessage(content="q")] + _round("read_file", args, "c1") + _round("read_file", args, "c2")
-    monkeypatch.setattr(agent, "_generate", lambda i, *, tools: AIMessage(
+    monkeypatch.setattr(agent, "_generate", lambda i, *, tools, think=False: AIMessage(
         content="", tool_calls=[_call("read_file", args, "c3")]))
     out = agent.agent_node(_state(prior))
     assert out["messages"][-1].content == agent.STALL_TEXT
@@ -217,7 +333,7 @@ def test_iteration_cap_answers_without_tools(monkeypatch):
 
     seen = {}
 
-    def fake(llm_input, *, tools):
+    def fake(llm_input, *, tools, think=False):
         seen["tools"] = tools
         seen["last"] = llm_input[-1].content
         return AIMessage(content="partial")
@@ -239,7 +355,7 @@ def test_steer_is_injected_before_the_call(monkeypatch):
     get_pause_controller().request("steer", "use km")
     seen = {}
 
-    def fake(llm_input, *, tools):
+    def fake(llm_input, *, tools, think=False):
         seen["input"] = llm_input
         return AIMessage(content="ok")
 
@@ -263,7 +379,7 @@ def test_pause_interrupt_continue_steer_abort(monkeypatch):
         return fake_interrupt.reply
 
     monkeypatch.setattr(agent, "interrupt", fake_interrupt)
-    monkeypatch.setattr(agent, "_generate", lambda i, *, tools: AIMessage(content="ans"))
+    monkeypatch.setattr(agent, "_generate", lambda i, *, tools, think=False: AIMessage(content="ans"))
     step = {"step_id": 1, "label": "x", "status": "pending", "intended_tool": None,
             "result": None, "needs_resolution": False}
 
@@ -522,9 +638,9 @@ def test_config_template_keeps_the_runtime_block():
     data = yaml.safe_load(pathlib.Path("config.default.yaml").read_text())
     rt = data["runtime"]
     for key in ("max_iterations", "auto_approve", "num_ctx", "llm_timeout", "keep_alive", "prime",
-                "airgap", "quarantine", "citations", "grant_scope"):
+                "airgap", "quarantine", "citations", "grant_scope", "think", "think_budget"):
         assert key in rt, key
-    assert "quick_path" not in rt
+    assert "quick_path" not in rt and "think_after" not in rt
     assert all(isinstance(v, str) for v in data["paths"].values())
 
 
@@ -534,7 +650,7 @@ def test_ask_user_runs_alone(monkeypatch):
     second question) with a note to ask first."""
     from nodes import agent
 
-    monkeypatch.setattr(agent, "_generate", lambda i, *, tools: AIMessage(content="", tool_calls=[
+    monkeypatch.setattr(agent, "_generate", lambda i, *, tools, think=False: AIMessage(content="", tool_calls=[
         _call("read_file", {"file_path": "a"}, "r"), _call("ask_user", {"question": "which?"}, "q"),
         _call("ask_user", {"question": "and?"}, "q2")]))
     out = agent.agent_node(_state([HumanMessage(content="q")]))
@@ -571,7 +687,7 @@ def test_generate_parse_failure_retries_once_then_answers_honestly(monkeypatch):
 
     calls = []
 
-    def flaky(llm_input, *, tools):
+    def flaky(llm_input, *, tools, think=False):
         calls.append(llm_input[-1].content)
         if len(calls) == 1:
             raise OutputParserException("bad tool json")
@@ -582,7 +698,7 @@ def test_generate_parse_failure_retries_once_then_answers_honestly(monkeypatch):
     assert out["messages"][-1].content.startswith("ok")
     assert len(calls) == 2 and calls[1] == agent.MALFORMED_NOTE
 
-    def broken(llm_input, *, tools):
+    def broken(llm_input, *, tools, think=False):
         raise OutputParserException("bad tool json")
 
     monkeypatch.setattr(agent, "_generate", broken)
@@ -590,7 +706,7 @@ def test_generate_parse_failure_retries_once_then_answers_honestly(monkeypatch):
     assert out["messages"][-1].content.startswith(agent.MALFORMED_TEXT)
     assert agent.route_after_agent({"messages": out["messages"]}) == "end"
 
-    def down(llm_input, *, tools):
+    def down(llm_input, *, tools, think=False):
         raise RuntimeError("connection refused")
 
     monkeypatch.setattr(agent, "_generate", down)
@@ -606,7 +722,7 @@ def test_incidents_note_uses_user_wording_and_dedupes(monkeypatch):
     prior = ([HumanMessage(content="q")] + _round("write_file", args, "c1", DECLINE_TEXT, "skipped")
              + _round("write_file", args, "c2", agent.ALREADY_DECLINED_TEXT, "skipped")
              + _round("web_search", {"query": "z"}, "c3", "air-gap refused", "blocked"))
-    monkeypatch.setattr(agent, "_generate", lambda i, *, tools: AIMessage(content="sorry"))
+    monkeypatch.setattr(agent, "_generate", lambda i, *, tools, think=False: AIMessage(content="sorry"))
     out = agent.agent_node(_state(prior))
     text = out["messages"][-1].content
     assert text.count("write_file(") == 1 and "declined at the approval gate" in text
@@ -618,7 +734,7 @@ def test_cap_lands_on_the_max_iterations_pass(monkeypatch):
     from nodes import agent
 
     seen = []
-    monkeypatch.setattr(agent, "_generate", lambda i, *, tools: seen.append(tools) or AIMessage(content="a"))
+    monkeypatch.setattr(agent, "_generate", lambda i, *, tools, think=False: seen.append(tools) or AIMessage(content="a"))
     agent.agent_node(_state([HumanMessage(content="q")], iteration=get_config().max_iterations - 2))
     agent.agent_node(_state([HumanMessage(content="q")], iteration=get_config().max_iterations - 1))
     assert seen == [True, False]
@@ -636,7 +752,7 @@ def test_prior_answer_trailers_are_stripped_from_history(monkeypatch):
     from nodes import agent
 
     seen = {}
-    monkeypatch.setattr(agent, "_generate", lambda i, *, tools: seen.setdefault("input", i) and AIMessage(content="ok"))
+    monkeypatch.setattr(agent, "_generate", lambda i, *, tools, think=False: seen.setdefault("input", i) and AIMessage(content="ok"))
     earlier = ("42\n\n" + agent.INCIDENTS_NOTE_HEADER + "\n- read_file(x) — error: boom\n\n"
                "Sources:\n  [1] calculate(expression='6*7')")
     msgs = [HumanMessage(content="first"), AIMessage(content=earlier), HumanMessage(content="second")]

@@ -1,5 +1,5 @@
 """
-Approval node — the human-in-the-loop safety gate (Phase 2).
+Approval node — the human-in-the-loop safety gate.
 
 Whether a call skips the human is ONE question asked of ONE object: `policy.approves(name,
 risk, args)` (the tier threshold + the shell allowlist — see policy.py). Anything it
@@ -24,7 +24,7 @@ import diag
 from trust import policy
 from trust import quarantine
 from tools.registry import risk_of
-from core.state import AgentState, current_step
+from core.state import AgentState, current_step, issuing_message
 
 # The decline observation a rejected call gets. The structural `saturn_status: skipped` stamp on
 # the ToolMessage is what readers key on (nodes/agent.py's declined-repeat guard + incidents).
@@ -157,14 +157,7 @@ def approval_node(state: AgentState) -> Command[Literal["tools", "agent"]]:
     ToolMessage here (orphaned tool_calls break the next model turn); everything else in the
     batch still routes to `tools`, which executes only the calls that don't already have a
     ToolMessage. A fully-rejected batch routes back to `agent`."""
-    answered = set()
-    last = None
-    for m in reversed(state["messages"]):
-        if isinstance(m, ToolMessage):
-            answered.add(m.tool_call_id)
-            continue
-        last = m
-        break
+    last, answered = issuing_message(state["messages"])
     tool_calls = [tc for tc in (getattr(last, "tool_calls", None) or [])
                   if tc.get("id") not in answered]
 

@@ -13,26 +13,20 @@ frame. Specifics:
   - A dim vertical rail (`│`) carries the execution trace. Consecutive node lines form one
     continuous gutter, so a turn reads as a single inspectable block (the htop/tree feel). Each
     node line leads with a green `✓` (the node has finished by the time it prints) then a dim
-    `name  elapsed`. At normal verbosity the plumbing nodes (`ground`, `update_plan`, `plan_gate`)
-    fold out of the rail — their *output* still prints and the trace DB keeps every node — so a
-    turn reads as the user's mental model, `plan → agent → tools → … → synthesize`;
-    `set_verbosity("verbose")` (via `/trace full`) restores every node line and full timings.
-    `synthesize`'s ROW is suppressed the same way but for a different reason: its update fires
-    after the answer has already begun streaming, and rich prints above a live region, so drawing
-    it would shove the streaming answer down. Only the row goes — the node's metrics still feed
-    the bar (and the receipt), and a bounded-record leaf keeps its row so no annotation is
-    ever orphaned.
+    `name  elapsed`. At normal verbosity the plumbing node (`ground`) folds out of the rail —
+    its timing rolls into the next row and the trace DB keeps every node — so a turn reads as
+    the user's mental model, `agent → tools → agent → …`; `set_verbosity("verbose")` (via
+    `/trace full`) restores every node line and full timings.
   - Color is **semantic only**: green = done, cyan = active, yellow/red = risk tier. Structure
     is dim. Nothing is colored just to look nice — if it has color, it means something. And
     because color is the first thing a terminal drops, the MARKER carries the state and color only
     reinforces it: everything must still read under `NO_COLOR=1`.
   - The plan re-renders **in full** — every row carrying its status glyph AND intended tool —
-    each time it materially changes (2026-07-06 faithful-rendering rework): the first draft,
-    each completed step of the execute → update_plan loop, a replan's redraft, a rectify
-    cancellation, a review edit. (The old one-line status diff hid tools after the first print
-    and missed a redraft that kept ids/statuses.) The one fold: a step flipping to bare
-    `active` — the execute rail line + reasoning leaf in the same delta already name the step
-    being worked, so that flip rides silently into the next material render. Each re-render opens
+    each time it materially changes (2026-07-06 faithful-rendering rework): each `plan` call
+    the model makes (tools/planning.py) is a new render. (The old one-line status diff hid tools
+    after the first print and missed a redraft that kept ids/statuses.) The one fold: a step
+    flipping to bare `active` with nothing else changed rides silently into the next material
+    render. Each re-render opens
     with a dim `│ plan · 4/12` row: it delimits one rendering from the next (they interleave with
     trace rows 8-12 times a turn) and the count is the progress the repetition exists to show.
   - The `tools` node renders a **tool-I/O sub-tree** under its header: one `├─ name(args)  dur`

@@ -48,10 +48,32 @@ TRUST_KEYS = frozenset({
     "runtime.auto_approve",
     "runtime.airgap",
     "runtime.quarantine",
-    "runtime.redaction",
     "shell.env_scrub",      # emptying it lets a shell child read secrets from its environment
     "runtime.grant_scope",  # session/persist lengthen how long an always-allow grant lives
 })
+
+def saturn_home() -> Path:
+    """The user's own Saturn folder: `$SATURN_HOME`, else `~/.saturn` — hand-written files that
+    follow the user everywhere (the global SATURN.md, hooks.yaml), and a new wheel install's
+    data (`wheel_data_home`)."""
+    return Path(os.environ.get("SATURN_HOME") or Path.home() / ".saturn").expanduser()
+
+
+def wheel_data_home() -> Path:
+    """Where a wheel (pipx/uv) install keeps config.yaml and its data, first match wins:
+    `$SATURDAY_HOME` (the old name, when set), `$SATURN_HOME`, `~/.saturday` when an earlier
+    install already keeps its config.yaml there (2026-09-29: one home is ~/.saturn now, and no
+    one's data moves), else `~/.saturn`. diag.py and env_keys.py repeat this rule — they import
+    nothing project-side — and tests/test_data_home.py pins the three together."""
+    if os.environ.get("SATURDAY_HOME"):
+        return Path(os.environ["SATURDAY_HOME"]).expanduser()
+    if os.environ.get("SATURN_HOME"):
+        return Path(os.environ["SATURN_HOME"]).expanduser()
+    legacy = Path.home() / ".saturday"
+    if (legacy / "config.yaml").is_file():
+        return legacy
+    return Path.home() / ".saturn"
+
 
 def _resolve_config_path() -> Path:
     """Locate the live config.yaml.
@@ -62,8 +84,8 @@ def _resolve_config_path() -> Path:
     /update's ff-only pull) — it is seeded on first run from the tracked template
     config.default.yaml.
 
-    Installed mode (pipx/uv/pip wheel): the user's editable copy lives under SATURDAY_HOME
-    (default ~/.saturday), seeded on first run from the packaged default that the wheel ships
+    Installed mode (pipx/uv/pip wheel): the user's editable copy lives in `wheel_data_home()`
+    (~/.saturn; an earlier install's ~/.saturday stays where it is), seeded on first run from the packaged default that the wheel ships
     to <venv>/share/saturn/ (see pyproject.toml). Keeping the live copy out of site-packages
     means a persisted /config edit survives a `pipx upgrade`.
     """
@@ -84,7 +106,7 @@ def _resolve_config_path() -> Path:
             # persist() reports "not persisted" cleanly; the next writable launch seeds.
             return local_default
         return local
-    home = Path(os.environ.get("SATURDAY_HOME") or Path.home() / ".saturday")
+    home = wheel_data_home()
     user_cfg = home / "config.yaml"
     if not user_cfg.exists():
         share = Path(sys.prefix) / "share" / "saturn"
@@ -94,7 +116,7 @@ def _resolve_config_path() -> Path:
         if not default.exists():
             raise FileNotFoundError(
                 "config.yaml not found: not running from a Saturn clone, and the packaged "
-                f"default ({default}) is missing. Reinstall Saturn, or point SATURDAY_HOME "
+                f"default ({default}) is missing. Reinstall Saturn, or point SATURN_HOME "
                 "at a directory containing a config.yaml."
             )
         home.mkdir(parents=True, exist_ok=True)
@@ -104,10 +126,15 @@ def _resolve_config_path() -> Path:
 
 _CONFIG_PATH = _resolve_config_path()
 # Data root: every `paths.*` entry resolves against the directory holding the live config.yaml —
-# the repo root in clone mode, SATURDAY_HOME for a wheel install. User data never lands in
+# the repo root in clone mode, wheel_data_home() for a wheel install. User data never lands in
 # site-packages, where an upgrade would clobber it. (diag.py and env_keys.py mirror this lookup;
 # they deliberately import nothing project-side, so keep the three in step.)
 _REPO_ROOT = _CONFIG_PATH.parent
+
+
+def config_path() -> Path:
+    """The live config.yaml this session loaded (clone: beside the code; wheel: the data home)."""
+    return _CONFIG_PATH
 
 # THE two model roles the loop binds (config.yaml `roles:`, llms.get_model's vocabulary):
 # `tool_caller` is the agent's one call per pass, `utility` the out-of-loop background work

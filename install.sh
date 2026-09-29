@@ -9,23 +9,26 @@
 set -eu
 
 # --- config (override via env) -----------------------------------------------------
-REPO_URL="${SATURDAY_REPO:-https://github.com/logansundaram/saturn.git}"
-BRANCH="${SATURDAY_BRANCH:-main}"
-INSTALL_DIR="${SATURDAY_HOME:-$HOME/.saturday}"
-BIN_DIR="${SATURDAY_BIN:-$HOME/.local/bin}"
+# SATURN_* since 2026-09-29; the old SATURDAY_* spellings are still read. The clone's folder is
+# SATURN_INSTALL_DIR (old name SATURDAY_HOME) — SATURN_HOME is ~/.saturn, the user's own folder
+# (SATURN.md, hooks.yaml). A clone keeps its data beside itself, so existing installs stay put.
+REPO_URL="${SATURN_REPO:-${SATURDAY_REPO:-https://github.com/logansundaram/saturn.git}}"
+BRANCH="${SATURN_BRANCH:-${SATURDAY_BRANCH:-main}}"
+INSTALL_DIR="${SATURN_INSTALL_DIR:-${SATURDAY_HOME:-$HOME/.saturday}}"
+BIN_DIR="${SATURN_BIN:-${SATURDAY_BIN:-$HOME/.local/bin}}"
 MIN_PY_MAJOR=3
 MIN_PY_MINOR=10
 # Active tier for a fresh install. '4b' uses qwen3.5:4b (a light download that runs on modest
 # hardware); switch to a larger size class later via /models tier.
-TIER="${SATURDAY_TIER:-4b}"
+TIER="${SATURN_TIER:-${SATURDAY_TIER:-4b}}"
 # The chat model the 4b tier binds. Must match the `4b` tier binding in config.yaml — pulling
 # a different model than the tier binds breaks the first run. If you override this, rebind
 # the roles afterwards with /models. The knowledge-base embedder (qwen3-embedding:8b) is NOT
 # pulled here: `/docs add` offers to pull it the first time a document is ingested.
-MODELS="${SATURDAY_MODELS:-qwen3.5:4b}"
+MODELS="${SATURN_MODELS:-${SATURDAY_MODELS:-qwen3.5:4b}}"
 # Minimum Ollama daemon version. Older daemons can't pull the current model formats (the pull
 # fails or the model runs wrong), so we update below if the installed one is behind this.
-MIN_OLLAMA="${SATURDAY_MIN_OLLAMA:-0.6.0}"
+MIN_OLLAMA="${SATURN_MIN_OLLAMA:-${SATURDAY_MIN_OLLAMA:-0.6.0}}"
 
 # --- output helpers ----------------------------------------------------------------
 if [ -t 1 ]; then B="$(printf '\033[1m')"; G="$(printf '\033[32m')"; Y="$(printf '\033[33m')"; R="$(printf '\033[31m')"; X="$(printf '\033[0m')"; else B=; G=; Y=; R=; X=; fi
@@ -115,18 +118,19 @@ say "Creating virtual environment and installing dependencies"
 [ -d "$INSTALL_DIR/.venv" ] || "$PY" -m venv "$INSTALL_DIR/.venv"
 VENV_PY="$INSTALL_DIR/.venv/bin/python"
 "$VENV_PY" -m pip install --quiet --upgrade pip
-# Install requirements behind a compact progress bar instead of pip's full firehose. Everything
-# is still captured to $PIP_LOG so a dependency failure is never silently swallowed - on failure
+# Install the checkout itself, editable, behind a compact progress bar instead of pip's full
+# firehose: pyproject.toml is the one dependency list, and an editable install keeps the clone
+# the code that runs (config.py stays in clone mode — its data lives beside it). Everything is
+# still captured to $PIP_LOG so a dependency failure is never silently swallowed - on failure
 # we print the tail of the log and the path to the full one.
-REQ="$INSTALL_DIR/requirements.txt"
 PIP_LOG="$INSTALL_DIR/.venv/pip-install.log"
 PIP_STAT="$INSTALL_DIR/.venv/.pip-status"
-# Rough upper bound for the bar: declared requirements + headroom for transitive deps.
-EXPECTED=$(grep -cE '^[[:space:]]*[^#[:space:]]' "$REQ" 2>/dev/null || echo 1)
+# Rough upper bound for the bar: declared dependencies + headroom for transitive deps.
+EXPECTED=$(sed -n '/^dependencies = \[/,/^\]/p' "$INSTALL_DIR/pyproject.toml" 2>/dev/null | grep -cE '^[[:space:]]*"' || echo 1)
 [ "$EXPECTED" -gt 0 ] 2>/dev/null || EXPECTED=1
 rm -f "$PIP_STAT"
 # Run pip in a group so we can record its real exit code (the pipeline's status is awk's).
-{ "$VENV_PY" -m pip install --no-input --progress-bar off -r "$REQ" 2>&1; echo $? > "$PIP_STAT"; } \
+{ "$VENV_PY" -m pip install --no-input --progress-bar off -e "$INSTALL_DIR" 2>&1; echo $? > "$PIP_STAT"; } \
   | tee "$PIP_LOG" \
   | awk -v total="$((EXPECTED*3))" -v tty="$([ -t 1 ] && echo 1 || echo 0)" '
       /^Collecting / {

@@ -3,7 +3,9 @@ Local-knowledge tools — what the agent already knows, on this machine.
 
   search_knowledge_base — semantic search over the local RAG store (the ingested corpus).
   remember / recall     — durable facts via `memory_registry` (the layered markdown store).
-  recall_runs           — full-text search over past runs (the trace DB's runs table, FTS5).
+
+(`recall_runs`, a model-facing search over the trace DB, was cut 2026-09-29: "what did I
+decide" is memory's job. `/trace search` still searches past runs for the user.)
 
 Kept separate from the live-web tools (`web.py`): these search the user's OWN data, not the
 internet. (remember/recall lived in tools/memory.py until the 2026-06-11 leaf consolidation.)
@@ -75,29 +77,3 @@ def recall(query: str = ""):
     if not facts:
         return "No matching facts in persistent memory."
     return "\n".join(f"- {f}" for f in facts)
-
-
-# untrusted=True: a recorded answer may quote what a web page or an MCP server said — a stored
-# injection resurfacing through search must be scanned like any other external content.
-@register_tool("read_only", untrusted=True)
-def recall_runs(query: str, limit: int = 5):
-    """Search the record of past runs (every earlier request and the answer given, across
-    sessions) for the given words — e.g. "what did we do last week", "the report we made
-    Monday", or to redo an earlier task the same way. Returns the matching runs newest-relevant
-    first with their id, date, request and a preview of the answer. `limit` caps the results."""
-    from config import get_config
-    from stores.trace import search_runs
-    from textutil import clip
-
-    rows = search_runs(str(get_config().path("db_sqlite")), query, limit=limit)
-    if not rows:
-        return "No past runs match those words."
-    out = []
-    for r in rows:
-        when = str(r.get("started_at") or "")[:16].replace("T", " ")
-        out.append(
-            f"run #{r['run_id']} ({when}, {r.get('status')})\n"
-            f"  request: {clip(r['query'], 300)}\n"
-            f"  answer: {clip(r['response'], 600)}"
-        )
-    return "\n\n".join(out)

@@ -26,7 +26,7 @@ core/       the engine room: state, model factory, prompts, invoke options, the 
 nodes/      the graph nodes, one per file (ground → agent → approval → tools → agent …)
 tools/      the tool implementations + registry + MCP client (risk tiers declared at definition)
 notify/     scheduled desktop notifications: the platform seam, the macOS launchd/osascript backend, the menu bar item
-trust/      the trust stack: gate policy, egress ledger, redaction, quarantine, receipt
+trust/      the trust stack: gate policy, egress ledger, secret scan, quarantine, receipt
 commands/   the slash-command layer (/help themes, one module each)
 stores/     data + persistence: RAG corpus + its manifest, memory, snapshots, trace DB
 tui/        presentation: the rich-based terminal UI, type-ahead reader, system metrics
@@ -96,9 +96,9 @@ The whole product is one loop. Reading it end to end explains 80% of the repo:
 | File | What it does |
 |---|---|
 | `state.py` | `AgentState` + the step-dict vocabulary of the model's checklist. `current_step` (first item with `result is None`) is the gate's step context; `gate_events` is the one non-recomputable record (human decisions); `is_turn_start` is THE turn-boundary predicate. |
-| `llms.py` | `get_model(role)` — the two-role model factory (`tool_caller` = the agent's call, `utility` = background work) over Ollama; locality boundary wrapping for a remote `OLLAMA_HOST`; startup health check. Cloud providers are shelved (refuse actionably). |
+| `llms.py` | `get_model(role)` — the two-role model factory (`tool_caller` = the agent's call, `utility` = background work) over Ollama; `invoke_kwargs`, THE builder of the per-task decoding options every call sends (num_ctx, num_predict, think); locality boundary wrapping for a remote `OLLAMA_HOST`; startup health check. Cloud providers are shelved (refuse actionably). |
 | `messages.py` | Every system prompt, in one place: `agent_sys_msg()` (the loop's one prompt — no tool catalog, the tools ride the native bind) plus the compaction, memory-review and /init prompts. |
-| `structured.py` | `_invoke_kwargs` — THE builder of the per-task decoding options every model call sends (num_ctx, num_predict, think) — plus the hardened structured-output call the memory review uses. |
+| `doctext.py` | Text out of PDF / .docx / .xlsx (`extract`) for `read_file` and `@file` attachments, and the PDF / Word loaders the knowledge base shares. A leaf; the format libraries load lazily. |
 | `context.py` | `grounding_parts` (the stable / per-turn halves of the grounding block) and `clean` (workspace paths collapse in observations). |
 | `sources.py` | `build_sources` — the answer's source numbering, shared by the Sources footer and `/trace source`. |
 | `pause.py` | The `PauseController`: the Esc pause / steer latch the agent node consults at the top of every pass. |
@@ -106,6 +106,7 @@ The whole product is one loop. Reading it end to end explains 80% of the repo:
 | `tool_args.py` | Tool-argument recovery: alias coercion onto real schemas + the schema hint the agent sends back on a rejected call (small-model tolerance). |
 | `compaction.py` | The heavier LLM compaction (automatic past threshold) folding old turns into a summary message. |
 | `memory_review.py` | Session-end learning, gated: collects memory candidates from each turn (steer notes, gate denials, failed tool calls) and from compaction summaries into a pending queue, optionally asks the utility model for proposals, and runs the accept-each review screen (`/memory review`, `/quit`). Never writes without a y. |
+| `hooks.py` | The user's `~/.saturn/hooks.yaml`: shell commands on turn-start / turn-end (`app/turn.py`) and before- / after-write (`tools/files.py`); a before-write non-zero exit blocks the write; `problems()` feeds the startup warning. |
 | `mentions.py` | `@file` expansion into clamped attachment blocks; drag-and-drop path detection. |
 | `workspace.py` | Where Saturn works: the launch folder, `/add-dir` folders, the one containment check (`resolve`), and the pruned walk. |
 
@@ -121,11 +122,11 @@ every check in the agent node. Note: `nodes/tools.py` is the *tool-execution nod
 |---|---|
 | `toolspec.py` | `@register_tool(risk[, retrieval])` — risk tier declared at definition, timing wrapper. Unknown risk fails closed to `destructive`. |
 | `registry.py` | Imports the tool modules (which registers them), exposes the live registry + risk views, connects MCP, applies persisted `/policy risk` overrides. |
-| `mcp_client.py` | MCP client: stdio/HTTP/SSE servers from config.yaml, remote tools registered as `mcp_<server>_<tool>` (never trusting self-declared tiers), redaction parity, one background asyncio bridge. |
+| `mcp_client.py` | MCP client: stdio/HTTP/SSE servers from config.yaml, remote tools registered as `mcp_<server>_<tool>` (never trusting self-declared tiers), remote calls on the egress ledger, one background asyncio bridge. |
 | `calculator.py` | `calculate` (whitelisted AST evaluator — never `eval`) + `current_time` (clock grounding). |
 | `web.py` | `web_search` (keyless DuckDuckGo — API-less by design since 2026-07-06), `web_extract` (local trafilatura), `http_request` (the universal REST integration — always gated, request shown in full). |
 | `files.py` | Workspace-sandboxed file tools: read/write/edit/list/search/find. Mutating tools snapshot first for `/undo`. |
-| `knowledge.py` | `search_knowledge_base` (RAG) + `remember`/`recall` (the layered memory; `remember` takes a layer and a `replaces=#id`) + `recall_runs` (FTS5 search over past runs). |
+| `knowledge.py` | `search_knowledge_base` (RAG) + `remember`/`recall` (the layered memory; `remember` takes a layer and a `replaces=#id`) |
 | `shell.py` | `run_shell` — always `destructive` (the human approving the exact command is the boundary), bounded foreground runs only. |
 | `interaction.py` | `ask_user` — pauses the running graph via `interrupt()` to ask the human ONE question; the typed answer resumes as the observation. `read_only` (asking never gates); degrades honestly headless. |
 | `notify.py` | `schedule_notification` — a one-shot desktop reminder handed to the OS scheduler via `notify/` (launchd + osascript on macOS; other platforms refuse honestly). `side_effecting`; not egress. Human side: `/notify`. |
@@ -147,7 +148,7 @@ every check in the agent node. Note: `nodes/tools.py` is the *tool-execution nod
 |---|---|
 | `policy.py` | THE gate policy object. `approves(name, risk, args)` is the single question the approval node asks; `/policy risk`·`allow`·`open` and `--yolo` are all views of it. Durable state in `database/permissions.json`. |
 | `egress.py` | The network chokepoint: in-memory egress ledger (every exit calls `check` then `record`), the air-gap gate, and the inference-locality classifier (`ollama_is_local`). |
-| `redaction.py` | Secret stripping/warning at the network boundary (a remote `OLLAMA_HOST`, MCP args) (key patterns, JWTs, private keys); `scan_args` backs the gate's secret warning. |
+| `secret_scan.py` | Credential-shaped values (key patterns, JWTs, private keys) as display-safe findings; `scan_args` backs the gate's secret-argument warning. |
 | `quarantine.py` | Prompt-injection quarantine: scan untrusted observations, fence instruction-shaped content as data, escalate the next tool batch to the gate. Also screens corpus/attachment admission. |
 | `receipt.py` | The ambient surfaces: per-answer trust receipt spans, the session posture line, one-time discovery hints. |
 
@@ -167,7 +168,7 @@ owns every view of a feature.
 `rag.py` (corpus sync + vector store), `document_registry.py` (the knowledge-base manifest),
 `memory_registry.py` (the layered memory file: six layers, per-fact metadata token, selection
 under a cap), `snapshots.py` (pre-write snapshots for /undo), `trace.py` (the run/event/LLM-call
-trace DB behind /trace and exports, plus the `runs_fts` index behind `recall_runs` / `/trace
+trace DB behind /trace and exports, plus the `runs_fts` index behind `/trace
 search` and the current-run seam `remember` stamps provenance from).
 
 ### `tui/` — presentation only
@@ -202,7 +203,7 @@ deliberate name reuse. When you're jumping by filename, disambiguate here:
 4. **`nodes/` in graph order** — ground, agent, approval, tools. This is the heart; take it
    slowly at `agent.py` (the check order around the call is load-bearing — the module
    docstring and `tests/test_agent_loop.py` pin it).
-5. **`core/structured.py` + `core/tool_args.py`** — the small-model hardening and the
+5. **`core/tool_args.py` + `core/llms.invoke_kwargs`** — the small-model hardening and the
    per-task decoding options the agent leans on.
 6. **`trust/policy.py` → `nodes/approval.py` → `tui/ui/approval.py`** — the gate, end to end.
 7. **`trust/egress.py`, `quarantine.py`, `receipt.py`** — the rest of the trust stack.

@@ -4,7 +4,7 @@ Knowledge & workspace commands — what the agent knows and where it works, in o
 
   /docs    the RAG corpus + workspace file listing (add/remove/sync)
   /memory  the durable remember/recall facts
-  /init    survey the workspace and draft SATURDAY.md
+  /init    survey the workspace and draft SATURN.md
   /undo    revert the last turn's file changes (pre-write snapshots)
 """
 
@@ -484,9 +484,9 @@ _MAX_LISTING = 100
 
 # Written when the workspace is empty or the LLM draft fails — still useful: the file's existence
 # (and its section headings) teaches the user what to put there.
-_TEMPLATE = """# SATURDAY.md
+_TEMPLATE = """# SATURN.md
 
-Standing instructions for this workspace. Saturday loads this file into context at the start of
+Standing instructions for this workspace. Saturn loads this file into context at the start of
 every turn — keep it short and current.
 
 ## What this workspace is for
@@ -526,13 +526,13 @@ def _workspace_listing(workspace: Path) -> list[str]:
 
 @command(
     "init",
-    "Survey the working folder and draft SATURDAY.md (standing per-folder instructions).",
+    "Survey the working folder and draft SATURN.md (standing per-folder instructions).",
     usage="/init [--force]",
     details="""
 The working folder is the folder you launched Saturn from — the directory the file tools read
 and write and the shell runs in. /add-dir reaches another folder for the session.
 
-/init creates SATURDAY.md in the working folder — the per-workspace instructions file (the
+/init creates SATURN.md in the working folder — the per-workspace instructions file (the
 CLAUDE.md equivalent). The grounding node loads it into context EVERY turn, so whatever it says
 is standing guidance for the agent: what this workspace is for, its layout, your conventions.
 
@@ -540,23 +540,26 @@ is standing guidance for the agent: what this workspace is for, its layout, your
 with the utility model; if the workspace is empty or the model is unavailable, it writes a
 sensible template instead. Either way: open it and edit — it's your file, the draft is a start.
 
-Refuses to overwrite an existing SATURDAY.md unless --force is passed.
+Refuses to overwrite existing instructions unless --force is passed. A folder may still carry the
+old name, SATURDAY.md: it keeps loading while no SATURN.md exists, counts as existing
+instructions here, and /init --force writes a SATURN.md that takes its place.
 
 Standing rules that should follow you into EVERY workspace (tone, "always metric", "never draft
 to my boss without asking") go in ~/.saturn/SATURN.md instead — hand-written, loaded every turn
-under the workspace file, which wins where the two conflict. A workspace SATURN.md is read in
-preference to SATURDAY.md when both exist.
+under the workspace file, which wins where the two conflict.
 """,
 )
 def _init(ctx, args):
     from core import workspace as _ws
+    from nodes.ground import _INSTRUCTIONS_FILES
 
     force = any(a in ("--force", "-f") for a in args)
     workspace = _ws.root()
     workspace.mkdir(parents=True, exist_ok=True)
-    target = workspace / "SATURDAY.md"
-    if target.exists() and not force:
-        _print(f"  SATURDAY.md already exists at {target} — edit it directly, or re-draft "
+    target = workspace / "SATURN.md"
+    existing = next((workspace / n for n in _INSTRUCTIONS_FILES if (workspace / n).exists()), None)
+    if existing is not None and not force:
+        _print(f"  {existing.name} already exists at {existing} — edit it directly, or re-draft "
                "with /init --force.")
         return
 
@@ -564,13 +567,13 @@ def _init(ctx, args):
     content = None
     # Only worth an LLM call when there is something to look at; an empty workspace gets the
     # template, which explains itself better than a model guessing at nothing.
-    if [e for e in listing if e != "SATURDAY.md"]:
+    if [e for e in listing if e not in _INSTRUCTIONS_FILES]:
         try:
             from langchain.messages import HumanMessage
             from core.llms import get_model
             from core.messages import INIT_DRAFT_PROMPT
 
-            _print("  surveying the workspace and drafting SATURDAY.md…")
+            _print("  surveying the workspace and drafting SATURN.md…")
             prompt = INIT_DRAFT_PROMPT.format(listing="\n".join(listing) or "(empty)")
             draft = str(get_model("utility").invoke([HumanMessage(content=prompt)]).content).strip()
             # Models love to wrap file output in a code fence — unwrap it.

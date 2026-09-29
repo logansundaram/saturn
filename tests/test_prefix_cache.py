@@ -15,7 +15,7 @@ import json
 
 from langchain.messages import AIMessage, HumanMessage
 
-from core import structured as st
+from core import llms
 
 
 def _step(step_id, tool=None, result=None, status="pending", label=None):
@@ -58,7 +58,7 @@ def test_grounding_node_splits_stable_and_per_turn_sections(isolated_paths, monk
     assert out["context"] == stable + "\n\n" + dynamic
     assert stable.startswith("## Grounding context")
     assert "be terse" in stable and "likes tea" in stable
-    for per_turn in ("tea shop", "ATT"):  # (the recap section left with the plan engine)
+    for per_turn in ("tea shop", "ATT", "### Now"):  # (the recap section left with the plan engine)
         assert per_turn in dynamic and per_turn not in stable
     # the stable half is exactly what the idle prime rebuilds between turns
     assert ground.stable_grounding() == stable
@@ -116,7 +116,7 @@ def test_prime_sends_one_boundary_request_per_lineage(monkeypatch):
     assert [m.content for m in msgs] == [agent_sys_msg().content, "STABLE"]
     assert kw["options"]["num_predict"] == 1
     assert kw["reasoning"] is True  # think ON: think-off adds tokens past the boundary
-    assert kw["options"]["num_ctx"] == st._invoke_kwargs("tool_caller", None, 0.0)["options"]["num_ctx"]
+    assert kw["options"]["num_ctx"] == llms.invoke_kwargs("tool_caller", None, 0.0)["options"]["num_ctx"]
 
 
 def test_prime_never_raises_and_reports_zero_when_the_daemon_is_down(monkeypatch):
@@ -189,3 +189,13 @@ def test_prime_stops_between_lineages_when_a_turn_starts(monkeypatch):
         assert prime.prime("STABLE") == 1 == model.calls
     finally:
         prime.set_busy(False)
+
+
+def test_now_section_names_the_weekday_date_and_time():
+    from datetime import datetime, timedelta, timezone
+
+    from nodes.ground import now_section
+
+    now = datetime(2026, 9, 29, 14, 5, tzinfo=timezone(timedelta(hours=-7)))
+    assert now_section(now) == (
+        "### Now\nTuesday 2026-09-29 (29 September 2026), 14:05 local time (UTC-07:00)")

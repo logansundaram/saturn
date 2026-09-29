@@ -302,7 +302,7 @@ def _render_tool_events(events: list[dict], *, always_show_results: bool = False
 
 def _egress_leaf(eg: dict) -> tuple[str, str]:
     """(text, style) for one per-call egress annotation (the dicts nodes/tools._egress_slice
-    attaches). A send names the host, size, channel and any redactions; a block names what the
+    attaches). A send names the host, size and channel; a block names what the
     air-gap refused. The `more` marker is the slice's own overflow cap."""
     if "more" in eg:
         n = eg.get("more")
@@ -321,9 +321,6 @@ def _egress_leaf(eg: dict) -> tuple[str, str]:
         parts.append(human_bytes(n))
     if channel:
         parts.append(channel)
-    r = eg.get("redactions") or 0
-    if r:
-        parts.append(f"{r} redaction{'s' if r != 1 else ''}")
     return (" · ".join(parts), "yellow")
 
 

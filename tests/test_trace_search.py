@@ -1,5 +1,5 @@
-"""Opening the trace to the agent (2026-09-02): an FTS5 index over `runs.query` / `runs.response`
-behind the read-only `recall_runs` tool and `/trace search`, plus the current-run seam that
+"""Searching past runs (2026-09-02): an FTS5 index over `runs.query` / `runs.response`
+behind `/trace search`, plus the current-run seam that
 stamps provenance on facts stored mid-turn. Offline: a throwaway sqlite file per test.
 """
 
@@ -70,16 +70,6 @@ def test_current_run_id_is_set_during_a_run_and_cleared_after(tmp_path):
     t.end_run(rid, "ok", "a")
     assert trace.current_run_id() is None
     t.conn.close()
-
-
-def test_recall_runs_tool_reads_the_configured_db(isolated_paths):
-    from config import get_config
-    from tools.knowledge import recall_runs
-
-    _seed(get_config().path("db_sqlite"))
-    out = recall_runs.invoke({"query": "reports q3", "limit": 3})
-    assert "run #1" in out and "request: rename the Q3 reports" in out and "q3_ prefix" in out
-    assert recall_runs.invoke({"query": "zebra"}) == "No past runs match those words."
 
 
 def test_trace_search_command(tmp_path, capsys):

@@ -391,6 +391,23 @@ def test_trace_llm_output_extracts_content_and_tokens():
     assert out["content"] == "hello" and ptok == 12 and otok == 3
 
 
+def test_trace_llm_output_records_a_streamed_passs_reasoning():
+    """A thinking pass streams its reasoning in chunks' `reasoning_content`; the summed chunk
+    carries it whole and the llm_calls record keeps it (/trace why's `thought:` line)."""
+    from langchain_core.messages import AIMessageChunk
+    from langchain_core.outputs import ChatGenerationChunk, LLMResult
+    from stores.trace import _llm_output
+
+    chunks = [AIMessageChunk(content="", additional_kwargs={"reasoning_content": "the file "}),
+              AIMessageChunk(content="", additional_kwargs={"reasoning_content": "has it"}),
+              AIMessageChunk(content="42")]
+    full = chunks[0] + chunks[1] + chunks[2]
+    out, _p, _o = _llm_output(LLMResult(generations=[[ChatGenerationChunk(message=full)]]))
+    assert out["content"] == "42" and out["reasoning"] == "the file has it"
+    plain, _p, _o = _llm_output(LLMResult(generations=[[ChatGenerationChunk(message=chunks[2])]]))
+    assert "reasoning" not in plain
+
+
 def test_tracer_records_and_reads_back_llm_calls():
     import os
     import sqlite3

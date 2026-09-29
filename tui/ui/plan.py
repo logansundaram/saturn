@@ -108,14 +108,12 @@ def _plan_header(plan) -> None:
 def show_plan(plan) -> None:
     """Render the live plan — the FULL step list, every row carrying its status glyph and
     intended tool — each time it materially changes (2026-07-06 faithful-rendering rework):
-    the first draft, each completed step (the execute → update_plan loop), a replan's redraft,
-    a rectify cancellation, a review edit. Re-rendering the whole block (instead of the old
+    i.e. on each `plan` call the model makes (tools/planning.py). Re-rendering the whole block (instead of the old
     one-line status diff, which hid tools after the first print and missed a redraft that kept
     ids/statuses) keeps the transparency surface showing the plan AS IT CURRENTLY STANDS.
 
-    The one fold: a step flipping to `active` with nothing else changed — the execute rail line
-    + reasoning leaf in the same delta already name the step being worked, so that flip rides
-    silently into the next material render (where it lands as its terminal status)."""
+    The one fold: a step flipping to `active` with nothing else changed rides silently into the
+    next material render (where it lands as its terminal status)."""
     if not plan:
         return
 

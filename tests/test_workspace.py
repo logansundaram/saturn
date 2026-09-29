@@ -321,7 +321,7 @@ def test_init_drafts_into_the_launch_folder(isolated_paths, tmp_path):
     empty.mkdir()
     workspace.set_root(empty)
     dispatch("/init", CommandContext(state={}, make_initial_state=dict, db_path=""))
-    assert (empty / "SATURDAY.md").is_file()
+    assert (empty / "SATURN.md").is_file()
 
 
 def test_init_listing_uses_the_pruned_walk(monkeypatch, tmp_path):
@@ -434,3 +434,14 @@ def test_refusal_at_the_filesystem_root_has_no_add_dir_sentence(root):
     assert "/add-dir" not in refusal and refusal.endswith(").")
     _t, refusal = workspace.resolve("/")
     assert "/add-dir" not in refusal
+
+
+def test_a_content_search_past_its_time_budget_says_it_stopped(launched, monkeypatch):
+    """Launched from ~, a search that matches nothing read every text file under home (80 s).
+    Past the budget the search stops, and an empty result is never claimed as 'no matches'."""
+    import tools.files as files
+
+    monkeypatch.setattr(files, "_SEARCH_MAX_SECONDS", 0.0)
+    out = search_files.invoke({"pattern": "nothing-matches-this"})
+    assert out.startswith("No matches for /nothing-matches-this/ in the files searched so far")
+    assert "stopped after 0 s of searching" in out

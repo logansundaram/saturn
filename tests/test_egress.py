@@ -57,12 +57,6 @@ def test_airgap_read_live(monkeypatch):
     assert egress.airgap_on() is True
 
 
-def test_redactions_aggregated():
-    egress.record("llm", "anthropic API", "claude", n_bytes=100, redactions=3)
-    egress.record("llm", "anthropic API", "claude", n_bytes=100, redactions=2)
-    assert egress.summary()["redactions"] == 5
-
-
 def test_record_is_crash_proof():
     # Junk must never raise into the calling network op.
     egress.record("web_search", None, None, n_bytes="lots")  # type: ignore[arg-type]

@@ -62,9 +62,8 @@ from typing import Optional
 
 import diag
 from trust import egress
-from trust import redaction
 from config import get_config
-from textutil import map_strings, truncate
+from textutil import truncate
 from tools.toolspec import RISK_TIERS, register_tool_object
 
 # Fallbacks when config.yaml lacks the knobs (mirrors shell.py's local-helper style).
@@ -445,24 +444,6 @@ _DEAD_CONNECTION_MARKERS = (
 )
 
 
-def _redact_args(args):
-    """Deep-copy a tool-call args tree with every secret-like span replaced
-    (`redaction.redact`) — the redact-mode twin of the warn-mode count at the MCP boundary.
-    Walks `textutil.map_strings`, the rewrite twin of the `iter_strings` walk that warn mode's
-    `redaction.scan_args` counts with — one walker, so the two modes can never disagree about
-    what counts as argument content. Only string leaves change; structure and non-string
-    values pass through untouched."""
-    total = 0
-
-    def _swap(s):
-        nonlocal total
-        new, findings = redaction.redact(s)
-        total += len(findings)
-        return new
-
-    return map_strings(args, _swap), total
-
-
 def call_tool(server: str, tool: str, args: dict) -> str:
     """Execute one remote tool call synchronously (the bridge tool_node ends up in). Always
     returns a string observation — errors are reported to the model, never raised, matching how
@@ -479,22 +460,11 @@ def call_tool(server: str, tool: str, args: dict) -> str:
         gblocked = egress.check("mcp", host, f"{server}.{tool}")
         if gblocked:
             return gblocked
-        # Redaction parity with the LLM boundary (llms._NetworkBoundaryModel): tool args
-        # cross the wire too. `warn` counts secret-like values into the egress event; `redact`
-        # replaces them in the args actually sent. The gate may have shown the human the call,
-        # but a tier relaxed via /policy risk sends without a prompt — the boundary itself can't be blind.
-        redactions = 0
-        if redaction.active():
-            if redaction.mode() == "redact":
-                args, redactions = _redact_args(args or {})
-            else:
-                redactions = len(redaction.scan_args(args or {}))
         try:
             n_bytes = len(json.dumps(args or {}, default=str))
         except Exception:
             n_bytes = 0
-        egress.record("mcp", host, f"{server}.{tool}", provider=server,
-                      n_bytes=n_bytes, redactions=redactions)
+        egress.record("mcp", host, f"{server}.{tool}", provider=server, n_bytes=n_bytes)
 
     # Lazy reconnect: a server that crashed or dropped (state error/disconnected) gets ONE fresh
     # connection attempt per call. /mcp reload remains the full recovery (re-lists + re-registers).

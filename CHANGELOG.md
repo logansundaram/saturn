@@ -26,6 +26,52 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
   capped turns. A measurement, not a `--strict` gate; the report lands at
   `logging/benchmarks/loop_<ts>.json`. Fixtures are planted under `bench_*` in the workspace
   and removed afterwards. The trust benchmark stays the default run.
+- **Read PDFs, Word documents and spreadsheets directly.** `read_file` returns a PDF as its text
+  page by page, a `.docx` as its paragraphs and tables, and an `.xlsx` as one CSV block per
+  sheet — "summarize the PDF on my desktop" no longer goes through the knowledge base or needs
+  the embedder. `@file` attachments read them the same way. Other binary files (images,
+  archives) are refused by name instead of returned as garbled bytes.
+- **Saturn knows today's date.** Every turn's grounding carries the weekday, date and time, so
+  "what day is it" and "this Thursday" resolve without a tool round.
+- **Hooks.** `~/.saturn/hooks.yaml` runs your own shell commands on `turn-start`, `turn-end`,
+  `before-write` and `after-write`, with the request, answer or file in the environment and
+  as JSON on stdin. A `before-write` hook that exits non-zero blocks the write, and the answer
+  says so. A mistake in the file is named at startup instead of silently skipped.
+- **Saturn never writes the files that control it.** `write_file` and `edit_file` refuse
+  `hooks.yaml`, the live `config.yaml` and `permissions.json`, even when approved — a write to
+  one could loosen the gate or plant an ungated command. Launched from `~`, they sit inside
+  the working folder, so this refusal is what keeps them out.
+- **`/trace why` shows what a thinking pass thought.** The reasoning of a pass that thought
+  (after a failed tool call) is kept in the run's record and shown under that pass.
+
+### Changed
+
+- **`/init` writes `SATURN.md`.** The old name, `SATURDAY.md`, is still read when no
+  `SATURN.md` exists, and `/init` won't overwrite either without `--force`.
+- **Content search has a 10-second budget.** Launched from `~`, a `search_files` that matched
+  nothing used to read every text file under home (80 s measured). It now stops after 10
+  seconds and says the search was partial, so it never reports "no matches" for files it didn't
+  search.
+- **The menu bar icon is off by default.** It no longer installs a login item on first launch;
+  set `notify.menubar: true` to start it with every launch, or `/notify icon start` once.
+  Existing configs keep their setting.
+- **One dependency list.** `requirements.txt` is gone: the installer installs the checkout
+  from `pyproject.toml` (`pip install -e`), and `/update` reinstalls when that file changes.
+- **`SATURN_*` environment variables.** `SATURN_DEBUG`, `SATURN_NO_SPLASH`, `SATURN_NO_ANIM`
+  and the installer's `SATURN_TIER` / `SATURN_MODELS` / `SATURN_BRANCH` / `SATURN_REPO` /
+  `SATURN_BIN` / `SATURN_MIN_OLLAMA`; the old `SATURDAY_*` spellings still work.
+  The installer's clone folder is `SATURN_INSTALL_DIR` (old name `SATURDAY_HOME`).
+- **One home folder, `~/.saturn`.** A new pipx/uv install keeps its `config.yaml` and data there,
+  beside `SATURN.md` and `hooks.yaml` (`SATURN_HOME` moves all of it). An existing
+  `~/.saturday` install keeps being used where it is, and an explicit `SATURDAY_HOME` still wins.
+
+### Removed
+
+- **Outbound redaction (`runtime.redaction`).** The off-by-default warn/redact modes that
+  rewrote prompts to a remote Ollama and MCP arguments are gone; the egress ledger still records
+  every byte that leaves. The approval gate still warns when a call carries a secret.
+- **`recall_runs`,** the model-facing search over past runs. Remembering what you decided is
+  memory's job; `/trace search` still searches past runs for you.
 
 ### The v2 cut (2026-09-27)
 

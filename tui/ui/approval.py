@@ -432,13 +432,13 @@ def _frame_note(text: str, style: str = "yellow") -> None:
 def _render_secret_warnings(args: dict) -> None:
     """Warn when a gated call's arguments carry a secret-like value (an API key in an MCP call's
     args, a token inline in a run_shell command): approving the call sends the secret wherever the
-    call goes. Reuses the redaction scanner; emails are excluded here (common, legitimate argument
+    call goes. Reuses trust/secret_scan; emails are excluded here (common, legitimate argument
     content — this warning is about credentials). Best-effort: a scan failure never blocks the
     gate."""
     try:
-        from trust import redaction
+        from trust import secret_scan
 
-        findings = [f for f in redaction.scan_args(args) if f.kind != "email"]
+        findings = [f for f in secret_scan.scan_args(args) if f.kind != "email"]
     except Exception:
         return
     if not findings:
@@ -841,7 +841,7 @@ def ask_approval(value: dict) -> "bool | dict":
     decides per call, `a` approves AND auto-approves these tools for the rest of the session
     (run_shell instead gets a scoped /policy allow-style prefix grant), `e` explains WHY the agent wants
     the batch (plan step + recorded reasoning) and re-prompts. Arguments carrying secret-like
-    values warn inline (redaction scanner); a batch following quarantine-flagged tool output
+    values warn inline (trust/secret_scan); a batch following quarantine-flagged tool output
     opens with a banner saying so. Returns True/False or {"approved_ids": [...]} for a partial
     batch."""
     tool_calls = value.get("tool_calls", []) if isinstance(value, dict) else []

@@ -77,12 +77,12 @@ def warm_model(role: str = "tool_caller") -> bool:
     from langchain.messages import HumanMessage
 
     from core.llms import generate, get_model
-    from core.structured import _invoke_kwargs, _model_tag
+    from core.llms import invoke_kwargs, model_tag
 
     try:
-        kwargs = _invoke_kwargs(role, None, 0.0, task="agent")
+        kwargs = invoke_kwargs(role, None, 0.0, task="agent")
         kwargs.setdefault("options", {})["num_predict"] = 1
-        generate(get_model(role), [HumanMessage(content="ok")], tag=_model_tag(role), **kwargs)
+        generate(get_model(role), [HumanMessage(content="ok")], tag=model_tag(role), **kwargs)
         return True
     except Exception as exc:
         diag.log(f"startup: model warm-up skipped ({exc})")

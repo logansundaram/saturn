@@ -91,7 +91,7 @@ replay. The point isn't how much Saturn can do — it's that you can see and con
   people and projects in your life, and what not to do again. Loaded selectively each turn under
   one cap, every fact carries the run it came from, and it learns at session end through a review
   screen — nothing is written without your accept (`/memory review`). Past runs are searchable
-  too (`recall_runs`, `/trace search`).
+  too (`/trace search`).
 - **It asks instead of guessing** — when a needed value, choice, or confirmation is missing,
   the agent pauses mid-run with one question (`ask_user`), and your typed answer resumes the
   turn. The alternative to asking is fabrication; Saturn asks.
@@ -118,7 +118,9 @@ replay. The point isn't how much Saturn can do — it's that you can see and con
   bytes went to which host and how many actions faced the approval gate — whenever anything
   actually left your machine or was gated. A fully-local turn stays clean: silence means
   nothing left. `/privacy` carries the full readout on demand.
-- **Per-workspace instructions** — `/init` surveys your workspace and drafts `SATURDAY.md`,
+- **Hooks** — `~/.saturn/hooks.yaml` runs your own shell commands on `turn-start`, `turn-end`,
+  `before-write` and `after-write`; a `before-write` hook that exits non-zero blocks the write.
+- **Per-workspace instructions** — `/init` surveys your workspace and drafts `SATURN.md`,
   standing instructions loaded every turn (like a per-project system prompt).
 - **Headless mode** — `saturn -p "query"` runs one query and prints the answer; piped stdin
   attaches to the turn (`git diff | saturn -p "review this change"`). Gated tools are denied by
@@ -136,22 +138,24 @@ replay. The point isn't how much Saturn can do — it's that you can see and con
 
 ## How it works (the short version)
 
-Every turn flows through a graph of small, inspectable steps:
+Every turn is one loop of small, inspectable steps:
 
 ```
-ground → plan → [review?] → agent → [approval?] → tools → update plan → … → synthesize
+ground → agent ─(no tool calls)─→ answer
+           ↑          │ tool calls
+           └── tools ← approval
 ```
 
-- **ground** loads SATURDAY.md, the memory facts relevant to this request, and the
+- **ground** loads your standing instructions (`~/.saturn/SATURN.md` and the folder's
+  `SATURN.md`), today's date, the memory facts relevant to this request, and the
   knowledge-base manifest.
-- **plan** drafts a step-by-step plan (the transparency surface you can inspect and edit).
-- **agent** picks the next tool to call (or finishes).
+- **agent** makes one model call: it either calls tools or answers. A message without tool
+  calls *is* the answer, and it streams as it is written.
 - **approval** pauses for your OK before anything side-effecting runs.
 - **tools** run; results flow back so the agent can decide what's next.
-- **synthesize** writes the final answer from what was actually gathered.
 
-The plan is a first-class, editable object — it both *shows* you what's happening and *drives*
-execution.
+On a multi-step task the agent keeps a checklist with the `plan` tool, shown live in the rail.
+Esc pauses the loop: continue, steer, or abort.
 
 ---
 
@@ -174,8 +178,8 @@ and inspect first.
 The installer defaults to the lightweight **`4b`** size class (`qwen3.5:4b`). On the first launch
 `/models` reads your hardware, prices every size against it, and asks which tier and embedder to
 run — Enter takes the recommendation, and anything not pulled yet is pulled on consent. Re-run
-`/models` anytime, or set `SATURDAY_TIER=9b` (or `27b`/`35b`) before installing.
-Other knobs: `SATURDAY_HOME` (install dir), `SATURDAY_MODELS` (models to pull), `SATURDAY_BRANCH`.
+`/models` anytime, or set `SATURN_TIER=9b` (or `27b`/`35b`) before installing.
+Other knobs: `SATURN_INSTALL_DIR` (install dir), `SATURN_MODELS` (models to pull), `SATURN_BRANCH`.
 
 Saturn ships one recommended tier per parameter size (the qwen3.5–3.8 ladder); `/models`
 shows the ladder priced against your machine. Any Ollama model with native tool-calling binds
@@ -200,8 +204,8 @@ Then run `saturn`. You still need [Ollama](https://ollama.com/download) running 
 models pulled — for the `4b` tier that's `ollama pull qwen3.5:4b` and
 `ollama pull qwen3-embedding:8b` (multi-GB downloads; Ollama prints each one's exact size as the
 pull starts). The quick installer above does both for you, and `/config setup` reports what's
-missing — when models are missing it offers to run the pulls for you (y/N, default no). Installed this way, your data and `config.yaml` live in `~/.saturday` (override with
-`SATURDAY_HOME`), and you upgrade with `pipx upgrade saturn-agent` / `uv tool upgrade
+missing — when models are missing it offers to run the pulls for you (y/N, default no). Installed this way, your data and `config.yaml` live in `~/.saturn` beside your `SATURN.md`
+(override with `SATURN_HOME`; an earlier install's `~/.saturday` keeps being used), and you upgrade with `pipx upgrade saturn-agent` / `uv tool upgrade
 saturn-agent` instead of `/update`.
 
 ### Manual install (from source)
@@ -237,14 +241,14 @@ cd saturn
 python -m venv .venv
 source .venv/bin/activate
 
-pip install -r requirements.txt
+pip install -e .
 ```
 
 > `prompt_toolkit` (live command highlighting) is optional — Saturn runs fine without it.
 
 There is **no API key step**: web search is keyless and inference is local. (Custom env vars —
 e.g. for an MCP server's `${VAR}` expansion — go in a plain `.env` file next to the install,
-or in `~/.saturday/.env` for pipx installs.)
+or in `~/.saturn/.env` for pipx installs.)
 
 ### 3. Run it
 
@@ -331,7 +335,7 @@ Type `/help` for the full list, or `/<command> --help` for details on any one. H
 | `/trace source` | Show the full material behind a citation `[n]` of the last answer (folded in from `/source`). |
 | `/privacy` | The privacy surface: what CAN leave (`/privacy`), what DID (`/privacy egress`), and seal the boundary (`/privacy airgap`). |
 | `/undo` | Revert the file changes of the last turn that wrote anything. |
-| `/init` | Survey the workspace and draft `SATURDAY.md` standing instructions. |
+| `/init` | Survey the workspace and draft `SATURN.md` standing instructions. |
 | `/trace` | Inspect past runs, tool I/O, and LLM calls; `/trace why` explains a run's decisions; `/trace export` writes the run's complete record as JSON; `/trace replay` (or `saturn --replay <file>`) re-renders an exported record anywhere — no database needed. |
 | `/resume` | Continue your last session (autosaved); `save [name]`/`list`/`<name>` for named sessions (plain `.json` files under `database/sessions/`). |
 | `/update` | Self-update: pull the latest Saturn (your data is never touched). |
@@ -368,7 +372,7 @@ trust/              # the trust stack: gate policy, egress ledger, quarantine,
                     #   trust receipt
 tools/              # the agent's tools (web, files, shell, calculator, knowledge)
                     #   + the registry and MCP client
-nodes/              # the graph's nodes (ground, plan, execute, tools, rectify, synthesize, …)
+nodes/              # the graph's nodes: ground, agent, approval, tools
 commands/           # slash commands (one module per /help theme)
 stores/             # persistence: RAG + its manifest, durable memory, snapshots, trace
 tui/                # the terminal UI / live trace rail

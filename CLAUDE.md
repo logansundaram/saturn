@@ -21,7 +21,7 @@ Note: `CLAUDE.md` is tracked (its `.gitignore` entry was removed 2026-09-02).
 ```bash
 # setup (the CI way — a dep missing from pyproject.toml fails here, not in pipx installs)
 python -m venv .venv && source .venv/bin/activate
-pip install -e .[dev]                # or: pip install -r requirements.txt  (keep both lists in sync)
+pip install -e .[dev]                # pyproject.toml is the one dependency list
 
 # run
 python agent.py                      # interactive TUI (./saturn.sh prefers the repo .venv)
@@ -39,7 +39,7 @@ python -m pytest tests/test_policy.py -q -k prefix       # one test by name
 python benchmark.py [--strict]       # reports to logging/benchmarks/trust_<ts>.json
 python benchmark.py --loop           # the loop benchmark: daily requests graded on passes/tool choice/phantoms → loop_<ts>.json
 
-SATURDAY_DEBUG=1 python agent.py     # echo logging/diag.log lines to stderr
+SATURN_DEBUG=1 python agent.py       # echo logging/diag.log lines to stderr (old name SATURDAY_DEBUG still read)
 ```
 
 There is no linter or formatter configured. CI (`.github/workflows/tests.yml`) runs the suite on
@@ -121,7 +121,7 @@ model binds.
 `runtime.max_iterations` bounds agent passes per turn; past it the last pass answers without tools.
 
 `config.yaml` is **gitignored user data**, seeded on first run from the tracked template
-`config.default.yaml` (or `$SATURDAY_HOME/config.yaml` for wheel installs). Change defaults in the
+`config.default.yaml` (or `~/.saturn/config.yaml` for wheel installs — `config.wheel_data_home`). Change defaults in the
 template. `config.persist()` does a surgical single-line YAML edit to preserve comments — don't replace
 it with a full dump. `config.py`, `diag.py`, `textutil.py` import nothing project-side and are safe
 leaves; `diag.log()` replaces `print()` in nodes/tools (stdout collides with the rich Live TUI).
@@ -170,7 +170,14 @@ Snapshots record absolute paths, so `/undo` restores the right file from any fol
 by `sys.platform` (macOS = one launchd LaunchAgent per one-shot, shown by `osascript`; anything else is the
 honest `Unsupported`). A new platform is one module plus one branch in `backend()`. It is not egress.
 `notify/menubar.py` (tested, Cocoa-free) + `notify/menubar_app.py` (AppKit, pyobjc, macOS-only dep) are the
-menu bar icon: a login LaunchAgent the REPL starts, which outlives the terminal; its Quit is `quit_all()`.
+menu bar icon: a login LaunchAgent the REPL starts when `notify.menubar` is on (default off since
+2026-09-29), which outlives the terminal; its Quit is `quit_all()`.
+
+`core/hooks.py` runs the user's `~/.saturn/hooks.yaml` (`$SATURN_HOME`) commands on turn-start /
+turn-end (`app/turn.run_turn`) and before- / after-write (`tools/files.py`). They are the user's
+commands: no gate, not egress — which is why the file tools refuse to write the hooks file, and
+likewise the live `config.yaml` and `permissions.json` (`tools/files._control_files`).
+`tests/conftest.py` gives every test an empty `SATURN_HOME` and a throwaway `HOME`.
 
 Native macOS app tools (`tools/notes.py`, `tools/calendar.py`, `tools/mail.py`) go through `tools/applescript.py` — `run(script,
 app=)` opens the app hidden then runs `osascript` (osascript alone gets -600 on a closed Calendar); output is

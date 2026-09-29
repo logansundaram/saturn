@@ -71,7 +71,7 @@ _LAYER_ALIASES = {
 _ALWAYS_LAYERS = ("user", "commitments")
 _MEMO_DIGEST = 5
 
-_DEFAULT_CONTEXT_CAP = 4000   # chars — the same order as SATURDAY.md's 6000 (nodes/ground.py)
+_DEFAULT_CONTEXT_CAP = 4000   # chars — the same order as SATURN.md's 6000 (nodes/ground.py)
 _DEFAULT_STALE_DAYS = 90      # a by-match fact unused this long is flagged stale in /memory
 
 

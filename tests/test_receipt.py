@@ -1,11 +1,11 @@
 """
 Trust receipt (receipt.py) — the pure trust_parts builder over synthetic egress events, plus the
-arg-scan helper the gate's secret warning uses (redaction.scan_args).
+arg-scan helper the gate's secret warning uses (secret_scan.scan_args).
 """
 
 from trust import egress
 from trust import receipt
-from trust import redaction
+from trust import secret_scan
 
 
 def _ev(host="api.tavily.com", n_bytes=0, status=egress.SENT):
@@ -129,11 +129,11 @@ def test_scan_args_walks_nested_values():
         "headers": {"Authorization": "Bearer abcdefghijklmnopqrstuvwxyz123456"},
         "extra": [{"note": "key sk-ant-abcdefghijklmnopqrstuvwx leaked"}],
     }
-    kinds = {f.kind for f in redaction.scan_args(args)}
+    kinds = {f.kind for f in secret_scan.scan_args(args)}
     assert "bearer-token" in kinds
     assert "anthropic-key" in kinds
 
 
 def test_scan_args_clean_and_non_string_tolerant():
-    assert redaction.scan_args({"a": 1, "b": [True, None], "c": {"d": 2.5}}) == []
-    assert redaction.scan_args(None) == []
+    assert secret_scan.scan_args({"a": 1, "b": [True, None], "c": {"d": 2.5}}) == []
+    assert secret_scan.scan_args(None) == []

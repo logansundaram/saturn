@@ -3,7 +3,7 @@ Ollama-locality boundary — a remote OLLAMA_HOST is network egress, never "loca
 
 The local-inference story (posture line, /privacy) keys on
 egress.ollama_is_local(): when the Ollama endpoint is off-machine, chat models are wrapped in
-the network boundary proxy (redacted + ledger-recorded), embeddings go through the embeddings
+the network boundary proxy (ledger-recorded), embeddings go through the embeddings
 boundary, the air-gap refuses both, and egress._inference classifies the bindings
 "remote" so no surface can claim the words were computed on this machine.
 """
@@ -181,9 +181,9 @@ def test_get_embeddings_unwrapped_on_loopback(monkeypatch):
 # ── network-boundary byte accounting ──────────────────────────────────────────────────────────
 
 
-def test_boundary_records_post_redaction_bytes(monkeypatch, isolated_paths):
-    """The ledger must record what actually crossed the boundary: in redact mode that is the
-    redacted copy, smaller than the original by exactly the stripped secret."""
+def test_boundary_records_the_bytes_it_sends(monkeypatch, isolated_paths):
+    """The ledger records what crossed the boundary, and the boundary sends the messages
+    unchanged (the redact mode that rewrote them was cut 2026-09-29)."""
     from langchain_core.messages import HumanMessage
 
     from config import get_config
@@ -191,21 +191,14 @@ def test_boundary_records_post_redaction_bytes(monkeypatch, isolated_paths):
 
     rt = get_config()._data.setdefault("runtime", {})
     monkeypatch.setitem(rt, "airgap", False)
-    monkeypatch.setitem(rt, "redaction", "redact")
-    secret = "sk-ant-" + "a" * 60
-    msgs = [HumanMessage(content=f"please use {secret} for this")]
+    msgs = [HumanMessage(content="please use sk-ant-" + "a" * 60 + " for this")]
 
     b = _NetworkBoundaryModel(inner=object(), model="qwen3.5:9b", host="ollama @ http://10.0.0.5:11434")
     mark = egress.next_seq()
-    to_send = b._outgoing(msgs)
+    assert b._outgoing(msgs) is msgs
 
     evs = egress.events_since(mark)
-    assert evs and evs[0].redactions == 1
-    assert evs[0].n_bytes == _approx_bytes(to_send)
-    assert evs[0].n_bytes < _approx_bytes(msgs)  # the secret never counted as "sent"
-
-
-# ── posture surface ─────────────────────────────────────────────────────────────────────────
+    assert [e.channel for e in evs] == ["llm"] and evs[0].n_bytes == _approx_bytes(msgs)
 
 
 def test_posture_line_names_remote_endpoint(monkeypatch):
@@ -243,7 +236,7 @@ class _FakeInner:
 
 
 def test_network_boundary_batch_routes_through_the_boundary():
-    """batch() must cross the boundary one input at a time (each redacted + recorded) — the
+    """batch() must cross the boundary one input at a time (each recorded) — the
     inner model's batch would take the whole list past it in one unobserved call."""
     from core.llms import _NetworkBoundaryModel
 
@@ -255,7 +248,7 @@ def test_network_boundary_batch_routes_through_the_boundary():
 
 def test_network_boundary_refuses_unguarded_send_paths():
     """__getattr__ used to hand generate/transform/… back bound to the INNER model — an
-    unredacted, unrecorded send. They fail closed now; benign attributes still delegate."""
+    unrecorded send. They fail closed now; benign attributes still delegate."""
     from core.llms import _NetworkBoundaryModel
 
     inner = _FakeInner()

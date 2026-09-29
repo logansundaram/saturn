@@ -40,10 +40,11 @@ PROJECT_ROOT = Path(notify.__file__).resolve().parent.parent
 # ── config + paths ───────────────────────────────────────────────────────────────────────────
 
 def enabled() -> bool:
-    """`notify.menubar` in config.yaml (default on): whether an interactive launch starts the
-    icon. `/notify icon start` works either way."""
+    """`notify.menubar` in config.yaml (default off since 2026-09-29 — a login item is a lot to
+    install for an icon nobody asked for): whether an interactive launch starts the icon.
+    `/notify icon start` works either way."""
     from config import get_config
-    return bool(get_config().get("notify.menubar", True))
+    return bool(get_config().get("notify.menubar", False))
 
 
 def _database_dir() -> Path:

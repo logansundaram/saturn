@@ -37,20 +37,20 @@ def test_grounding_parts_treats_old_context_as_stable():
 
 
 def test_agent_task_is_think_off_with_payload_bound(monkeypatch):
-    from core import structured
-    monkeypatch.setattr(structured, "_model_tag", lambda role: "m")
-    kw = structured._invoke_kwargs("tool_caller", None, 0.0)
+    from core import llms
+    monkeypatch.setattr(llms, "model_tag", lambda role: "m")
+    kw = llms.invoke_kwargs("tool_caller", None, 0.0)
     assert kw["reasoning"] is False and kw["options"]["num_predict"] == 4096
-    assert structured._ROLE_TASK["tool_caller"] == "agent"
+    assert llms._ROLE_TASK["tool_caller"] == "agent"
 
 
 def test_think_flag_rides_invoke_kwargs_with_its_budget(monkeypatch):
     """A thinking pass sends `reasoning=True` and widens num_predict by runtime.think_budget
     (thinking tokens count against the bound; the answer must still fit after them)."""
-    from core import structured
-    monkeypatch.setattr(structured, "_model_tag", lambda role: "m")
+    from core import llms
+    monkeypatch.setattr(llms, "model_tag", lambda role: "m")
     _think_cfg(monkeypatch, think_budget=1000)
-    kw = structured._invoke_kwargs("tool_caller", None, 0.0, task="agent", think=True)
+    kw = llms.invoke_kwargs("tool_caller", None, 0.0, task="agent", think=True)
     assert kw["reasoning"] is True and kw["options"]["num_predict"] == 4096 + 1000
 
 
@@ -610,7 +610,8 @@ def test_trace_why_renders_agent_passes(isolated_paths, capsys):
         c.execute("INSERT INTO llm_calls (run_id, seq, ts, node, model, dur, prompt_tokens, output_tokens, "
                   "input, output, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                   (run_id, 1, "2026-09-27T00:00:00", "agent", "m", 0.1, 10, 5, "[]",
-                   json.dumps({"content": "let me read it", "tool_calls": [_call("read_file", {"file_path": "x"})]}),
+                   json.dumps({"content": "let me read it", "tool_calls": [_call("read_file", {"file_path": "x"})],
+                               "reasoning": "the answer\n is in x"}),
                    "ok"))
         c.execute("INSERT INTO llm_calls (run_id, seq, ts, node, model, dur, prompt_tokens, output_tokens, "
                   "input, output, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -620,7 +621,9 @@ def test_trace_why_renders_agent_passes(isolated_paths, capsys):
     tr._why(SimpleNamespace(db_path=db, state={}), [str(run_id)])
     out = capsys.readouterr().out
     assert "pass 1" in out and "read_file" in out and "let me read it" in out
-    assert "pass 2: answered" in out
+    assert "thought: the answer is in x" in out  # the recorded reasoning, whitespace folded
+    assert out.index("thought:") < out.index("→ chose to call")
+    assert "pass 2: answered" in out and out.count("thought:") == 1
     assert "rectify" not in out
 
 
@@ -759,3 +762,13 @@ def test_prior_answer_trailers_are_stripped_from_history(monkeypatch):
     agent.agent_node(_state(msgs))
     prior_ai = [m for m in seen["input"] if isinstance(m, AIMessage)]
     assert prior_ai and prior_ai[0].content == "42"
+
+
+def test_issuing_message_walks_back_over_answered_calls():
+    from core.state import issuing_message
+
+    ai = AIMessage(content="", tool_calls=[{"name": "a", "args": {}, "id": "1"},
+                                           {"name": "b", "args": {}, "id": "2"}])
+    last, answered = issuing_message([HumanMessage("q"), ai, ToolMessage("x", tool_call_id="1")])
+    assert last is ai and answered == {"1"}
+    assert issuing_message([ToolMessage("x", tool_call_id="9")]) == (None, {"9"})

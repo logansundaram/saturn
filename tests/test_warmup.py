@@ -9,7 +9,7 @@ weights are resident before the user's first query. Fully offline here: the mode
 from langchain.messages import AIMessage
 
 from app import startup
-from core import structured
+from core import llms
 
 
 class _Stub:
@@ -33,7 +33,7 @@ def test_warm_model_sends_one_minimal_request_at_the_configured_window(monkeypat
     # One token, at the SAME num_ctx every turn uses — Ollama keys the loaded runner on the
     # context size, so a warm-up at a different window would load a runner the turn then evicts.
     assert opts["num_predict"] == 1
-    assert opts["num_ctx"] == structured._invoke_kwargs("tool_caller", None, 0.0)["options"]["num_ctx"]
+    assert opts["num_ctx"] == llms.invoke_kwargs("tool_caller", None, 0.0)["options"]["num_ctx"]
 
 
 def test_warm_model_never_raises(monkeypatch):

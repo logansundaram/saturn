@@ -138,7 +138,7 @@ def posture_spans() -> list[tuple[str, str]]:
     deviation-only: a facet at its safe default (gate read_only · local inference · quarantine
     gate) says NOTHING, so the default posture renders no line at all; silence means the
     defaults hold. What speaks: a loosened/open gate, the air-gap seal, off-machine inference,
-    a weakened quarantine, and the redaction mode once an off-machine boundary exists. The
+    a weakened quarantine. The
     affirmative readout lives behind /privacy. Every read is live and best-effort: a facet that
     can't be derived is OMITTED rather than guessed — this line must never claim a posture it
     didn't read."""
@@ -195,17 +195,6 @@ def posture_spans() -> list[tuple[str, str]]:
         q = quarantine.mode()
         if q != "gate":
             spans.append((f"quarantine {q}", "warn" if q == "off" else "dim"))
-    except Exception:
-        pass
-
-    # Redaction — only meaningful once an off-machine boundary exists to redact for: `off` on a
-    # live boundary is the warning; an active mode is the calm qualifier of the inference span.
-    try:
-        from trust import redaction
-
-        if all_local is False:
-            mode = redaction.mode()
-            spans.append((f"redaction {mode}", "warn" if mode == "off" else "dim"))
     except Exception:
         pass
     return spans

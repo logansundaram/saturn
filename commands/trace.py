@@ -26,8 +26,8 @@ def _connect(db_path):
 # (The `calls`, `cost`, and `state` subviews were CUT 2026-07-16 — `calls` duplicated the
 # per-run drill-down's tool I/O, `cost` was the readout half of the already-cut cloud-era token
 # budget (local users read tok/s + context fill live in the status bar and /config context),
-# and `state` was a developer debugging dump wearing a user command. /trace is why · answer ·
-# source · invoke · export · replay now.)
+# and `state` was a developer debugging dump wearing a user command. /trace is why · source ·
+# invoke · context · search · export · replay now; `answer` left with the Glass Box.)
 
 
 def _to_int(s) -> Optional[int]:
@@ -452,9 +452,14 @@ def _render_why(ui, run, events, calls):
         if tcs:
             names = ", ".join(f"{c.get('name')}({_fmt_call_args(c.get('args'))})" for c in tcs)
             _print(f"    pass {step}: {content or '(no preamble)'}")
-            _print(f"      → chose to call: {names}")
         else:
             _print(f"    pass {step}: answered" + (f" — {content}" if content else ""))
+        # A thinking pass's reasoning (stores/trace._llm_output) — why it chose what follows.
+        reasoning = " ".join(str(out.get("reasoning") or "").split())
+        if reasoning:
+            _print(f"      thought: {_clip(reasoning, 400)}")
+        if tcs:
+            _print(f"      → chose to call: {names}")
     if printed_header:
         _print("")
 
@@ -493,7 +498,7 @@ def _fmt_call_args(args) -> str:
 @command(
     "trace",
     "Observability hub: drill-down of recorded runs + live trace control.",
-    usage="/trace [#id | -l [n] | why | answer | source | invoke | context"
+    usage="/trace [#id | -l [n] | why | source | invoke | context"
           " | search <words> | export | replay | on|off|full]",
     details="""
 Expands one recorded run from the trace database (database/db.sqlite) into the full replay the
@@ -531,8 +536,7 @@ Subviews:
   /trace search <words> full-text search over every recorded run's request and answer (SQLite
                        FTS5 over the runs table — no embedder): "what did we do last week",
                        the report from Monday. Each hit names its run id for /trace #id, /trace
-                       why #id, or /trace export. The agent has the same index as the
-                       `recall_runs` tool. -l <n> caps the hits (default 8).
+                       why #id, or /trace export. -l <n> caps the hits (default 8).
   /trace export [#id]  write a run's complete record (events + tool I/O + LLM calls) to a
                        self-contained replayable JSON file under logging/exports/; -o <path>
                        to choose the destination. The record you can hand to someone else

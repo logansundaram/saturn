@@ -92,7 +92,7 @@ CREATE INDEX IF NOT EXISTS ix_events_run ON events(run_id);
 CREATE INDEX IF NOT EXISTS ix_llm_calls_run ON llm_calls(run_id);
 """
 
-# Full-text index over the runs the agent may search (`recall_runs`, `/trace search`). SQLite's
+# Full-text index over the runs `/trace search` searches. SQLite's
 # FTS5 ships in every CPython wheel we target, but a distro build can omit it, so this is applied
 # separately from _SCHEMA and its absence degrades to a LIKE scan (search_runs) — never a failed
 # tracer. External-content table: the runs row stays the record; the index is rebuilt from it
@@ -179,7 +179,7 @@ def search_runs(db_path, text: str, limit: int = 5) -> list[dict]:
     instead, best match first — so "the report we made Monday" still finds the report. FTS5
     (bm25-ranked) when the index exists, else a LIKE scan. Terms are quoted individually so user
     text can never inject FTS syntax, and `%`/`_` are escaped in the LIKE path. Read-side helper
-    (its own short-lived connection) — shared by the `recall_runs` tool and `/trace search`."""
+    (its own short-lived connection) — behind `/trace search`."""
     terms = _search_terms(text)
     if not terms:
         return []
@@ -545,8 +545,10 @@ def _msg_to_dict(m) -> dict:
 
 def _llm_output(response) -> tuple[dict, int, int]:
     """Pull (output dict, prompt_tokens, output_tokens) out of an LLMResult. The output dict is the
-    model's text + any tool calls; tokens come from the message's usage_metadata, falling back to
-    Ollama's response_metadata eval counts."""
+    model's text + any tool calls, plus `reasoning` when the pass thought (langchain-ollama's
+    `reasoning_content` — recorded HERE, not on the conversation's AIMessage, where the adapter
+    would send it back to the model as `thinking` on every later call); tokens come from the
+    message's usage_metadata, falling back to Ollama's response_metadata eval counts."""
     gens = getattr(response, "generations", None) or []
     msg = None
     text = ""
@@ -573,6 +575,9 @@ def _llm_output(response) -> tuple[dict, int, int]:
         # /trace invoke renderer can disclose the recording cut — without it, --full presents
         # a capped output as the model's complete reply.
         out["truncated"] = len(text)
+    reasoning = str((getattr(msg, "additional_kwargs", None) or {}).get("reasoning_content") or "")
+    if reasoning.strip():
+        out["reasoning"] = reasoning[:_LLM_MSG_CAP]
     return out, int(ptok or 0), int(otok or 0)
 
 

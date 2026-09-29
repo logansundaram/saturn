@@ -91,7 +91,7 @@ jobs:
         run: pipx run twine check dist/*
       - name: Smoke-test the wheel in a clean venv
         env:
-          SATURDAY_HOME: ${{ runner.temp }}/saturday-home
+          SATURN_HOME: ${{ runner.temp }}/saturn-home
         run: |
           python -m venv "$RUNNER_TEMP/venv"
           "$RUNNER_TEMP/venv/bin/pip" install dist/*.whl

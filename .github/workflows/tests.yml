@@ -26,8 +26,8 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
       - name: Install dependencies
-        # Install from the package, not requirements.txt — a dependency missing from
-        # pyproject.toml fails HERE instead of shipping broken to pipx/uv installs.
+        # Install from the package — pyproject.toml is the one dependency list, so a missing
+        # dependency fails HERE instead of shipping broken to pipx/uv or install.sh installs.
         run: pip install -e .[dev]
       - name: Run unit suite
         run: python -m pytest tests/ -q
@@ -50,7 +50,7 @@ jobs:
           "$RUNNER_TEMP/venv/bin/pip" install dist/*.whl
       - name: Smoke-test the installed package
         env:
-          SATURDAY_HOME: ${{ runner.temp }}/saturday-home
+          SATURN_HOME: ${{ runner.temp }}/saturn-home
         run: |
           cd "$RUNNER_TEMP"
           ./venv/bin/saturn --version

@@ -135,9 +135,11 @@ def test_stop_boots_out_and_removes_the_plist(agents):
 def test_enabled_reads_the_config_knob(isolated_paths, monkeypatch):
     from config import get_config
     cfg = get_config()
+    notify_cfg = {k: v for k, v in cfg._data.get("notify", {}).items() if k != "menubar"}
+    monkeypatch.setitem(cfg._data, "notify", notify_cfg)
+    assert menubar.enabled() is False  # off unless asked for (2026-09-29)
+    monkeypatch.setitem(notify_cfg, "menubar", True)
     assert menubar.enabled() is True
-    monkeypatch.setitem(cfg._data.setdefault("notify", {}), "menubar", False)
-    assert menubar.enabled() is False
 
 
 # ── the agent pidfile ────────────────────────────────────────────────────────────────────────

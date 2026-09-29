@@ -106,7 +106,7 @@ _RENAMED = {
     "egress": "privacy egress",
     "airgap": "privacy airgap",
     # ("redact" pointed at /privacy redact until that subcommand was CUT 2026-07-16 — a cut
-    # feature leaves no pointer; the knob survives as /config runtime.redaction.)
+    # feature leaves no pointer.)
     "why": "trace why",
     # /commands was never a real command — point the habit at the command list.
     "commands": "help",

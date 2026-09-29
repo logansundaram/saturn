@@ -203,7 +203,7 @@ Pulls the latest Saturday from the git remote it was installed from (the install
 the repo, so the repo root IS the install).
 
   /update          fast-forward pull; lists what came in; reinstalls Python dependencies if
-                   requirements.txt changed in the pull
+                   pyproject.toml changed in the pull
   /update --check  fetch only and report how many commits behind you are, without changing
                    anything
 
@@ -276,10 +276,10 @@ def _update(ctx, args):
         # If the pull changed the dependency list, install it — an updated module importing a
         # package that isn't there yet would otherwise greet the next launch with a stack trace.
         rc, changed, _ = _git("diff", "--name-only", old, new)
-        if rc == 0 and "requirements.txt" in changed.splitlines():
-            _print("  requirements.txt changed — installing dependencies (this can take a minute)…")
+        if rc == 0 and "pyproject.toml" in changed.splitlines():
+            _print("  pyproject.toml changed — installing dependencies (this can take a minute)…")
             proc = subprocess.run(
-                [sys.executable, "-m", "pip", "install", "-r", "requirements.txt"],
+                [sys.executable, "-m", "pip", "install", "-e", "."],
                 cwd=str(_REPO_ROOT),
                 capture_output=True,
                 text=True,
@@ -292,7 +292,7 @@ def _update(ctx, args):
             else:
                 tail = (proc.stderr or proc.stdout or "").strip().splitlines()[-1:]
                 _print(f"  pip install failed: {tail[0] if tail else 'unknown error'}")
-                _print(f"  run it yourself: {sys.executable} -m pip install -r requirements.txt")
+                _print(f"  run it yourself: {sys.executable} -m pip install -e {_REPO_ROOT}")
 
         _print("  restart Saturday (/quit and relaunch) to run the new version.")
     except subprocess.TimeoutExpired:

@@ -8,7 +8,7 @@ code never names a model.
 
 Ollama is the only backend: nothing leaves the machine to compute the words (cloud providers
 were shelved 2026-07-03 and cut 2026-09-27). The one network boundary that remains is a REMOTE
-`OLLAMA_HOST`: `_NetworkBoundaryModel` wraps that daemon so every call is redacted, recorded
+`OLLAMA_HOST`: `_NetworkBoundaryModel` wraps that daemon so every call is recorded
 to the egress ledger and refused under air-gap. Built models are cached per model id;
 `reset_models()` clears the cache after a live model change (the `/models` command).
 
@@ -26,7 +26,6 @@ from langchain_ollama import ChatOllama, OllamaEmbeddings
 import diag
 
 from trust import egress
-from trust import redaction
 from config import MODEL_ROLES, get_config
 
 
@@ -46,11 +45,8 @@ def _approx_bytes(messages) -> int:
 class _NetworkBoundaryModel:
     """Thin proxy around an off-machine chat model — an Ollama daemon behind a remote
     OLLAMA_HOST, via `_wrap_ollama` — that makes the network boundary observable + safe. Every
-    call through it:
-      - records the egress to the ledger (`egress.record`) — what left, where to, how big; and
-      - runs the outgoing messages through `redaction.process_messages` first, stripping secrets
-        when `runtime.redaction` is on.
-    Everything else (bind_tools, with_structured_output, attribute access) delegates to the inner
+    call through it records the egress to the ledger (`egress.record`) — what left, where to,
+    how big. Everything else (bind_tools, with_structured_output, attribute access) delegates to the inner
     model and re-wraps any derived runnable so the boundary survives `.bind_tools(...)` /
     `.with_structured_output(...)`. LOOPBACK Ollama models are never wrapped — there is no
     boundary."""
@@ -61,15 +57,10 @@ class _NetworkBoundaryModel:
         self._host = host
 
     def _outgoing(self, messages):
-        """Redact (per the mode) then record the egress; return the messages to actually send.
-        n_bytes measures `to_send` — what actually crosses the boundary — not the pre-redaction
-        original: in redact mode the two differ by exactly the secrets that were stripped."""
-        to_send, redactions = redaction.process_messages(messages) if isinstance(messages, list) else (messages, 0)
-        egress.record(
-            "llm", self._host, self._model,
-            provider="ollama", n_bytes=_approx_bytes(to_send), redactions=redactions,
-        )
-        return to_send
+        """Record the egress; return the messages to send (unchanged)."""
+        egress.record("llm", self._host, self._model, provider="ollama",
+                      n_bytes=_approx_bytes(messages))
+        return messages
 
     def invoke(self, input, *args, **kwargs):
         return self._inner.invoke(self._outgoing(input), *args, **kwargs)
@@ -85,7 +76,7 @@ class _NetworkBoundaryModel:
             yield chunk
 
     def batch(self, inputs, *args, **kwargs):
-        # Through invoke one input at a time so EVERY input is redacted + recorded — the inner
+        # Through invoke one input at a time so EVERY input is recorded — the inner
         # model's batch would take the whole list past the boundary in one unobserved call.
         return [self.invoke(i, *args, **kwargs) for i in inputs]
 
@@ -104,7 +95,7 @@ class _NetworkBoundaryModel:
 
     # Network entry points this proxy does NOT cover fail CLOSED: __getattr__ used to hand them
     # back bound to the INNER model, so a future caller (or a LangChain runnable composition)
-    # would send unredacted, unrecorded content — the exact leak the boundary exists to prevent.
+    # would send unrecorded content — the exact leak the boundary exists to prevent.
     # Nothing in the repo calls these today; a new caller gets a loud pointer, never a bypass.
     _UNGUARDED = frozenset({
         "generate", "agenerate", "generate_prompt", "agenerate_prompt",
@@ -115,7 +106,7 @@ class _NetworkBoundaryModel:
         if name in _NetworkBoundaryModel._UNGUARDED:
             raise AttributeError(
                 f"_NetworkBoundaryModel does not expose {name!r}: it would bypass the "
-                "redaction/egress boundary — use invoke/stream/astream/batch instead"
+                "egress boundary — use invoke/stream/astream/batch instead"
             )
         # Anything else we don't override (get_name, config_specs, etc.) defers to the inner model.
         return getattr(self._inner, name)
@@ -138,7 +129,7 @@ _MODEL_CACHE: dict[str, object] = {}
 def _wrap_ollama(m, model: str):
     """Loopback Ollama is handed back bare — there is no boundary to guard. A REMOTE Ollama
     (OLLAMA_HOST pointing off-machine) IS one: wrap it in the network boundary proxy so every
-    call is redacted (per runtime.redaction) and recorded to the egress ledger with the real
+    call is checked against the air-gap and recorded to the egress ledger with the real
     endpoint as the host — 'local model' must never silently mean 'someone else's machine'."""
     if egress.ollama_is_local():
         return m
@@ -188,11 +179,6 @@ def model_id(role: str) -> str:
     return get_config().model_for_role(role).model
 
 
-# (get_tool_model / get_plan_model / get_judge_model were removed with the 2026-07-03 engine
-# transplant: structured judgments now go through core/structured.py — flat schemas + shape hints
-# + salvage parsing over get_model(role), with per-attempt temperature riding the invoke kwargs —
-# and the execute node binds ONE tool per call (nodes/execute._generate_tool_call), never the
-# whole registry.)
 
 
 class _EmbeddingsBoundary:
@@ -421,8 +407,8 @@ def check_models() -> list[str]:
 #
 # Model tags whose daemon rejected a `think` parameter. A model without a thinking template 400s
 # on `think` in EITHER direction, so the engine cannot express "no rationale please" to it — it
-# can only stop asking. Learned once per tag per process, never guessed from the name; the
-# structured layer's `_invoke_kwargs` consults it and omits the flag for such tags.
+# can only stop asking. Learned once per tag per process, never guessed from the name;
+# `invoke_kwargs` consults it and omits the flag for such tags.
 _NO_THINK_SUPPORT: set = set()
 
 _THINK_REJECTION_MARKERS = ("does not support thinking", "thinking is not supported", '"think"')
@@ -431,6 +417,59 @@ _THINK_REJECTION_MARKERS = ("does not support thinking", "thinking is not suppor
 def _is_think_rejection(exc: Exception) -> bool:
     text = f"{exc}".lower()
     return any(m in text for m in _THINK_REJECTION_MARKERS)
+
+
+# ── the per-call decoding options (moved from core/structured.py, 2026-09-29) ───────────────────
+# The output-token bound per task — a circuit breaker well above a healthy generation, so a
+# repetition loop lands as a truncated draw instead of a full window. `agent` is the loop's one
+# call (nodes/agent.py): prose OR a tool call, so it must fit a write_file payload (4096 tokens
+# is ~12-16 KB of text).
+NUM_PREDICT: dict = {"agent": 4096}
+# The default task per model ROLE for call sites that don't name one; the utility role's calls
+# name no task and keep the daemon's defaults.
+_ROLE_TASK = {"tool_caller": "agent"}
+
+
+def model_tag(role: str) -> str:
+    """The concrete model id serving `role`, '' when the binding can't be read."""
+    try:
+        return str(get_config().model_for_role(role).model)
+    except Exception:
+        return ""
+
+
+def invoke_kwargs(role: str, fmt: "dict | None", temp: float, task: "str | None" = None, *,
+                  think: bool = False) -> dict:
+    """THE builder of the options every model call sends: constrained decoding (`fmt`), the
+    temperature and the per-TASK decisions ride the invoke kwargs (ChatOllama forwards
+    `format`/`options`/`reasoning` to the daemon).
+
+    The options dict must carry `num_ctx` too: langchain_ollama treats an invoke-time `options`
+    as a FULL REPLACEMENT for the constructor-built options (which is the only place the
+    configured context window lives), so temperature alone would silently revert the daemon to
+    its ~2048 default and front-truncate long prompts. A task also carries its `num_predict`
+    bound, and `reasoning` (think) is set EXPLICITLY OFF — never the model's default — unless
+    the daemon already rejected the flag for this tag (`_NO_THINK_SUPPORT`). `think=True` is
+    the agent's adaptive thinking pass (nodes/agent.py): the flag goes ON and the task's
+    `num_predict` widens by `runtime.think_budget`, since thinking tokens count against it."""
+    task = task or _ROLE_TASK.get(role)
+    options: dict = {"temperature": temp}
+    tag = model_tag(role)
+    try:
+        cfg = get_config()
+        options["num_ctx"] = cfg.num_ctx_for(cfg.model_for_role(role).model)
+    except Exception:  # a broken binding must not fail the call that would surface it
+        pass
+    if task is not None:
+        options["num_predict"] = NUM_PREDICT.get(task, 512)
+        if think:
+            options["num_predict"] += max(0, int(get_config().get("runtime.think_budget", 4096) or 0))
+    kwargs: dict = {"options": options}
+    if task is not None and tag not in _NO_THINK_SUPPORT:
+        kwargs["reasoning"] = bool(think)
+    if fmt is not None:
+        kwargs["format"] = fmt
+    return kwargs
 
 
 def generate(runnable, messages, *, tag: str = "", **kwargs):

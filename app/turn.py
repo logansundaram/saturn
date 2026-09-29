@@ -10,6 +10,7 @@ from langgraph.types import Command
 from langchain.messages import AIMessageChunk
 
 import diag
+from core import hooks
 from tui import ui
 
 
@@ -33,6 +34,8 @@ def run_turn(graph, payload, config, approver, on_update=None, pause=None, on_to
     # kill a healthy multi-step turn mid-flight. Generous but finite — the REAL bound is
     # runtime.max_iterations (agent passes), which lands at an honest answer long before this.
     config.setdefault("recursion_limit", 200)
+    query = payload.get("current_query") if isinstance(payload, dict) else None
+    hooks.run("turn-start", query=query)  # the user's hooks.yaml (core/hooks); none → no cost
     pending = payload
     while True:
         if pause is not None:
@@ -75,6 +78,7 @@ def run_turn(graph, payload, config, approver, on_update=None, pause=None, on_to
 
         snapshot = graph.get_state(config)
         if not snapshot.next:
+            _turn_end_hooks(query, snapshot.values)
             return snapshot.values  # turn complete
 
         # Paused on an interrupt — pull its payload, ask the approver/reviewer, resume.
@@ -85,6 +89,13 @@ def run_turn(graph, payload, config, approver, on_update=None, pause=None, on_to
                 break
         decision = approver(interrupt_value)
         pending = Command(resume=decision)
+
+
+def _turn_end_hooks(query, values: dict) -> None:
+    """turn-end with the recorded answer (the last message, trailers included)."""
+    messages = (values or {}).get("messages") or []
+    answer = str(getattr(messages[-1], "content", "") or "") if messages else ""
+    hooks.run("turn-end", query=query, answer=answer)
 
 
 def _make_on_update(tracer, run_id, show_ui=True, answer=None):

@@ -6,8 +6,8 @@ resolve, prefix detect, masked listings, set/unset with on_change hooks). That m
 CUT 2026-07-16: the registry had been EMPTY since the API-less web pivot (2026-07-06) — no
 Saturn feature takes an API key (web search is keyless, inference is local, the Anthropic/
 OpenAI keys left with the cloud shelve 2026-07-03) — so the picker managed nothing. Secrets
-for MCP servers are plain env vars now: put them in `.env` next to the repo (or in
-SATURDAY_HOME for wheel installs) or export them in the shell; `mcp.servers` `${VAR}` entries
+for MCP servers are plain env vars now: put them in `.env` next to the repo (or in the
+wheel data home, ~/.saturn, for wheel installs) or export them in the shell; `mcp.servers` `${VAR}` entries
 read them through `get()` below. When a keyed provider returns, the managed registry returns
 with it (the pre-cut module is in git history).
 
@@ -26,12 +26,20 @@ from dotenv import dotenv_values
 def _resolve_env_path() -> Path:
     # Clone mode: .env at the repo root (config.yaml — or, on a first run that hasn't seeded it
     # yet, the tracked template config.default.yaml — sits next to this file). Wheel installs
-    # (pipx/uv) keep secrets in SATURDAY_HOME (~/.saturday) with the rest of the user's data,
-    # mirroring config.py's lookup (kept in step by hand: no project imports here).
+    # (pipx/uv) keep secrets in the wheel data home with the rest of the user's data,
+    # config.wheel_data_home's rule repeated (kept in step by hand: no project imports here).
     root = Path(__file__).parent
     if (root / "config.yaml").exists() or (root / "config.default.yaml").exists():
         return root / ".env"
-    return Path(os.environ.get("SATURDAY_HOME") or Path.home() / ".saturday") / ".env"
+    return _wheel_data_home() / ".env"
+
+
+def _wheel_data_home() -> Path:
+    for var in ("SATURDAY_HOME", "SATURN_HOME"):
+        if os.environ.get(var):
+            return Path(os.environ[var]).expanduser()
+    legacy = Path.home() / ".saturday"
+    return legacy if (legacy / "config.yaml").is_file() else Path.home() / ".saturn"
 
 
 _ENV_PATH = _resolve_env_path()

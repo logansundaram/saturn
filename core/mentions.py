@@ -98,12 +98,17 @@ def display(path: str) -> str:
 
 
 def _read_clamped(path: str) -> str:
-    """Read a file as UTF-8 (replacing undecodable bytes), clamped to _MAX_FILE_CHARS with a marker.
-    Never raises — an unreadable file becomes an inline note so the turn still runs."""
+    """Read a file as UTF-8 (replacing undecodable bytes) — a PDF / .docx / .xlsx as its text
+    (core/doctext) — clamped to _MAX_FILE_CHARS with a marker. Never raises — an unreadable file
+    becomes an inline note so the turn still runs."""
+    from core import doctext  # lazy: a turn without an @file never needs it
+
     try:
-        with open(path, "r", encoding="utf-8", errors="replace") as fh:
-            data = fh.read(_MAX_FILE_CHARS + 1)
-    except OSError as exc:
+        data = doctext.extract(path)
+        if data is None:
+            with open(path, "r", encoding="utf-8", errors="replace") as fh:
+                data = fh.read(_MAX_FILE_CHARS + 1)
+    except Exception as exc:  # OSError, or a corrupt document the parser rejects
         return f"[could not read {display(path)}: {exc}]"
     if len(data) > _MAX_FILE_CHARS:
         return data[:_MAX_FILE_CHARS] + f"\n… [truncated — {display(path)} exceeds {_MAX_FILE_CHARS} chars]"

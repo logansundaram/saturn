@@ -147,7 +147,7 @@ def test_init_success_prints_absolute_workspace_path(isolated_paths, capsys):
 
     _init(None, [])  # empty isolated workspace -> template branch, no LLM call
     out = capsys.readouterr().out
-    target = get_config().path("workspace") / "SATURDAY.md"
+    target = get_config().path("workspace") / "SATURN.md"
     assert target.exists()
     assert str(target) in out  # the ABSOLUTE path, not a bare basename
 

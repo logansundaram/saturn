@@ -53,7 +53,7 @@ class EgressEvent:
     """One outbound network operation (or one air-gap refusal). `channel` is the kind of egress
     (web_search/web_extract/mcp/llm/embedding), `host` where it went, `detail` a short human
     label (the query, the URL, the model id), `provider` the backend when relevant, `n_bytes` the
-    approximate size of what was SENT, `redactions` how many secrets were stripped first. `seq` is
+    approximate size of what was SENT. `seq` is
     the session-wide ordinal (monotonic, never reused) — turn slices key on it, not list indexes,
     so the cap-trim and `clear()` can't shift a mark onto the wrong events."""
 
@@ -63,7 +63,6 @@ class EgressEvent:
     detail: str = ""
     provider: str = ""
     n_bytes: int = 0
-    redactions: int = 0
     status: str = SENT
     seq: int = 0
 
@@ -125,7 +124,7 @@ def _safe_int(v) -> int:
 
 
 def record(channel: str, host: str, detail: str = "", *, provider: str = "",
-           n_bytes: int = 0, redactions: int = 0, status: str = SENT) -> None:
+           n_bytes: int = 0, status: str = SENT) -> None:
     """Append one egress event to the ledger. Best-effort and crash-proof: a junk field is coerced
     to a safe default rather than dropping the event — losing the RECORD that something left the
     machine is the one failure a boundary ledger must never have. `host`/`detail` are display
@@ -140,7 +139,6 @@ def record(channel: str, host: str, detail: str = "", *, provider: str = "",
             detail=truncate(str(detail or ""), 500),
             provider=str(provider or ""),
             n_bytes=_safe_int(n_bytes),
-            redactions=_safe_int(redactions),
             status=str(status or SENT),
             seq=_SEQ + 1,
         )
@@ -229,7 +227,7 @@ def summarize_events(events) -> dict:
     """Aggregate one slice of EgressEvents — THE one accounting every per-slice trust surface
     uses (the per-answer receipt, the `/privacy egress` headline), so they can
     never report different byte/host numbers for the same events. Returns
-    {sent, blocked, bytes, redactions, hosts (first-seen order), channels (sent, first-seen)}."""
+    {sent, blocked, bytes, hosts (first-seen order), channels (sent, first-seen)}."""
     sent = [e for e in events if getattr(e, "status", "") == SENT]
     blocked = [e for e in events if getattr(e, "status", "") == BLOCKED]
     hosts: list[str] = []
@@ -245,7 +243,6 @@ def summarize_events(events) -> dict:
         "sent": len(sent),
         "blocked": len(blocked),
         "bytes": sum(_safe_int(getattr(e, "n_bytes", 0)) for e in sent),
-        "redactions": sum(_safe_int(getattr(e, "redactions", 0)) for e in sent),
         "hosts": hosts,
         "channels": channels,
     }
@@ -267,7 +264,6 @@ def summary() -> dict:
         "sent": agg["sent"],
         "blocked": agg["blocked"],
         "bytes": agg["bytes"],
-        "redactions": agg["redactions"],
         "hosts": agg["hosts"],
         "by_channel": by_channel,
         "cleared": _CLEARED_AT > 0,

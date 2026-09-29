@@ -9,7 +9,7 @@ plan/execute loop's job — the agent composes web_search + web_extract calls, e
 the plan rail, gated, and traced. A single opaque research call would hide exactly the steps
 this product exists to show; it was removed June 2026 as a scope cut. `http_request` — the
 one-call-to-any-REST-API "universal integration" — was CUT 2026-07-16: the MCP client is the
-integration surface now, and it arrives with per-server trust declarations, arg redaction, and
+integration surface now, and it arrives with per-server trust declarations, the egress ledger, and
 status/reload that a generic POST-anywhere tool never had. With it gone, the only ways out of
 this machine are a search query, a page fetch, and the MCP servers the user configured.)
 
@@ -26,8 +26,8 @@ carried.
                 `trafilatura`. Only the page's own host is contacted.
 
 (The Tavily backend — `web.provider`, TAVILY_API_KEY, the session fallback latch — was removed
-2026-07-06. `trust/redaction.py` deliberately KEEPS the `tvly-` secret pattern: the redaction
-scanner guards whatever secrets pass through outgoing text, not just ones Saturn uses.)
+2026-07-06. `trust/secret_scan.py` deliberately KEEPS the `tvly-` secret pattern: the gate's
+secret warning covers whatever secrets a call carries, not just ones Saturn uses.)
 
 `web.max_results` lives in `config.yaml`; nothing is hard-coded here.
 """

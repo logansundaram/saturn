@@ -468,9 +468,9 @@ LOOP_TASKS: list[dict] = [
     _task("chat_about_tools", "chat", "What can you do with my email?"),
     _task("chat_joke", "chat", "Tell me a joke about spreadsheets."),
     # lookup — one tool round, then the answer
-    _task("date_weekday", "lookup", "What day of the week is it today?",
-          tools={"current_time"}, required=[{"current_time"}], max_passes=2,
-          answer_any=[datetime.now().strftime("%A").lower()]),
+    # the date rides the grounding's Now line (2026-09-29): one pass, current_time tolerated
+    _task("date_weekday", "chat", "What day of the week is it today?",
+          tools={"current_time"}, answer_any=[datetime.now().strftime("%A").lower()]),
     _task("calc_arith", "lookup", "What is 847 * 293 + 12450?",
           tools={"calculate"}, required=[{"calculate"}], max_passes=2, answer_any=["260621"]),
     _task("calc_split", "lookup",

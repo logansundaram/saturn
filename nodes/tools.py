@@ -1,9 +1,9 @@
 """
-Tool-execution node for the living-plan ReAct loop (Phase 1).
+Tool-execution node for the v2 loop (agent → approval → tools → agent).
 
 tool_node executes the tool calls on the last AI message, appends the results as ToolMessages
-back into `messages` (so the model sees them next iteration), and mirrors each
-`name(args) -> result` into the trace accumulators — paired so synthesis can't divorce a value
+back into `messages` (so the model sees them next pass), and mirrors each
+`name(args) -> result` into the trace accumulators — paired so the record can't divorce a value
 from the call that produced it.
 """
 
@@ -16,7 +16,7 @@ from trust import egress
 from trust import quarantine
 from tools.registry import tools_by_name, RETRIEVAL_TOOLS
 from tools.planning import PLAN_TOOL, to_plan
-from core.state import AgentState
+from core.state import AgentState, issuing_message
 from textutil import CALL_RESULT_SEP, clip, fmt_args, head_tail
 
 # Cap each argument's length so a big write_file payload doesn't bloat the trace/synthesis input.
@@ -81,7 +81,6 @@ def _egress_slice(mark: int) -> list[dict]:
             "channel": e.channel,
             "host": e.host,
             "n_bytes": e.n_bytes,
-            "redactions": e.redactions,
             "status": e.status,
         }
         for e in events
@@ -96,16 +95,8 @@ def tool_node(state: AgentState):
 
     The batch is the most recent tool-calling AIMessage's calls MINUS any call that already has
     a ToolMessage: the approval gate answers rejected calls itself (decline ToolMessages) and
-    still routes here so the approved/ungated remainder runs. Walk back over those trailing
-    ToolMessages to find the issuing AIMessage."""
-    answered = set()
-    last = None
-    for m in reversed(state["messages"]):
-        if isinstance(m, ToolMessage):
-            answered.add(m.tool_call_id)
-            continue
-        last = m
-        break
+    still routes here so the approved/ungated remainder runs (core.state.issuing_message)."""
+    last, answered = issuing_message(state["messages"])
     pending_calls = [
         tc for tc in (getattr(last, "tool_calls", None) or []) if tc["id"] not in answered
     ]

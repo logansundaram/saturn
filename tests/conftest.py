@@ -61,6 +61,24 @@ def _reset_grant_lifecycle():
     policy.reset_grants()
 
 
+@pytest.fixture(scope="session")
+def _empty_saturn_home(tmp_path_factory):
+    return tmp_path_factory.mktemp("saturn_home")
+
+
+@pytest.fixture(autouse=True)
+def _isolated_saturn_home(_empty_saturn_home, monkeypatch, tmp_path_factory):
+    """The user's own ~/.saturn (the global SATURN.md, hooks.yaml) must never reach a test —
+    a real hook would run commands mid-suite. Every test sees an EMPTY $SATURN_HOME; a test
+    that needs files there points SATURN_HOME at its own tmp_path.
+
+    HOME too: core/workspace falls back to the home folder for a launch folder that doesn't
+    exist, so a fixture that forgot to create its folder wrote into the real ~ (2026-09-29).
+    Every test gets a throwaway HOME; a test about home points HOME at its own tmp_path."""
+    monkeypatch.setenv("SATURN_HOME", str(_empty_saturn_home))
+    monkeypatch.setenv("HOME", str(tmp_path_factory.mktemp("home")))
+
+
 @pytest.fixture(autouse=True)
 def _reset_workspace():
     """core/workspace holds the launch folder and the /add-dir folders as process state —

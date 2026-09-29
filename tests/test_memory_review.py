@@ -10,6 +10,8 @@ offline: the model-proposal seam is monkeypatched wherever a test reaches it.
 
 import json
 
+import pytest
+
 from langchain.messages import AIMessage, HumanMessage
 
 from commands._framework import CommandContext
@@ -286,3 +288,47 @@ def test_quit_survives_an_interrupted_review(isolated_paths, monkeypatch):
     ctx = CommandContext(state={"messages": []}, make_initial_state=dict, db_path="")
     system._quit(ctx, [])
     assert ctx.should_quit
+
+
+class _ReviewModel:
+    """A utility model stub for llm_candidates' one constrained call."""
+
+    def __init__(self, reply):
+        self.reply, self.calls = reply, []
+
+    def invoke(self, msgs, **kw):
+        from langchain.messages import AIMessage
+
+        self.calls.append((msgs, kw))
+        if isinstance(self.reply, Exception):
+            raise self.reply
+        return AIMessage(content=self.reply)
+
+
+def _transcript_msgs():
+    from langchain.messages import AIMessage, HumanMessage
+
+    return [HumanMessage("my lease ends in March"), AIMessage("Noted.")]
+
+
+def test_llm_candidates_makes_one_constrained_call_and_salvages_json(monkeypatch):
+    from core import llms
+    from core.messages import MEMORY_REVIEW_FORMAT, MEMORY_REVIEW_SHAPE
+
+    model = _ReviewModel('Sure: {"facts":[{"layer":"commitments","text":"lease ends in March"}]} ok')
+    monkeypatch.setattr(llms, "get_model", lambda role: model)
+    out = rv.llm_candidates(_transcript_msgs())
+    assert [(c["layer"], c["text"], c["source"]) for c in out] == [
+        ("commitments", "lease ends in March", "model")]
+    msgs, kw = model.calls[0]
+    assert len(model.calls) == 1
+    assert msgs[-1].content == MEMORY_REVIEW_SHAPE  # the shape hint rides as a trailing HumanMessage
+    assert kw["format"] == MEMORY_REVIEW_FORMAT
+
+
+@pytest.mark.parametrize("reply", ["no json here", '{"facts": "not a list"}', RuntimeError("down")])
+def test_llm_candidates_is_empty_on_any_failure(monkeypatch, reply):
+    from core import llms
+
+    monkeypatch.setattr(llms, "get_model", lambda role: _ReviewModel(reply))
+    assert rv.llm_candidates(_transcript_msgs()) == []

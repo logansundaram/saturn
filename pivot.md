@@ -67,9 +67,10 @@ important daily-task property Claude Code has and Saturn lacks.
 
 **Known slow case (2026-09-29):** launched from `~`, a content search that matches nothing
 reads every text file under home — measured 80 s (17,101 files, 796 MB); a name search takes
-0.7 s and startup walks nothing. Add a time budget to `search_files` when it bites.
+0.7 s and startup walks nothing. `search_files` now stops at 10 s and says the scan was partial
+(2026-09-29).
 
-### 2. Read the files people actually have (half a day)
+### 2. Read the files people actually have (half a day) — shipped 2026-09-29 (`core/doctext.py`; .xlsx via the stdlib, no new dependency; `@file` attachments too)
 Route `read_file` through the loaders already in `stores/rag.py` (pypdf, python-docx) for a
 direct read of PDF / .docx / .xlsx-as-CSV; keep the knowledge base for search across many
 documents. "Summarize this PDF" stops depending on the embedder.
@@ -120,7 +121,7 @@ through `toolspec.register_tool_object` like MCP tools — the cheapest way for 
 Saturn one thing their life needs (a `pay-rent` script, a `home-assistant` toggle). Risk fails
 closed to `destructive`; every call faces the gate; stdout is untrusted.
 
-### 10. Hooks (half a day)
+### 10. Hooks (half a day) — shipped 2026-09-29 (`core/hooks.py`; before-write can block; the file tools never write hooks.yaml)
 `~/.saturn/hooks.yaml`: shell commands on `turn-start`, `turn-end`, `before-write`,
 `after-write`. The same seam Claude Code exposes; the memory review and the launch brief could be
 built on it.
@@ -157,15 +158,15 @@ shape without adding a call to the chat turn. Pivot #1 and #2 above stay the top
 
 ### Cut
 
-- **Outbound redaction** (`trust/redaction.py`, 183 lines, `runtime.redaction`,
+- ~~**Outbound redaction**~~ — cut 2026-09-29 down to the scanner the gate's secret-argument
+  warning uses (`trust/secret_scan.py`); the warn/redact modes and `runtime.redaction` are gone.
+  (Was: `trust/redaction.py`, 183 lines, `runtime.redaction`,
   `tests/test_redaction.py`, a receipt branch). It only runs when `OLLAMA_HOST` is remote
   (`core/llms.py::_wrap_ollama`) and the default is `off`. The egress ledger already records
   the remote host.
-- **The Sources footer on the answer.** The agent prompt no longer asks for `[n]` citations, so
-  `runtime.citations` only controls the mechanical footer `nodes/agent.py::_with_trailers`
-  appends; the rail already showed each call as it ran. Drop the footer, `strip_trailers`,
-  `tests/test_citations.py`. Keep `/trace source`, which reads the same data.
-- **The menu bar LaunchAgent** (`notify/menubar.py` + `notify/menubar_app.py`, 443 lines, the
+- ~~**The Sources footer on the answer.**~~ Kept (2026-09-29, the user's call): the receipt of
+  what informed an answer stays on the recorded message.
+- **The menu bar LaunchAgent** — defaulted off 2026-09-29 (`notify.menubar: false`). (`notify/menubar.py` + `notify/menubar_app.py`, 443 lines, the
   pyobjc dependency). Every interactive launch installs a login item (`app/repl.py`,
   `_menubar.ensure_running()`) for an icon that lists pending notifications. Default it off, or
   cut it until the ambient-awareness work (advantages.md §5.5) gives it a job.
@@ -173,29 +174,33 @@ shape without adding a call to the chat turn. Pivot #1 and #2 above stay the top
   the `capabilities` block is read once for a startup warning and `max_context_window` is
   display only. Collapse each tier to `model`, `num_ctx`, `embedder`; `/models`, `config.py`
   and every "role" reference simplify with it.
-- **The structured-output layer** (`core/structured.py`). One caller left, the memory review's
+- ~~**The structured-output layer** (`core/structured.py`).~~ Cut 2026-09-29: the options
+  builder moved to `core/llms.invoke_kwargs`, the review makes one constrained call. One caller left, the memory review's
   proposals. Move `_invoke_kwargs` / `_model_tag` into `core/llms.py`; the review makes one
   constrained call with a default.
-- **`requirements.txt`.** CI installs from `pyproject.toml`; a second list kept in sync is pure
+- ~~**`requirements.txt`.**~~ Cut 2026-09-29: install.sh installs editable from pyproject.toml. CI installs from `pyproject.toml`; a second list kept in sync is pure
   upkeep.
-- **`recall_runs`** (`tools/knowledge.py`). A model-facing search over the trace DB, marked
+- ~~**`recall_runs`** (`tools/knowledge.py`).~~ Cut 2026-09-29; `/trace search` stays. A model-facing search over the trace DB, marked
   untrusted, overlapping memory. "What did I decide" is memory's job.
 
 ### Trim (rot that misleads the next reader)
 
-- `README.md` (the "life of a turn" block and the layout listing) still documents plan,
-  rectify and synthesize.
+- ~~`README.md` (the "life of a turn" block and the layout listing) still documents plan,
+  rectify and synthesize.~~ Fixed 2026-09-29, with the stale headers below and `/trace answer`.
 - Stale headers: `tui/ui/__init__.py` describes plan_gate / update_plan / synthesize rows;
   `nodes/tools.py` opens with "living-plan ReAct loop (Phase 1)"; `nodes/approval.py` says
   "Phase 2"; `config.default.yaml` says "Phase 3" and "Saturday.ai"; `core/context.py`
   references plan_context.
 - `/trace` usage still lists `answer`, cut with the Glass Box.
-- Two names: ten `SATURDAY_*` environment variables beside `SATURN_HOME`, and `/init` still
-  writes `SATURDAY.md`. Pick `SATURN_*`, read the old spellings as fallbacks for one release.
+- Two names: done 2026-09-29 (`SATURN_*` with `SATURDAY_*` fallbacks; `/init` writes
+  `SATURN.md`); 2026-09-29 also: one home — a new wheel install keeps its data in ~/.saturn
+  (`config.wheel_data_home`; an existing ~/.saturday install stays put), the installer's clone
+  folder is `SATURN_INSTALL_DIR`. Pick `SATURN_*`, read the old spellings as fallbacks for one release.
 
 ### Improve
 
-1. **Put the date in the dynamic grounding** (`nodes/ground.py::grounding_node`). The prompt
+1. **Put the date in the dynamic grounding** (`nodes/ground.py::grounding_node`) — shipped
+   2026-09-29 as the `### Now` section; `current_time` stays for the exact time mid-task. The prompt
    routes every "Thursday" through a `current_time` round trip; one line makes date questions a
    single call, and the tool and its prompt line can go.
 2. **Move the ask_user interrupt out of the tool.** A resumed interrupt re-runs the tools node,
@@ -210,7 +215,7 @@ shape without adding a call to the chat turn. Pivot #1 and #2 above stay the top
    gone, and a thinking pass that returns nothing is rerun think-off. Found by the loop
    benchmark: on the 4b and 9b, a thinking pass whose right move is a short answer writes the
    answer inside its reasoning and emits no content.
-5. **One walk-back helper.** "Skip trailing ToolMessages to find the issuing AIMessage" exists
+5. **One walk-back helper** — shipped 2026-09-29 (`core.state.issuing_message`). "Skip trailing ToolMessages to find the issuing AIMessage" exists
    in `nodes/agent.py::route_after_agent`, `nodes/tools.py::tool_node` and `nodes/approval.py`.
    Put it in `core/state`.
 6. **Concurrent tool batches.** Serial today so egress events attribute by sequence
@@ -245,7 +250,8 @@ an item here subsumes one of those it says so._
    hack (`ASK_ALONE_TEXT`), the headless special case and the tool; `plan` state carries across
    the boundary so a mid-checklist question resumes. Replaces "move the ask_user interrupt out
    of the tool".
-4. **An environment snapshot in the dynamic grounding.** Date, weekday, time, the launch
+4. **An environment snapshot in the dynamic grounding** — the date half shipped 2026-09-29
+   (`### Now`); the launch folder was already in the stable half; the workspace listing is open. Date, weekday, time, the launch
    directory and a short workspace listing, the way Claude Code puts cwd and git status in
    front of the model. Subsumes "put the date in the dynamic grounding"; `current_time` and
    its prompt line go. "The file on my desktop" and "Thursday" resolve on pass one.
@@ -260,7 +266,8 @@ an item here subsumes one of those it says so._
 7. **A wall-clock budget beside the pass cap.** `runtime.turn_seconds` triggers the same
    capped last pass. Sixteen passes on a 4b can be minutes; a companion should not make someone
    wait that long without a decision.
-8. **Record the reasoning.** A thinking pass streams `reasoning_content` and drops it. Stamp it
+8. **Record the reasoning** — shipped 2026-09-29, in the `llm_calls` record (not the
+   AIMessage: langchain-ollama would send `reasoning_content` back as `thinking`). A thinking pass streams `reasoning_content` and drops it. Stamp it
    on the recorded AIMessage so `/trace why` can show why the pass chose its calls, and the
    loop benchmark can grade it.
 9. **The catalog's shape — measure before touching.** Twenty-six schemas is 3.7k tokens and

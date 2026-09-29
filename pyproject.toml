@@ -1,9 +1,9 @@
 # Packaging for pipx / uv / pip installs ("installed mode").
 #
-# The curl installer (install.sh) clones the repo and uses requirements.txt —
-# that file stays the source of truth for the clone install; keep `dependencies` below in
-# sync with it. In installed mode there is no repo: config.py seeds config.yaml into
-# SATURDAY_HOME (~/.saturday) from the packaged default (shipped via data-files below), and
+# `dependencies` below is the one dependency list: the curl installer (install.sh) clones the
+# repo and installs it editable (`pip install -e`), and /update reinstalls when this file
+# changes. In installed mode there is no repo: config.py seeds config.yaml into
+# ~/.saturn (config.wheel_data_home) from the packaged default (shipped via data-files below), and
 # all user data lives there instead of site-packages, so upgrades can't clobber it.
 
 [build-system]
@@ -82,6 +82,6 @@ include = ["app*", "commands*", "core*", "trust*", "tools*", "nodes*", "stores*"
 namespaces = true
 
 [tool.setuptools.data-files]
-# Lands at <venv>/share/saturn/ — config.py seeds SATURDAY_HOME/config.yaml from it on first run.
+# Lands at <venv>/share/saturn/ — config.py seeds <wheel data home>/config.yaml from it on first run.
 # The template (not the live config.yaml, which is untracked user data since 2026-07-10).
 "share/saturn" = ["config.default.yaml"]

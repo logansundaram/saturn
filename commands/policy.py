@@ -231,7 +231,7 @@ the headless --yolo flag) is a view of one policy object. This command IS that o
 door — its levers:
 
   /policy                     the live posture: auto-approve threshold, persisted risk overrides,
-                              the shell allowlist (with count), airgap + redaction + quarantine.
+                              the shell allowlist (with count), airgap + quarantine.
   /policy risk <tool> <tier> [--save]
                               override one tool's tier live (tiers prefix-match: read/side/dest);
                               --save persists to permissions.json; `<tool> reset` restores the
@@ -281,13 +281,12 @@ def _policy_cmd(ctx, args):
             _print("    shell allowlist        : (none)")
         _print(f"    always-allow lifetime  : {policy.default_grant_scope()}  "
                "(runtime.grant_scope)")
-        from trust import egress, quarantine, redaction
+        from trust import egress, quarantine
 
         # Every facet below is the EFFECTIVE value from its owning module, never the raw
-        # config string: redaction.mode() lowercases and falls back to off on garbage, so
-        # echoing the key would let this line assert a posture nothing enforces.
+        # config string: quarantine.mode() normalizes and falls back on garbage, so echoing
+        # the key would let this line assert a posture nothing enforces.
         _print(f"    airgap                 : {'on' if egress.airgap_on() else 'off'}")
-        _print(f"    redaction              : {redaction.mode()}")
         _print(f"    quarantine             : {quarantine.mode()}")
         return
 

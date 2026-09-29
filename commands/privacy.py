@@ -195,7 +195,6 @@ def _egress(ctx, args):
         f"{s['sent']} egress event(s), {_human_bytes(s['bytes'])} sent to "
         f"{len(hosts)} host(s)"
         + (f", {s['blocked']} blocked" if s["blocked"] else "")
-        + (f", {s['redactions']} secret(s) redacted" if s["redactions"] else "")
         + airgap
     )
     ui.section("egress", headline)
@@ -213,10 +212,7 @@ def _egress(ctx, args):
             ("BLOCKED", ui.risk_style("destructive")) if e.status == egress.BLOCKED
             else (_human_bytes(e.n_bytes), "dim")
         )
-        detail = e.detail
-        if e.redactions:
-            detail += f"  ⟨{e.redactions} redacted⟩"
-        rows.append((when, e.channel, e.host, detail, status))
+        rows.append((when, e.channel, e.host, e.detail, status))
     ui.table(rows, styles=["dim", "accent", None, None, None])
 
     if s["by_channel"]:
@@ -358,9 +354,6 @@ def _show_posture(ctx, cfg, ui, egress):
         _print("  seal it with  /privacy airgap on   (then re-run /privacy airgap to verify).")
 
 
-# (/privacy redact — the secret-stripper front end — was CUT 2026-07-16: dormant, it configured
-# a boundary that exists only behind a remote OLLAMA_HOST.
-# The MACHINERY stays: trust/redaction.py still guards the remote-Ollama seam and the MCP
-# http/sse boundary, and the gate's secret-arg warning still uses redaction.scan_args. The mode
-# remains reachable as the config escape hatch: /config runtime.redaction <off|warn|redact> —
-# a trust key, so it persists only with an explicit --save.)
+# (/privacy redact — the secret-stripper front end — was CUT 2026-07-16, and the machinery
+# behind it, runtime.redaction, on 2026-09-29. The gate's secret-argument warning keeps the
+# scanner: trust/secret_scan.py.)

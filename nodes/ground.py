@@ -1,5 +1,5 @@
-import os
 import time
+from datetime import datetime
 from pathlib import Path
 
 import diag
@@ -46,20 +46,20 @@ wants the whole thing (/trace context, older checkpoints).
 #                                  to my boss without asking"; hand-written, follows the user
 #                                  everywhere ($SATURN_HOME overrides the directory);
 #   <workspace>/SATURN.md          per-workspace — conventions, goals, what matters here; drafted
-#                                  by /init (which still writes the old name, SATURDAY.md — read
-#                                  when no SATURN.md exists). Where the two conflict the
+#                                  by /init (the old name, SATURDAY.md, is still read when no
+#                                  SATURN.md exists). Where the two conflict the
 #                                  workspace file wins, and the prompt says so.
 # Each is capped so a runaway file can't eat the context window.
 _INSTRUCTIONS_FILES = ("SATURN.md", "SATURDAY.md")
-_GLOBAL_INSTRUCTIONS_ENV = "SATURN_HOME"
 _INSTRUCTIONS_CAP = 6000
 
 
 def global_instructions_path() -> Path:
     """Where the global standing instructions live: `$SATURN_HOME/SATURN.md`, else
-    `~/.saturn/SATURN.md`."""
-    home = os.environ.get(_GLOBAL_INSTRUCTIONS_ENV) or (Path.home() / ".saturn")
-    return Path(home).expanduser() / _INSTRUCTIONS_FILES[0]
+    `~/.saturn/SATURN.md` (config.saturn_home)."""
+    from config import saturn_home
+
+    return saturn_home() / _INSTRUCTIONS_FILES[0]
 
 
 def _read_capped(path: Path) -> str:
@@ -108,6 +108,18 @@ def _working_folder_section() -> str:
     return "### Working folder\n" + "\n".join(lines)
 
 
+def now_section(now: "datetime | None" = None) -> str:
+    """Today's date, weekday and the time (pivot loop #4, 2026-09-29). In the DYNAMIC half — it
+    changes every turn, and the dynamic half rides only the current request, never the history,
+    so the cached prefix is untouched. With it, "Thursday" and "what's the date" resolve on the
+    first pass instead of a current_time round trip."""
+    now = now or datetime.now().astimezone()
+    offset = now.strftime("%z")
+    return ("### Now\n"
+            f"{now.strftime('%A')} {now.strftime('%Y-%m-%d')} ({now.day} {now.strftime('%B %Y')}), "
+            f"{now.strftime('%H:%M')} local time (UTC{offset[:3]}:{offset[3:]})")
+
+
 def stable_grounding() -> str:
     """The query-independent half of the grounding block — what the idle prime re-sends between
     turns. Byte-identical to the `context_stable` the next turn's grounding_node builds unless
@@ -150,7 +162,7 @@ def grounding_node(state: AgentState) -> dict:
     start = time.perf_counter()
 
     stable = stable_grounding()
-    sections = []
+    sections = [now_section()]
 
     # Selected against THIS request (memory_registry.select_for_context): agent/entities/
     # negative facts only when they share tokens with the query, plus the trailer naming what

@@ -22,8 +22,9 @@ what the request needs. Never re-run a call whose result you already have.
 - For a task that needs several steps, call `plan` first with the steps, then call it again as \
 steps complete so the user can follow along. Skip it for a single lookup or a chat answer.
 - Current or external facts (prices, news, versions, who a real person or company is) come \
-from web_search, even when you think you know them. Anything involving today's date or time \
-comes from current_time. Arithmetic comes from calculate — never do math in your head.
+from web_search, even when you think you know them. Today's date, weekday and the time are in \
+the Now line of the grounding — use them for "today", "Thursday" and other relative dates. \
+Arithmetic comes from calculate — never do math in your head.
 - The user's own notes, documents, mail and calendar come from the matching reader tools. \
 Files are read with read_file; relative paths are in the working folder shown in the grounding. \
 For a folder outside it, ask the user to run /add-dir <folder>. The knowledge base is searched \
@@ -50,7 +51,7 @@ def agent_sys_msg() -> SystemMessage:
 
 # ── utility-role prompts (the out-of-loop LLM calls) ─────────────────────────────────────────
 # Every prompt the app sends lives here (the one-prompt-home rule), including the utility calls
-# that run OUTSIDE the loop: conversation compaction, the memory review, and /init's SATURDAY.md
+# that run OUTSIDE the loop: conversation compaction, the memory review, and /init's SATURN.md
 # draft.
 
 # core/compaction._llm_summary — /compact + auto-compaction. The transcript is appended after.
@@ -105,14 +106,14 @@ MEMORY_REVIEW_SHAPE = (
 # manifest carries a mechanical first-line description now, so nothing summarizes untrusted
 # document text through a model at ingest.)
 
-# commands/knowledge /init — drafts SATURDAY.md from the workspace survey.
-INIT_DRAFT_PROMPT = """You are initializing SATURDAY.md — a standing-instructions file that a local
+# commands/knowledge /init — drafts SATURN.md from the workspace survey.
+INIT_DRAFT_PROMPT = """You are initializing SATURN.md — a standing-instructions file that a local
 AI agent loads into context at the start of every turn it works in this workspace.
 
 Below is the workspace's file listing.
-Write a concise SATURDAY.md (under 60 lines) in markdown with exactly these sections:
+Write a concise SATURN.md (under 60 lines) in markdown with exactly these sections:
 
-# SATURDAY.md
+# SATURN.md
 ## What this workspace is for      (1-3 sentences inferred from the files)
 ## Layout                          (the notable files/folders and what each holds — only what you
                                     can actually infer; skip boilerplate)

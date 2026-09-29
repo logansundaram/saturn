@@ -49,7 +49,6 @@ def test_posture_spans_loud_states_lead_and_warn(monkeypatch):
     monkeypatch.setitem(rt, "auto_approve", "destructive")  # the gate is OPEN, not "at a tier"
     monkeypatch.setitem(rt, "airgap", True)
     monkeypatch.setitem(rt, "quarantine", "off")
-    monkeypatch.setitem(rt, "redaction", "off")
 
     monkeypatch.setattr(
         egress, "_inference",
@@ -61,8 +60,7 @@ def test_posture_spans_loud_states_lead_and_warn(monkeypatch):
     assert ("⛓ airgap", "accent") in spans
     assert ("inference off-machine: ollama @ http://10.0.0.5:11434", "warn") in spans
     assert ("quarantine off", "warn") in spans
-    # redaction off only matters when a network boundary exists to redact for — here it does
-    assert ("redaction off", "warn") in spans
+    assert not any(text.startswith("redaction") for text, _ in spans)  # cut 2026-09-29
 
 
 def test_posture_spans_state_the_effective_quarantine_mode(monkeypatch):
@@ -133,7 +131,7 @@ def test_tool_node_attaches_the_calls_egress_slice(monkeypatch, isolated_paths):
     ev = delta["tool_events"][0]
     assert ev["egress"] == [{
         "channel": "http", "host": "api.example.com",
-        "n_bytes": 123, "redactions": 0, "status": "sent",
+        "n_bytes": 123, "status": "sent",
     }]
 
 
@@ -186,9 +184,9 @@ def test_egress_leaf_text_and_styles():
 
     text, style = tr._egress_leaf(
         {"channel": "http", "host": "api.example.com", "n_bytes": 123,
-         "redactions": 1, "status": "sent"})
+         "redactions": 1, "status": "sent"})  # an older record's field is ignored
     assert text.startswith("⇅ sent → api.example.com")
-    assert "http" in text and "1 redaction" in text
+    assert "http" in text and "redaction" not in text
     assert style == "yellow"
 
     text, style = tr._egress_leaf(

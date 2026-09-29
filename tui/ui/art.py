@@ -14,7 +14,7 @@ from ._base import Console, Text, _console, _RICH
 
 
 # ── geometry / shading constants ─────────────────────────────────────────────
-# Set SATURDAY_NO_SPLASH=1 to suppress it, SATURDAY_NO_ANIM=1 to print only the resting frame; it
+# Set SATURN_NO_SPLASH=1 to suppress it, SATURN_NO_ANIM=1 to print only the resting frame; it
 # also auto-skips when stdout isn't a terminal or is too narrow.
 _ART_R, _ART_C = 15, 56                   # canvas rows, cols
 _ART_PCY, _ART_PCX = 7.0, 28.0            # planet centre
@@ -244,12 +244,21 @@ def _saturn_plain() -> str:
     return "\n".join(lines)
 
 
+def _flag(name: str) -> bool:
+    """`SATURN_<name>`, or the old `SATURDAY_<name>` spelling (read until the next release)."""
+    return bool(os.environ.get(f"SATURN_{name}") or os.environ.get(f"SATURDAY_{name}"))
+
+
+def _no_splash() -> bool:
+    return _flag("NO_SPLASH")
+
+
 def splash(work=None):
     """Play the startup ring animation, then settle on its resting frame. If `work` (a zero-arg
     callable — the slow startup loading) is given, it runs on a background thread while the ring
     keeps drawing itself out in a smooth loop, and the animation holds until it finishes; its
     return value is passed back (its exception re-raised). Best-effort and non-fatal: a
-    non-terminal stdout, a too-narrow window, or SATURDAY_NO_SPLASH still runs `work`, just
+    non-terminal stdout, a too-narrow window, or SATURN_NO_SPLASH still runs `work`, just
     without the art, so it can never wedge launch."""
     import sys
     import threading
@@ -266,19 +275,19 @@ def splash(work=None):
             raise box["exc"]
         return box["value"]
 
-    quiet = bool(os.environ.get("SATURDAY_NO_SPLASH")) or not _RICH \
+    quiet = _no_splash() or not _RICH \
         or _console.size.width < _ART_C + 2 \
-        or not _console.is_terminal or bool(os.environ.get("SATURDAY_NO_ANIM"))
+        or not _console.is_terminal or _flag("NO_ANIM")
 
     if quiet:
-        if not _RICH and not os.environ.get("SATURDAY_NO_SPLASH"):
+        if not _RICH and not _no_splash():
             print(_saturn_plain())
         _run()                              # no animation: just do the work, then settle
         # `and _console.is_terminal`: a non-tty reports the fallback width (80), which clears the
         # _ART_C + 2 bar — so the settled ring was being printed into pipes and redirected logs,
         # the one place a splash can only be noise. `quiet` already tests is_terminal; this branch
         # is reached for several other reasons too, so it must test it as well.
-        if _RICH and not os.environ.get("SATURDAY_NO_SPLASH") \
+        if _RICH and not _no_splash() \
                 and _console.is_terminal \
                 and _console.size.width >= _ART_C + 2:
             _console.print(_saturn_text(1.0, final=True))

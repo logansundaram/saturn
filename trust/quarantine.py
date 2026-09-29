@@ -8,7 +8,7 @@ indistinguishable from the user's own intent — the classic indirect prompt-inj
 This module is the boundary:
 
   scan(text)            high-signal patterns for instruction-shaped content inside a tool
-                        observation. Conservative on purpose (like redaction.py): it flags the
+                        observation. Conservative on purpose (like secret_scan.py): it flags the
                         canonical injection phrasings, it is not a classifier.
   is_untrusted(name)    whether a tool's output comes from outside the trust boundary (web tools,
                         remote MCP tools, the ingested-document corpus).

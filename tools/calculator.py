@@ -148,9 +148,9 @@ def calculate(expression: str) -> str:
 # training cutoff), and without this tool the only cure was a pointless web_search.
 @register_tool("read_only")
 def current_time():
-    """The current local date and time, with timezone, UTC equivalent, and weekday. Use this
-    whenever the answer depends on 'today', 'now', or any relative date — never guess the
-    current date from memory."""
+    """The current local date and time, with timezone, UTC equivalent, and weekday. Today's
+    date is already in the grounding's Now line; call this when you need the exact time again
+    later in a long task."""
     now = datetime.now().astimezone()
     return {
         "local": now.isoformat(timespec="seconds"),

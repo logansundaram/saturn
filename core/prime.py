@@ -78,7 +78,7 @@ def prime(stable: str, only: "tuple | None" = None) -> int:
     if not ENABLED or not stable:
         return 0
     from core.llms import generate
-    from core.structured import _invoke_kwargs, _model_tag
+    from core.llms import invoke_kwargs, model_tag
 
     sent = 0
     for name, role, factory, messages in lineages(stable):
@@ -92,11 +92,11 @@ def prime(stable: str, only: "tuple | None" = None) -> int:
             # request is all prefill — and think ON regardless of the task table: a think-off
             # prime appends the empty think block after the boundary and pushes the N-4
             # checkpoint past it.
-            kwargs = _invoke_kwargs(role, None, 0.0, task="agent")
+            kwargs = invoke_kwargs(role, None, 0.0, task="agent")
             kwargs.setdefault("options", {})["num_predict"] = 1
             if "reasoning" in kwargs:
                 kwargs["reasoning"] = True
-            generate(factory(), messages, tag=_model_tag(role), **kwargs)
+            generate(factory(), messages, tag=model_tag(role), **kwargs)
             sent += 1
         except Exception as exc:
             diag.log(f"prime: {name} lineage skipped ({exc})")

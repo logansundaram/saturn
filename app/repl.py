@@ -65,6 +65,13 @@ def run_repl() -> None:
         if _menubar_status.startswith("failed"):
             ui.warn(f"menu bar icon {_menubar_status} (/notify icon start to retry)")
 
+    # The user's hooks.yaml (core/hooks): say once what it got wrong, so a hook that silently
+    # never runs can't happen. No file, no cost.
+    from core import hooks as _hooks
+
+    for problem in _hooks.problems():
+        ui.warn(f"{_hooks.hooks_path()}: {problem}")
+
     # Startup header — tier/model / tool count / corpus size, like a tool's first line.
     from core.llms import model_id, check_models
     from tools.registry import tool as _tools

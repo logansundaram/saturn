@@ -16,33 +16,22 @@ source keeps the useful part of the result intact).
 import fnmatch
 import os
 import re
+import time
 from pathlib import Path
 
 from textutil import truncate
 from tools.toolspec import register_tool
 
+from core import doctext, hooks
 from core import workspace as _ws
 from stores.snapshots import snapshot_file
 
 
-# ── cross-module observation contracts (one producer, one parser — the DECLINE_TEXT rule) ────
-# The write tools report refusals as ordinary strings, so their SUCCESS wording is a contract:
-# nodes/synthesize.verify_writes re-reads only files whose observation starts with one of these
-# markers. Change a constant and its return statement together; never re-type the strings there.
+# The write tools' success lines (tests and the loop benchmark match on them).
 MSG_OVERWROTE = "File overwritten successfully"
 MSG_CREATED = "File created successfully"
 MSG_APPENDED = "Content appended to file successfully"
 EDIT_PREFIX = "Edited "  # edit_file's success line: f"{EDIT_PREFIX}{path}: replaced …"
-WRITE_SUCCESS_MARKERS = (MSG_OVERWROTE, MSG_CREATED, MSG_APPENDED, EDIT_PREFIX)
-
-# The not-found refusals nodes/rectify's dead-end classifier keys on (lowercase startswith —
-# rectify lowercases observations before matching). Same producer/parser contract as above.
-NOT_FOUND_PREFIXES = (
-    "file not found:",           # edit_file: missing target
-    "no matches for",            # search_files: empty content search
-    "no files matching",         # find_files: empty name glob
-    "path is not a directory",   # _resolve_dir refusal (a guessed directory that isn't one)
-)
 
 
 def _resolve(path: str):
@@ -60,6 +49,39 @@ def _resolve_dir(path: str):
     if error is None and not target.is_dir():
         error = "Path is not a directory."
     return root, target, error
+
+
+def _control_files() -> "dict[Path, str]":
+    """The files that control Saturn itself — never the agent's to write, even through the gate:
+    a write to one could loosen the gate (config.yaml's auto_approve, a saved always-allow) or
+    plant a command that runs ungated (hooks.yaml). Launched from ~ they sit inside the
+    workspace, so the containment check alone does not keep them out."""
+    from config import config_path, get_config
+
+    return {
+        hooks.hooks_path(): "holds the user's hook commands",
+        config_path(): "holds Saturn's settings, the approval gate's included",
+        get_config().path("permissions"): "holds the approval gate's saved permissions",
+    }
+
+
+def _check_write_allowed(target_path, tool: str) -> None:
+    """Raise when a write must not happen: a control file (`_control_files`) is never the
+    agent's to write, and the user's before-write hooks may say no. RAISED, like read_file's
+    not-found, so the round is a failed step the answer's incidents note discloses. Asked only
+    once the write is otherwise certain, so a hook never fires for a call refused for another
+    reason."""
+    try:
+        target = Path(target_path).resolve()
+        protected = {Path(p).resolve(): why for p, why in _control_files().items()}
+    except OSError:
+        protected, target = {}, None
+    if target in protected:
+        raise PermissionError(f"{target} {protected[target]}; Saturn never writes it. "
+                              "Ask the user to edit it by hand.")
+    refusal = hooks.before_write(target_path, tool)
+    if refusal:
+        raise PermissionError(refusal)
 
 
 def _not_found_text(file_path: str) -> str:
@@ -84,7 +106,7 @@ def _not_found_text(file_path: str) -> str:
 
 @register_tool("read_only", untrusted=True)
 def read_file(file_path: str):
-    """Reads the contents of a file and returns it as a string. file_path is relative to the working folder; an absolute or ~ path inside a folder Saturn can reach also works."""
+    """Reads the contents of a file and returns it as a string. Text files are returned as written; PDF, Word (.docx) and Excel (.xlsx) files are returned as their text. file_path is relative to the working folder; an absolute or ~ path inside a folder Saturn can reach also works."""
     _, target_path, error = _resolve(file_path)
     if error:
         return error
@@ -95,6 +117,20 @@ def read_file(file_path: str):
         # confusion a small model actually has, so the refusal names the namespace and, when
         # the name matches an ingested document, the tool that reads it (2026-09-02).
         raise FileNotFoundError(_not_found_text(file_path))
+    # A PDF / Word / Excel file is read as its text (core/doctext) — "summarize the PDF on my
+    # desktop" is a direct read, not a knowledge-base ingest. Any other binary file is refused
+    # by name instead of returned as replacement-character soup.
+    document = doctext.extract(target_path)
+    if document is not None:
+        return document
+    try:
+        with open(target_path, "rb") as fh:
+            binary = b"\0" in fh.read(1024)  # _is_binary's sniff, but an OSError raises below
+    except OSError:
+        binary = False
+    if binary:
+        return (f"{file_path} is a binary file ({target_path.suffix or 'no extension'}); "
+                "read_file reads text, PDF, .docx and .xlsx files.")
     # Always UTF-8: the workspace holds user docs/notes that routinely carry non-cp1252
     # characters, and the default Windows encoding (cp1252) would raise UnicodeDecodeError on
     # them. errors="replace" degrades an undecodable byte to a marker rather than failing the
@@ -109,6 +145,7 @@ def write_file(file_path: str, content: str, overwrite: bool = True):
     _, target_path, error = _resolve(file_path)
     if error:
         return error
+    _check_write_allowed(target_path, "write_file")
     # Create the workspace and any intermediate directories so a nested path (e.g.
     # "notes/todo.md") works — without this, writing into a not-yet-existing subdirectory raised
     # FileNotFoundError. Safe: target_path is already verified to be inside the sandbox above.
@@ -119,10 +156,13 @@ def write_file(file_path: str, content: str, overwrite: bool = True):
     if overwrite:
         with open(target_path, "w", encoding="utf-8") as file:
             file.write(content)
-        return MSG_OVERWROTE if existed else MSG_CREATED
-    with open(target_path, "a", encoding="utf-8") as file:
-        file.write(content)
-    return MSG_APPENDED
+        result = MSG_OVERWROTE if existed else MSG_CREATED
+    else:
+        with open(target_path, "a", encoding="utf-8") as file:
+            file.write(content)
+        result = MSG_APPENDED
+    hooks.run("after-write", file=str(target_path), tool="write_file")
+    return result
 
 
 @register_tool("read_only")
@@ -173,10 +213,12 @@ def edit_file(file_path: str, old_string: str, new_string: str, replace_all: boo
             "to make it unique, or pass replace_all=True to replace every occurrence."
         )
 
+    _check_write_allowed(target_path, "edit_file")
     # Capture the turn-start state so /undo can reverse this edit.
     snapshot_file(target_path)
     new_content = content.replace(old_string, new_string)
     target_path.write_text(new_content, encoding="utf-8")
+    hooks.run("after-write", file=str(target_path), tool="edit_file")
     n = count if replace_all else 1
     return f"{EDIT_PREFIX}{file_path}: replaced {n} occurrence(s)."
 
@@ -186,6 +228,10 @@ _SEARCH_MAX_MATCHES = 100      # total matching lines returned
 _SEARCH_MAX_PER_FILE = 20      # matching lines per file (one log file can't eat the budget)
 _SEARCH_MAX_LINE = 200         # chars of each matched line
 _SEARCH_MAX_FILE_BYTES = 2_000_000  # skip files larger than this
+# Wall-clock budget for one content search. Launched from ~, a search that matches nothing reads
+# every text file under home — measured 80 s (17,101 files, 796 MB, 2026-09-29). Past the budget
+# the search stops and SAYS it stopped, so "no matches" is never claimed for a partial scan.
+_SEARCH_MAX_SECONDS = 10.0
 _FIND_MAX_RESULTS = 200
 
 
@@ -211,11 +257,15 @@ def search_files(pattern: str, directory: str = ".", file_glob: str = "*"):
         return f"Invalid regular expression: {exc}"
 
     matches: list[str] = []
-    truncated = False
+    truncated = timed_out = False
+    deadline = time.monotonic() + _SEARCH_MAX_SECONDS
     walk = _ws.Walk(target_path)
     for path in walk:
         if len(matches) >= _SEARCH_MAX_MATCHES:
             truncated = True
+            break
+        if time.monotonic() > deadline:
+            timed_out = True
             break
         if not fnmatch.fnmatch(path.name, file_glob):
             continue
@@ -241,12 +291,19 @@ def search_files(pattern: str, directory: str = ".", file_glob: str = "*"):
         if truncated:
             break
 
+    timeout_note = (f"… stopped after {_SEARCH_MAX_SECONDS:g} s of searching; files not yet "
+                    "searched may match — narrow the directory or file_glob.")
     if not matches:
+        if timed_out:
+            return (f"No matches for /{pattern}/ in the files searched so far under {directory!r} "
+                    f"(files matching {file_glob!r}).\n" + timeout_note)
         out = f"No matches for /{pattern}/ in {directory!r} (files matching {file_glob!r})."
         return out + ("\n" + _ws.walk_note() if walk.capped else "")
     out = "\n".join(matches)
     if truncated:
         out += f"\n… stopped at {_SEARCH_MAX_MATCHES} matches — narrow the pattern, directory, or file_glob."
+    elif timed_out:
+        out += "\n" + timeout_note
     elif walk.capped:
         out += "\n" + _ws.walk_note()
     return out

@@ -43,12 +43,12 @@ from core.context import grounding_parts
 from langchain_core.exceptions import OutputParserException
 from pydantic import ValidationError
 
-from core.llms import extract_prompt_tokens, extract_tok_per_sec, generate, get_model
+from core.llms import (extract_prompt_tokens, extract_tok_per_sec, generate, get_model,
+                       invoke_kwargs, model_tag)
 from core.llms import stream as llm_stream
 from core.messages import agent_sys_msg
 from core.pause import get_pause_controller
-from core.state import STEER_PREFIX, AgentState, is_steer_message, is_turn_start
-from core.structured import _invoke_kwargs, _model_tag
+from core.state import STEER_PREFIX, AgentState, is_steer_message, is_turn_start, issuing_message
 from core.tool_args import coerce_args, schema_hint
 from core.sources import build_sources
 from textutil import SOURCES_HEADER, clip, fmt_args, split_sources_footer
@@ -191,12 +191,12 @@ def _generate(llm_input: list, *, tools: bool, think: bool = False) -> AIMessage
 
     model = get_model(ROLE)
     runnable = model.bind_tools(list(registered)) if tools else model
-    kwargs = _invoke_kwargs(ROLE, None, 0.0, task="agent", think=think)
+    kwargs = invoke_kwargs(ROLE, None, 0.0, task="agent", think=think)
     full = None
-    for chunk in llm_stream(runnable, llm_input, tag=_model_tag(ROLE), **kwargs):
+    for chunk in llm_stream(runnable, llm_input, tag=model_tag(ROLE), **kwargs):
         full = chunk if full is None else full + chunk
     if full is None:  # a model that streamed nothing — blocking fallback
-        full = generate(runnable, llm_input, tag=_model_tag(ROLE), **kwargs)
+        full = generate(runnable, llm_input, tag=model_tag(ROLE), **kwargs)
     content = full.content if isinstance(full.content, str) else str(full.content)
     calls = []
     for tc in getattr(full, "tool_calls", None) or []:
@@ -475,14 +475,7 @@ def route_after_agent(state: AgentState) -> str:
     """A tool-calling message with unanswered calls → approval; one whose every call the node
     answered itself → straight back to agent; anything else → end."""
     msgs = state.get("messages") or []
-    answered = set()
-    last = None
-    for m in reversed(msgs):
-        if isinstance(m, ToolMessage):
-            answered.add(m.tool_call_id)
-            continue
-        last = m
-        break
+    last, answered = issuing_message(msgs)
     calls = (getattr(last, "tool_calls", None) or []) if isinstance(last, AIMessage) else []
     if not calls:
         return "end"

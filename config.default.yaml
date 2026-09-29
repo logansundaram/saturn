@@ -1,4 +1,4 @@
-# Saturday.ai runtime configuration (Phase 3).
+# Saturn runtime configuration.
 #
 # This file externalizes everything that used to be hard-coded across llms.py, rag.py,
 # document_registry.py, and agent.py: the model bindings, the filesystem paths, and the
@@ -83,14 +83,6 @@ runtime:
   # on|off`; `/privacy airgap` (bare) proves the current posture. Every blocked attempt shows in
   # `/privacy egress`.
   airgap: false
-  # Outbound redaction for cloud-bound roles (cloud-hybrid tier): strip secrets (API keys, tokens,
-  # private keys, JWTs, emails) from prompts+context before they reach a cloud model. One of:
-  #   off    no scan (default — a fully-local tier never leaves the machine anyway)
-  #   warn   detect + count (recorded to /privacy egress), but send unmodified
-  #   redact replace each secret with [REDACTED:<kind>] before sending
-  # Set via `/config runtime.redaction <mode>` (a trust key — persists only with an explicit
-  # --save). Local (Ollama) calls are never scanned — there's no boundary.
-  redaction: off
   # Prompt-injection quarantine (quarantine.py): UNTRUSTED tool output (web, remote
   # MCP, the ingested corpus) is scanned for instruction-shaped content ("ignore your previous
   # instructions", tool-coercion, role overrides). A hit is flagged in the trace rail, fenced
@@ -191,9 +183,9 @@ notify:
   # Start the menu bar icon with each interactive launch (macOS). It is a separate small
   # process registered as a login LaunchAgent, so it outlives this terminal and comes back
   # after a reboot — like the notifications it lists. Its "Quit Saturn…" stops the agent,
-  # cancels every pending notification, and removes itself. false = never start it
-  # (/notify icon start still works on demand).
-  menubar: true
+  # cancels every pending notification, and removes itself. Off by default: true starts it
+  # with every launch; /notify icon start brings it up once, on demand.
+  menubar: false
 
 mcp:
   connect_timeout: 20
@@ -231,7 +223,7 @@ tiers:
   # in a tier key silently splits it into two segments and corrupts a role bind.)
   #
   # The fresh-install default. Must stay in sync with the model list the install scripts pull
-  # (install.sh SATURDAY_MODELS) — a fresh install sets this tier active, so a
+  # (install.sh SATURN_MODELS) — a fresh install sets this tier active, so a
   # mismatch breaks the first run.
   4b:
     roles:

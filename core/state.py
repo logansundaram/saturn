@@ -1,6 +1,6 @@
 import operator
 from typing import List, Any, Optional
-from langchain.messages import HumanMessage
+from langchain.messages import HumanMessage, ToolMessage
 from langgraph.graph.message import add_messages
 from typing_extensions import TypedDict, Annotated
 
@@ -69,6 +69,20 @@ TERMINAL_STATUSES = ("done", "skipped", "blocked", "error", "cancelled", "supers
 # every reader (the incidents block, the write gate, the rail, /trace) treats it as record.
 INCIDENT_STATUSES = ("skipped", "blocked", "error", "cancelled")
 
+
+
+def issuing_message(messages) -> "tuple[Any, set]":
+    """The message that issued the pending tool batch, and the ids of its calls already answered:
+    walk back over the trailing ToolMessages (the agent's hygiene answers, the gate's declines,
+    executed results) to the first message that is not one. `(None, answered)` for an empty or
+    all-ToolMessage list. The one walk-back the agent's router, the gate and the tools node share."""
+    answered: set = set()
+    for m in reversed(messages):
+        if isinstance(m, ToolMessage):
+            answered.add(m.tool_call_id)
+            continue
+        return m, answered
+    return None, answered
 
 
 def current_step(plan: List[dict]) -> Optional[dict]:

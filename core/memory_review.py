@@ -255,8 +255,11 @@ def llm_enabled() -> bool:
 
 def llm_candidates(messages: list, run_id=None) -> list[dict]:
     """Ask the utility model for durable facts worth keeping from this session's transcript.
-    Proposals only — every one still faces the review screen. Empty on any failure (the
-    mechanical candidates stand on their own). Monkeypatched in tests; never reached offline."""
+    Proposals only — every one still faces the review screen. ONE constrained call (a flat JSON
+    schema for the decoder plus the shape hint as a trailing HumanMessage — never a
+    SystemMessage, which Ollama rejects mid-conversation for qwen3.8 models); the outermost
+    {...} is salvaged from prose-wrapped output. Empty on any failure (the mechanical candidates
+    stand on their own). Monkeypatched in tests; never reached offline."""
     if not messages:
         return []
     try:
@@ -264,8 +267,8 @@ def llm_candidates(messages: list, run_id=None) -> list[dict]:
         from pydantic import BaseModel
 
         from core.compaction import _transcript
+        from core.llms import generate, get_model, invoke_kwargs, model_tag
         from core.messages import MEMORY_REVIEW_FORMAT, MEMORY_REVIEW_PROMPT, MEMORY_REVIEW_SHAPE
-        from core.structured import structured
 
         class _Item(BaseModel):
             layer: str = "memo"
@@ -277,9 +280,13 @@ def llm_candidates(messages: list, run_id=None) -> list[dict]:
         transcript = _transcript(messages)
         if not transcript.strip():
             return []
-        prompt = HumanMessage(content=MEMORY_REVIEW_PROMPT + transcript)
-        out = structured("utility", [prompt], _Proposal, MEMORY_REVIEW_FORMAT,
-                         MEMORY_REVIEW_SHAPE, default=_Proposal())
+        messages = [HumanMessage(content=MEMORY_REVIEW_PROMPT + transcript),
+                    HumanMessage(content=MEMORY_REVIEW_SHAPE)]
+        resp = generate(get_model("utility"), messages, tag=model_tag("utility"),
+                        **invoke_kwargs("utility", MEMORY_REVIEW_FORMAT, 0.0))
+        content = str(getattr(resp, "content", "") or "")
+        start, end = content.find("{"), content.rfind("}")
+        out = _Proposal.model_validate_json(content[start:end + 1]) if end > start >= 0 else _Proposal()
     except Exception as exc:
         diag.log(f"memory review: model proposals failed: {exc}")
         return []

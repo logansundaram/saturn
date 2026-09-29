@@ -289,6 +289,9 @@ def run_memory_tasks(graph) -> list[dict]:
 def run_trust_benchmark(graph) -> dict:
     """Run the graded trust suite; returns {gate_results, injection_results, memory_results,
     summary}."""
+    from core import workspace
+
+    workspace.reset()  # probes write into the configured scratch folder, never the launch folder
     print(f"[trust] gate probes ({len(GATE_PROBES)} queries)")
     gate_results = []
     for query in GATE_PROBES:
@@ -626,7 +629,10 @@ class _loop_fixtures:
     tasks' outputs afterwards. Refuses to run over a user's own `bench_*` files."""
 
     def __enter__(self):
-        self.workspace = get_config().path("workspace")
+        from core import workspace
+
+        workspace.reset()  # the configured scratch folder, never the folder it was run from
+        self.workspace = workspace.root()
         self.workspace.mkdir(parents=True, exist_ok=True)
         existing = sorted(p.name for p in self.workspace.glob("bench_*"))
         if existing:

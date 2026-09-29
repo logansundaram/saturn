@@ -107,6 +107,7 @@ The whole product is one loop. Reading it end to end explains 80% of the repo:
 | `compaction.py` | The heavier LLM compaction (automatic past threshold) folding old turns into a summary message. |
 | `memory_review.py` | Session-end learning, gated: collects memory candidates from each turn (steer notes, gate denials, failed tool calls) and from compaction summaries into a pending queue, optionally asks the utility model for proposals, and runs the accept-each review screen (`/memory review`, `/quit`). Never writes without a y. |
 | `mentions.py` | `@file` expansion into clamped attachment blocks; drag-and-drop path detection. |
+| `workspace.py` | Where Saturn works: the launch folder, `/add-dir` folders, the one containment check (`resolve`), and the pruned walk. |
 
 ### `nodes/` — the graph, one file per node
 `ground` → `agent` → `approval` → `tools` → `agent` … → END. Routing helpers live beside

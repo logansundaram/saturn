@@ -58,7 +58,7 @@ Ranked by how much of the goal each unlocks per day of work. The first three are
 large gains in the repo and each is a bounded change; four through six are the "know the user"
 sub-project; the rest are "make it yours" and "feel like a product".
 
-### 1. Work where you launched — `saturn` in any folder (1–2 days)
+### 1. Work where you launched — `saturn` in any folder (1–2 days) — shipped 2026-09-29 (launch folder + /add-dir, /rm-dir; no always-listed roots)
 Root the file tools at the launch directory (or `--workspace`), keeping the same sandbox check;
 `/undo` snapshots and `SATURDAY.md` discovery follow the root; the fixed `database/workspace`
 stays the default only for wheel installs started from `$HOME`. Add `~/Desktop`, `~/Downloads`,

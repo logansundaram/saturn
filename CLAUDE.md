@@ -160,6 +160,12 @@ closed to `destructive`; `run_shell` is always `destructive`. MCP tools register
 and never trust a server's self-declared tier. `tools/toolspec.py` is separate from `registry.py`
 precisely to avoid the import cycle — keep it that way.
 
+File tools, `run_shell`'s working directory, the workspace `SATURN.md` and `/init` follow
+`core/workspace.py`: the launch folder (`agent.main` sets it from the cwd) plus folders added
+with `/add-dir`. `workspace.resolve` is the ONE containment check (`tools/files._resolve` wraps
+it); unset, the root falls back to `paths.workspace`, which is what tests and the benchmark use.
+Snapshots record absolute paths, so `/undo` restores the right file from any folder.
+
 `notify/` is the scheduled-notification seam behind `schedule_notification` and `/notify`: `backend()` picks
 by `sys.platform` (macOS = one launchd LaunchAgent per one-shot, shown by `osascript`; anything else is the
 honest `Unsupported`). A new platform is one module plus one branch in `backend()`. It is not egress.

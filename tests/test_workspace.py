@@ -377,3 +377,45 @@ def test_both_commands_answer_help(capsys):
     assert "/add-dir" in capsys.readouterr().out
     _dispatch("/rm-dir --help")
     assert "/rm-dir" in capsys.readouterr().out
+
+
+# ── launch wiring and the benchmark ─────────────────────────────────────────────────────────
+
+
+def test_main_sets_the_root_to_the_launch_folder(monkeypatch, tmp_path):
+    import io
+
+    import agent
+
+    monkeypatch.setattr("sys.stdin", io.StringIO(""))  # -p must never wait on piped input
+
+    here = tmp_path / "here"
+    here.mkdir()
+    monkeypatch.chdir(here)
+    monkeypatch.setattr("sys.argv", ["saturn", "--replay", str(tmp_path / "none.json")])
+    with pytest.raises(SystemExit):
+        agent.main()  # the replay path exits before the root is set …
+    assert workspace.root() != here.resolve()
+
+    ran = {}
+    monkeypatch.setattr("sys.argv", ["saturn", "-p", "hi"])
+    monkeypatch.setattr("app.headless.run_headless", lambda args: ran.setdefault("root", workspace.root()))
+    agent.main()  # … the headless path runs with it set
+    assert ran["root"] == here.resolve()
+
+
+def test_banner_names_the_working_folder(launched):
+    from tui.ui._base import _short_cwd
+
+    assert _short_cwd() == workspace.display(launched)
+
+
+def test_the_loop_benchmark_never_plants_in_the_launch_folder(monkeypatch, launched):
+    import benchmark
+    from config import get_config
+
+    monkeypatch.setattr(benchmark, "run_query", lambda graph, q: {"status": "ok", "response": "x",
+                        "iterations": 1, "tools_called": [], "hygiene": 0, "capped": False})
+    benchmark.run_loop_benchmark(object())
+    assert not list(launched.glob("bench_*"))
+    assert workspace.root() == get_config().path("workspace")

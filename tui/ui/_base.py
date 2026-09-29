@@ -221,9 +221,7 @@ def _git_branch() -> str:
 
 
 def _short_cwd() -> str:
-    """Current working dir with $HOME collapsed to ~, for a compact banner line."""
-    cwd = os.getcwd()
-    home = os.path.expanduser("~")
-    if cwd.startswith(home):
-        cwd = "~" + cwd[len(home):]
-    return cwd
+    """The working folder (core/workspace.root()), with $HOME collapsed to ~, for the banner."""
+    from core import workspace
+
+    return workspace.display(workspace.root())

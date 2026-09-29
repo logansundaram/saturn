@@ -75,6 +75,15 @@ def run_repl() -> None:
     ui.banner(
         f"{cfg.active_tier}:{model_id('tool_caller')}", len(_tools), n_docs, DB_PATH
     )
+    # Launched from "/" or an unreadable folder, core/workspace fell back to home — say so once.
+    from core import workspace as _ws
+    try:
+        _started = Path.cwd().resolve()
+    except OSError:
+        _started = None
+    if _started != _ws.root():
+        ui.warn(f"working in {_ws.display(_ws.root())}, not the folder Saturn was started in — "
+                "cd to a specific folder and restart to work there")
     # The session's trust posture, deviation-only (receipt.posture_spans): silent on a
     # default-safe install; speaks (with the /privacy · /policy pointers) when the gate is
     # loosened, the air-gap holds, inference leaves the machine, or a guard is weakened.

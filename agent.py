@@ -18,6 +18,7 @@ that contract survives the split. New code should import from the app/ modules d
 """
 
 import sys
+from pathlib import Path
 
 # Force UTF-8 console output: rail glyphs, tool results and model output routinely carry
 # characters a non-UTF-8 locale's stdout would refuse.
@@ -51,6 +52,16 @@ def main():
         from commands.trace import render_export
 
         sys.exit(0 if render_export(args.replay) else 1)
+
+    # The launch folder is the workspace (2026-09-29, core/workspace): the file tools, the shell
+    # and the folder's SATURN.md follow it in both modes. Set once, before either runs.
+    from core import workspace
+
+    try:
+        launched = Path.cwd()
+    except OSError:  # the folder was deleted under the shell
+        launched = Path.home()
+    workspace.set_root(launched)
 
     # --yolo: the CLI view of the gate policy — open the gate up front (threshold ->
     # destructive) so gated calls never interrupt; same mechanism as /policy open. Honored in

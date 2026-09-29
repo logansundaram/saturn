@@ -9,6 +9,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
 
 ### Added
 
+- **Saturn works where you launch it.** `cd` into any folder and run `saturn`: the file tools,
+  the shell, `/undo`, `/init` and the folder's `SATURN.md` all work there, the way Claude Code
+  works in a repo. Launched from `~`, your home folder is the workspace. The tools can't reach
+  anything outside it on their own: ask about a file elsewhere and Saturn suggests `/add-dir
+  <folder>`, which makes that folder reachable for the session; `/rm-dir` takes it away. Every
+  write and shell command still faces the gate. Searches skip `~/Library`, dependency folders
+  and hidden folders, and stop at 50,000 entries. `/undo` restores the exact file a turn wrote,
+  whatever folder you run it from.
 - **The loop benchmark** (`python benchmark.py --loop`). Twenty-four daily requests — chat,
   one-tool lookups, multi-step file tasks, and the shapes a small model gets wrong (a missing
   file, an impossible request, an under-specified one, mental arithmetic) — run through the

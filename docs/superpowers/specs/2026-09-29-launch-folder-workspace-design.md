@@ -146,8 +146,8 @@ All offline, in the files that own the features:
   another; a legacy relative manifest still restores.
 - **Commands**: `/add-dir` and `/rm-dir` happy paths and refusals, `--help`, and `/help`
   listing.
-- **Benchmark**: the loop benchmark sets its root to a temporary folder, so it never plants
-  files where it was run from.
+- **Benchmark**: both benchmarks reset the root, so they plant and grade in the configured
+  scratch workspace, never the folder they were run from.
 
 Then one live check on the 9b: launch from a scratch folder and from `~`, ask for a file in
 the folder, ask for one on the Desktop (expect the `/add-dir` suggestion), run `/add-dir

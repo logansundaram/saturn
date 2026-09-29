@@ -37,6 +37,7 @@ python -m pytest tests/test_policy.py -q -k prefix       # one test by name
 
 # trust benchmark — needs a running Ollama with the active tier pulled
 python benchmark.py [--strict]       # reports to logging/benchmarks/trust_<ts>.json
+python benchmark.py --loop           # the loop benchmark: daily requests graded on passes/tool choice/phantoms → loop_<ts>.json
 
 SATURDAY_DEBUG=1 python agent.py     # echo logging/diag.log lines to stderr
 ```
@@ -65,10 +66,11 @@ ground → agent ─(no tool calls)─→ END
            └── tools ← approval      (a fully-rejected batch → agent)
 ```
 
-- `ground` assembles `state["context"]` in two halves (SATURDAY.md, the knowledge-base manifest, the always-loaded
+- `ground` assembles `state["context"]` in two halves (`~/.saturn/SATURN.md` then the workspace `SATURN.md`/`SATURDAY.md`, the knowledge-base manifest, the always-loaded
   memory layers = stable; memory matches + attachments = dynamic). No model call.
 - `agent` (`nodes/agent.py`) makes ONE native tool-calling call per pass (`tool_caller` role,
-  `bind_tools(registry)`, think off, streamed). Prompt order is prefix-cache order:
+  `bind_tools(registry)`, streamed; think is adaptive — `runtime.think`: a pass thinks only right after a
+  tool round with an error, an empty thinking pass is rerun think-off, the capped pass never thinks). Prompt order is prefix-cache order:
   `[system][stable grounding][history…][dynamic + request][turn messages…]`; the bound tool
   schemas render into the chat template's system section, so the catalog is part of the prefix
   `core/prime.py` caches. The checks around the call are deterministic, in this order, and each

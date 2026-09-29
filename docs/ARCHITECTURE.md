@@ -15,7 +15,7 @@ message without tool calls is the answer.
 
 ```
 agent.py            entry point — parses the CLI, routes into app/ (thin; re-exports for tests)
-benchmark.py        the graded trust benchmark (dev-only)
+benchmark.py        the graded trust benchmark; --loop is the loop benchmark (dev-only)
 config.py/.yaml     the single source of truth for model bindings, paths, and runtime knobs
 diag.py             diagnostic logging to logging/diag.log (never print() — TUI-safe)
 textutil.py         leaf text helpers (truncation, head+tail clamping, byte formatting)
@@ -48,7 +48,7 @@ The whole product is one loop. Reading it end to end explains 80% of the repo:
 2. **The graph runs** — `app/turn.py::run_turn` streams the compiled graph that
    `app/graph.py::build_agent` assembled from `nodes/`:
    - `nodes/ground.py` builds `state["context"]` in two halves: `context_stable` (workspace
-     instructions from SATURDAY.md, the knowledge-base manifest, the always-loaded memory
+     instructions from ~/.saturn/SATURN.md and the workspace SATURN.md (or SATURDAY.md), the knowledge-base manifest, the always-loaded memory
      layers — `stores/memory_registry`: user facts + open commitments + the memo digest) and
      `context_dynamic` (agent/entities/negative facts matched to this request, attachments).
      The agent sends the stable half as its own message right after its system prompt, and
@@ -56,7 +56,8 @@ The whole product is one loop. Reading it end to end explains 80% of the repo:
      schemas the chat template renders are inside it — between turns so the daemon's prompt
      cache resumes there (see `docs/OPTIMIZATIONS.md`, "the prefix cache").
    - `nodes/agent.py` makes ONE native tool-calling call per pass (`bind_tools` over the
-     registry, think off, streamed) over `[system][stable][history…][dynamic + request][turn…]`.
+     registry, streamed, think adaptive: off on pass one and the capped pass, on once the turn
+     proved hard — `runtime.think`) over `[system][stable][history…][dynamic + request][turn…]`.
      Around the call, deterministic checks in a fixed order: a steer (Esc + text) lands as a
      `STEER_PREFIX` message; a pause (Esc) `interrupt()`s for the pause prompt (continue /
      steer / abort); past `runtime.max_iterations` the last pass runs with tools unbound and a

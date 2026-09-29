@@ -65,6 +65,10 @@ stays the default only for wheel installs started from `$HOME`. Add `~/Desktop`,
 `~/Documents` as always-listed roots so "the file on my desktop" resolves. This is the single most
 important daily-task property Claude Code has and Saturn lacks.
 
+**Known slow case (2026-09-29):** launched from `~`, a content search that matches nothing
+reads every text file under home — measured 80 s (17,101 files, 796 MB); a name search takes
+0.7 s and startup walks nothing. Add a time budget to `search_files` when it bites.
+
 ### 2. Read the files people actually have (half a day)
 Route `read_file` through the loaders already in `stores/rag.py` (pypdf, python-docx) for a
 direct read of PDF / .docx / .xlsx-as-CSV; keep the knowledge base for search across many
@@ -98,7 +102,7 @@ On session start, one dim block: today's events, mail threads waiting on a reply
 session. Nothing runs in the background; the brief is the first turn, done for you. `/brief`
 re-runs it; `runtime.brief: false` turns it off.
 
-### 7. `SATURN.md` global + per-folder instructions (half a day)
+### 7. `SATURN.md` global + per-folder instructions (half a day) — shipped 2026-09-28 (`/init` still writes SATURDAY.md)
 `~/.saturn/SATURN.md` loaded every turn (tone, standing rules, "always metric", "never draft to
 my boss without asking"), merged under a folder's `SATURDAY.md`. Rename the per-folder file to
 `SATURN.md` too and keep reading the old name. `/init` drafts both.
@@ -121,7 +125,7 @@ closed to `destructive`; every call faces the gate; stdout is untrusted.
 `after-write`. The same seam Claude Code exposes; the memory review and the launch brief could be
 built on it.
 
-### 11. The command diet (1 day)
+### 11. The command diet (1 day) — shipped 2026-09-28 (`/help --all`)
 Five commands a person needs — `/memory`, `/skills`, `/policy`, `/trace`, `/help` — listed by
 default; `/confidence`, `/privacy`, `/notify`, `/mcp`, `/models`, `/config`, `/docs`, `/undo`
 behind `/help --all`. Nothing is removed; the first screen stops looking like an audit console.
@@ -144,6 +148,128 @@ gated, never auto-approved, shown whole at the gate, on the ledger. The findings
 - **The trust benchmark's capability suites.** Keep the trust probes (gate, egress, quarantine,
   memory planting) as the regression floor; drop the engine metrics they lost today.
 - **Auditor-grade trace surfaces.** `/trace export`, replay and `/trace why` stay; no new views.
+
+## Cut list and loop improvements (2026-09-28 survey)
+
+_A pass over the tree the day after the v2 cut, ranked by lines removed per risk. Each cut is a
+bounded deletion with a test file to drop alongside it; the improvements change the loop's
+shape without adding a call to the chat turn. Pivot #1 and #2 above stay the top gains._
+
+### Cut
+
+- **Outbound redaction** (`trust/redaction.py`, 183 lines, `runtime.redaction`,
+  `tests/test_redaction.py`, a receipt branch). It only runs when `OLLAMA_HOST` is remote
+  (`core/llms.py::_wrap_ollama`) and the default is `off`. The egress ledger already records
+  the remote host.
+- **The Sources footer on the answer.** The agent prompt no longer asks for `[n]` citations, so
+  `runtime.citations` only controls the mechanical footer `nodes/agent.py::_with_trailers`
+  appends; the rail already showed each call as it ran. Drop the footer, `strip_trailers`,
+  `tests/test_citations.py`. Keep `/trace source`, which reads the same data.
+- **The menu bar LaunchAgent** (`notify/menubar.py` + `notify/menubar_app.py`, 443 lines, the
+  pyobjc dependency). Every interactive launch installs a login item (`app/repl.py`,
+  `_menubar.ensure_running()`) for an icon that lists pending notifications. Default it off, or
+  cut it until the ambient-awareness work (advantages.md §5.5) gives it a job.
+- **The second model role.** All four tiers bind `utility` to the same model as `tool_caller`;
+  the `capabilities` block is read once for a startup warning and `max_context_window` is
+  display only. Collapse each tier to `model`, `num_ctx`, `embedder`; `/models`, `config.py`
+  and every "role" reference simplify with it.
+- **The structured-output layer** (`core/structured.py`). One caller left, the memory review's
+  proposals. Move `_invoke_kwargs` / `_model_tag` into `core/llms.py`; the review makes one
+  constrained call with a default.
+- **`requirements.txt`.** CI installs from `pyproject.toml`; a second list kept in sync is pure
+  upkeep.
+- **`recall_runs`** (`tools/knowledge.py`). A model-facing search over the trace DB, marked
+  untrusted, overlapping memory. "What did I decide" is memory's job.
+
+### Trim (rot that misleads the next reader)
+
+- `README.md` (the "life of a turn" block and the layout listing) still documents plan,
+  rectify and synthesize.
+- Stale headers: `tui/ui/__init__.py` describes plan_gate / update_plan / synthesize rows;
+  `nodes/tools.py` opens with "living-plan ReAct loop (Phase 1)"; `nodes/approval.py` says
+  "Phase 2"; `config.default.yaml` says "Phase 3" and "Saturday.ai"; `core/context.py`
+  references plan_context.
+- `/trace` usage still lists `answer`, cut with the Glass Box.
+- Two names: ten `SATURDAY_*` environment variables beside `SATURN_HOME`, and `/init` still
+  writes `SATURDAY.md`. Pick `SATURN_*`, read the old spellings as fallbacks for one release.
+
+### Improve
+
+1. **Put the date in the dynamic grounding** (`nodes/ground.py::grounding_node`). The prompt
+   routes every "Thursday" through a `current_time` round trip; one line makes date questions a
+   single call, and the tool and its prompt line can go.
+2. **Move the ask_user interrupt out of the tool.** A resumed interrupt re-runs the tools node,
+   so the agent node forces ask_user to run alone (`ASK_ALONE_TEXT`). If the approval node
+   raises the question interrupt and writes the ToolMessage itself, the hack goes and siblings
+   run.
+3. **Size the observation clamp to the window.** `nodes/tools.py::_MAX_OBSERVATION` is a fixed
+   12k characters while windows run 32k–128k tokens; derive it from
+   `core/llms.active_context_window`.
+4. **Think on evidence, not on pass count** — shipped 2026-09-29. A pass thinks only right
+   after a tool round with an error; the plan, declined-call and `think_after` triggers are
+   gone, and a thinking pass that returns nothing is rerun think-off. Found by the loop
+   benchmark: on the 4b and 9b, a thinking pass whose right move is a short answer writes the
+   answer inside its reasoning and emits no content.
+5. **One walk-back helper.** "Skip trailing ToolMessages to find the issuing AIMessage" exists
+   in `nodes/agent.py::route_after_agent`, `nodes/tools.py::tool_node` and `nodes/approval.py`.
+   Put it in `core/state`.
+6. **Concurrent tool batches.** Serial today so egress events attribute by sequence
+   (`_egress_slice`). Tag ledger events with a call id via a contextvar and the batch can run
+   in a pool; a two-file compare then reads both at once.
+7. **Fold the `/models` page into first run.** `commands/runtime.py` (697 lines, a 696-line
+   test) already probes hardware and recommends a tier — pivot #12. Run the recommendation once
+   at first launch and shrink `/models` to list and use.
+
+
+## Loop improvements (2026-09-28 brainstorm)
+
+_Ideas for the engine itself — the shape of the loop, not features around it — ranked for all
+model sizes: the guards matter most on the 4b/9b, the projection and the grounding matter on
+every tier. The two knives below apply to each. The "Improve" list above still stands; where
+an item here subsumes one of those it says so._
+
+1. **A loop benchmark first** (`python benchmark.py --loop`). Twenty-odd daily requests with the
+   tool sequence each should take, graded from the turn record: passes per shape (chat = 1,
+   lookup = 2, multi ≤ N), wrong tool, missing tool, phantom action (text that describes an
+   action with no call), stub answer, hygiene bounces, capped turns, and a verifiable value in
+   the answer where one exists. Every idea below is a guess until this exists; the trust
+   benchmark lost its engine metrics in the v2 cut. Shipped 2026-09-28.
+2. **`_llm_input` becomes a budgeted prompt projection.** Today it maps state to the prompt and
+   only strips trailers, so ten reads on a 32k window push the system prompt off the front. Give
+   the projection a token budget: an observation a later pass has already moved past collapses
+   to a one-line stub in the PROMPT only — state, the trace and replay stay whole. Subsumes
+   "size the observation clamp to the window". Costs the chat turn nothing.
+3. **A question is an answer: delete the `ask_user` interrupt.** The model's last message is
+   the answer; when it needs a value it answers with the question and the turn ends, and the
+   user's reply is the next turn with the history intact. Deletes the interrupt, the run-alone
+   hack (`ASK_ALONE_TEXT`), the headless special case and the tool; `plan` state carries across
+   the boundary so a mid-checklist question resumes. Replaces "move the ask_user interrupt out
+   of the tool".
+4. **An environment snapshot in the dynamic grounding.** Date, weekday, time, the launch
+   directory and a short workspace listing, the way Claude Code puts cwd and git status in
+   front of the model. Subsumes "put the date in the dynamic grounding"; `current_time` and
+   its prompt line go. "The file on my desktop" and "Thursday" resolve on pass one.
+5. **A phantom-action guard.** The characteristic small-model failure: "I'll read the file
+   now." with no tool call, and the turn ends. Deterministic check on an answer — no calls,
+   short, ends in an intent verb, no tool used this turn — followed by ONE nudge pass. Fires only
+   on the failure shape; the benchmark's phantom count says whether it earns its place.
+6. **Compress oversize observations instead of clipping them.** Head-and-tail loses the middle
+   of a web page or a long file. Past the clamp, one utility-role call extracts what is relevant
+   to the request. Costs a call only on an oversize result. Pulls against collapsing the utility
+   role (cut list above) — decide the two together.
+7. **A wall-clock budget beside the pass cap.** `runtime.turn_seconds` triggers the same
+   capped last pass. Sixteen passes on a 4b can be minutes; a companion should not make someone
+   wait that long without a decision.
+8. **Record the reasoning.** A thinking pass streams `reasoning_content` and drops it. Stamp it
+   on the recorded AIMessage so `/trace why` can show why the pass chose its calls, and the
+   loop benchmark can grade it.
+9. **The catalog's shape — measure before touching.** Twenty-six schemas is 3.7k tokens and
+   twenty-six choices for a 4b. Two candidates to benchmark: domain tools with an action enum
+   (`mail(action=…)`), or a small core set plus a deferred group. Both fight the prefix cache,
+   so only if the loop benchmark shows tool-choice errors.
+
+Order: 1, then 2 and 3 as one sub-project, then 4 and 5. Items 2 and 3 are the ones that
+change the loop's shape; the rest are guards and grounding.
 
 ## How to decide, from here
 

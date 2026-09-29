@@ -7,6 +7,18 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
 
 ## [Unreleased]
 
+### Added
+
+- **The loop benchmark** (`python benchmark.py --loop`). Twenty-four daily requests — chat,
+  one-tool lookups, multi-step file tasks, and the shapes a small model gets wrong (a missing
+  file, an impossible request, an under-specified one, mental arithmetic) — run through the
+  live loop and graded from the turn record: passes against the shape's bound (chat = 1,
+  lookup = 2, multi ≤ N), tool choice, a verifiable value in the answer, phantom actions
+  (text that narrates a tool call that never happened), stub answers, hygiene bounces and
+  capped turns. A measurement, not a `--strict` gate; the report lands at
+  `logging/benchmarks/loop_<ts>.json`. Fixtures are planted under `bench_*` in the workspace
+  and removed afterwards. The trust benchmark stays the default run.
+
 ### The v2 cut (2026-09-27)
 
 #### Removed
@@ -88,6 +100,27 @@ this section, which describe v1 mechanisms that no longer exist._
 
 #### Added
 
+- **Adaptive thinking (`runtime.think`).** A pass thinks, under a bounded
+  `runtime.think_budget`, only when the tool round just before it had an error: a tool
+  failure or a refused call, the one place the model needs a new approach. A chat question,
+  a clean lookup, the answer after a declined or blocked call, and the capped last pass stay
+  think-off, so the answer that wraps up a multi-step task no longer pays for reasoning. A
+  thinking pass that comes back with neither text nor a call is rerun once think-off: on a
+  pass whose right move is a short answer, qwen3.5 can write the answer inside its reasoning
+  and emit nothing. `off` never thinks; `on` thinks on every uncapped pass. The reasoning
+  never enters the answer stream.
+- **`~/.saturn/SATURN.md` — standing instructions everywhere.** Loaded every turn under the
+  workspace file (tone, "always metric", "never draft to my boss without asking"); the
+  workspace file wins where they conflict. A workspace `SATURN.md` is read in preference to
+  `SATURDAY.md`, which still loads when it is the only one. `$SATURN_HOME` moves the directory.
+- **`!command` at the prompt.** Runs the command in your own shell (your action — no gate,
+  no trace row), prints the output and attaches it to your next message, so `!git diff` then
+  "summarize that" works like `git diff | saturn -q "summarize"`.
+- **`/help --all`.** Bare `/help` now lists the everyday commands (`/memory`, `/policy`,
+  `/trace`, `/help`, `/quit`); `--all` lists every command by theme with the trust map, as
+  before. Nothing was removed.
+- **`/memory` names its file.** The listing (and the empty-store note) prints the path of the
+  one markdown file the store is — yours to grep, edit and version.
 - **`plan` tool.** On a task that needs several tool calls the model records its checklist
   and updates it as steps complete; the rail, the gate's step context, `/trace why`, replay
   and the headless `plan` field show it.

@@ -42,8 +42,24 @@ def test_groups_are_alphabetical_and_bounded():
 
 # --- the rendered listing ----------------------------------------------------------------------
 
-def test_help_renders_groups_map_and_no_dead_legend(capsys):
+def test_bare_help_is_the_diet(capsys):
+    """pivot #11: the first screen lists the everyday commands only; every other command stays
+    registered and one flag away. Nothing on the diet may be a command that does not exist."""
+    from commands.system import _DAILY
+
+    assert set(_DAILY) <= set(COMMANDS)
     dispatch("/help", _ctx())
+    out = capsys.readouterr().out
+    for name in _DAILY:
+        assert f"/{name}" in out
+    for hidden in ("mcp", "models", "update", "privacy"):
+        assert f"/{hidden}" not in out
+    assert "--all" in out
+    assert "posture" not in out  # the trust map is the auditor's view
+
+
+def test_help_renders_groups_map_and_no_dead_legend(capsys):
+    dispatch("/help --all", _ctx())
     out = capsys.readouterr().out
     assert "* = scaffolded" not in out  # the dead legend is gone
     for group, _names in _GROUPS:

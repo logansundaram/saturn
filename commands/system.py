@@ -37,6 +37,12 @@ _GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("observability", ("mcp", "models", "tools", "trace")),
     ("system", ("config", "help", "notify", "quit", "update")),
 )
+# The command diet (2026-09-28, pivot #11): bare /help lists only the commands a person needs
+# on a Tuesday; everything else (the auditor's and operator's surfaces) stays registered and
+# listed by `/help --all`. Nothing is removed; the first screen stops looking like an audit
+# console. Order is display order.
+_DAILY: tuple[str, ...] = ("memory", "policy", "trace", "help", "quit")
+_ALL_FLAGS = {"--all", "-a", "all"}
 # (The legacy gate spellings — /risk · /allow · /autoapprove — were CUT 2026-07-06: they were
 # thin delegations to /policy's subcommands and now land on _RENAMED pointers, so the listing
 # carries ONE gate-policy surface instead of four. The 2026-07-07 command fold likewise dropped
@@ -63,10 +69,11 @@ def _names(cmd) -> str:
     "help",
     "List all slash commands by theme, or detail one.",
     aliases=("?", "h"),
-    usage="/help [command]",
+    usage="/help [--all | command]",
     details="""
-With no argument, opens with the trust-stack map (posture · activity · record) then lists every
-command grouped by theme.
+With no argument, lists the handful of commands a person needs day to day. `/help --all` opens
+with the trust-stack map (posture · activity · record) then lists EVERY command grouped by
+theme — nothing is hidden, only unlisted by default.
 
 With a command name, prints its detailed help — identical to `/<command> --help`. Renamed
 commands answer here too: `/help why` prints the same pointer as typing /why.
@@ -77,13 +84,15 @@ runs it). A mid-position token is data, so `/memory add prefer -h over --help in
 the fact.
 
 Examples:
-  /help              the grouped command list
+  /help              the everyday commands
+  /help --all        every command, grouped by theme
   /help policy       detail one command
   /policy --help     same thing, the git-style way
 """,
 )
 def _help(ctx, args):
-    if args and args[0].lower() not in _HELP_FLAGS:
+    show_all = bool(args) and args[0].lower() in _ALL_FLAGS
+    if args and not show_all and args[0].lower() not in _HELP_FLAGS:
         key = args[0].lstrip("/").lower()
         name = key if key in COMMANDS else _ALIASES.get(key)
         cmd = COMMANDS.get(name) if name else None
@@ -97,6 +106,15 @@ def _help(ctx, args):
         return
 
     from tui import ui
+
+    if not show_all:
+        rows = [(_names(COMMANDS[n]), (COMMANDS[n].summary, "dim")) for n in _DAILY if n in COMMANDS]
+        more = len(COMMANDS) - len(rows)
+        ui.section("slash commands", "/help <command> details one · /help --all lists every command")
+        ui.table(rows)
+        _print(f"  {more} more (config, docs, models, privacy, …): /help --all")
+        _print("")
+        return
 
     ui.section("slash commands", "/help <command> or /<command> --help for details on one")
     ui.table(list(_TRUST_MAP), styles=("dim", "accent"))

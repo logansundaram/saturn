@@ -148,3 +148,104 @@ def test_display_and_relative_forms(monkeypatch, tmp_path):
     assert workspace.relative(home / "proj" / "a" / "b.txt") == "a/b.txt"
     assert workspace.relative(home / "proj") == "."
     assert workspace.relative(home / "Desktop" / "x") == "~/Desktop/x"
+
+
+# ── the file tools ──────────────────────────────────────────────────────────────────────────
+
+from tools.files import edit_file, find_files, list_directory, read_file, search_files, write_file  # noqa: E402
+
+
+@pytest.fixture
+def launched(tmp_path, isolated_paths):
+    r = tmp_path / "launch"
+    (r / "notes").mkdir(parents=True)
+    (r / "notes" / "todo.md").write_text("buy milk\n", encoding="utf-8")
+    return workspace.set_root(r)
+
+
+def test_file_tools_work_in_the_launch_folder(launched):
+    assert read_file.invoke({"file_path": "notes/todo.md"}) == "buy milk\n"
+    assert write_file.invoke({"file_path": "new/idea.txt", "content": "x"}) == "File created successfully"
+    assert (launched / "new" / "idea.txt").read_text(encoding="utf-8") == "x"
+    assert edit_file.invoke({"file_path": "notes/todo.md", "old_string": "milk",
+                             "new_string": "oats"}).startswith("Edited ")
+    assert sorted(list_directory.invoke({"directory": "."})) == ["new", "notes"]
+    assert "notes/todo.md:1" in search_files.invoke({"pattern": "oats"})
+    assert "notes/todo.md" in find_files.invoke({"pattern": "*.md"})
+
+
+def test_a_path_outside_is_refused_with_the_add_dir_fix(launched, tmp_path):
+    (tmp_path / "Desktop").mkdir()
+    out = read_file.invoke({"file_path": str(tmp_path / "Desktop" / "x.pdf")})
+    assert out.startswith("Outside the folders Saturn can reach") and "/add-dir" in out
+    out = write_file.invoke({"file_path": "../escape.txt", "content": "x"})
+    assert out.startswith("Outside the folders Saturn can reach")
+    assert not (launched.parent / "escape.txt").exists()
+
+
+def test_a_new_subfolder_inside_an_added_folder_is_writable(launched, tmp_path):
+    desk = tmp_path / "Desktop"
+    desk.mkdir()
+    workspace.add(desk)
+    out = write_file.invoke({"file_path": str(desk / "sorted" / "a.txt"), "content": "x"})
+    assert out == "File created successfully"
+    assert (desk / "sorted" / "a.txt").read_text(encoding="utf-8") == "x"
+    assert "a.txt" in find_files.invoke({"pattern": "a.txt", "directory": str(desk)})
+
+
+def test_a_deleted_launch_folder_degrades_to_refusals(launched):
+    import shutil
+
+    shutil.rmtree(launched)
+    assert list_directory.invoke({"directory": "."}) == "Path is not a directory."
+    assert search_files.invoke({"pattern": "x"}) == "Path is not a directory."
+    with pytest.raises(FileNotFoundError):
+        read_file.invoke({"file_path": "notes/todo.md"})
+
+
+def test_walk_prunes_home_library_dependency_and_hidden_folders(monkeypatch, tmp_path, isolated_paths):
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    for d in ("Library/Caches", "proj/node_modules/pkg", "proj/.git", "proj/src", "Documents/Library"):
+        (home / d).mkdir(parents=True)
+    for f in ("Library/Caches/c.txt", "proj/node_modules/pkg/i.js", "proj/.git/HEAD",
+              "proj/src/main.py", "Documents/Library/kept.txt", "proj/.env"):
+        (home / f).write_text("needle", encoding="utf-8")
+    workspace.set_root(home)
+    found = find_files.invoke({"pattern": "*"})
+    assert "proj/src/main.py" in found and "Documents/Library/kept.txt" in found
+    assert "\nLibrary/" not in "\n" + found
+    for gone in ("Caches", "node_modules", ".git", ".env"):
+        assert gone not in found
+    hits = search_files.invoke({"pattern": "needle"})
+    assert "proj/src/main.py:1" in hits and "Caches" not in hits and "node_modules" not in hits
+
+
+def test_walk_budget_stops_and_says_so(monkeypatch, launched):
+    for i in range(5):
+        (launched / f"f{i}.txt").write_text("needle", encoding="utf-8")
+    monkeypatch.setattr(workspace, "WALK_MAX_ENTRIES", 3)
+    assert "stopped after 3 entries" in find_files.invoke({"pattern": "*.txt"})
+    assert "stopped after 3 entries" in search_files.invoke({"pattern": "needle"})
+
+
+def test_find_files_path_patterns(launched):
+    (launched / "notes" / "drafts").mkdir()
+    (launched / "notes" / "drafts" / "a.md").write_text("x", encoding="utf-8")
+    assert "notes/drafts/a.md" in find_files.invoke({"pattern": "notes/drafts/*.md"})
+    assert "notes/drafts/a.md" in find_files.invoke({"pattern": "**/drafts/*.md"})
+    assert "notes/drafts/" in find_files.invoke({"pattern": "drafts"})
+
+
+# ── robustness of resolve / normalize ───────────────────────────────────────────────────────
+
+
+def test_resolve_never_raises_on_an_invalid_path(root):
+    target, refusal = workspace.resolve("a\x00b")
+    assert refusal is not None and refusal.startswith("Invalid path:")
+
+
+def test_normalize_strips_only_a_matched_pair_of_quotes(root):
+    assert workspace.normalize("notes'").name == "notes'"
+    assert workspace.normalize("'x y'").name == "x y"
+    assert workspace.normalize('"x y"').name == "x y"

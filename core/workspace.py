@@ -66,7 +66,10 @@ def roots() -> list[Path]:
 def normalize(path) -> Path:
     """A user- or model-supplied path as an absolute resolved Path: surrounding quotes stripped
     (a dragged folder arrives quoted), `~` expanded, a relative path joined onto the root."""
-    raw = Path(str(path).strip().strip("\"'")).expanduser()
+    s = str(path).strip()
+    if len(s) >= 2 and s[0] == s[-1] and s[0] in "\"'":
+        s = s[1:-1]
+    raw = Path(s).expanduser()
     return (raw if raw.is_absolute() else root() / raw).resolve()
 
 
@@ -112,7 +115,10 @@ def resolve(path) -> "tuple[Path, str | None]":
     """The ONE containment check. Returns (target, refusal): `refusal` is None when the target is
     inside the root or an added folder, else the observation the model relays — it names the
     exact /add-dir command that would allow the path."""
-    target = normalize(path)
+    try:
+        target = normalize(path)
+    except (ValueError, RuntimeError, OSError) as exc:  # NUL byte, symlink loop: a refusal, never a raise
+        return Path(str(path)), f"Invalid path: {exc}"
     if any(_inside(target, r) for r in roots()):
         return target, None
     folder = target if target.is_dir() else target.parent
@@ -145,3 +151,47 @@ def remove(path) -> bool:
             del _extra[i]
             return True
     return False
+
+
+# ── the pruned walk (search_files, find_files, /init) ────────────────────────────────────────
+# Launched from ~, a search walks the whole home directory: macOS's ~/Library alone holds
+# hundreds of thousands of files, and dependency folders are noise, not the user's content.
+WALK_MAX_ENTRIES = 50_000
+_HEAVY_DIRS = frozenset({"node_modules", ".git", "__pycache__", ".venv", "venv", "Pods", "DerivedData"})
+
+
+class Walk:
+    """The entries under `top` in a stable (sorted) order, pruned: hidden entries (a dot-name —
+    the rule tools/files._hidden applies), heavy dependency/build folders anywhere, and a
+    `Library` folder directly under home. Yields files, and directories too when `dirs=True`, as
+    absolute Paths. Stops after WALK_MAX_ENTRIES entries and sets `capped`, so a caller can say
+    the result is partial."""
+
+    def __init__(self, top: Path, *, dirs: bool = False):
+        self.top = Path(top)
+        self.dirs = dirs
+        self.capped = False
+
+    def __iter__(self):
+        home = _home()
+        seen = 0
+        for dirpath, dirnames, filenames in os.walk(self.top):
+            here = Path(dirpath)
+            dirnames[:] = sorted(
+                d for d in dirnames
+                if not d.startswith(".") and d not in _HEAVY_DIRS
+                and not (d == "Library" and here == home)
+            )
+            entries = [here / d for d in dirnames] if self.dirs else []
+            entries += [here / f for f in sorted(filenames) if not f.startswith(".")]
+            for entry in entries:
+                if seen >= WALK_MAX_ENTRIES:
+                    self.capped = True
+                    return
+                seen += 1
+                yield entry
+
+
+def walk_note() -> str:
+    """The line a capped walk appends to its observation."""
+    return f"… stopped after {WALK_MAX_ENTRIES:,} entries — narrow the directory or pattern."

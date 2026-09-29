@@ -744,7 +744,7 @@ def test_write_preview_agrees_with_the_jail(isolated_paths):
     """A path the workspace jail will refuse must SAY so — a human who believes they are
     authorizing a write outside the workspace is being misinformed either way."""
     v = approval.write_verdict("../escape.txt", "x", True)
-    assert v["kind"] == "refused" and "outside the workspace" in (v["note"] or "")
+    assert v["kind"] == "refused" and "Outside the folders Saturn can reach" in (v["note"] or "")
     # …and the target reader takes the same jail decision (one resolver: tools/files._resolve).
     assert approval._workspace_target("../escape.txt")[1] == "refused"
 

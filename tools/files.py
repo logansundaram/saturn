@@ -1,9 +1,8 @@
 """
-Workspace file tools — read, write, edit, list, and search files inside the sandboxed workspace.
+File tools — read, write, edit, list, and search files inside the folders Saturn can reach.
 
-Every path is resolved against `config.path("workspace")` *per call* (so a live
-`/config paths.workspace` change is honored without a restart) and checked with `is_relative_to`
-so a tool call can never escape the workspace. The sandbox is the boundary; `write_file` and
+Every path is resolved per call through `core/workspace.resolve` — the launch folder plus any
+`/add-dir` folders — so a tool call can never reach anything else. `write_file` and
 `edit_file` are the mutating tools here (gated via registry.TOOL_RISK), and both snapshot the
 target's turn-start state first (stores/snapshots.py) so `/undo` can reverse them.
 
@@ -22,7 +21,7 @@ from pathlib import Path
 from textutil import truncate
 from tools.toolspec import register_tool
 
-from config import get_config
+from core import workspace as _ws
 from stores.snapshots import snapshot_file
 
 
@@ -46,25 +45,21 @@ NOT_FOUND_PREFIXES = (
 )
 
 
-def _resolve(rel_path: str, kind: str = "file"):
-    """Resolve a workspace-relative path inside the sandbox.
-
-    Returns (workspace, target, error): `error` is the refusal string when the path escapes the
-    workspace (then `target` must not be used), else None. Every tool below starts here — the
-    sandbox check exists exactly once."""
-    workspace = get_config().path("workspace")
-    target = (workspace / rel_path).resolve()
-    if not target.is_relative_to(workspace):
-        return workspace, target, f"Invalid {kind} path: outside the workspace."
-    return workspace, target, None
+def _resolve(path: str):
+    """Resolve a path the model gave against the folders Saturn can reach
+    (core/workspace.resolve — the ONE containment check). Returns (root, target, error): `error`
+    is the refusal string when the path is outside every reachable folder (then `target` must
+    not be used), else None. Every tool below starts here, and so does the approval preview."""
+    target, refusal = _ws.resolve(path)
+    return _ws.root(), target, refusal
 
 
-def _resolve_dir(rel_path: str):
+def _resolve_dir(path: str):
     """`_resolve` for tools that need an existing directory to walk."""
-    workspace, target, error = _resolve(rel_path, "directory")
+    root, target, error = _resolve(path)
     if error is None and not target.is_dir():
         error = "Path is not a directory."
-    return workspace, target, error
+    return root, target, error
 
 
 def _not_found_text(file_path: str) -> str:
@@ -89,7 +84,7 @@ def _not_found_text(file_path: str) -> str:
 
 @register_tool("read_only")
 def read_file(file_path: str):
-    """Reads the contents of a file in the workspace and returns it as a string. file_path is relative to the workspace root."""
+    """Reads the contents of a file and returns it as a string. file_path is relative to the working folder; an absolute or ~ path inside a folder Saturn can reach also works."""
     _, target_path, error = _resolve(file_path)
     if error:
         return error
@@ -110,8 +105,8 @@ def read_file(file_path: str):
 
 @register_tool("side_effecting")
 def write_file(file_path: str, content: str, overwrite: bool = True):
-    """Writes content to a file in the workspace. file_path is relative to the workspace root. content is the text to write. overwrite=True (default) replaces the file's contents; pass overwrite=False to append to the existing file instead. To change PART of an existing file, prefer edit_file — it can't accidentally drop the rest of the contents."""
-    workspace, target_path, error = _resolve(file_path)
+    """Writes content to a file. file_path is relative to the working folder; an absolute or ~ path inside a folder Saturn can reach also works. content is the text to write. overwrite=True (default) replaces the file's contents; pass overwrite=False to append to the existing file instead. To change PART of an existing file, prefer edit_file — it can't accidentally drop the rest of the contents."""
+    _, target_path, error = _resolve(file_path)
     if error:
         return error
     # Create the workspace and any intermediate directories so a nested path (e.g.
@@ -132,7 +127,7 @@ def write_file(file_path: str, content: str, overwrite: bool = True):
 
 @register_tool("read_only")
 def list_directory(directory: str = "."):
-    """Lists the files and folders inside a workspace directory. directory is a path relative to the workspace root. Use '.' to list the workspace root."""
+    """Lists the files and folders inside a directory. directory is relative to the working folder (an absolute or ~ path inside a reachable folder also works). Use '.' to list the working folder."""
     _, target_path, error = _resolve_dir(directory)
     if error:
         return error
@@ -148,14 +143,10 @@ def _hidden(name: str) -> bool:
     return name.startswith(".")
 
 
-def _has_hidden_part(rel) -> bool:
-    return any(_hidden(part) for part in rel.parts)
-
-
 @register_tool("side_effecting")
 def edit_file(file_path: str, old_string: str, new_string: str, replace_all: bool = False):
-    """Makes a targeted edit to an existing file in the workspace by replacing an exact text snippet. file_path is relative to the workspace root. old_string must match the file contents EXACTLY (including whitespace) and must be unique in the file — include surrounding lines to disambiguate, or pass replace_all=True to replace every occurrence. Prefer this over write_file when changing part of a file: it cannot accidentally drop the rest of the contents."""
-    workspace, target_path, error = _resolve(file_path)
+    """Makes a targeted edit to an existing file by replacing an exact text snippet. file_path is relative to the working folder; an absolute or ~ path inside a reachable folder also works. old_string must match the file contents EXACTLY (including whitespace) and must be unique in the file — include surrounding lines to disambiguate, or pass replace_all=True to replace every occurrence. Prefer this over write_file when changing part of a file: it cannot accidentally drop the rest of the contents."""
+    _, target_path, error = _resolve(file_path)
     if error:
         return error
     if not target_path.is_file():
@@ -210,7 +201,7 @@ def _is_binary(path) -> bool:
 
 @register_tool("read_only")
 def search_files(pattern: str, directory: str = ".", file_glob: str = "*"):
-    """Searches the CONTENTS of workspace files for a regular-expression pattern (case-insensitive) and returns matching lines as 'path:line_number: text'. Use this to find where something is mentioned without reading every file. directory is a workspace-relative path to search under ('.' = whole workspace); file_glob filters which files are searched by name (e.g. '*.md'). For finding files by NAME, use find_files instead."""
+    """Searches the CONTENTS of files for a regular-expression pattern (case-insensitive) and returns matching lines as 'path:line_number: text'. Use this to find where something is mentioned without reading every file. directory is relative to the working folder ('.' = the whole working folder); file_glob filters which files are searched by name (e.g. '*.md'). For finding files by NAME, use find_files instead."""
     workspace, target_path, error = _resolve_dir(directory)
     if error:
         return error
@@ -221,65 +212,73 @@ def search_files(pattern: str, directory: str = ".", file_glob: str = "*"):
 
     matches: list[str] = []
     truncated = False
-    # Walk lazily (sorted per directory for a stable order) instead of materializing + sorting
-    # the entire recursive tree up front — with `sorted(rglob("*"))` the match cap could only
-    # save file reads, never the full walk+sort of a large workspace.
-    for dirpath, dirnames, filenames in os.walk(target_path):
-        if truncated:
+    walk = _ws.Walk(target_path)
+    for path in walk:
+        if len(matches) >= _SEARCH_MAX_MATCHES:
+            truncated = True
             break
-        dirnames[:] = sorted(d for d in dirnames if not _hidden(d))
-        for fname in sorted(filenames):
+        if not fnmatch.fnmatch(path.name, file_glob):
+            continue
+        try:
+            if path.stat().st_size > _SEARCH_MAX_FILE_BYTES or _is_binary(path):
+                continue
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        rel = _ws.relative(path)
+        in_file = 0
+        for lineno, line in enumerate(text.splitlines(), 1):
+            if not rx.search(line):
+                continue
+            matches.append(f"{rel}:{lineno}: {truncate(line.strip(), _SEARCH_MAX_LINE)}")
+            in_file += 1
+            if in_file >= _SEARCH_MAX_PER_FILE:
+                matches.append(f"{rel}: … more matches in this file (capped at {_SEARCH_MAX_PER_FILE})")
+                break
             if len(matches) >= _SEARCH_MAX_MATCHES:
                 truncated = True
                 break
-            if _hidden(fname) or not fnmatch.fnmatch(fname, file_glob):
-                continue
-            path = Path(dirpath) / fname
-            try:
-                if path.stat().st_size > _SEARCH_MAX_FILE_BYTES or _is_binary(path):
-                    continue
-                text = path.read_text(encoding="utf-8", errors="replace")
-            except OSError:
-                continue
-            rel = path.relative_to(workspace).as_posix()
-            in_file = 0
-            for lineno, line in enumerate(text.splitlines(), 1):
-                if not rx.search(line):
-                    continue
-                matches.append(f"{rel}:{lineno}: {truncate(line.strip(), _SEARCH_MAX_LINE)}")
-                in_file += 1
-                if in_file >= _SEARCH_MAX_PER_FILE:
-                    matches.append(f"{rel}: … more matches in this file (capped at {_SEARCH_MAX_PER_FILE})")
-                    break
-                if len(matches) >= _SEARCH_MAX_MATCHES:
-                    truncated = True
-                    break
+        if truncated:
+            break
 
     if not matches:
-        return f"No matches for /{pattern}/ in {directory!r} (files matching {file_glob!r})."
+        out = f"No matches for /{pattern}/ in {directory!r} (files matching {file_glob!r})."
+        return out + ("\n" + _ws.walk_note() if walk.capped else "")
     out = "\n".join(matches)
     if truncated:
         out += f"\n… stopped at {_SEARCH_MAX_MATCHES} matches — narrow the pattern, directory, or file_glob."
+    elif walk.capped:
+        out += "\n" + _ws.walk_note()
     return out
 
 
 @register_tool("read_only")
 def find_files(pattern: str, directory: str = "."):
-    """Finds workspace files by NAME using a glob pattern and returns their workspace-relative paths. A bare pattern like '*.md' or 'report*' searches recursively under directory; a pattern with '/' (e.g. 'notes/*.txt' or '**/drafts/*.md') is matched as a path. Use this to locate a file when the exact path is unknown; for searching file CONTENTS, use search_files."""
+    """Finds files and folders by NAME using a glob pattern and returns their paths relative to the working folder. A bare pattern like '*.md' or 'report*' searches recursively under directory; a pattern with '/' (e.g. 'notes/*.txt' or '**/drafts/*.md') is matched as a path. Use this to locate a file when the exact path is unknown; for searching file CONTENTS, use search_files."""
     workspace, target_path, error = _resolve_dir(directory)
     if error:
         return error
-    # A bare name pattern means "anywhere under here" — that's what the asker wants from
-    # '*.md'. A pattern containing a path separator is taken literally relative to directory.
-    paths = target_path.rglob(pattern) if "/" not in pattern else target_path.glob(pattern)
-    results = sorted(
-        p.relative_to(workspace).as_posix() + ("/" if p.is_dir() else "")
-        for p in paths
-        if not _has_hidden_part(p.relative_to(target_path))
-    )
+    # A bare name pattern means "anywhere under here" — that's what the asker wants from '*.md'.
+    # A pattern containing '/' matches the path relative to `directory`; a leading '**/' also
+    # matches at the top level (glob's zero-directory reading).
+    walk = _ws.Walk(target_path, dirs=True)
+    results = []
+    for p in walk:
+        rel_to_dir = p.relative_to(target_path).as_posix()
+        if "/" in pattern:
+            hit = fnmatch.fnmatch(rel_to_dir, pattern) or (
+                pattern.startswith("**/") and fnmatch.fnmatch(rel_to_dir, pattern[3:]))
+        else:
+            hit = fnmatch.fnmatch(p.name, pattern)
+        if hit:
+            results.append(_ws.relative(p) + ("/" if p.is_dir() else ""))
+    results.sort()
     if not results:
-        return f"No files matching {pattern!r} under {directory!r}."
+        out = f"No files matching {pattern!r} under {directory!r}."
+        return out + ("\n" + _ws.walk_note() if walk.capped else "")
     if len(results) > _FIND_MAX_RESULTS:
         extra = len(results) - _FIND_MAX_RESULTS
         results = results[:_FIND_MAX_RESULTS] + [f"… {extra} more — narrow the pattern."]
+    if walk.capped:
+        results.append(_ws.walk_note())
     return "\n".join(results)

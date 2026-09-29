@@ -62,6 +62,17 @@ def _reset_grant_lifecycle():
 
 
 @pytest.fixture(autouse=True)
+def _reset_workspace():
+    """core/workspace holds the launch folder and the /add-dir folders as process state —
+    clear it around every test so a root set in one test never leaks into another."""
+    from core import workspace
+
+    workspace.reset()
+    yield
+    workspace.reset()
+
+
+@pytest.fixture(autouse=True)
 def _no_prefix_priming(monkeypatch):
     """The idle prefix primes (core/prime.py) are real model requests fired from background
     threads at startup and after each turn — never under tests (no test may reach a model).

@@ -121,10 +121,15 @@ def resolve(path) -> "tuple[Path, str | None]":
         return Path(str(path)), f"Invalid path: {exc}"
     if any(_inside(target, r) for r in roots()):
         return target, None
-    folder = target if target.is_dir() else target.parent
     reach = ", ".join(display(r) for r in roots())
-    return target, (f"Outside the folders Saturn can reach ({reach}). "
-                    f"Ask the user to run /add-dir {display(folder)} to allow it.")
+    refusal = f"Outside the folders Saturn can reach ({reach})."
+    # Suggest a folder /add-dir will accept: the nearest ancestor that exists, never the disk root.
+    folder = target
+    while not folder.is_dir() and folder.parent != folder:
+        folder = folder.parent
+    if folder.is_dir() and not _is_fs_root(folder):
+        refusal += f" Ask the user to run /add-dir {display(folder)} to allow it."
+    return target, refusal
 
 
 def add(path) -> "tuple[Path, bool]":

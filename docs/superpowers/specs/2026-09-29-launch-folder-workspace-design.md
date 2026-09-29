@@ -56,8 +56,10 @@ around every test, so a root set in one test never leaks into another.
 2. Resolve symlinks and `..` (`Path.resolve()`).
 3. The target must be inside one of `roots()` (`is_relative_to`). Otherwise the refusal is:
    `Outside the folders Saturn can reach ({roots as display paths}). Ask the user to run
-   /add-dir {folder} to allow it.` — `{folder}` is the requested path itself when it is a
-   directory, else its parent folder.
+   /add-dir {folder} to allow it.` — `{folder}` is the requested path itself when it is an
+   existing directory, else its nearest existing ancestor. When that would be the filesystem
+   root (which `/add-dir` refuses), the second sentence is dropped and the refusal ends after
+   the reach list.
 
 The refusal is a tool observation, so the model relays it. The containment check exists once,
 here. The file tools' `_resolve` becomes a thin wrapper over it.
@@ -127,6 +129,7 @@ Both live in a new `commands/workspace_dirs.py`, registered with `@command`, and
 - `set_root` never fails: an unreadable or vanished cwd falls back to home, then to the
   configured workspace, and the banner says which was used.
 - `/add-dir` refusals are printed, never raised.
+- read_file and search_files are untrusted (quarantine-scanned): the launch folder holds downloaded and third-party files.
 
 ## Testing
 

@@ -419,3 +419,18 @@ def test_the_loop_benchmark_never_plants_in_the_launch_folder(monkeypatch, launc
     benchmark.run_loop_benchmark(object())
     assert not list(launched.glob("bench_*"))
     assert workspace.root() == get_config().path("workspace")
+
+
+def test_refusal_names_the_nearest_existing_folder(root, tmp_path):
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    _t, refusal = workspace.resolve(str(outside / "reports" / "deep" / "q3.md"))
+    assert f"/add-dir {workspace.display(outside)} to allow it." in refusal
+
+
+def test_refusal_at_the_filesystem_root_has_no_add_dir_sentence(root):
+    _t, refusal = workspace.resolve("/definitely-not-here.txt")
+    assert refusal.startswith("Outside the folders Saturn can reach (")
+    assert "/add-dir" not in refusal and refusal.endswith(").")
+    _t, refusal = workspace.resolve("/")
+    assert "/add-dir" not in refusal

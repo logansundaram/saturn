@@ -3,7 +3,6 @@ of core/plan_context.py, kept after the plan engine's removal (2026-09-27)."""
 
 from __future__ import annotations
 
-from config import get_config
 
 # The filesystem write tools — the one classification the answer trailers and memory review
 # still key on (which calls wrote files).
@@ -21,15 +20,17 @@ def grounding_parts(state) -> "tuple[str, str]":
 
 
 def clean(text) -> str:
-    """Normalize an observation: absolute workspace paths (run_shell output routinely embeds
-    them) collapse to workspace-relative so prompts and the rail stay readable and
+    """Normalize an observation: absolute paths under the working folder (run_shell output
+    routinely embeds them) collapse to relative ones so prompts and the rail stay readable and
     machine-independent. Best-effort; unknown shapes pass through."""
     s = str(text)
     try:
-        raw = str(get_config().path("workspace"))
+        from core import workspace
+
+        raw = str(workspace.root())
     except Exception:
         return s
     for form in {raw, raw.replace("\\", "/")}:
         if form:
-            s = s.replace(form + "/", "").replace(form + "\\", "").replace(form, "workspace")
+            s = s.replace(form + "/", "").replace(form + "\\", "").replace(form, ".")
     return s

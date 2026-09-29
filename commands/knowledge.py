@@ -508,18 +508,17 @@ every turn — keep it short and current.
 
 
 def _workspace_listing(workspace: Path) -> list[str]:
-    """Workspace-relative paths, capped. Best-effort — unreadable entries are skipped."""
+    """Paths relative to `workspace`, capped, over the pruned walk (core/workspace.Walk) — run
+    from home, a sorted rglob would crawl all of ~/Library first. Best-effort."""
+    from core import workspace as _ws
+
     out = []
     try:
-        for p in sorted(workspace.rglob("*")):
+        for p in _ws.Walk(workspace, dirs=True):
             if len(out) >= _MAX_LISTING:
                 out.append("… (listing capped)")
                 break
-            try:
-                rel = p.relative_to(workspace).as_posix()
-            except ValueError:
-                continue
-            out.append(rel + ("/" if p.is_dir() else ""))
+            out.append(p.relative_to(workspace).as_posix() + ("/" if p.is_dir() else ""))
     except OSError:
         pass
     return out
@@ -527,16 +526,13 @@ def _workspace_listing(workspace: Path) -> list[str]:
 
 @command(
     "init",
-    "Survey the workspace and draft SATURDAY.md (standing per-workspace instructions).",
+    "Survey the working folder and draft SATURDAY.md (standing per-folder instructions).",
     usage="/init [--force]",
     details="""
-The workspace is Saturn's sandboxed working area — the directory the file tools read and write,
-at paths.workspace in config.yaml (database/workspace under the install by default). It is NOT
-the directory you launched Saturn from, and /init never touches your current directory. To get
-real files into Saturn's view: ingest them into the knowledge base with /docs add <path>, drop a
-file onto the prompt (drag-and-drop offers ingest/attach), or copy them into the workspace.
+The working folder is the folder you launched Saturn from — the directory the file tools read
+and write and the shell runs in. /add-dir reaches another folder for the session.
 
-/init creates SATURDAY.md at that workspace root — the per-workspace instructions file (the
+/init creates SATURDAY.md in the working folder — the per-workspace instructions file (the
 CLAUDE.md equivalent). The grounding node loads it into context EVERY turn, so whatever it says
 is standing guidance for the agent: what this workspace is for, its layout, your conventions.
 
@@ -553,10 +549,10 @@ preference to SATURDAY.md when both exist.
 """,
 )
 def _init(ctx, args):
-    from config import get_config
+    from core import workspace as _ws
 
     force = any(a in ("--force", "-f") for a in args)
-    workspace = get_config().path("workspace")
+    workspace = _ws.root()
     workspace.mkdir(parents=True, exist_ok=True)
     target = workspace / "SATURDAY.md"
     if target.exists() and not force:
@@ -592,11 +588,7 @@ def _init(ctx, args):
 
     target.write_text(content or _TEMPLATE, encoding="utf-8")
     kind = "drafted from the workspace contents" if content else "template"
-    # Full absolute path on purpose: the workspace is Saturn's sandboxed area, not the cwd a
-    # terminal user expects — a bare basename here left people unable to find the file they
-    # were just told to edit.
     _print(f"  wrote {target} ({kind}).")
-    _print("  this is Saturn's sandboxed workspace, not your current directory.")
     _print("  it now loads into context every turn — open it and make it yours.")
 
 

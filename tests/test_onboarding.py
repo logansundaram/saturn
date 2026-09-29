@@ -150,7 +150,6 @@ def test_init_success_prints_absolute_workspace_path(isolated_paths, capsys):
     target = get_config().path("workspace") / "SATURDAY.md"
     assert target.exists()
     assert str(target) in out  # the ABSOLUTE path, not a bare basename
-    assert "sandboxed workspace, not your current directory" in out
 
 
 def test_init_existing_file_refusal_also_prints_the_path(isolated_paths, capsys):

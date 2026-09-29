@@ -272,3 +272,65 @@ def test_walk_survives_a_dangling_symlink(launched):
     (launched / "dead.txt").symlink_to(launched / "missing.txt")
     find_files.invoke({"pattern": "*.txt"})
     search_files.invoke({"pattern": "milk"})
+
+
+# ── the shell, grounding, prompt, cleanup and /init ────────────────────────────────────────
+
+
+def test_run_shell_runs_in_the_launch_folder(launched):
+    from tools.shell import run_shell
+
+    out = run_shell.invoke({"command": "pwd -P"})
+    assert out.startswith("[exit code 0]") and str(launched) in out
+
+
+def test_grounding_names_the_working_folder_and_reads_its_saturn_md(launched, tmp_path, monkeypatch):
+    from nodes.ground import stable_grounding
+
+    monkeypatch.setenv("SATURN_HOME", str(tmp_path / "saturn_home"))  # no global SATURN.md
+    (launched / "SATURN.md").write_text("be terse", encoding="utf-8")
+    desk = tmp_path / "Desktop"
+    desk.mkdir()
+    workspace.add(desk)
+    text = stable_grounding()
+    section = text.split("### Working folder\n", 1)[1].split("\n### ", 1)[0]
+    assert workspace.display(launched) in section
+    assert workspace.display(desk) in section and "/add-dir" in section
+    assert "be terse" in text
+
+
+def test_clean_collapses_the_launch_folder(launched):
+    from core.context import clean
+
+    assert clean(f"wrote {launched}/notes/a.txt in {launched}") == "wrote notes/a.txt in ."
+
+
+def test_agent_prompt_points_at_the_working_folder():
+    from core.messages import agent_sys_msg
+
+    text = agent_sys_msg().content
+    assert "working folder" in text and "/add-dir" in text
+    assert "Workspace files" not in text
+
+
+def test_init_drafts_into_the_launch_folder(isolated_paths, tmp_path):
+    import commands  # noqa: F401 — registers every command
+    from commands._framework import CommandContext, dispatch
+
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    workspace.set_root(empty)
+    dispatch("/init", CommandContext(state={}, make_initial_state=dict, db_path=""))
+    assert (empty / "SATURDAY.md").is_file()
+
+
+def test_init_listing_uses_the_pruned_walk(monkeypatch, tmp_path):
+    from commands.knowledge import _workspace_listing
+
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    (home / "Library" / "Caches").mkdir(parents=True)
+    (home / "Library" / "Caches" / "c").write_text("x", encoding="utf-8")
+    (home / "notes.md").write_text("x", encoding="utf-8")
+    listing = _workspace_listing(home.resolve())
+    assert "notes.md" in listing and not any("Library" in p for p in listing)

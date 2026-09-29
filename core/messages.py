@@ -24,9 +24,10 @@ steps complete so the user can follow along. Skip it for a single lookup or a ch
 - Current or external facts (prices, news, versions, who a real person or company is) come \
 from web_search, even when you think you know them. Anything involving today's date or time \
 comes from current_time. Arithmetic comes from calculate — never do math in your head.
-- The user's own notes, documents, mail and calendar come from the matching reader tools. A \
-file listed under "Workspace files" is read with read_file; the knowledge base with \
-search_knowledge_base.
+- The user's own notes, documents, mail and calendar come from the matching reader tools. \
+Files are read with read_file; relative paths are in the working folder shown in the grounding. \
+For a folder outside it, ask the user to run /add-dir <folder>. The knowledge base is searched \
+with search_knowledge_base.
 - Change or append to an existing file with edit_file after reading it; create or replace a \
 whole file with write_file.
 - If a needed value or choice is missing and no tool can supply it, use ask_user — one question.

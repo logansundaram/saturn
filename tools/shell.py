@@ -9,9 +9,8 @@ safety boundary here, NOT a path jail. This is the design the roadmap calls "a `
 run_shell safe-by-default": the risk tier does the guarding, the same way write_file's overwrite
 is made safe by the gate (gotcha #2) rather than by being forbidden.
 
-Working directory — every call runs inside `config.path("workspace")` by default, resolved per
-call so a live `/config paths.workspace` change is honored, matching the file tools' sandbox
-(files.py). A shell can of course `cd` out of it; this is a sensible default, not a hard jail.
+Working directory — every call runs inside the working folder (core/workspace.root(): the folder Saturn was
+launched from). A shell can of course `cd` out of it; this is a sensible default, not a hard jail.
 
 The raw command line is handed to /bin/sh so the agent writes shell syntax and chains with the
 shell's own operators.
@@ -112,16 +111,18 @@ def _format(returncode: int, stdout: str, stderr: str) -> str:
 
 @register_tool("destructive")
 def run_shell(command: str):
-    """Runs a shell command on the host machine and returns its combined stdout+stderr plus the exit code. Use this for anything no other tool covers: running scripts or quick one-off code, build/test commands, git, package managers, inspecting the system. `command` is a single command line interpreted by /bin/sh — chain steps with the shell's own operators (`;`, `&&`, `|`). It runs inside the workspace directory by default and is terminated if it outlives the shell timeout — never start a server or watcher with it. This is a powerful, irreversible action and always requires user approval; do not assume it succeeded — check the returned exit code."""
+    """Runs a shell command on the host machine and returns its combined stdout+stderr plus the exit code. Use this for anything no other tool covers: running scripts or quick one-off code, build/test commands, git, package managers, inspecting the system. `command` is a single command line interpreted by /bin/sh — chain steps with the shell's own operators (`;`, `&&`, `|`). It runs inside the working folder and is terminated if it outlives the shell timeout — never start a server or watcher with it. This is a powerful, irreversible action and always requires user approval; do not assume it succeeded — check the returned exit code."""
     timeout = _timeout()
     try:
-        workspace = get_config().path("workspace")
-        workspace.mkdir(parents=True, exist_ok=True)
+        from core import workspace
+
+        cwd = workspace.root()
+        cwd.mkdir(parents=True, exist_ok=True)  # the configured fallback may not exist yet
 
         # Hand the raw command line to /bin/sh (shell=True) so native syntax works.
         popen_kwargs = dict(
             shell=True,
-            cwd=str(workspace),
+            cwd=str(cwd),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,

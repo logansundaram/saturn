@@ -5,7 +5,6 @@ from pathlib import Path
 import diag
 
 from core.state import AgentState
-from config import get_config
 from textutil import clip
 from stores.memory_registry import memory_context_split, mark_used
 from stores.document_registry import read_documents_manifest
@@ -77,7 +76,9 @@ def _read_capped(path: Path) -> str:
 def _read_instructions() -> "tuple[str, str]":
     """The workspace instructions as (file name, text) — SATURN.md first, the old SATURDAY.md
     when only it exists; ("", "") when neither does."""
-    workspace = get_config().path("workspace")
+    from core import workspace as _ws
+
+    workspace = _ws.root()
     for name in _INSTRUCTIONS_FILES:
         text = _read_capped(workspace / name)
         if text:
@@ -92,12 +93,27 @@ def _read_global_instructions() -> str:
         diag.log(f"grounding_node : global SATURN.md unreadable: {exc}")
         return ""
 
+def _working_folder_section() -> str:
+    """Where Saturn is working (core/workspace): the launch folder and the session's /add-dir
+    folders. In the STABLE half — the root is fixed for the session, so the prefix cache holds;
+    /add-dir and /rm-dir miss it once, like editing SATURN.md."""
+    from core import workspace as _ws
+
+    lines = [f"You are working in {_ws.display(_ws.root())}. Relative paths resolve here."]
+    extra = _ws.extra()
+    if extra:
+        lines.append("Also reachable this session (added with /add-dir): "
+                     + ", ".join(_ws.display(p) for p in extra))
+    lines.append("Any other folder needs the user to run /add-dir <folder> first.")
+    return "### Working folder\n" + "\n".join(lines)
+
+
 def stable_grounding() -> str:
     """The query-independent half of the grounding block — what the idle prime re-sends between
     turns. Byte-identical to the `context_stable` the next turn's grounding_node builds unless
     the knowledge base, the instructions files or the always-loaded memory layers changed
     in between (in which case the prime simply misses and the turn prefills it, as before)."""
-    sections = ["## Grounding context"]
+    sections = ["## Grounding context", _working_folder_section()]
 
     global_instructions = _read_global_instructions()
     if global_instructions:

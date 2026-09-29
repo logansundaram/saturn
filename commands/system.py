@@ -32,7 +32,7 @@ from commands._session import write_autosave
 # can't silently vanish from /help.
 _GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("conversation", ("clear", "resume")),
-    ("knowledge & workspace", ("docs", "init", "memory", "undo")),
+    ("knowledge & workspace", ("add-dir", "docs", "init", "memory", "rm-dir", "undo")),
     ("trust & control", ("policy", "privacy")),
     ("observability", ("mcp", "models", "tools", "trace")),
     ("system", ("config", "help", "notify", "quit", "update")),

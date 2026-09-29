@@ -334,3 +334,46 @@ def test_init_listing_uses_the_pruned_walk(monkeypatch, tmp_path):
     (home / "notes.md").write_text("x", encoding="utf-8")
     listing = _workspace_listing(home.resolve())
     assert "notes.md" in listing and not any("Library" in p for p in listing)
+
+
+# ── /add-dir and /rm-dir ────────────────────────────────────────────────────────────────────
+
+
+def _dispatch(line):
+    import commands  # noqa: F401
+    from commands._framework import CommandContext, dispatch
+
+    dispatch(line, CommandContext(state={}, make_initial_state=dict, db_path=""))
+
+
+def test_add_dir_adds_lists_and_rm_dir_removes(launched, tmp_path, capsys):
+    desk = tmp_path / "My Desk"
+    desk.mkdir()
+    _dispatch(f"/add-dir {desk}")
+    assert "added" in capsys.readouterr().out
+    assert workspace.extra() == [desk.resolve()]
+    _dispatch("/add-dir")
+    out = capsys.readouterr().out
+    assert workspace.display(launched) in out and workspace.display(desk) in out
+    _dispatch(f'/rm-dir "{desk}"')
+    assert "removed" in capsys.readouterr().out
+    assert workspace.extra() == []
+
+
+def test_add_dir_and_rm_dir_refusals(launched, tmp_path, capsys):
+    _dispatch(f"/add-dir {tmp_path / 'nope'}")
+    assert "not a folder" in capsys.readouterr().out
+    _dispatch(f"/rm-dir {launched}")
+    assert "started in" in capsys.readouterr().out
+    _dispatch(f"/rm-dir {tmp_path}")
+    assert "was not added" in capsys.readouterr().out
+    _dispatch("/rm-dir")
+    assert "usage" in capsys.readouterr().out.lower()
+    assert workspace.roots() == [launched]
+
+
+def test_both_commands_answer_help(capsys):
+    _dispatch("/add-dir --help")
+    assert "/add-dir" in capsys.readouterr().out
+    _dispatch("/rm-dir --help")
+    assert "/rm-dir" in capsys.readouterr().out

@@ -35,6 +35,7 @@ _COMMAND_MODULES = [
     "runtime",       # /tools, /models, /mcp
     "system",        # /help, /quit, /update
     "trace",         # /trace (incl. the answer/source provenance subviews)
+    "workspace_dirs",  # /add-dir, /rm-dir — folders beyond the launch folder
 ]
 
 for _mod in _COMMAND_MODULES:

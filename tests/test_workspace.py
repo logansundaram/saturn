@@ -249,3 +249,26 @@ def test_normalize_strips_only_a_matched_pair_of_quotes(root):
     assert workspace.normalize("notes'").name == "notes'"
     assert workspace.normalize("'x y'").name == "x y"
     assert workspace.normalize('"x y"').name == "x y"
+
+
+# ── symlinks in the walk ────────────────────────────────────────────────────────────────────
+
+
+def test_walk_skips_symlinks_pointing_outside(launched, tmp_path):
+    (tmp_path / "secret").mkdir()
+    (tmp_path / "secret" / "key.txt").write_text("needle", encoding="utf-8")
+    (launched / "link.txt").symlink_to(tmp_path / "secret" / "key.txt")
+    assert "link.txt" not in search_files.invoke({"pattern": "needle"})
+    assert "link.txt" not in find_files.invoke({"pattern": "*.txt"})
+
+
+def test_walk_keeps_symlinks_pointing_inside(launched):
+    (launched / "inside.txt").symlink_to(launched / "notes" / "todo.md")
+    assert "inside.txt" in find_files.invoke({"pattern": "inside.txt"})
+    assert "inside.txt:1" in search_files.invoke({"pattern": "milk"})
+
+
+def test_walk_survives_a_dangling_symlink(launched):
+    (launched / "dead.txt").symlink_to(launched / "missing.txt")
+    find_files.invoke({"pattern": "*.txt"})
+    search_files.invoke({"pattern": "milk"})

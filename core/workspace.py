@@ -172,6 +172,15 @@ class Walk:
         self.dirs = dirs
         self.capped = False
 
+    @staticmethod
+    def _reachable(entry: Path) -> bool:
+        """A symlink is listed only when its resolved target is inside a reachable folder."""
+        try:
+            resolved = entry.resolve()
+        except (OSError, RuntimeError):
+            return False
+        return any(_inside(resolved, r) for r in roots())
+
     def __iter__(self):
         home = _home()
         seen = 0
@@ -185,6 +194,8 @@ class Walk:
             entries = [here / d for d in dirnames] if self.dirs else []
             entries += [here / f for f in sorted(filenames) if not f.startswith(".")]
             for entry in entries:
+                if entry.is_symlink() and not self._reachable(entry):
+                    continue
                 if seen >= WALK_MAX_ENTRIES:
                     self.capped = True
                     return

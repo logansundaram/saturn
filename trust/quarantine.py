@@ -49,16 +49,18 @@ from textutil import clip
 
 _MODES = ("off", "warn", "gate")
 
-# Tools whose observations cross the trust boundary. Workspace file tools are deliberately NOT
-# untrusted — the workspace is the user's own data; the boundary is content that arrived from
-# outside (the web, remote servers, the ingested corpus which may hold downloaded documents).
+# Tools whose observations cross the trust boundary: the web, remote servers, the ingested corpus,
+# and — since 2026-09-29 — the file tools that return file CONTENTS (read_file, search_files). The
+# workspace is the launch folder (all of home when launched from ~), which holds downloaded and
+# third-party files, so what they return is data, not the user's own words. list_directory and
+# find_files return names only and stay trusted.
 #
 # The classification is DECLARED AT REGISTRATION (@register_tool(untrusted=True) /
 # register_tool_object(untrusted=True)) and PUSHED here by tools/registry at startup and by
 # /mcp reload — quarantine stays a leaf (imports config + textutil only), so the registry pushes
 # instead of being imported. The hard-coded set below is only the fallback for code paths that
 # never load the registry (unit tests, partial imports); with a push in effect it is unused.
-UNTRUSTED_TOOLS = {"web_search", "web_extract", "search_knowledge_base"}
+UNTRUSTED_TOOLS = {"web_search", "web_extract", "search_knowledge_base", "read_file", "search_files"}
 _UNTRUSTED_PREFIX = "mcp_"  # every remote MCP tool (fallback-mode heuristic)
 _UNTRUSTED_OVERRIDE: "set[str] | None" = None  # the registry-pushed set; None = fallback mode
 

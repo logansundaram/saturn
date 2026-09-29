@@ -82,7 +82,7 @@ def _not_found_text(file_path: str) -> str:
     return text
 
 
-@register_tool("read_only")
+@register_tool("read_only", untrusted=True)
 def read_file(file_path: str):
     """Reads the contents of a file and returns it as a string. file_path is relative to the working folder; an absolute or ~ path inside a folder Saturn can reach also works."""
     _, target_path, error = _resolve(file_path)
@@ -199,7 +199,7 @@ def _is_binary(path) -> bool:
         return True
 
 
-@register_tool("read_only")
+@register_tool("read_only", untrusted=True)
 def search_files(pattern: str, directory: str = ".", file_glob: str = "*"):
     """Searches the CONTENTS of files for a regular-expression pattern (case-insensitive) and returns matching lines as 'path:line_number: text'. Use this to find where something is mentioned without reading every file. directory is relative to the working folder ('.' = the whole working folder); file_glob filters which files are searched by name (e.g. '*.md'). For finding files by NAME, use find_files instead."""
     workspace, target_path, error = _resolve_dir(directory)

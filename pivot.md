@@ -252,7 +252,10 @@ an item here subsumes one of those it says so._
    to test primality — eight passes). Trust benchmark: 4b gate 3/3 · injection 2/2 · memory
    supersession MISSED (it called `recall` with `remember`'s arguments seven times, hygiene
    bounced each, then claimed the update — the incidents note disclosed it); 9b all pass. A
-   4b-only miss is a model limit; confirm on the 9b before changing the engine.
+   4b-only miss is a model limit; confirm on the 9b before changing the engine. Later that
+   evening, with the rounds rule in the prompt and the foreign-arguments refusal: 4b loop
+   20/25 (the new `multi_dependent` passes: read in pass 1, write in pass 2), 4b trust all
+   pass including supersession.
 2. **`_llm_input` becomes a budgeted prompt projection.** Today it maps state to the prompt and
    only strips trailers, so ten reads on a 32k window push the system prompt off the front. Give
    the projection a token budget: an observation a later pass has already moved past collapses

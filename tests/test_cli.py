@@ -531,6 +531,19 @@ def test_loop_grade_tool_shape_tags():
         task, _loop_entry(tools_called=[], iterations=1, response="It is 7731."))
 
 
+def test_loop_grade_dependent_calls_must_wait_a_round():
+    import benchmark
+
+    task = {"id": "t", "shape": "multi", "query": "q", "tools": {"read_file", "write_file"},
+            "required": [{"read_file"}, {"write_file"}], "max_passes": 4,
+            "ordered": ("read_file", "write_file")}
+    ok = _loop_entry(tools_called=["read_file", "write_file"], iterations=3, response="done")
+    ok["tool_passes"] = [("read_file", 1), ("write_file", 2)]
+    assert benchmark.grade_loop_task(task, ok) == []
+    together = dict(ok, tool_passes=[("read_file", 1), ("write_file", 1)])
+    assert "same_pass:read_file+write_file" in benchmark.grade_loop_task(task, together)
+
+
 def test_loop_grade_phantom_stub_capped_error():
     import benchmark
     from nodes.agent import NO_ANSWER_TEXT

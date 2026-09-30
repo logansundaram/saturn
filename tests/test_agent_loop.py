@@ -284,6 +284,29 @@ def test_hygiene_unknown_tool_and_missing_args(monkeypatch):
     assert agent.route_after_agent({"messages": out["messages"]}) == "agent"
 
 
+def test_hygiene_refuses_arguments_that_belong_to_another_tool(monkeypatch):
+    """`recall(fact=…, replaces=…)` is `remember`'s call under the wrong name (the 4b's
+    supersession miss, 2026-09-29): recall has no required arguments, so coercion used to
+    drop the foreign ones and RUN it. Refused with remember's shape instead; a call whose
+    arguments fit its own tool is never second-guessed."""
+    from core.tool_args import tool_for_args
+    from nodes import agent
+
+    assert tool_for_args("recall", {"fact": "I live in Berlin", "replaces": "#2"}) == "remember"
+    assert tool_for_args("recall", {"query": "Berlin"}) is None
+    assert tool_for_args("recall", {}) is None
+    assert tool_for_args("read_file", {"path": "a.txt"}) is None  # an alias of its own arg
+    assert tool_for_args("mcp_x_y", {"fact": "z"}) is None  # not our schema to police
+
+    monkeypatch.setattr(agent, "_generate", lambda i, *, tools, think=False: AIMessage(
+        content="", tool_calls=[_call("recall", {"fact": "I live in Berlin", "replaces": "#2"}, "a")]))
+    out = agent.agent_node(_state([HumanMessage(content="q")]))
+    tm = out["messages"][-1]
+    assert isinstance(tm, ToolMessage) and tm.tool_call_id == "a"
+    assert "belong to remember" in tm.content and "remember(fact=" in tm.content
+    assert agent.route_after_agent({"messages": out["messages"]}) == "agent"
+
+
 def test_hygiene_malformed_call_gets_a_schema_hint(monkeypatch):
     """A small model's tool call whose arguments were not valid JSON arrives as an
     invalid_tool_call (LangChain refuses non-dict args on tool_calls): refused with the

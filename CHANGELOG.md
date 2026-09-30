@@ -41,6 +41,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
   `hooks.yaml`, the live `config.yaml` and `permissions.json`, even when approved — a write to
   one could loosen the gate or plant an ungated command. Launched from `~`, they sit inside
   the working folder, so this refusal is what keeps them out.
+- **The prompt explains the rounds.** The agent is told it works in rounds — the tools it
+  calls now run, the results come back, then it decides the next call — so "read the file,
+  then email whoever it names" reads the file first and writes the mail after, instead of
+  guessing the address in the same pass. The loop benchmark has a task for this shape
+  (`multi_dependent`, graded `same_pass` when the dependent call didn't wait).
+- **Arguments that belong to another tool are refused.** `recall(fact=…, replaces=…)` is
+  `remember`'s call under the wrong name; it used to run as a bare `recall()`. The model now
+  gets "those arguments belong to remember" with the right shape.
 - **`/trace why` shows what a thinking pass thought.** The reasoning of a pass that thought
   (after a failed tool call) is kept in the run's record and shown under that pass.
 

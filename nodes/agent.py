@@ -49,7 +49,7 @@ from core.llms import stream as llm_stream
 from core.messages import agent_sys_msg
 from core.pause import get_pause_controller
 from core.state import STEER_PREFIX, AgentState, is_steer_message, is_turn_start, issuing_message
-from core.tool_args import coerce_args, schema_hint
+from core.tool_args import coerce_args, schema_hint, tool_for_args
 from core.sources import build_sources
 from textutil import SOURCES_HEADER, clip, fmt_args, split_sources_footer
 
@@ -303,6 +303,10 @@ def _hygiene(call: dict, rounds: list, malformed: bool = False) -> "tuple[dict, 
     if malformed:
         return refuse("Error: " + schema_hint(name, "the arguments were not valid JSON"))
     raw = call.get("args")
+    other = tool_for_args(name, raw)
+    if other:
+        return refuse("Error: " + schema_hint(
+            other, f"those arguments belong to {other}, not {name}; the call was not run"))
     args = coerce_args(name, raw)
     if args is None:
         problem = ("the arguments were not an object" if not isinstance(raw, dict)

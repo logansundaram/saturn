@@ -200,6 +200,7 @@ def tool_node(state: AgentState):
             "result": _preview(observation),
             "dur": dur,
             "ok": ok,
+            "pass": state.get("iteration"),  # the agent pass that issued it (benchmark ordering)
         }
         if q_kinds:
             event["quarantine"] = q_kinds

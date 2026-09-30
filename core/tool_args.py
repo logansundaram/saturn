@@ -151,6 +151,29 @@ def coerce_args(name: str, args) -> Optional[dict]:
 
 
 
+def tool_for_args(name: str, args) -> Optional[str]:
+    """The OTHER tool whose required arguments `args` supplies when none of them fits `name` —
+    the small-model slip `recall(fact=…, replaces=…)` for `remember`. None when the arguments
+    fit `name` (or nothing else), so a legitimate call is never second-guessed. A no-required-
+    args tool like recall would otherwise swallow foreign arguments silently and run."""
+    if not isinstance(args, dict) or not args:
+        return None
+    keys = {k.lower() for k in args if isinstance(k, str)}
+    own = _ARG_ALIASES.get(name)
+    if own is None:
+        return None
+    own_names = {a for names in own.values() for a in names}
+    own_names |= {n for opt in _OPTIONAL.get(name, []) for n in ([opt] if isinstance(opt, str) else opt)}
+    if keys & own_names:
+        return None
+    for other, required in _ARG_ALIASES.items():
+        if other == name or not required:
+            continue
+        if all(any(a in keys for a in names) for names in required.values()):
+            return other
+    return None
+
+
 def schema_hint(name: str, problem: str) -> str:
     """The retry corrective appended to the context after a rejected attempt."""
     shape = _SCHEMA_SHAPES.get(name, f"{name}(<arguments matching the tool's schema>)")

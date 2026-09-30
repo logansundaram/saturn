@@ -412,6 +412,8 @@ def run_trust_benchmark(graph) -> dict:
 #   file_missing /     the file a write task should have produced is absent / lacks its token
 #   file_wrong
 #   no_question        an under-specified request neither asked ask_user nor ended in a question
+#   same_pass:a+b      b was issued in the same pass as a although it needs a's result (a
+#                      guessed argument — the ReAct shape the prompt asks for)
 #   error              the turn raised
 #
 # A task passes with no tags. The suite is a MEASUREMENT (no --strict): the summary reports
@@ -443,7 +445,7 @@ LOOP_FIXTURES = {
     "bench_long.txt": _LONG_TEXT,
 }
 # Files the write tasks produce; removed with the fixtures.
-LOOP_OUTPUTS = ("bench_out.txt", "bench_plan.txt", "bench_index.txt")
+LOOP_OUTPUTS = ("bench_out.txt", "bench_plan.txt", "bench_index.txt", "bench_ref.txt")
 
 _FILE_LOOKUP = {"list_directory", "find_files", "search_files", "read_file"}
 _CANT = ["can't", "cannot", "can not", "unable", "not able", "no way", "don't have",
@@ -516,6 +518,12 @@ LOOP_TASKS: list[dict] = [
           tools={"list_directory", "find_files", "write_file", "plan"},
           required=[{"list_directory", "find_files"}, {"write_file"}], max_passes=4,
           check_file=("bench_index.txt", "bench_a.txt")),
+    # the ReAct shape: the write's content comes from the read, so the read must run FIRST —
+    # a write issued in the same pass carries a guessed value (file_wrong) or none
+    _task("multi_dependent", "multi",
+          "Read the reference number in bench_a.txt and write just that number into bench_ref.txt.",
+          tools={"read_file", "write_file", "plan"}, required=[{"read_file"}, {"write_file"}],
+          max_passes=4, check_file=("bench_ref.txt", "120"), ordered=("read_file", "write_file")),
     _task("multi_edit", "multi", "In bench_edit.txt change the status from draft to final.",
           tools={"read_file", "edit_file", "plan"}, required=[{"edit_file"}], max_passes=4,
           check_file=("bench_edit.txt", "status: final")),
@@ -584,6 +592,17 @@ def grade_loop_task(task: dict, entry: dict) -> list[str]:
             tags.append("wrong_answer")
     if task.get("must_ask") and "ask_user" not in executed and not stripped.endswith("?"):
         tags.append("no_question")
+    ordered = task.get("ordered")
+    if ordered:
+        # The later tool's FIRST call must come in a later pass than the earlier tool's first —
+        # issued together, the later call carried an argument the model had not seen yet.
+        first = {}
+        for name, n in entry.get("tool_passes") or []:
+            first.setdefault(name, n)
+        a, b = ordered
+        if a in first and b in first and first[a] is not None and first[b] is not None \
+                and first[b] <= first[a]:
+            tags.append(f"same_pass:{a}+{b}")
     check = task.get("check_file")
     if check:
         target, token = check
@@ -781,6 +800,9 @@ def run_query(graph, query: str) -> dict:
             "plan_steps": len(plan),
             "iterations": result.get("iteration"),
             "tools_called": tools_called,
+            # (tool, agent pass) per executed call — the loop benchmark's `ordered` check reads
+            # whether a dependent call waited for its input's round.
+            "tool_passes": [(e.get("name"), e.get("pass")) for e in (result.get("tool_events") or [])],
             # Tools that tripped the approval gate (anything not read-only) — surfaces how often
             # a suite exercises the safety gate.
             "gated_tools": [t for t in tools_called if risk_of(t) != "read_only"],

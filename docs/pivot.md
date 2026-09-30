@@ -208,6 +208,17 @@ shape without adding a call to the chat turn. Pivot #1 and #2 above stay the top
   waits forever when nothing is written. Read stdin only when something is waiting there
   (`select` on POSIX), and say so in `--help`; anyone scripting Saturn hits this.
 
+- ~~**The 2026-09-30 code review.**~~ Fixed 2026-09-30, each with a test: tool failures
+  returned as strings were stamped `done`, so the incidents note and the adaptive think missed
+  them (tools now raise `ToolError`); the incidents note listed a call that failed and then
+  ran; a case-only spelling of `config.yaml` / `hooks.yaml` got past the control-file guard;
+  brace expansion and `--flag=/path` values got past the shell allowlist's tail screen;
+  `run_shell` shared the terminal with the Esc watcher; `web_extract` recorded only the first
+  host of a redirect chain; compaction and `/init` called the model without `invoke_kwargs`;
+  a steer was lost to an Esc landing mid-pass; a retried malformed reply streamed on top of
+  the first; `list_directory(path=…)` / `recall(text=…)` were refused as another tool's
+  arguments.
+
 ### Trim (rot that misleads the next reader)
 
 - ~~`README.md` (the "life of a turn" block and the layout listing) still documents plan,

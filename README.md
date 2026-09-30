@@ -95,10 +95,11 @@ replay. The point isn't how much Saturn can do — it's that you can see and con
   the agent pauses mid-run with one question (`ask_user`), and your typed answer resumes the
   turn. The alternative to asking is fabrication; Saturn asks.
 - **Shell commands** — run arbitrary shell commands (scripts, build tools, git, package managers)
-  in the sandboxed workspace. Uses PowerShell on Windows and `/bin/sh` on macOS/Linux — write
-  commands in your platform's native syntax. Every run is a bounded **foreground** run: the
-  process lives and dies inside the turn you approved (no detached-process surface), with a
-  timeout so a hung command can't wedge the turn.
+  in the sandboxed workspace, through `/bin/sh` — write Unix shell syntax. Every run is a
+  bounded **foreground** run: the process lives and dies inside the turn you approved (no
+  detached-process surface), with a timeout so a hung command can't wedge the turn. A command
+  never reads your terminal (a prompt for input gets end-of-input at once), and a non-zero exit
+  is a failed step the answer tells you about.
 - **Cited answers** — answers that drew on tools or documents cite their sources inline (`[1]`)
   and end with a Sources list mapping each number to the exact tool call or document behind it;
   `/trace source 3` shows the full material behind any citation.
@@ -352,7 +353,9 @@ yours" shouldn't steer your search queries through a keyed SaaS backend:
 
 - **`web_search`** is keyless DuckDuckGo — no key, no account, nothing to sign up for.
 - **`web_extract`** reads pages **locally** (via `trafilatura`) — only the page's own host is
-  contacted.
+  contacted, plus any host its redirects lead to. Saturn follows each redirect itself, so
+  every host is checked against the air-gap and written to the egress ledger before it is
+  reached.
 
 For deeper research, the agent plans multiple search + read steps — visible in the plan rail,
 every call traced — rather than hiding them inside a monolithic research tool.

@@ -15,7 +15,7 @@ the tool lets the agent narrow by calendar name, and the default window is one w
 
 Times go through the notify grammar (`notify.parse_when`, `allow_past` so a query can look
 backward). AppleScript dates are built field by field (`mkdate`) — the `date "…"` literal form
-is locale-dependent and never used. Every failure comes back as an `Error: …` string.
+is locale-dependent and never used. Every failure raises ToolError (an `Error: …` observation, stamped error).
 Nothing here is egress.
 """
 
@@ -26,7 +26,7 @@ from datetime import datetime, timedelta
 import notify
 from tools import applescript
 from tools.applescript import AS_RS, AS_US, ISO_HANDLERS, AppleScriptError, quote, records
-from tools.toolspec import register_tool
+from tools.toolspec import ToolError, register_tool
 
 _HANDLERS = ISO_HANDLERS + """
 on mkdate(y, m, d, secs)
@@ -74,9 +74,9 @@ def list_calendar_events(start: str = "", end: str = "", calendars: str = ""):
         d1 = _when(start, today)
         d2 = _when(end, d1 + timedelta(days=7))
     except notify.NotifyError as exc:
-        return f"Error: {exc}"
+        raise ToolError(str(exc)) from exc
     if d2 <= d1:
-        return f"Error: end {_iso(d2)} is at or before start {_iso(d1)}; put the earlier time first"
+        raise ToolError(f"end {_iso(d2)} is at or before start {_iso(d1)}; put the earlier time first")
     names = [n.strip() for n in str(calendars or "").split(",") if n.strip()]
     if names:
         source = "repeat with cn in {" + ", ".join(quote(n) for n in names) + "}\n    set c to calendar cn"
@@ -103,7 +103,7 @@ return out
     try:
         rows = records(applescript.run(script, timeout=_QUERY_TIMEOUT, app="Calendar"))
     except AppleScriptError as exc:
-        return f"Error: {exc}"
+        raise ToolError(str(exc)) from exc
     events = [
         {"calendar": r[0], "uid": r[1], "title": r[2], "start": r[3], "end": r[4],
          "all_day": r[5] == "true", "location": r[6]}
@@ -124,16 +124,16 @@ def create_calendar_event(calendar: str, title: str, start: str, end: str = "",
     calendar = str(calendar or "").strip()
     title = str(title or "").strip()
     if not calendar:
-        return "Error: create_calendar_event needs the name of an existing calendar"
+        raise ToolError("create_calendar_event needs the name of an existing calendar")
     if not title:
-        return "Error: an event needs a non-empty title"
+        raise ToolError("an event needs a non-empty title")
     try:
         d1 = notify.parse_when(str(start or ""), now=_now(), allow_past=True)
         d2 = _when(end, d1 + timedelta(hours=1))
     except notify.NotifyError as exc:
-        return f"Error: {exc}"
+        raise ToolError(str(exc)) from exc
     if d2 <= d1:
-        return f"Error: end {_iso(d2)} is at or before start {_iso(d1)}"
+        raise ToolError(f"end {_iso(d2)} is at or before start {_iso(d1)}")
     props = [f"summary:{quote(title)}", f"start date:{_mkdate(d1)}", f"end date:{_mkdate(d2)}"]
     if str(location or "").strip():
         props.append(f"location:{quote(str(location).strip())}")
@@ -150,5 +150,5 @@ end tell
     try:
         uid = applescript.run(script, app="Calendar")
     except AppleScriptError as exc:
-        return f"Error: {exc}"
+        raise ToolError(str(exc)) from exc
     return {"uid": uid, "calendar": calendar, "title": title, "start": _iso(d1), "end": _iso(d2)}

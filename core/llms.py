@@ -412,8 +412,9 @@ def _is_think_rejection(exc: Exception) -> bool:
 # The output-token bound per task — a circuit breaker well above a healthy generation, so a
 # repetition loop lands as a truncated draw instead of a full window. `agent` is the loop's one
 # call (nodes/agent.py): prose OR a tool call, so it must fit a write_file payload (4096 tokens
-# is ~12-16 KB of text).
-NUM_PREDICT: dict = {"agent": 4096}
+# is ~12-16 KB of text). The background calls get their own bound: a compaction brief, the
+# memory review's JSON, /init's SATURN.md draft — each a page or so at most.
+NUM_PREDICT: dict = {"agent": 4096, "compaction": 1536, "memory_review": 1024, "init": 1536}
 
 
 def model_tag() -> str:

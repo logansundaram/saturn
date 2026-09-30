@@ -20,7 +20,7 @@ import time
 from pathlib import Path
 
 from textutil import truncate
-from tools.toolspec import register_tool
+from tools.toolspec import ToolError, register_tool
 
 from core import doctext, hooks
 from core import workspace as _ws
@@ -76,8 +76,10 @@ def _check_write_allowed(target_path, tool: str) -> None:
         protected = {Path(p).resolve(): why for p, why in _control_files().items()}
     except OSError:
         protected, target = {}, None
-    if target in protected:
-        raise PermissionError(f"{target} {protected[target]}; Saturn never writes it. "
+    # File identity, not spelling: on macOS's case-insensitive disk CONFIG.YAML is config.yaml.
+    hit = next((p for p in protected if target is not None and _ws.same(target, p)), None)
+    if hit is not None:
+        raise PermissionError(f"{hit} {protected[hit]}; Saturn never writes it. "
                               "Ask the user to edit it by hand.")
     refusal = hooks.before_write(target_path, tool)
     if refusal:
@@ -109,7 +111,7 @@ def read_file(file_path: str):
     """Reads the contents of a file and returns it as a string. Text files are returned as written; PDF, Word (.docx) and Excel (.xlsx) files are returned as their text. file_path is relative to the working folder; an absolute or ~ path inside a folder Saturn can reach also works."""
     _, target_path, error = _resolve(file_path)
     if error:
-        return error
+        raise ToolError(error)
     if not target_path.is_file():
         # RAISED, not returned: a missing file is a failed call (status error, disclosed as an
         # incident) exactly as before — only the text changed. The raw OSError told the model
@@ -129,7 +131,7 @@ def read_file(file_path: str):
     except OSError:
         binary = False
     if binary:
-        return (f"{file_path} is a binary file ({target_path.suffix or 'no extension'}); "
+        raise ToolError(f"{file_path} is a binary file ({target_path.suffix or 'no extension'}); "
                 "read_file reads text, PDF, .docx and .xlsx files.")
     # Always UTF-8: the workspace holds user docs/notes that routinely carry non-cp1252
     # characters, and the default Windows encoding (cp1252) would raise UnicodeDecodeError on
@@ -144,7 +146,7 @@ def write_file(file_path: str, content: str, overwrite: bool = True):
     """Writes content to a file. file_path is relative to the working folder; an absolute or ~ path inside a folder Saturn can reach also works. content is the text to write. overwrite=True (default) replaces the file's contents; pass overwrite=False to append to the existing file instead. To change PART of an existing file, prefer edit_file — it can't accidentally drop the rest of the contents."""
     _, target_path, error = _resolve(file_path)
     if error:
-        return error
+        raise ToolError(error)
     _check_write_allowed(target_path, "write_file")
     # Create the workspace and any intermediate directories so a nested path (e.g.
     # "notes/todo.md") works — without this, writing into a not-yet-existing subdirectory raised
@@ -170,7 +172,7 @@ def list_directory(directory: str = "."):
     """Lists the files and folders inside a directory. directory is relative to the working folder (an absolute or ~ path inside a reachable folder also works). Use '.' to list the working folder."""
     _, target_path, error = _resolve_dir(directory)
     if error:
-        return error
+        raise ToolError(error)
     return [item.name for item in target_path.iterdir() if not _hidden(item.name)]
 
 
@@ -188,27 +190,27 @@ def edit_file(file_path: str, old_string: str, new_string: str, replace_all: boo
     """Makes a targeted edit to an existing file by replacing an exact text snippet. file_path is relative to the working folder; an absolute or ~ path inside a reachable folder also works. old_string must match the file contents EXACTLY (including whitespace) and must be unique in the file — include surrounding lines to disambiguate, or pass replace_all=True to replace every occurrence. Prefer this over write_file when changing part of a file: it cannot accidentally drop the rest of the contents."""
     _, target_path, error = _resolve(file_path)
     if error:
-        return error
+        raise ToolError(error)
     if not target_path.is_file():
-        return f"File not found: {file_path}. Use write_file to create a new file."
+        raise ToolError(f"File not found: {file_path}. Use write_file to create a new file.")
     # Strict UTF-8 on purpose (unlike read_file's errors='replace'): a replace-decode here
     # would silently corrupt every undecodable byte OUTSIDE the edited snippet when the file
     # is written back. Refusing to edit a non-UTF-8 file is the safe failure.
     try:
         content = target_path.read_text(encoding="utf-8")
     except UnicodeDecodeError:
-        return f"Cannot edit {file_path}: it is not valid UTF-8 text (binary or legacy encoding)."
+        raise ToolError(f"Cannot edit {file_path}: it is not valid UTF-8 text (binary or legacy encoding).")
 
     if old_string == new_string:
-        return "old_string and new_string are identical — nothing to change."
+        raise ToolError("old_string and new_string are identical — nothing to change.")
     count = content.count(old_string)
     if count == 0:
-        return (
+        raise ToolError(
             "old_string was not found in the file. It must match the current contents "
             "exactly, including whitespace and indentation — read the file again and retry."
         )
     if count > 1 and not replace_all:
-        return (
+        raise ToolError(
             f"old_string appears {count} times in the file. Include more surrounding context "
             "to make it unique, or pass replace_all=True to replace every occurrence."
         )
@@ -250,11 +252,11 @@ def search_files(pattern: str, directory: str = ".", file_glob: str = "*"):
     """Searches the CONTENTS of files for a regular-expression pattern (case-insensitive) and returns matching lines as 'path:line_number: text'. Use this to find where something is mentioned without reading every file. directory is relative to the working folder ('.' = the whole working folder); file_glob filters which files are searched by name (e.g. '*.md'). For finding files by NAME, use find_files instead."""
     workspace, target_path, error = _resolve_dir(directory)
     if error:
-        return error
+        raise ToolError(error)
     try:
         rx = re.compile(pattern, re.IGNORECASE)
     except re.error as exc:
-        return f"Invalid regular expression: {exc}"
+        raise ToolError(f"Invalid regular expression: {exc}")
 
     matches: list[str] = []
     truncated = timed_out = False
@@ -314,7 +316,7 @@ def find_files(pattern: str, directory: str = "."):
     """Finds files and folders by NAME using a glob pattern and returns their paths relative to the working folder. A bare pattern like '*.md' or 'report*' searches recursively under directory; a pattern with '/' (e.g. 'notes/*.txt' or '**/drafts/*.md') is matched as a path. Use this to locate a file when the exact path is unknown; for searching file CONTENTS, use search_files."""
     workspace, target_path, error = _resolve_dir(directory)
     if error:
-        return error
+        raise ToolError(error)
     # A bare name pattern means "anywhere under here" — that's what the asker wants from '*.md'.
     # A pattern containing '/' matches the path relative to `directory`; a leading '**/' also
     # matches at the top level (glob's zero-directory reading).

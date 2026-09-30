@@ -35,6 +35,7 @@ import uuid
 from types import SimpleNamespace
 
 from langchain.messages import AIMessage, HumanMessage, ToolMessage
+from langgraph.config import get_stream_writer
 from langgraph.types import interrupt
 
 import diag
@@ -221,6 +222,18 @@ def _is_parse_failure(exc: Exception) -> bool:
     return "tool call" in text and ("pars" in text or "invalid" in text or "malformed" in text)
 
 
+# The custom-stream event that tells the UI to drop what this pass streamed so far
+# (app/turn.run_turn → on_retract): a malformed attempt's tokens are not the answer.
+RETRACT = {"type": "retract"}
+
+
+def _retract_stream() -> None:
+    try:
+        get_stream_writer()(RETRACT)
+    except Exception:  # outside a graph run (a test calling the node directly): nothing streamed
+        pass
+
+
 def _generate_or_retry(llm_input: list, *, tools: bool, think: bool = False) -> "AIMessage | None":
     """`_generate`, retried ONCE with the malformed-call note when the model's output could not
     be parsed; None when the retry failed the same way (the caller answers honestly)."""
@@ -230,6 +243,7 @@ def _generate_or_retry(llm_input: list, *, tools: bool, think: bool = False) -> 
         if not _is_parse_failure(exc):
             raise
         diag.log(f"agent_node : malformed model output ({type(exc).__name__}: {exc}) — retrying once")
+    _retract_stream()  # the failed attempt may have streamed text; the retry streams its own
     try:
         return _generate(llm_input + [HumanMessage(content=MALFORMED_NOTE)], tools=tools, think=think)
     except Exception as exc:
@@ -341,11 +355,14 @@ def incidents(this_turn: list) -> list:
     """One line per tool CALL that did NOT complete — declined at the gate (skipped), refused
     by the air-gap (blocked), or failed (error) — read off the ToolMessages' structural stamp
     and worded for the user (the observations are written for the model). One line per
-    distinct call: a declined call the model re-issued is one incident, not two."""
+    distinct call: a declined call the model re-issued is one incident, not two. A call's LAST
+    outcome decides — one that failed and then ran when re-issued is not an incident."""
+    rounds = _rounds(this_turn)
+    last = {key: status for key, _n, _a, status, _o in rounds}
     out = []
     seen: set = set()
-    for key, name, args, status, obs in _rounds(this_turn):
-        if status not in _INCIDENT_STATUSES or key in seen:
+    for key, name, args, status, obs in rounds:
+        if status not in _INCIDENT_STATUSES or last[key] not in _INCIDENT_STATUSES or key in seen:
             continue
         seen.add(key)
         why = _INCIDENT_WORDING.get(status) or f"failed: {clip(' '.join(obs.split()), _INCIDENT_CAP)}"
@@ -380,14 +397,11 @@ def agent_node(state: AgentState):
     iteration = int(state.get("iteration", 0) or 0) + 1
     updates: dict = {"iteration": iteration}
 
-    # 1. steer — only when no pause is outstanding (a pause outranks a steer, and this branch
-    # must not consume the node on a post-interrupt re-run: see core/pause.py).
-    if not controller.pending():
-        for r in controller.take_steers():
-            if r is not None and str(r.reason).strip():
-                new.append(_steer_message(str(r.reason)))
-
-    # 2. pause — read non-destructively, cleared only past the interrupt.
+    # 1. steer and 2. pause. The queued steers are drained only PAST any pause interrupt: a
+    # resumed interrupt re-runs this node from the top, so steers taken before it would be lost
+    # to an Esc landing in between (see core/pause.py). The pause is read non-destructively and
+    # cleared only past the interrupt.
+    pause_steer = None
     if controller.pending():
         req = controller.peek()
         decision = interrupt({
@@ -399,13 +413,18 @@ def agent_node(state: AgentState):
         controller.clear()
         action = decision.get("action") if isinstance(decision, dict) else "continue"
         if action == "abort":
-            updates["messages"] = new + [
-                AIMessage(content=_with_trailers(ABORT_TEXT, state, _this_turn(messages + new)))
+            updates["messages"] = [
+                AIMessage(content=_with_trailers(ABORT_TEXT, state, _this_turn(messages)))
             ]
             diag.log(f"agent_node : {time.perf_counter() - start:.4f}s (aborted at the pause prompt)")
             return updates
         if action == "steer" and str(decision.get("text") or "").strip():
-            new.append(_steer_message(str(decision["text"])))
+            pause_steer = str(decision["text"])
+    for r in controller.take_steers():
+        if r is not None and str(r.reason).strip():
+            new.append(_steer_message(str(r.reason)))
+    if pause_steer is not None:  # typed at the pause prompt: after anything queued before it
+        new.append(_steer_message(pause_steer))
 
     # 3. the cap — the last pass answers without tools. The budget note rides the prompt only
     # (never state: a HumanMessage there would read as a new turn boundary).

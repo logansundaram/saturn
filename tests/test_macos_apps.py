@@ -132,6 +132,16 @@ def _tool(name):
     return tools_by_name[name]
 
 
+def _err(name, args):
+    """A refused call RAISES ToolError (stamped error by the tools node); returns the
+    observation the model sees, "Error: …"."""
+    from tools.toolspec import ToolError
+
+    with pytest.raises(ToolError) as info:
+        _tool(name).invoke(args)
+    return f"Error: {info.value}"
+
+
 def test_notes_tools_are_registered_with_the_right_trust():
     from tools.registry import risk_of, tools_by_name
     from tools.toolspec import _UNTRUSTED
@@ -194,9 +204,9 @@ def test_read_note_by_id_uses_the_id(mac):
     assert 'note id "x-coredata://A/ICNote/p9"' in mac.script()
 
 
-def test_read_note_missing_is_an_error_string(mac):
+def test_read_note_missing_is_an_error(mac):
     mac.reply("")
-    out = _tool("read_note").invoke({"note": "nope"})
+    out = _err("read_note", {"note": "nope"})
     assert out.startswith("Error:") and "nope" in out
 
 
@@ -221,13 +231,13 @@ def test_create_note_defaults_to_the_default_folder(mac):
 
 
 def test_create_note_refuses_empty_title(mac):
-    out = _tool("create_note").invoke({"title": "  ", "body": "x"})
+    out = _err("create_note", {"title": "  ", "body": "x"})
     assert out.startswith("Error:") and mac.calls == []
 
 
 def test_notes_tools_report_non_mac_honestly(monkeypatch):
     monkeypatch.setattr(applescript, "_platform", lambda: "linux")
-    out = _tool("search_notes").invoke({"query": "x"})
+    out = _err("search_notes", {"query": "x"})
     assert out.startswith("Error:") and "only available on macOS" in out and "linux" in out
 
 
@@ -296,12 +306,12 @@ def test_list_events_accepts_relative_times_and_end_before_start_is_an_error(mac
     _tool("list_calendar_events").invoke({"start": "tomorrow at 09:00", "end": "in 2 days"})
     s = mac.script()
     assert "my mkdate(2026, 9, 7, 32400)" in s and "my mkdate(2026, 9, 8, 36000)" in s
-    out = _tool("list_calendar_events").invoke({"start": "2026-09-09", "end": "2026-09-08"})
+    out = _err("list_calendar_events", {"start": "2026-09-09", "end": "2026-09-08"})
     assert out.startswith("Error:") and "before" in out
 
 
 def test_list_events_bad_time_is_an_error(mac, clock):
-    out = _tool("list_calendar_events").invoke({"start": "whenever"})
+    out = _err("list_calendar_events", {"start": "whenever"})
     assert out.startswith("Error:") and "whenever" in out and mac.calls == []
 
 
@@ -326,20 +336,20 @@ def test_create_event_defaults_to_one_hour(mac, clock):
 
 
 def test_create_event_refuses_empty_title_and_calendar(mac, clock):
-    assert _tool("create_calendar_event").invoke({"calendar": "", "title": "x", "start": "10:00"}).startswith("Error:")
-    assert _tool("create_calendar_event").invoke({"calendar": "Home", "title": " ", "start": "10:00"}).startswith("Error:")
+    assert _err("create_calendar_event", {"calendar": "", "title": "x", "start": "10:00"}).startswith("Error:")
+    assert _err("create_calendar_event", {"calendar": "Home", "title": " ", "start": "10:00"}).startswith("Error:")
     assert mac.calls == []
 
 
 def test_create_event_relays_an_unknown_calendar(mac, clock):
     mac.reply("", 1, 'execution error: Calendar got an error: Can’t get calendar "Nope". (-1728)')
-    out = _tool("create_calendar_event").invoke({"calendar": "Nope", "title": "x", "start": "10:00"})
+    out = _err("create_calendar_event", {"calendar": "Nope", "title": "x", "start": "10:00"})
     assert out.startswith("Error:") and 'calendar "Nope"' in out
 
 
 def test_calendar_tools_report_non_mac_honestly(monkeypatch, clock):
     monkeypatch.setattr(applescript, "_platform", lambda: "linux")
-    out = _tool("list_calendar_events").invoke({})
+    out = _err("list_calendar_events", {})
     assert out.startswith("Error:") and "only available on macOS" in out
 
 
@@ -401,7 +411,7 @@ def test_list_mail_standard_and_named_mailboxes(mac):
 
 def test_list_mail_unknown_mailbox_is_a_plain_error(mac):
     mac.reply("", 1, 'execution error: Mail got an error: Can’t get item 1 of every mailbox whose name = "Nope". Invalid index. (-1719)')
-    out = _tool("list_mail").invoke({"mailbox": "Nope"})
+    out = _err("list_mail", {"mailbox": "Nope"})
     assert out == "Error: no mailbox named 'Nope' (use inbox, sent, drafts, junk, trash, or a folder/label name)"
 
 
@@ -429,7 +439,7 @@ def test_read_mail_returns_headers_and_body(mac):
 
 def test_read_mail_missing_is_an_error(mac):
     mac.reply("")
-    out = _tool("read_mail").invoke({"id": 12345})
+    out = _err("read_mail", {"id": 12345})
     assert out.startswith("Error:") and "12345" in out
 
 
@@ -441,7 +451,7 @@ def test_mail_tools_use_the_long_query_timeout(mac, monkeypatch):
 
 
 def test_read_mail_rejects_a_non_numeric_id(mac):
-    out = _tool("read_mail").invoke({"id": "abc"})
+    out = _err("read_mail", {"id": "abc"})
     assert out.startswith("Error:") and mac.calls == []
 
 
@@ -461,8 +471,8 @@ def test_draft_mail_opens_a_visible_unsent_draft(mac):
 
 
 def test_draft_mail_refuses_missing_recipient_or_subject(mac):
-    assert _tool("draft_mail").invoke({"to": "", "subject": "x", "body": "y"}).startswith("Error:")
-    assert _tool("draft_mail").invoke({"to": "a@x.com", "subject": " ", "body": "y"}).startswith("Error:")
+    assert _err("draft_mail", {"to": "", "subject": "x", "body": "y"}).startswith("Error:")
+    assert _err("draft_mail", {"to": "a@x.com", "subject": " ", "body": "y"}).startswith("Error:")
     assert mac.calls == []
 
 

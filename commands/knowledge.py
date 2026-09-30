@@ -556,12 +556,14 @@ def _init(ctx, args):
     if [e for e in listing if e not in _INSTRUCTIONS_FILES]:
         try:
             from langchain.messages import HumanMessage
-            from core.llms import get_model
+            from core.llms import generate, get_model, invoke_kwargs, model_tag
             from core.messages import INIT_DRAFT_PROMPT
 
             _print("  surveying the workspace and drafting SATURN.md…")
             prompt = INIT_DRAFT_PROMPT.format(listing="\n".join(listing) or "(empty)")
-            draft = str(get_model().invoke([HumanMessage(content=prompt)]).content).strip()
+            resp = generate(get_model(), [HumanMessage(content=prompt)], tag=model_tag(),
+                            **invoke_kwargs(None, 0.0, task="init"))
+            draft = str(resp.content).strip()
             # Models love to wrap file output in a code fence — unwrap it.
             if draft.startswith("```"):
                 lines = draft.splitlines()

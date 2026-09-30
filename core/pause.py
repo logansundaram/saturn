@@ -61,9 +61,9 @@ class PauseController:
         pause is a request to INTERRUPT, a steer a request to adjust WITHOUT interrupting, and
         the agent node handles them on different paths. Sharing one slot let a steer typed after an
         Esc-pause overwrite the pause (the user saw the ⏸ acknowledgement and never got the
-        editor), so steers queue and are drained only when no pause is outstanding — the pause
-        outranks the steer, and the path to interrupt() evaluates identically on both LangGraph
-        passes. For pauses the latest request wins (only the most recent reason is shown)."""
+        editor), so steers queue and are drained only PAST any pause interrupt — the pause
+        outranks the steer, the path to interrupt() evaluates identically on both LangGraph
+        passes, and a steer is never taken on a pass the interrupt then discards. For pauses the latest request wins (only the most recent reason is shown)."""
         with self._lock:
             if source == "steer":
                 self._steers.append(PauseRequest(source=source, reason=reason))

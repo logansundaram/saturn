@@ -256,6 +256,33 @@ this section, which describe v1 mechanisms that no longer exist._
 
 ### Fixed
 
+- **A tool call that failed now says so in the answer.** An edit whose text was not found, a
+  shell command that exited non-zero or timed out, a calendar event, note, mail draft or
+  reminder that could not be made, an MCP error, a page that could not be fetched: each used to
+  count as done, so the answer's "not done" note stayed silent and the model did not stop to
+  rethink. Each is now a failed step. A call that failed and then succeeded when retried is no
+  longer listed as failed.
+- **The file tools refuse `CONFIG.yaml` like `config.yaml`.** On macOS's case-insensitive disk,
+  a different capitalisation of `config.yaml`, `permissions.json` or `hooks.yaml` got past the
+  guard that keeps the agent from writing Saturn's own control files.
+- **An always-allowed shell command cannot reach outside the workspace through brace expansion
+  or a flag's value** (`cat {..,x}/secret`, `sort --files0-from=/etc/passwd`, `-o../x`); such a
+  command faces the gate again.
+- **Shell commands no longer read the terminal.** A command that waited for input (an editor,
+  a password prompt) shared your keystrokes with Saturn's Esc watcher and hung until the
+  timeout; it now gets an immediate end-of-input.
+- **`web_extract` records every host a redirect reaches**, each checked against the air-gap
+  and written to the egress ledger before it is contacted. Previously only the first host was
+  recorded. trafilatura's own fetch, which followed redirects out of the ledger's sight, is no
+  longer used.
+- **Compaction, the memory review and `/init` run with thinking off and a length cap**, like
+  the agent's own call. A thinking model could otherwise put its reasoning into the summary
+  that every later turn carries.
+- **A steer typed just before an Esc pause is no longer lost.**
+- **A malformed model output that is retried no longer doubles the streamed text.** The failed
+  attempt's text is cleared before the retry streams.
+- **`list_directory(path=…)` and `recall(text=…)` run as asked.** Common argument spellings
+  used to be refused and pointed at an unrelated tool (`read_file`, `search_files`).
 - **`saturn -p` no longer hangs when stdin is open but nothing is written to it** (a
   background job, a subprocess that inherits a pipe). Piped input is attached when it arrives
   within a second; otherwise the turn runs without it and says so on stderr.

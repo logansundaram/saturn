@@ -9,6 +9,7 @@ import pytest
 
 from core import hooks, workspace
 from tools.files import edit_file, write_file
+from tools.toolspec import ToolError
 
 
 @pytest.fixture
@@ -98,7 +99,8 @@ def test_a_refused_edit_fires_no_hook(home, tmp_path):
     log = tmp_path / "log"
     _hooks(home, f"before-write:\n  - echo hit >> {log}\n")
     (workspace.root() / "a.txt").write_text("one", encoding="utf-8")
-    edit_file.invoke({"file_path": "a.txt", "old_string": "zzz", "new_string": "two"})
+    with pytest.raises(ToolError):
+        edit_file.invoke({"file_path": "a.txt", "old_string": "zzz", "new_string": "two"})
     assert not log.exists()
 
 
@@ -155,3 +157,15 @@ def test_run_turn_fires_turn_start_and_turn_end(home, tmp_path, monkeypatch):
 
     turn.run_turn(Graph(), {"current_query": "meaning?"}, {}, approver=lambda v: True)
     assert log.read_text().splitlines() == ["start meaning?", "end 42"]
+
+
+def test_a_case_only_spelling_of_a_control_file_is_still_refused(home):
+    """macOS's disk is case-insensitive: HOOKS.YAML opens hooks.yaml, so the guard compares
+    file identity, not the spelling."""
+    workspace.add(home)
+    _hooks(home, "turn-start:\n  - echo hi\n")
+    if not (home / "HOOKS.YAML").exists():
+        pytest.skip("case-sensitive filesystem")
+    with pytest.raises(PermissionError, match="Saturn never writes it"):
+        write_file.invoke({"file_path": str(home / "HOOKS.YAML"), "content": "turn-start: [rm -rf ~]"})
+    assert (home / "hooks.yaml").read_text() == "turn-start:\n  - echo hi\n"

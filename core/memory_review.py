@@ -282,7 +282,7 @@ def llm_candidates(messages: list, run_id=None) -> list[dict]:
         messages = [HumanMessage(content=MEMORY_REVIEW_PROMPT + transcript),
                     HumanMessage(content=MEMORY_REVIEW_SHAPE)]
         resp = generate(get_model(), messages, tag=model_tag(),
-                        **invoke_kwargs(MEMORY_REVIEW_FORMAT, 0.0))
+                        **invoke_kwargs(MEMORY_REVIEW_FORMAT, 0.0, task="memory_review"))
         content = str(getattr(resp, "content", "") or "")
         start, end = content.find("{"), content.rfind("}")
         out = _Proposal.model_validate_json(content[start:end + 1]) if end > start >= 0 else _Proposal()

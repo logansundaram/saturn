@@ -7,15 +7,15 @@ from a web page or an email, so its content is treated exactly like a web fetch 
 fenced by the quarantine before the model reads it. `create_note` changes user data, so it is
 `side_effecting` and faces the approval gate with the exact title/body/folder shown.
 
-Every failure — not macOS, Automation denied, no such note — comes back as an `Error: …`
-string the model must relay, never invent around. Nothing here is egress.
+Every failure — not macOS, Automation denied, no such note — raises ToolError: an `Error: …`
+observation the model must relay, never invent around, stamped error. Nothing here is egress.
 """
 
 from __future__ import annotations
 
 from tools import applescript
 from tools.applescript import AS_RS, AS_US, ISO_HANDLERS, AppleScriptError, quote, records
-from tools.toolspec import register_tool
+from tools.toolspec import ToolError, register_tool
 
 _MAX_MATCHES = 200   # hard cap on records fetched before Python sorts and applies `limit`
 _TRASH = "Recently Deleted"   # deleted notes linger here for 30 days; search never lists them
@@ -54,7 +54,7 @@ return out
     try:
         rows = records(applescript.run(script, app="Notes"))
     except AppleScriptError as exc:
-        return f"Error: {exc}"
+        raise ToolError(str(exc)) from exc
     notes = [{"id": r[0], "title": r[1], "folder": r[2], "modified": r[3]}
              for r in rows if len(r) == 4 and r[2] != _TRASH]
     notes.sort(key=lambda n: n["modified"], reverse=True)
@@ -69,7 +69,7 @@ def read_note(note: str):
     title (exact match first, then the first title containing it)."""
     ref = str(note or "").strip()
     if not ref:
-        return "Error: read_note needs a note id or title"
+        raise ToolError("read_note needs a note id or title")
     if ref.startswith("x-coredata://"):
         locate = f"set n to note id {quote(ref)}"
     else:
@@ -88,10 +88,10 @@ end tell
     try:
         out = applescript.run(script, app="Notes")
     except AppleScriptError as exc:
-        return f"Error: {exc}"
+        raise ToolError(str(exc)) from exc
     parts = out.split(applescript.US, 4)
     if len(parts) != 5:
-        return f"Error: no note matches {ref!r}"
+        raise ToolError(f"no note matches {ref!r}")
     return {"id": parts[0], "title": parts[1], "folder": parts[2], "modified": parts[3], "body": parts[4]}
 
 
@@ -101,7 +101,7 @@ def create_note(title: str, body: str = "", folder: str = ""):
     (an existing Notes folder name) or the default folder when omitted. Returns the new note's id."""
     title = str(title or "").strip()
     if not title:
-        return "Error: a note needs a non-empty title"
+        raise ToolError("a note needs a non-empty title")
     folder = str(folder or "").strip()
     text = _html(str(body or ""))
     target = f" at folder {quote(folder)}" if folder else ""
@@ -113,7 +113,7 @@ end tell"""
     try:
         note_id = applescript.run(script, app="Notes")
     except AppleScriptError as exc:
-        return f"Error: {exc}"
+        raise ToolError(str(exc)) from exc
     return {"id": note_id, "title": title, "folder": folder}
 
 

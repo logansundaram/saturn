@@ -9,8 +9,9 @@ machine — so the egress ledger is untouched.
 
 The observation carries the resolved local time and the id so the answer can report exactly
 what was scheduled (and the human can `/notify cancel <id>` it). Every failure — an
-unparseable or past time, an unsupported platform, launchctl refusing — comes back as an
-`Error: …` string the model must relay, never invent around.
+unparseable or past time, an unsupported platform, launchctl refusing — raises ToolError: the
+model sees an `Error: …` observation it must relay, never invent around, and the round is
+stamped error.
 """
 
 from __future__ import annotations
@@ -18,7 +19,7 @@ from __future__ import annotations
 from datetime import datetime
 
 import notify
-from tools.toolspec import register_tool
+from tools.toolspec import ToolError, register_tool
 
 
 def _now() -> datetime:
@@ -34,13 +35,13 @@ def schedule_notification(when: str, title: str, body: str = ""):
     Use for "remind me", "notify me", "ping me at …" — the reminder is delivered by the OS."""
     title = str(title or "").strip()
     if not title:
-        return "Error: a notification needs a non-empty title"
+        raise ToolError("a notification needs a non-empty title")
     try:
         at = notify.parse_when(str(when or ""), now=_now())
         n = notify.Notification(id=notify.new_id(), when=at, title=title, body=str(body or "").strip())
         notify.backend().schedule(n)
     except notify.NotifyError as exc:
-        return f"Error: {exc}"
+        raise ToolError(str(exc)) from exc
     return {
         "id": n.id,
         "scheduled_for": at.isoformat(timespec="minutes"),

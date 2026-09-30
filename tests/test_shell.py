@@ -4,7 +4,10 @@ run_shell is a bounded foreground run only; see shelf/2026-07-03-runtime-trim.)"
 
 import sys
 
+import pytest
+
 from tools.shell import run_shell
+from tools.toolspec import ToolError
 
 _PY = sys.executable
 _CALL = f'"{_PY}"'
@@ -16,9 +19,30 @@ def test_foreground_returns_output_and_exit_code(isolated_paths):
     assert "fg-hello" in out
 
 
-def test_foreground_nonzero_exit_code_reported(isolated_paths):
-    out = run_shell.invoke({"command": f'{_CALL} -c "import sys; sys.exit(3)"'})
-    assert "[exit code" in out and "0]" not in out.splitlines()[0]
+def test_foreground_nonzero_exit_code_is_a_failure(isolated_paths):
+    """A failed command is a failed step: raised, so the round is stamped error and disclosed."""
+    with pytest.raises(ToolError) as info:
+        run_shell.invoke({"command": f'{_CALL} -c "import sys; print(\'out\'); sys.exit(3)"'})
+    assert str(info.value).startswith("[exit code 3]") and "out" in str(info.value)
+
+
+def test_the_child_never_reads_saturns_terminal(isolated_paths, monkeypatch):
+    """The type-ahead/Esc watcher reads the terminal during a turn; a command that inherited
+    it (git's editor, a password prompt, input()) would split keys with it and hang to the
+    timeout. The child's stdin is /dev/null: an immediate EOF."""
+    import subprocess
+
+    seen = {}
+    real = subprocess.Popen
+
+    def spy(*a, **kw):
+        seen.update(kw)
+        return real(*a, **kw)
+
+    monkeypatch.setattr(subprocess, "Popen", spy)
+    with pytest.raises(ToolError, match="EOFError"):
+        run_shell.invoke({"command": f'{_CALL} -c "input()"'})
+    assert seen.get("stdin") is subprocess.DEVNULL
 
 
 def test_no_background_surface():

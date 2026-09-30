@@ -35,8 +35,8 @@ NEVER the console, where it would scribble over the rich.Live TUI.
 
 Failure posture: best-effort everywhere. A server that fails to connect is reported (startup
 problems surface next to check_models' warnings, and in /mcp) and its tools
-simply don't exist this session; a tool call that fails returns an "Error: ..." observation to the
-model instead of raising; nothing here can take the REPL down. `/mcp reload` is the recovery path
+simply don't exist this session; a tool call that fails raises ToolError, which tool_node turns
+into an "Error: ..." observation stamped error; nothing here can take the REPL down. `/mcp reload` is the recovery path
 (full reconnect + re-register); a call against a dropped connection also attempts one lazy
 reconnect on its own.
 
@@ -64,7 +64,7 @@ import diag
 from trust import egress
 from config import get_config
 from textutil import truncate
-from tools.toolspec import RISK_TIERS, register_tool_object
+from tools.toolspec import RISK_TIERS, ToolError, register_tool_object
 
 # Fallbacks when config.yaml lacks the knobs (mirrors shell.py's local-helper style).
 _DEFAULT_CONNECT_TIMEOUT = 20.0   # seconds to start + handshake a server at startup
@@ -445,12 +445,12 @@ _DEAD_CONNECTION_MARKERS = (
 
 
 def call_tool(server: str, tool: str, args: dict) -> str:
-    """Execute one remote tool call synchronously (the bridge tool_node ends up in). Always
-    returns a string observation — errors are reported to the model, never raised, matching how
-    tool_node treats local tool failures."""
+    """Execute one remote tool call synchronously (the bridge tool_node ends up in). Returns the
+    string observation; a failure (unconfigured, disconnected, timed out, the server's own
+    isError) raises ToolError, so tool_node stamps the round `error` like a local tool's."""
     st = _SERVERS.get(server)
     if st is None:
-        return f"Error: MCP server '{server}' is not configured."
+        raise ToolError(f"MCP server '{server}' is not configured.")
 
     # Network boundary: a remote (http/sse) server call leaves the machine — gate it on air-gap and
     # record it to the egress ledger. A stdio server is a local child process (its own egress, if
@@ -475,8 +475,8 @@ def call_tool(server: str, tool: str, args: dict) -> str:
                 _launch(st)
                 _await_ready([st], _connect_timeout())
         if st.state != "connected" or st.session is None:
-            return (
-                f"Error: MCP server '{server}' is not connected"
+            raise ToolError(
+                f"MCP server '{server}' is not connected"
                 f"{f' ({st.error})' if st.error else ''} — the user can run /mcp reload."
             )
 
@@ -491,7 +491,7 @@ def call_tool(server: str, tool: str, args: dict) -> str:
             result = fut.result(timeout + 5)  # outer belt over the protocol-level read timeout
         except concurrent.futures.TimeoutError:
             fut.cancel()
-            return f"Error: MCP tool '{tool}' on server '{server}' timed out after {timeout:g}s."
+            raise ToolError(f"MCP tool '{tool}' on server '{server}' timed out after {timeout:g}s.")
     except (Exception, asyncio.CancelledError) as exc:
         # CancelledError is a BaseException (3.8+): a loop-side teardown cancelling the in-flight
         # call would otherwise escape this clause AND tool_node's `except Exception`, crashing
@@ -500,7 +500,7 @@ def call_tool(server: str, tool: str, args: dict) -> str:
         if any(marker in msg for marker in _DEAD_CONNECTION_MARKERS):
             st.state = "error"
             st.error = msg
-        return f"Error calling MCP tool '{tool}' on server '{server}': {msg}"
+        raise ToolError(f"calling MCP tool '{tool}' on server '{server}': {msg}") from None
     finally:
         diag.log(f"mcp {server}.{tool} : {time.perf_counter() - start:.4f}s")
 
@@ -539,7 +539,7 @@ def _result_text(result) -> str:
 
     text = "\n".join(p for p in parts if p).strip() or "(empty result)"
     if getattr(result, "isError", False):
-        return f"Error from MCP tool: {text}"
+        raise ToolError(f"from MCP tool: {text}")
     return text
 
 

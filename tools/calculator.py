@@ -12,7 +12,7 @@ import ast
 import operator
 from datetime import datetime, timezone
 
-from tools.toolspec import register_tool
+from tools.toolspec import ToolError, register_tool
 
 # Whitelisted AST evaluator — NOT eval(). eval with an empty __builtins__ dict is an escapable
 # sandbox (dunder traversal reaches os/subprocess), which would make this read_only tool an
@@ -137,9 +137,9 @@ def calculate(expression: str) -> str:
                 result = int(result)
         return str(result)
     except ZeroDivisionError:
-        return "Error: division by zero"
+        raise ToolError("division by zero") from None
     except Exception as e:
-        return f"Error: {e}"
+        raise ToolError(str(e)) from e
 
 
 # --- time grounding ---------------------------------------------------------------------------

@@ -16,6 +16,7 @@ from trust import egress
 from trust import quarantine
 from tools.registry import tools_by_name, RETRIEVAL_TOOLS
 from tools.planning import PLAN_TOOL, to_plan
+from tools.toolspec import ToolError
 from core.state import AgentState, issuing_message
 from textutil import CALL_RESULT_SEP, clip, fmt_args, head_tail
 
@@ -129,6 +130,9 @@ def tool_node(state: AgentState):
                 # which is why nodes/agent.py lets ask_user run only ALONE in its batch: a
                 # sibling call would execute twice.
                 raise
+            except ToolError as exc:  # the tool's own "this did not happen", worded for the model
+                observation = f"Error: {exc}"
+                ok = False
             except Exception as exc:  # surface tool errors to the model instead of crashing
                 observation = f"Error calling {name}: {exc}"
                 ok = False

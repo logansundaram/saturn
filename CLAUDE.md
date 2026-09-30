@@ -74,9 +74,9 @@ ground → agent ─(no tool calls)─→ END
   `[system][stable grounding][history…][dynamic + request][turn messages…]`; the bound tool
   schemas render into the chat template's system section, so the catalog is part of the prefix
   `core/prime.py` caches. The checks around the call are deterministic, in this order, and each
-  is pinned by `tests/test_agent_loop.py`: **steer** (Esc + text → a `STEER_PREFIX` HumanMessage)
-  → **pause** (Esc → `interrupt({"type": "pause"})` → `ui.pause_prompt`: continue / steer / abort)
-  → **cap** (`runtime.max_iterations` passes; the last pass runs with tools UNBOUND and a budget
+  is pinned by `tests/test_agent_loop.py`: **pause** (Esc → `interrupt({"type": "pause"})` →
+  `ui.pause_prompt`: continue / steer / abort) → **steer** (Esc + text → a `STEER_PREFIX`
+  HumanMessage; drained only past the pause, since a resumed interrupt re-runs the node) → **cap** (`runtime.max_iterations` passes; the last pass runs with tools UNBOUND and a budget
   note — a real answer, never a stub) → generate → **hygiene** on each emitted call (unknown tool,
   missing arguments via `core/tool_args.coerce_args`, malformed JSON, a repeat of a call the user
   DECLINED this turn, a third identical call — each answered with an error ToolMessage that routes
@@ -113,7 +113,9 @@ When slicing conversation history, use `core.state.is_turn_start` — a mid-turn
 
 Each tier binds ONE chat model (`tiers.<t>.model`) — the agent's call and the background calls
 (compaction, the memory review, `/init`) share it — plus an `embedder`. Code gets it from
-`core/llms.get_model()`; never name a model in graph code. It resolves through `active_tier` →
+`core/llms.get_model()`; never name a model in graph code. Every call — background ones too —
+sends `core/llms.invoke_kwargs(..., task=…)` (a `NUM_PREDICT` entry), so thinking is explicitly
+off and output bounded; a bare `.invoke()` gets the model's defaults. It resolves through `active_tier` →
 `tiers` in `config.yaml`; a leftover `roles:` block is refused with the one `model:` line to
 write instead (the old `SATURDAY_*` / `SATURDAY.md` / `~/.saturday` spellings are no longer read
 either, since 2026-09-30). Ollama is the only backend (cloud providers were cut 2026-09-27; a remote
@@ -149,7 +151,9 @@ accept). The benchmark's memory tasks and `tests/test_memory_*.py` pin this.
 - `policy.py` — one object behind `/policy risk|allow|open`, `runtime.auto_approve`, and `--yolo`.
   `/policy` (`commands/policy.py`) is the ONE trust front door: its bare readout, the gate's levers,
   and `egress` / `airgap` over `egress.py` (`/privacy` merged in 2026-09-30).
-  Shell prefix matching is token-based and refuses metacharacters. Persisted in `database/permissions.json`.
+  Shell prefix matching is token-based and refuses metacharacters; the tail past a granted prefix
+  is screened too (`arg_tail_rejects`: interpreters, capability flags, globs and `{}`, paths
+  outside the workspace — bare or as a flag's value). Persisted in `database/permissions.json`.
 - `egress.py` — every outbound network op calls `check()` (air-gap) then `record()`. The complete list
   of egress chokepoints is `core/llms.py`, `tools/web.py`, `tools/mcp_client.py`;
   `tests/test_no_new_egress.py` fails on a network-client import anywhere else. A new chokepoint is a
@@ -160,8 +164,10 @@ accept). The benchmark's memory tasks and `tests/test_memory_*.py` pin this.
 ### Tools
 
 Define a tool in its own module under `tools/` with `@register_tool(risk=...)` from `tools/toolspec.py`;
-`tools/registry.py` imports the modules to trigger registration — nothing else to edit. Unknown risk fails
-closed to `destructive`; `run_shell` is always `destructive`. MCP tools register as `mcp_<server>_<tool>`
+`tools/registry.py` imports the modules to trigger registration — nothing else to edit. A call that
+did not do its job RAISES `toolspec.ToolError` (never returns an error string): the tools node
+stamps it `error`, which wakes the adaptive think and puts it in the answer's incidents note.
+Unknown risk fails closed to `destructive`; `run_shell` is always `destructive`. MCP tools register as `mcp_<server>_<tool>`
 and never trust a server's self-declared tier. `tools/toolspec.py` is separate from `registry.py`
 precisely to avoid the import cycle — keep it that way.
 

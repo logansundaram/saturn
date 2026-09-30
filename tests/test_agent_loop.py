@@ -8,7 +8,7 @@ pause prompt. Offline: `nodes.agent._generate` is the one model seam and every t
 from types import SimpleNamespace
 
 import pytest
-from langchain.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain.messages import AIMessage, AIMessageChunk, HumanMessage, SystemMessage, ToolMessage
 
 
 # ── Task 1: leaf modules ─────────────────────────────────────────────────────────────────────
@@ -296,6 +296,11 @@ def test_hygiene_refuses_arguments_that_belong_to_another_tool(monkeypatch):
     assert tool_for_args("recall", {}) is None
     assert tool_for_args("read_file", {"path": "a.txt"}) is None  # an alias of its own arg
     assert tool_for_args("mcp_x_y", {"fact": "z"}) is None  # not our schema to police
+    # A no-required-args tool's OPTIONAL argument under a common alias is its own call, never
+    # redirected to a tool that happens to share the alias (list_directory → read_file).
+    assert tool_for_args("list_directory", {"path": "src"}) is None
+    assert tool_for_args("recall", {"text": "coffee"}) is None
+    assert tool_for_args("recall", {"q": "coffee"}) is None
 
     monkeypatch.setattr(agent, "_generate", lambda i, *, tools, think=False: AIMessage(
         content="", tool_calls=[_call("recall", {"fact": "I live in Berlin", "replaces": "#2"}, "a")]))
@@ -422,6 +427,49 @@ def test_pause_interrupt_continue_steer_abort(monkeypatch):
     out = agent.agent_node(_state([HumanMessage(content="q")]))
     assert out["messages"][-1].content.startswith(agent.ABORT_TEXT)
     assert agent.route_after_agent({"messages": out["messages"]}) == "end"
+
+
+def test_a_steer_survives_a_pause_that_lands_mid_pass(monkeypatch):
+    """Esc arriving right after the steers were read: the interrupt re-runs the node from the
+    top on resume, so steers drained BEFORE the interrupt were lost. They are drained only past
+    it, so the correction reaches the model either way."""
+    from core.pause import get_pause_controller
+    from core.state import STEER_PREFIX
+    from nodes import agent
+
+    c = get_pause_controller()
+    c.request("steer", "use km")
+    real_take = c.take_steers
+
+    def take_then_esc():  # the race: the pause lands between the drain and the pause check
+        out = real_take()
+        c.request("user", "esc")
+        return out
+
+    monkeypatch.setattr(c, "take_steers", take_then_esc)
+
+    class _Interrupted(Exception):
+        pass
+
+    def fake_interrupt(v):
+        if not fake_interrupt.resumed:
+            raise _Interrupted  # LangGraph's interrupt: the node stops and re-runs on resume
+        return {"action": "continue"}
+
+    fake_interrupt.resumed = False
+    monkeypatch.setattr(agent, "interrupt", fake_interrupt)
+    seen = {}
+    monkeypatch.setattr(agent, "_generate",
+                        lambda i, *, tools, think=False: seen.setdefault("input", i) and AIMessage(content="ans"))
+    state = _state([HumanMessage(content="q")])
+    try:
+        out = agent.agent_node(state)
+    except _Interrupted:  # resumed: the node runs again from the top
+        monkeypatch.setattr(c, "take_steers", real_take)
+        fake_interrupt.resumed = True
+        out = agent.agent_node(state)
+    assert any(isinstance(m, HumanMessage) and m.content == f"{STEER_PREFIX} use km"
+               for m in out["messages"])
 
 
 def test_route_after_agent_mixed_hygiene_goes_to_approval():
@@ -705,6 +753,48 @@ def test_on_update_discards_when_hygiene_answered_a_call():
     assert a.discarded == 1
 
 
+def test_a_parse_failure_retracts_what_the_failed_attempt_streamed(monkeypatch):
+    """The failed attempt's tokens already reached the response region; the retry would stream
+    a second attempt on top of them. The node emits a RETRACT on the custom stream first."""
+    from langchain_core.exceptions import OutputParserException
+
+    from nodes import agent
+
+    written = []
+    monkeypatch.setattr(agent, "get_stream_writer", lambda: written.append)
+    attempts = []
+
+    def flaky(llm_input, *, tools, think=False):
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise OutputParserException("bad tool json")
+        return AIMessage(content="ok")
+
+    monkeypatch.setattr(agent, "_generate", flaky)
+    agent.agent_node(_state([HumanMessage(content="q")]))
+    assert written == [agent.RETRACT]
+
+
+def test_run_turn_hands_a_retract_to_on_retract():
+    from app import turn
+    from nodes.agent import RETRACT
+
+    class G:
+        def stream(self, *a, **k):
+            assert "custom" in k.get("stream_mode", [])
+            yield ("messages", (AIMessageChunk(content="garbled"), {"langgraph_node": "agent"}))
+            yield ("custom", RETRACT)
+            yield ("messages", (AIMessageChunk(content="ok"), {"langgraph_node": "agent"}))
+
+        def get_state(self, config):
+            return SimpleNamespace(next=(), values={"messages": []}, tasks=[])
+
+    seen = []
+    turn.run_turn(G(), {}, {}, approver=lambda v: True, on_token=seen.append,
+                  on_retract=lambda: seen.append("<retract>"))
+    assert seen == ["garbled", "<retract>", "ok"]
+
+
 def test_generate_parse_failure_retries_once_then_answers_honestly(monkeypatch):
     from langchain_core.exceptions import OutputParserException
 
@@ -754,6 +844,21 @@ def test_incidents_note_uses_user_wording_and_dedupes(monkeypatch):
     assert "Do not retry" not in text and "blocked by the air-gap" in text
 
 
+def test_incidents_note_omits_a_call_that_later_succeeded():
+    """A failed call the model re-issued and that then RAN is done, not an incident — the note
+    must not tell the user a write that happened did not (the ask-alone refusal, a transient
+    web error retried). The call's LAST outcome decides."""
+    from nodes import agent
+
+    args = {"file_path": "x", "content": "y"}
+    turn = ([HumanMessage(content="q")]
+            + _round("write_file", args, "c1", agent.ASK_ALONE_TEXT, "error")
+            + _round("write_file", args, "c2", "Created x", "done")
+            + _round("web_search", {"query": "z"}, "c3", "Created", "done")
+            + _round("web_search", {"query": "z"}, "c4", "Error: timeout", "error"))
+    assert agent.incidents(turn) == ["web_search(query='z') — failed: Error: timeout"]
+
+
 def test_cap_lands_on_the_max_iterations_pass(monkeypatch):
     from config import get_config
     from nodes import agent
@@ -794,3 +899,14 @@ def test_issuing_message_walks_back_over_answered_calls():
     last, answered = issuing_message([HumanMessage("q"), ai, ToolMessage("x", tool_call_id="1")])
     assert last is ai and answered == {"1"}
     assert issuing_message([ToolMessage("x", tool_call_id="9")]) == (None, {"9"})
+
+
+def test_coercion_maps_optional_argument_aliases():
+    """The alias a small model emits for an optional argument lands on the real name, so
+    list_directory(path='src') lists src rather than the workspace root."""
+    from core.tool_args import coerce_args
+
+    assert coerce_args("list_directory", {"path": "src"}) == {"directory": "src"}
+    assert coerce_args("recall", {"text": "coffee"}) == {"query": "coffee"}
+    assert coerce_args("find_files", {"pattern": "*.md", "dir": "notes"}) == {"pattern": "*.md", "directory": "notes"}
+    assert coerce_args("search_files", {"pattern": "x", "path": "src"}) == {"pattern": "x", "directory": "src"}

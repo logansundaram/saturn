@@ -79,7 +79,7 @@ _INTERPRETERS = {
 }
 
 # A glob in the tail: its expansion is not what was screened.
-_GLOB = re.compile(r"[*?\[\]]")
+_GLOB = re.compile(r"[*?\[\]{}]")  # {} too: brace expansion builds paths ({..,x}/secret)
 
 
 # --- the tier threshold (runtime.auto_approve and its views) -----------------------------
@@ -470,6 +470,18 @@ def _escapes_workspace(token: str) -> bool:
     return ".." in re.split(r"[\\/]", t)
 
 
+def _flag_values(token: str) -> "list[str]":
+    """The value a flag token carries: after `=` (`--files0-from=/etc/passwd`), or glued onto a
+    short flag (`-o../x`). Screened as a path like any bare argument."""
+    if not token.startswith("-"):
+        return []
+    if "=" in token:
+        return [token.split("=", 1)[1]]
+    if not token.startswith("--") and len(token) > 2:
+        return [token[2:]]
+    return []
+
+
 def arg_tail_rejects(prefix: str, command: str) -> "str | None":
     """Why the tokens AFTER a granted prefix disqualify `command` (None when they don't): the
     program is a general-purpose interpreter with trailing arguments, or a tail token is a
@@ -493,7 +505,7 @@ def arg_tail_rejects(prefix: str, command: str) -> "str | None":
             return f"argument `{tok}` can introduce a new exec or write path"
         if _GLOB.search(tok):
             return f"argument `{tok}` contains a glob — its expansion is not what was screened"
-        if _escapes_workspace(tok):
+        if _escapes_workspace(tok) or any(_escapes_workspace(v) for v in _flag_values(tok)):
             return f"argument `{tok}` names a path outside the workspace"
     return None
 

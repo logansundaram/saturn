@@ -48,9 +48,10 @@ the history with their trailers stripped (`strip_trailers`).
 Around the call, deterministic checks in this order (each pinned by `tests/test_agent_loop.py`,
 each costing a chat turn nothing):
 
-1. **steer** — Esc + text mid-turn lands as a `STEER_PREFIX` HumanMessage (not a turn boundary;
-   `core.state.is_turn_start` is the one predicate).
-2. **pause** — Esc alone `interrupt()`s into continue / steer / abort.
+1. **pause** — Esc alone `interrupt()`s into continue / steer / abort.
+2. **steer** — Esc + text mid-turn lands as a `STEER_PREFIX` HumanMessage (not a turn boundary;
+   `core.state.is_turn_start` is the one predicate). Drained only PAST the pause: a resumed
+   interrupt re-runs the node from the top, so steers taken before it would be lost.
 3. **cap** — past `runtime.max_iterations` (16) the pass runs with tools UNBOUND and a budget
    note: a real answer, never a stub.
 4. **generate** — `_generate`, the one seam tests replace: `bind_tools(registry)`, streamed,
@@ -60,7 +61,9 @@ each costing a chat turn nothing):
    round just before it had an error; a thinking pass that returns nothing is rerun think-off
    (the 4b/9b write the answer inside the reasoning and emit no content). A thinking pass's
    reasoning is recorded in `llm_calls` (shown by `/trace why`), never on the message. A model
-   reply whose tool arguments were not valid JSON is retried once with a corrective note.
+   reply whose tool arguments were not valid JSON is retried once with a corrective note;
+   what the failed attempt streamed is retracted first (`RETRACT` on LangGraph's custom
+   stream, which `app/turn.run_turn` hands to `on_retract` — the REPL's `answer.discard`).
 5. **hygiene** — on each emitted call, answered with an error ToolMessage that routes straight
    back to `agent` (no gate, no execution): an unknown tool; arguments that belong to another
    tool (`recall(fact=…)` → "those belong to remember"); missing required arguments after
@@ -68,7 +71,8 @@ each costing a chat turn nothing):
    identical call (`STALL_REPEATS`). `ask_user` runs alone — a resumed interrupt re-executes
    the tools node, so siblings in its batch are answered with `ASK_ALONE_TEXT`.
 6. **answer** — a message without tool calls IS the answer. The incidents note (calls that
-   were declined, blocked or failed, read off the ToolMessages' `saturn_status` stamp) and the
+   were declined, blocked or failed, read off the ToolMessages' `saturn_status` stamp; a
+   call's LAST outcome decides, so one that failed and then ran is not listed) and the
    Sources receipt (every call and document the turn gathered, numbered as `/trace source`
    numbers them) are appended to the RECORDED message, never the stream.
 
@@ -94,19 +98,26 @@ sequence). Per call: the observation is clamped to `_MAX_OBSERVATION` (12,000 ch
 head and tail); the egress slice is attached; untrusted output (web, MCP, files, notes, mail)
 is scanned by `trust/quarantine.py` and fenced as data; a structural `saturn_status` stamp
 (`done` / `error` / `blocked` / `skipped`) rides the ToolMessage so no reader has to sniff
-outcome from text; a successful `plan` call maps onto `state["plan"]` (the rail's checklist —
+outcome from text — a tool reports failure by RAISING `tools.toolspec.ToolError` (an edit
+whose text was not found, a non-zero shell exit, a refused path, an MCP error), which the node
+stamps `error`; before 2026-09-30 most tools returned such failures as strings, stamped `done`; a successful `plan` call maps onto `state["plan"]` (the rail's checklist —
 intent, not record). Each tool event records the agent pass that issued it.
 
 ### Around the loop
 
 - `runtime.keep_alive` keeps the model loaded between turns; the idle prime warms the prefix.
 - Auto-compaction (`runtime.auto_compact`, threshold 0.85 of the window) summarizes older turns
-  with the same model after a turn; the memory review queues candidates from each turn.
+  with the same model after a turn (thinking off, `num_predict` bounded — `invoke_kwargs`
+  task `compaction`, as are `memory_review` and `init`); the memory review queues candidates from each turn.
 - Headless `-p` / `-q` run the same loop with gated tools DENIED unless `--yolo`.
 - `hooks.yaml` fires on turn-start / turn-end (from `run_turn`) and before- / after-write
   (from the file tools); a before-write non-zero exit refuses the write as a failed step.
 
 ### What the benchmarks say (2026-09-29, after the small wins)
+
+These numbers predate the 2026-09-30 review fixes: failed tool calls now stamp `error`, so the
+adaptive think fires after them and the incidents note lists them. Re-run both benchmarks
+before comparing.
 
 Loop benchmark (`python benchmark.py --loop`, 25 daily requests): 4b 20/25, 9b 20/24 (before
 the dependent-calls task); no phantom actions, no hygiene bounces, no capped turns on either.

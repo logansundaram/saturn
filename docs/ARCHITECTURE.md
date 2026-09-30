@@ -57,19 +57,23 @@ The whole product is one loop. Reading it end to end explains 80% of the repo:
    - `nodes/agent.py` makes ONE native tool-calling call per pass (`bind_tools` over the
      registry, streamed, think adaptive: off on pass one and the capped pass, on once the turn
      proved hard — `runtime.think`) over `[system][stable][history…][dynamic + request][turn…]`.
-     Around the call, deterministic checks in a fixed order: a steer (Esc + text) lands as a
-     `STEER_PREFIX` message; a pause (Esc) `interrupt()`s for the pause prompt (continue /
-     steer / abort); past `runtime.max_iterations` the last pass runs with tools unbound and a
+     Around the call, deterministic checks in a fixed order: a pause (Esc) `interrupt()`s for
+     the pause prompt (continue / steer / abort); a steer (Esc + text) lands as a
+     `STEER_PREFIX` message, drained only past the pause so a resumed interrupt cannot lose it;
+     past `runtime.max_iterations` the last pass runs with tools unbound and a
      budget note; each emitted call passes hygiene (unknown tool, missing or malformed
-     arguments via `core/tool_args`, a repeat of a call the user declined this turn, a third
+     arguments via `core/tool_args`, arguments that belong to another tool, a repeat of a call the user declined this turn, a third
      identical call — each answered with an error ToolMessage back to the model). A message
      without tool calls is the answer: the Sources receipt and the incidents note (declined /
-     blocked / failed rounds, read off the ToolMessages' `saturn_status` stamp) are appended
-     to the recorded message.
+     blocked / failed calls, read off the ToolMessages' `saturn_status` stamp; a call's last
+     outcome decides, so one that failed and then ran is not listed) are appended to the
+     recorded message. A malformed reply is retried once, and what it streamed is retracted
+     first (`nodes.agent.RETRACT` on LangGraph's custom stream → `run_turn`'s `on_retract`).
    - `nodes/approval.py` is the human gate: `trust/policy.py` decides whether each call the
      agent did not answer itself is auto-approved (risk tier, /policy allow prefixes) or must
      interrupt and ask you. A fully-rejected batch routes back to the agent.
-   - `nodes/tools.py` executes the calls, clamps the observation, attributes egress
+   - `nodes/tools.py` executes the calls, stamps each `done` / `error` / `blocked` (a tool
+     reports failure by raising `ToolError`, so an error is never read as done), clamps the observation, attributes egress
      (`trust/egress.py`), fences injection-suspicious content (`trust/quarantine.py`), and
      maps a `plan` call (`tools/planning.py` — the model's checklist) onto `state["plan"]`.
 3. **The answer renders** — `tui/ui/response.py` streamed the agent's answer tokens as they
@@ -85,7 +89,7 @@ The whole product is one loop. Reading it end to end explains 80% of the repo:
 |---|---|
 | `cli.py` | The strict argparse surface (`-p`, `--json`, `--export`, `--replay`, `--yolo`) + piped-stdin capture. Unknown flags exit 2, never fall through to the TUI. |
 | `graph.py` | `build_agent()`: wires `nodes/` into the compiled LangGraph with the SqliteSaver checkpointer. The only place graph assembly happens. |
-| `turn.py` | `run_turn()`: streams one turn (node updates + answer tokens), resolves interrupts through the caller's approver, surfaces trace degradation. |
+| `turn.py` | `run_turn()`: streams one turn (node updates + answer tokens + the agent's retract signal), resolves interrupts through the caller's approver, surfaces trace degradation. |
 | `session.py` | Per-turn state shape + fresh-turn reset + the two history compactions (mechanical every turn; LLM summary past the threshold). |
 | `startup.py` | Shared startup: knowledge-base sync + graph build, one-line ingest warnings, attachment admission warnings. |
 | `headless.py` | The `-p` path: one query → stdout; gated calls denied by default; `--json` / `--export` contracts. |
@@ -95,18 +99,18 @@ The whole product is one loop. Reading it end to end explains 80% of the repo:
 | File | What it does |
 |---|---|
 | `state.py` | `AgentState` + the step-dict vocabulary of the model's checklist. `current_step` (first item with `result is None`) is the gate's step context; `gate_events` is the one non-recomputable record (human decisions); `is_turn_start` is THE turn-boundary predicate; `grounding_parts` splits the grounding into its stable / per-turn halves. |
-| `llms.py` | `get_model()` — the model factory (one chat model per tier, shared by the agent and the background calls) over Ollama; `invoke_kwargs`, THE builder of the per-task decoding options every call sends (num_ctx, num_predict, think); locality boundary wrapping for a remote `OLLAMA_HOST`; startup health check. Cloud providers are shelved (refuse actionably). |
+| `llms.py` | `get_model()` — the model factory (one chat model per tier, shared by the agent and the background calls) over Ollama; `invoke_kwargs`, THE builder of the per-task decoding options every call sends (num_ctx, num_predict, think) — the agent, compaction, the memory review and `/init` each pass a task, so thinking is explicitly off and output bounded; locality boundary wrapping for a remote `OLLAMA_HOST`; startup health check. Cloud providers are shelved (refuse actionably). |
 | `messages.py` | Every system prompt, in one place: `agent_sys_msg()` (the loop's one prompt — no tool catalog, the tools ride the native bind) plus the compaction, memory-review and /init prompts. |
 | `doctext.py` | Text out of PDF / .docx / .xlsx (`extract`) for `read_file` and `@file` attachments, and the PDF / Word loaders the knowledge base shares. A leaf; the format libraries load lazily. |
 | `sources.py` | `build_sources` — the answer's source numbering, shared by the Sources footer and `/trace source`. |
 | `pause.py` | The `PauseController`: the Esc pause / steer latch the agent node consults at the top of every pass. |
 | `prime.py` | The idle prefix prime: between turns (and once after the weights load) the agent's `[system][stable grounding]` prefix is re-sent through the bound model with one predicted token so the next turn's call resumes from that checkpoint. Off under tests and `runtime.prime: false`. |
-| `tool_args.py` | Tool-argument recovery: alias coercion onto real schemas + the schema hint the agent sends back on a rejected call (small-model tolerance). |
+| `tool_args.py` | Tool-argument recovery: alias coercion onto real schemas (required and optional arguments), the foreign-arguments check (`tool_for_args`: `recall(fact=…)` is `remember`'s call), and the schema hint the agent sends back on a rejected call (small-model tolerance). |
 | `compaction.py` | The heavier LLM compaction (automatic past threshold) folding old turns into a summary message. |
 | `memory_review.py` | Session-end learning, gated: collects memory candidates from each turn (steer notes, gate denials, failed tool calls) and from compaction summaries into a pending queue, optionally asks the model for proposals, and runs the accept-each review screen (`/memory review`, `/quit`). Never writes without a y. |
 | `hooks.py` | The user's `~/.saturn/hooks.yaml`: shell commands on turn-start / turn-end (`app/turn.py`) and before- / after-write (`tools/files.py`); a before-write non-zero exit blocks the write; `problems()` feeds the startup warning. |
 | `mentions.py` | `@file` expansion into clamped attachment blocks; drag-and-drop path detection. |
-| `workspace.py` | Where Saturn works: the launch folder, `/add-dir` folders, the one containment check (`resolve`), and the pruned walk. |
+| `workspace.py` | Where Saturn works: the launch folder, `/add-dir` folders, the one containment check (`resolve`), `same` (file identity — a case-only spelling on macOS is the same file), and the pruned walk. |
 
 ### `nodes/` — the graph, one file per node
 `ground` → `agent` → `approval` → `tools` → `agent` … → END. Routing helpers live beside
@@ -118,14 +122,14 @@ every check in the agent node. Note: `nodes/tools.py` is the *tool-execution nod
 ### `tools/` — capabilities behind the gate
 | File | What it does |
 |---|---|
-| `toolspec.py` | `@register_tool(risk[, retrieval])` — risk tier declared at definition, timing wrapper. Unknown risk fails closed to `destructive`. |
+| `toolspec.py` | `@register_tool(risk[, retrieval, untrusted])` — risk tier declared at definition, timing wrapper. Unknown risk fails closed to `destructive`. `ToolError`: what a tool RAISES when the call did not do its job (the tools node stamps it `error`; never return a failure as a string). |
 | `registry.py` | Imports the tool modules (which registers them), exposes the live registry + risk views, connects MCP, applies persisted `/policy risk` overrides. |
 | `mcp_client.py` | MCP client: stdio/HTTP/SSE servers from config.yaml, remote tools registered as `mcp_<server>_<tool>` (never trusting self-declared tiers), remote calls on the egress ledger, one background asyncio bridge. |
 | `calculator.py` | `calculate` (whitelisted AST evaluator — never `eval`) + `current_time` (clock grounding). |
-| `web.py` | `web_search` (keyless DuckDuckGo — API-less by design since 2026-07-06), `web_extract` (local trafilatura), `http_request` (the universal REST integration — always gated, request shown in full). |
-| `files.py` | Workspace-sandboxed file tools: read/write/edit/list/search/find. Mutating tools snapshot first for `/undo`. |
+| `web.py` | `web_search` (keyless DuckDuckGo — API-less by design since 2026-07-06), `web_extract` (httpx fetch + local trafilatura extraction; redirects followed one hop at a time, each new host air-gap checked and recorded before it is contacted). `http_request` was cut 2026-07-16 — MCP is the integration surface. |
+| `files.py` | Workspace-sandboxed file tools: read/write/edit/list/search/find. Mutating tools snapshot first for `/undo`; Saturn's control files (config.yaml, permissions.json, hooks.yaml) are refused by file identity, so a case-only spelling is refused too. |
 | `knowledge.py` | `search_knowledge_base` (RAG) + `remember`/`recall` (the layered memory; `remember` takes a layer and a `replaces=#id`) |
-| `shell.py` | `run_shell` — always `destructive` (the human approving the exact command is the boundary), bounded foreground runs only. |
+| `shell.py` | `run_shell` — always `destructive` (the human approving the exact command is the boundary), bounded foreground runs only; stdin is `/dev/null` (the Esc watcher owns the terminal); a non-zero exit or timeout raises `ToolError`. |
 | `interaction.py` | `ask_user` — pauses the running graph via `interrupt()` to ask the human ONE question; the typed answer resumes as the observation. `read_only` (asking never gates); degrades honestly headless. |
 | `notify.py` | `schedule_notification` — a one-shot desktop reminder handed to the OS scheduler via `notify/` (launchd + osascript on macOS; other platforms refuse honestly). `side_effecting`; not egress. Human side: `/notify`. |
 | `applescript.py` | The one seam for native macOS app tools: `run(script, app=)` opens the target app hidden then runs `osascript`, translating "not macOS" / Automation denied / not running / timeout into model-readable errors; `quote` + RS/US `records` so user text never splits a field. Not egress; imports nothing project-side. |
@@ -144,7 +148,7 @@ every check in the agent node. Note: `nodes/tools.py` is the *tool-execution nod
 ### `trust/` — the product's namesake
 | File | What it does |
 |---|---|
-| `policy.py` | THE gate policy object. `approves(name, risk, args)` is the single question the approval node asks; `/policy risk`·`allow`·`open` and `--yolo` are all views of it. Durable state in `database/permissions.json`. |
+| `policy.py` | THE gate policy object. `approves(name, risk, args)` is the single question the approval node asks; `/policy risk`·`allow`·`open` and `--yolo` are all views of it. A shell always-allow prefix covers a command only past the metacharacter screen and the argument-tail screen (interpreters, capability flags, globs and brace expansion, paths outside the workspace — bare or as a flag's value). Durable state in `database/permissions.json`. |
 | `egress.py` | The network chokepoint: in-memory egress ledger (every exit calls `check` then `record`), the air-gap gate, and the inference-locality classifier (`ollama_is_local`). |
 | `secret_scan.py` | Credential-shaped values (key patterns, JWTs, private keys) as display-safe findings; `scan_args` backs the gate's secret-argument warning. |
 | `quarantine.py` | Prompt-injection quarantine: scan untrusted observations, fence instruction-shaped content as data, escalate the next tool batch to the gate. Also screens corpus/attachment admission. |

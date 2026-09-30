@@ -110,11 +110,14 @@ def _llm_summary(older: list) -> str:
     on an LLM failure (caller treats that as a no-op)."""
     import time
 
-    from core.llms import get_model
+    from core.llms import generate, get_model, invoke_kwargs, model_tag
     from core.messages import COMPACTION_PROMPT  # lazy: messages pulls the live tool registry
 
     prompt = HumanMessage(content=COMPACTION_PROMPT + _transcript(older))
     start = time.perf_counter()
-    out = get_model().invoke([prompt]).content
+    # A task, so thinking is explicitly OFF and the output bounded: the brief rides every later
+    # turn, and a thinking model's default would put its reasoning into it.
+    out = generate(get_model(), [prompt], tag=model_tag(),
+                   **invoke_kwargs(None, 0.0, task="compaction")).content
     diag.log(f"compaction: summarized {len(older)} msg(s) in {time.perf_counter() - start:.2f}s")
     return str(out).strip()

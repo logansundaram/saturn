@@ -82,15 +82,15 @@ _EMPTY_OK: dict[str, set[str]] = {
 # accepted under that exact key; a list is the alias order, drawn from keys no REQUIRED arg
 # consumed (schedule_notification's detail under "message" was silently dropped when "message"
 # also aliased the title — an empty body at the gate, review 2026-09-06).
+_DIRECTORY = ["directory", "dir", "folder", "path"]
 _OPTIONAL: dict[str, list] = {
-
-    "list_directory": ["directory"],
-    "find_files": ["directory"],
-    "search_files": ["directory", "file_glob"],
+    "list_directory": [_DIRECTORY],
+    "find_files": [_DIRECTORY],
+    "search_files": [_DIRECTORY, "file_glob"],
     "write_file": ["overwrite"],
     "edit_file": ["replace_all"],
     "remember": ["category", "layer", "replaces", "sensitivity"],
-    "recall": ["query"],
+    "recall": [["query", "q", "text", "search", "keywords", "keyword"]],
     "schedule_notification": [
         ["body", "detail", "details", "description", "message", "text", "note", "content"],
     ],

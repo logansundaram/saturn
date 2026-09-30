@@ -265,7 +265,7 @@ def test_arg_tail_screen_is_defense_in_depth_not_a_boundary(isolated_paths):
     assert policy.approves("run_shell", "destructive",
                            {"command": "tar --use-compress-program=sh -cf x ."}) is False
     assert policy.approves("run_shell", "destructive",
-                           {"command": "tar --totals=/bin/sh -cf x ."}) is True
+                           {"command": "tar --checkpoint-action=exec=id -cf x ."}) is True
 
 
 _EVASION_CORPUS = [
@@ -274,6 +274,9 @@ _EVASION_CORPUS = [
     ("cp", "cp notes.txt /dev/stdout", "versatile copy"),
     ("awk", 'awk \'BEGIN{system("id")}\'', "versatile interpreter -> exec"),
     ("cat", "cat *", "glob expansion"),
+    ("cat", "cat {..,x}/secret", "brace expansion builds a parent path"),
+    ("sort", "sort --files0-from=/etc/passwd", "a flag's value names a path outside"),
+    ("sort", "sort -o../x notes.txt", "a short flag's glued value"),
     ("git status", "git status ； rm a.txt", "unicode lookalike ';' (inert in sh/pwsh)"),
     ("python", "python evil.py", "unlisted-by-a-denylist interpreter runs a script"),
     ("npm", "npm run pwn", "package script is arbitrary code"),

@@ -73,7 +73,9 @@ def normalize(path) -> Path:
     return (raw if raw.is_absolute() else root() / raw).resolve()
 
 
-def _same(a: Path, b: Path) -> bool:
+def same(a: Path, b: Path) -> bool:
+    """Whether two paths name the same file: equal, or (both existing) the same inode — a
+    case-only spelling on macOS's case-insensitive disk is the same file."""
     try:
         return a == b or (a.exists() and b.exists() and os.path.samefile(a, b))
     except OSError:
@@ -87,7 +89,7 @@ def _inside(target: Path, folder: Path) -> bool:
     yet (a new file in a new subfolder) is judged by its nearest existing ancestors."""
     if target.is_relative_to(folder):
         return True
-    return any(_same(anc, folder) for anc in (target, *target.parents) if anc.exists())
+    return any(same(anc, folder) for anc in (target, *target.parents) if anc.exists())
 
 
 def display(path) -> str:
@@ -152,7 +154,7 @@ def remove(path) -> bool:
     included, which cannot be removed."""
     p = normalize(path)
     for i, folder in enumerate(_extra):
-        if _same(p, folder):
+        if same(p, folder):
             del _extra[i]
             return True
     return False

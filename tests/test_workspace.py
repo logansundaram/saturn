@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from core import workspace
+from tools.toolspec import ToolError
 
 
 @pytest.fixture
@@ -176,10 +177,10 @@ def test_file_tools_work_in_the_launch_folder(launched):
 
 def test_a_path_outside_is_refused_with_the_add_dir_fix(launched, tmp_path):
     (tmp_path / "Desktop").mkdir()
-    out = read_file.invoke({"file_path": str(tmp_path / "Desktop" / "x.pdf")})
-    assert out.startswith("Outside the folders Saturn can reach") and "/add-dir" in out
-    out = write_file.invoke({"file_path": "../escape.txt", "content": "x"})
-    assert out.startswith("Outside the folders Saturn can reach")
+    with pytest.raises(ToolError, match="(?s)^Outside the folders Saturn can reach.*/add-dir"):
+        read_file.invoke({"file_path": str(tmp_path / "Desktop" / "x.pdf")})
+    with pytest.raises(ToolError, match="^Outside the folders Saturn can reach"):
+        write_file.invoke({"file_path": "../escape.txt", "content": "x"})
     assert not (launched.parent / "escape.txt").exists()
 
 
@@ -197,8 +198,10 @@ def test_a_deleted_launch_folder_degrades_to_refusals(launched):
     import shutil
 
     shutil.rmtree(launched)
-    assert list_directory.invoke({"directory": "."}) == "Path is not a directory."
-    assert search_files.invoke({"pattern": "x"}) == "Path is not a directory."
+    with pytest.raises(ToolError, match="Path is not a directory."):
+        list_directory.invoke({"directory": "."})
+    with pytest.raises(ToolError, match="Path is not a directory."):
+        search_files.invoke({"pattern": "x"})
     with pytest.raises(FileNotFoundError):
         read_file.invoke({"file_path": "notes/todo.md"})
 

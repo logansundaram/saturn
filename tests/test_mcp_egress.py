@@ -7,6 +7,7 @@ rewriting that lived here was cut with runtime.redaction, 2026-09-29.)
 import pytest
 
 from trust import egress
+from tools.toolspec import ToolError
 
 ANTHROPIC_KEY = "sk-ant-" + "a" * 24
 BEARER = "Bearer " + "b" * 30
@@ -29,8 +30,8 @@ def test_http_call_is_recorded_with_its_args_unchanged(monkeypatch, isolated_pat
     mc = _forge(monkeypatch)
     args = {"text": ANTHROPIC_KEY, "headers": [BEARER]}
     mark = egress.next_seq()
-    out = mc.call_tool("srv", "post", args)
-    assert out.startswith("Error")  # never connected — the boundary already did its job
+    with pytest.raises(ToolError):  # never connected — the boundary already did its job
+        mc.call_tool("srv", "post", args)
     evs = egress.events_since(mark)
     assert [(e.channel, e.host, e.detail) for e in evs] == [("mcp", "mcp.example.com", "srv.post")]
     assert evs[0].n_bytes > 0
@@ -40,8 +41,8 @@ def test_http_call_is_recorded_with_its_args_unchanged(monkeypatch, isolated_pat
 def test_stdio_server_is_not_egress(monkeypatch, isolated_paths):
     mc = _forge(monkeypatch, transport="stdio")
     mark = egress.next_seq()
-    out = mc.call_tool("srv", "post", {"text": ANTHROPIC_KEY})
-    assert out.startswith("Error")
+    with pytest.raises(ToolError):
+        mc.call_tool("srv", "post", {"text": ANTHROPIC_KEY})
     assert egress.events_since(mark) == []  # a local child process is not network egress
 
 

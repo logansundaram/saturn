@@ -14,7 +14,8 @@ from core import hooks
 from tui import ui
 
 
-def run_turn(graph, payload, config, approver, on_update=None, pause=None, on_token=None):
+def run_turn(graph, payload, config, approver, on_update=None, pause=None, on_token=None,
+             on_retract=None):
     """Drive one turn to completion, streaming node updates and pausing at an interrupt.
 
     `approver(interrupt_value) -> decision` resolves each interrupt (the approval gate, the pause
@@ -24,7 +25,9 @@ def run_turn(graph, payload, config, approver, on_update=None, pause=None, on_to
     the final answer live. `pause`, if given, is a `typeahead.InputQueue` (any start()/stop() console
     reader): it's started only while the graph is executing and stopped before any blocking input(),
     so it can capture type-ahead + the Esc pause without ever stealing the prompt's keystrokes (the
-    queued lines themselves are drained by the REPL loop, not here). Returns the final state.
+    queued lines themselves are drained by the REPL loop, not here). `on_retract()`, if given, is
+    called when the agent node takes back what it streamed (a malformed attempt about to be
+    retried — `nodes.agent.RETRACT` on the custom stream). Returns the final state.
 
     Streams two modes at once: "updates" drives the trace/plan and carries the interrupt marker
     (unchanged routing — pause/resume is still decided by get_state below); "messages" carries the
@@ -47,8 +50,12 @@ def run_turn(graph, payload, config, approver, on_update=None, pause=None, on_to
         # it above the live tail, and the final render follows it.
         try:
             for mode, data in graph.stream(
-                pending, config, stream_mode=["updates", "messages"]
+                pending, config, stream_mode=["updates", "messages", "custom"]
             ):
+                if mode == "custom":
+                    if on_retract and isinstance(data, dict) and data.get("type") == "retract":
+                        on_retract()
+                    continue
                 if mode == "messages":
                     # (message_chunk, metadata) — stream only the agent node's tokens. Filters:
                     # skip other nodes' model calls, and require an AIMessageChunk (a streaming

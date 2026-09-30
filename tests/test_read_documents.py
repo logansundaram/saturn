@@ -12,6 +12,7 @@ import pytest
 
 from core import doctext, mentions, workspace
 from tools.files import read_file
+from tools.toolspec import ToolError
 
 
 def _pdf(pages: list[str]) -> bytes:
@@ -115,9 +116,10 @@ def test_xlsx_rows_are_capped(folder, monkeypatch):
 
 def test_other_binary_files_are_refused_by_name(folder):
     (folder / "photo.jpg").write_bytes(b"\xff\xd8\xff\x00\x10JFIF")
-    out = read_file.invoke({"file_path": "photo.jpg"})
-    assert out.startswith("photo.jpg is a binary file (.jpg)")
-    assert "PDF, .docx and .xlsx" in out
+    with pytest.raises(ToolError) as info:
+        read_file.invoke({"file_path": "photo.jpg"})
+    assert str(info.value).startswith("photo.jpg is a binary file (.jpg)")
+    assert "PDF, .docx and .xlsx" in str(info.value)
 
 
 def test_text_files_are_unchanged(folder):

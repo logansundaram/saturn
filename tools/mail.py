@@ -26,7 +26,7 @@ from __future__ import annotations
 
 from tools import applescript
 from tools.applescript import AS_RS, AS_US, ISO_HANDLERS, AppleScriptError, quote, records
-from tools.toolspec import register_tool
+from tools.toolspec import ToolError, register_tool
 
 # A killed osascript does NOT cancel its Apple event: Mail keeps grinding through it on its main
 # thread, serially, and every retry queues behind it (observed 2026-09-06 — six timed-out queries
@@ -51,12 +51,12 @@ _ROW = (f"(id of m as string) & {AS_US} & (sender of m) & {AS_US} & (subject of 
         f"& my iso(date received of m) & {AS_US} & (read status of m as string) & {AS_RS}")
 
 
-def _error(exc: AppleScriptError, mailbox: str) -> str:
-    """Mail's own errors, with the one everyday case made plain."""
+def _error(exc: AppleScriptError, mailbox: str) -> ToolError:
+    """Mail's own errors as the ToolError to raise, with the one everyday case made plain."""
     if "Invalid index" in str(exc) and "every mailbox whose name" in str(exc):
-        return (f"Error: no mailbox named {mailbox!r} (use inbox, sent, drafts, junk, trash, "
-                f"or a folder/label name)")
-    return f"Error: {exc}"
+        return ToolError(f"no mailbox named {mailbox!r} (use inbox, sent, drafts, junk, trash, "
+                         f"or a folder/label name)")
+    return ToolError(str(exc))
 
 
 def _rows(out: str, mailbox: str) -> list[dict]:
@@ -99,7 +99,7 @@ return out
     try:
         out = applescript.run(script, timeout=_QUERY_TIMEOUT, app="Mail")
     except AppleScriptError as exc:
-        return _error(exc, mailbox)
+        raise _error(exc, mailbox) from exc
     rows = _rows(out, mailbox)
     if unread_only:
         rows = [m for m in rows if m["unread"]]
@@ -114,7 +114,7 @@ def search_mail(query: str, mailbox: str = "inbox", limit: int = 10):
     Returns id, from, subject, date and unread flag, newest first."""
     q = str(query or "").strip()
     if not q:
-        return "Error: search_mail needs a non-empty query"
+        raise ToolError("search_mail needs a non-empty query")
     mailbox = str(mailbox or "inbox").strip() or "inbox"
     limit = max(1, min(int(limit or 10), _MAX))
     script = f"""
@@ -134,7 +134,7 @@ return out
     try:
         out = applescript.run(script, timeout=_QUERY_TIMEOUT, app="Mail")
     except AppleScriptError as exc:
-        return _error(exc, mailbox)
+        raise _error(exc, mailbox) from exc
     rows = _rows(out, mailbox)
     return rows if rows else f"No messages match {q!r}."
 
@@ -146,7 +146,7 @@ def read_mail(id: int | str, mailbox: str = "inbox"):
     try:
         mid = int(id)
     except (TypeError, ValueError):
-        return f"Error: read_mail needs a numeric message id from list_mail, not {id!r}"
+        raise ToolError(f"read_mail needs a numeric message id from list_mail, not {id!r}")
     mailbox = str(mailbox or "inbox").strip() or "inbox"
     script = f"""
 tell application "Mail"
@@ -165,10 +165,10 @@ end tell
     try:
         out = applescript.run(script, timeout=_QUERY_TIMEOUT, app="Mail")
     except AppleScriptError as exc:
-        return _error(exc, mailbox)
+        raise _error(exc, mailbox) from exc
     parts = out.split(applescript.US, 5)
     if len(parts) != 6:
-        return f"Error: no message with id {mid} in {mailbox}"
+        raise ToolError(f"no message with id {mid} in {mailbox}")
     return {"id": parts[0], "mailbox": mailbox, "from": parts[1], "to": parts[2],
             "subject": parts[3], "date": parts[4], "body": parts[5]}
 
@@ -185,9 +185,9 @@ def draft_mail(to: str, subject: str, body: str, cc: str = ""):
     tos, ccs = _addresses(to), _addresses(cc)
     subject = str(subject or "").strip()
     if not tos:
-        return "Error: draft_mail needs at least one recipient address"
+        raise ToolError("draft_mail needs at least one recipient address")
     if not subject:
-        return "Error: an email draft needs a non-empty subject"
+        raise ToolError("an email draft needs a non-empty subject")
     recips = "\n".join(
         [f"    make new to recipient with properties {{address:{quote(a)}}}" for a in tos]
         + [f"    make new cc recipient with properties {{address:{quote(a)}}}" for a in ccs]
@@ -204,6 +204,6 @@ end tell"""
     try:
         applescript.run(script, app="Mail")
     except AppleScriptError as exc:
-        return f"Error: {exc}"
+        raise ToolError(str(exc)) from exc
     return {"to": tos, "cc": ccs, "subject": subject,
             "note": "opened in Mail as an unsent draft for you to review and send; nothing was sent"}

@@ -40,6 +40,12 @@ _RETRIEVAL: set = set()    # tool names whose results are recorded as retrieved 
 _UNTRUSTED: set = set()    # tool names whose OUTPUT crosses the trust boundary (quarantine scans)
 
 
+class ToolError(Exception):
+    """A tool call that did not do its job — raised, never returned, so the tools node stamps
+    the round `error`: the adaptive think wakes on it and the answer's incidents note tells the
+    user. The message is written for the model; the node hands it back as the observation."""
+
+
 def register_tool(risk: str = "destructive", *, retrieval: bool = False, untrusted: bool = False):
     """Decorator: wrap a function as a LangChain tool AND register it (list + risk tier + retrieval
     flag + trust classification) in one place.

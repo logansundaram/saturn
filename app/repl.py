@@ -320,6 +320,7 @@ def run_repl() -> None:
                                           answer=answer),
                 pause=input_queue,
                 on_token=answer.feed,
+                on_retract=answer.discard,
             )
             tracer.end_run(run_id, "ok", state["messages"][-1].content)
             # The daemon is idle now: re-plant every lineage's prefix checkpoint for the next

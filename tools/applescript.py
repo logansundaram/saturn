@@ -51,7 +51,8 @@ end pad
 
 class AppleScriptError(Exception):
     """A script could not run or failed. The message is written for the model/user to read
-    verbatim (it always starts with a lowercase clause the tool prefixes with 'Error: ')."""
+    verbatim (it always starts with a lowercase clause; the tool re-raises it as ToolError and the tools
+    node prefixes 'Error: ')."""
 
 
 def _platform() -> str:

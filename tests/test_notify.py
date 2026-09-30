@@ -15,6 +15,7 @@ import pytest
 import notify
 from notify import NotifyError, Notification, parse_when
 from notify import macos
+from tools.toolspec import ToolError
 
 
 # ── fixtures ─────────────────────────────────────────────────────────────────────────────────
@@ -288,23 +289,23 @@ def test_tool_refuses_past_time_without_scheduling(mac_backend, monkeypatch):
     from tools.registry import tools_by_name
 
     monkeypatch.setattr(tool_mod, "_now", lambda: NOW)
-    out = tools_by_name["schedule_notification"].invoke({"when": "2020-01-01T00:00", "title": "x"})
-    assert isinstance(out, str) and out.startswith("Error:") and "current_time" in out
+    with pytest.raises(ToolError, match="current_time"):
+        tools_by_name["schedule_notification"].invoke({"when": "2020-01-01T00:00", "title": "x"})
     assert mac_backend.pending() == []
 
 
 def test_tool_refuses_empty_title(mac_backend):
     from tools.registry import tools_by_name
-    out = tools_by_name["schedule_notification"].invoke({"when": "in 5 minutes", "title": "  "})
-    assert out.startswith("Error:") and "title" in out
+    with pytest.raises(ToolError, match="title"):
+        tools_by_name["schedule_notification"].invoke({"when": "in 5 minutes", "title": "  "})
     assert mac_backend.pending() == []
 
 
 def test_tool_reports_unsupported_platform_honestly(monkeypatch):
     from tools.registry import tools_by_name
     monkeypatch.setattr(notify, "backend", lambda: notify.Unsupported("linux"))
-    out = tools_by_name["schedule_notification"].invoke({"when": "in 5 minutes", "title": "x"})
-    assert out.startswith("Error:") and "not supported on linux" in out
+    with pytest.raises(ToolError, match="not supported on linux"):
+        tools_by_name["schedule_notification"].invoke({"when": "in 5 minutes", "title": "x"})
 
 
 # ── /notify ──────────────────────────────────────────────────────────────────────────────────

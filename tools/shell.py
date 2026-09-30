@@ -17,7 +17,8 @@ shell's own operators.
 
 Bounded — the call is killed after `shell.timeout` seconds (config.yaml `shell:`) so a hung or
 interactive command can't wedge the turn, mirroring `runtime.llm_timeout`. stdout and stderr
-are combined and returned with the exit code; the
+are combined and returned with the exit code; a non-zero exit or a timeout RAISES ToolError
+(the same text), so the round is stamped error and the answer discloses it. The
 tool_node clamps the observation before it enters context (gotcha #5), so a runaway command can't
 overflow the window.
 
@@ -32,7 +33,7 @@ import signal
 import subprocess
 
 from config import get_config
-from tools.toolspec import register_tool
+from tools.toolspec import ToolError, register_tool
 
 # Fallback when config.yaml has no `shell.timeout` (or an invalid one). Mirrors the local-helper
 # style web.py uses for its own knobs — no config.py property needed for a single tool-local value.
@@ -115,6 +116,9 @@ def run_shell(command: str):
         popen_kwargs = dict(
             shell=True,
             cwd=str(cwd),
+            # Never the terminal: the type-ahead/Esc watcher is reading it, and a command that
+            # waits on it (an editor, a password prompt) would hang to the timeout. EOF instead.
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -143,8 +147,12 @@ def run_shell(command: str):
                 stdout, stderr = "", ""
             partial = ((stdout or "") + (stderr or "")).strip()
             msg = f"Command timed out after {timeout:g}s and was terminated."
-            return f"{msg}\n{partial}" if partial else msg
-
-        return _format(proc.returncode, stdout, stderr)
+            raise ToolError(f"{msg}\n{partial}" if partial else msg)
+    except ToolError:
+        raise
     except Exception as exc:  # never let a shell failure kill the turn — report it to the agent
-        return f"Shell execution failed: {exc}"
+        raise ToolError(f"Shell execution failed: {exc}") from exc
+    out = _format(proc.returncode, stdout, stderr)
+    if proc.returncode != 0:
+        raise ToolError(out)  # a failed command is a failed step: stamped error, disclosed
+    return out

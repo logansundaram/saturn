@@ -16,6 +16,7 @@ import pytest
 import tools.web as web
 from config import get_config
 from trust import egress
+from tools.toolspec import ToolError
 
 
 class _StubDDGS:
@@ -86,8 +87,8 @@ def test_extract_local_records_target_host(monkeypatch):
 def test_extract_empty_list_records_nothing():
     # No URL → nothing sent → nothing recorded (the old top-of-function record logged a phantom
     # event for an empty call). .func bypasses the str schema to reach the list-tolerant body.
-    out = web.web_extract.func(url=[])
-    assert "No URL" in out
+    with pytest.raises(ToolError, match="No URL"):
+        web.web_extract.func(url=[])
     assert egress.count() == 0
 
 
@@ -95,8 +96,8 @@ def test_extract_empty_list_records_nothing_under_airgap(monkeypatch):
     # The empty guard precedes the air-gap check: an empty call must not put a phantom BLOCKED
     # event with the garbage host "[]" into the ledger for a send that could never have happened.
     monkeypatch.setitem(get_config()._data["runtime"], "airgap", True)
-    out = web.web_extract.func(url=[])
-    assert "No URL" in out
+    with pytest.raises(ToolError, match="No URL"):
+        web.web_extract.func(url=[])
     assert egress.count() == 0
 
 
@@ -124,6 +125,56 @@ def test_extract_multi_url_records_every_host(monkeypatch):
         ("b.example", "web_extract", egress.SENT),
         ("c.example", "web_extract", egress.SENT),
     ]
+
+
+def _redirecting_get(chain):
+    """A stand-in for httpx.get over `chain` = {url: (status, location_or_body)}; records the
+    URLs actually requested, and refuses to be asked to follow redirects itself."""
+    import httpx
+
+    asked = []
+
+    def get(url, *, follow_redirects, **_kw):
+        assert follow_redirects is False  # every hop is Saturn's, so every host is recorded
+        asked.append(url)
+        status, value = chain[url]
+        req = httpx.Request("GET", url)
+        if 300 <= status < 400:
+            return httpx.Response(status, headers={"location": value}, request=req)
+        return httpx.Response(status, text=value, request=req)
+
+    return get, asked
+
+
+def test_extract_records_every_host_a_redirect_reaches(monkeypatch):
+    """A redirect to another host is a send to that host: recorded (and air-gap checked)
+    BEFORE the hop, so the ledger names every host contacted — not only the one asked for."""
+    get, asked = _redirecting_get({
+        "https://a.example/x": (302, "https://tracker.b.example/r?id=1"),
+        "https://tracker.b.example/r?id=1": (301, "/final"),
+        "https://tracker.b.example/final": (200, "<html><body><p>hello</p></body></html>"),
+    })
+    monkeypatch.setattr(web.httpx, "get", get)
+    monkeypatch.setattr("trafilatura.extract", lambda html, **kw: "hello")
+    assert web.web_extract.invoke({"url": "https://a.example/x"}) == "hello"
+    assert asked == ["https://a.example/x", "https://tracker.b.example/r?id=1",
+                     "https://tracker.b.example/final"]
+    assert [(e.host, e.status) for e in egress.events()] == [
+        ("a.example", egress.SENT), ("tracker.b.example", egress.SENT)]
+
+
+def test_extract_redirect_loop_is_a_failure(monkeypatch):
+    get, _asked = _redirecting_get({"https://a.example/x": (302, "https://a.example/x")})
+    monkeypatch.setattr(web.httpx, "get", get)
+    with pytest.raises(ToolError, match="redirect"):
+        web.web_extract.invoke({"url": "https://a.example/x"})
+
+
+def test_extract_fetches_only_through_the_recorded_path():
+    """trafilatura's own fetch follows redirects out of sight of the ledger — never called."""
+    import inspect
+
+    assert "fetch_url" not in inspect.getsource(web) and "fetch_response" not in inspect.getsource(web)
 
 
 # ── http_request: CUT 2026-07-16 ───────────────────────────────────────────────────────────────

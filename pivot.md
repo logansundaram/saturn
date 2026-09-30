@@ -183,6 +183,13 @@ shape without adding a call to the chat turn. Pivot #1 and #2 above stay the top
 - ~~**`recall_runs`** (`tools/knowledge.py`).~~ Cut 2026-09-29; `/trace search` stays. A model-facing search over the trace DB, marked
   untrusted, overlapping memory. "What did I decide" is memory's job.
 
+### Fix (found dogfooding)
+
+- **`saturn -p` hangs when stdin is open but is not a terminal** (2026-09-29, found running
+  it from a background job). Headless mode reads piped stdin to append it to the query, and
+  waits forever when nothing is written. Read stdin only when something is waiting there
+  (`select` on POSIX), and say so in `--help`; anyone scripting Saturn hits this.
+
 ### Trim (rot that misleads the next reader)
 
 - ~~`README.md` (the "life of a turn" block and the layout listing) still documents plan,
@@ -239,6 +246,13 @@ an item here subsumes one of those it says so._
    action with no call), stub answer, hygiene bounces, capped turns, and a verifiable value in
    the answer where one exists. Every idea below is a guess until this exists; the trust
    benchmark lost its engine metrics in the v2 cut. Shipped 2026-09-28.
+   **Baselines (2026-09-29 evening, after the small wins):** 4b 19/24, 9b 20/24, no phantoms,
+   hygiene bounces or capped turns on either. Stable misses: `file_long_middle` (the clamp drops
+   the middle — item 6 below) and `robust_no_math_in_head` on the 9b (seven `calculate` calls
+   to test primality — eight passes). Trust benchmark: 4b gate 3/3 · injection 2/2 · memory
+   supersession MISSED (it called `recall` with `remember`'s arguments seven times, hygiene
+   bounced each, then claimed the update — the incidents note disclosed it); 9b all pass. A
+   4b-only miss is a model limit; confirm on the 9b before changing the engine.
 2. **`_llm_input` becomes a budgeted prompt projection.** Today it maps state to the prompt and
    only strips trailers, so ten reads on a 32k window push the system prompt off the front. Give
    the projection a token budget: an observation a later pass has already moved past collapses

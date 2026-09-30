@@ -2,7 +2,7 @@
 
 _2026-09-28. A note on the advantages that a local-first, terminal-native agent has over a cloud
 agent, and the work that turns each one into something a user feels. Companion to `pivot.md`
-(the ranked list); this file says why those items matter, not when to do them._
+(the ranked list, this folder); this file says why those items matter, not when to do them._
 
 ## 1. Latency that scales with the request (adaptive thinking) — shipped 2026-09-28 (`runtime.think`)
 

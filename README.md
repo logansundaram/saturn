@@ -376,7 +376,7 @@ nodes/              # the graph's nodes: ground, agent, approval, tools
 commands/           # slash commands (one module per /help theme)
 stores/             # persistence: RAG + its manifest, durable memory, snapshots, trace
 tui/                # the terminal UI / live trace rail
-docs/               # ARCHITECTURE.md — the code map for reading the source by hand
+docs/               # the documents: README.md indexes them (ARCHITECTURE.md is the code map)
 database/           # your data: documents/, workspace/, memory/, caches, trace DB
 ```
 

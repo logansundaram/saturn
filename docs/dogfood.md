@@ -1,7 +1,7 @@
 # Saturn — dogfooding prompts
 
 _2026-09-29. What a real user would ask Saturn, written against the product direction in
-`pivot.md`, not against what is built today. Use it to dogfood: run the prompts, note what
+`pivot.md` (this folder), not against what is built today. Use it to dogfood: run the prompts, note what
 breaks, and turn the failures into the next items on the list._
 
 ## What Saturn is

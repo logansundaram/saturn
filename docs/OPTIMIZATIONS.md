@@ -178,7 +178,7 @@ _Shipped 2026-09-08 as the quick path; §9 has the measurements and the ranking 
 this section's "what survives" list._
 
 Supersedes the ordering in §7. The principle — a chat question is one call — is now the second
-knife in `pivot.md`; this section records only what it changed about the latency work.
+knife in `pivot.md` (this folder); this section records only what it changed about the latency work.
 
 **Why §7's ranking was wrong.** Every item in §7 makes the plan engine cheaper for turns that
 still go through it. The traffic (41 of 46 plans single-step, 17 of 46 a lone reasoning step)

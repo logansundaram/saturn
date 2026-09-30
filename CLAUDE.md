@@ -58,7 +58,7 @@ Commit messages follow `area: what changed` in lowercase (`gate: …`, `trace: �
 `agent.py` is a thin router into `app/`; `app/graph.py::build_agent` compiles the graph from `nodes/`
 (one file per node) with a SqliteSaver checkpointer, and `app/turn.py::run_turn` streams it. Since
 2026-09-27 (v2) the engine is ONE ReAct loop — spec:
-`docs/superpowers/specs/2026-09-27-v2-react-loop-design.md`:
+`docs/superpowers/specs/2026-09-27-v2-react-loop-design.md` (the loop's shape today: `docs/engine.md`):
 
 ```
 ground → agent ─(no tool calls)─→ END
@@ -211,7 +211,10 @@ from `app/` directly.
 
 ### Docs
 
-`docs/ARCHITECTURE.md` — code map. `docs/OPTIMIZATIONS.md` — latency techniques: shipped, next, and
-to-measure, with the numbers behind them. `pivot.md` — the product goal since 2026-09-27 and the ranked
-work that closes the distance to it (it replaced `PLAN.md`). `CHANGELOG.md` — user-visible history.
-`docs/superpowers/` — planning specs from past feature work.
+Every document but the three the root needs (`README.md`, `CHANGELOG.md`, this file) lives under
+`docs/`; `docs/README.md` is the index. `docs/ARCHITECTURE.md` — code map. `docs/pivot.md` — the
+product goal since 2026-09-27 and the ranked work that closes the distance to it. `docs/engine.md`
+— the loop's shape today and the ranked engine improvements. `docs/dogfood.md` — the prompts a real
+user would try. `docs/advantages.md` — why the pivot items matter. `docs/OPTIMIZATIONS.md` — latency
+techniques with the numbers behind them. `docs/superpowers/` — specs and plans from past feature
+work. `CHANGELOG.md` — user-visible history.

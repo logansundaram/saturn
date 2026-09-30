@@ -1,7 +1,7 @@
 # Saturn v2 — the pivot
 
 _2026-09-27. Written the day the plan/execute engine was replaced by one loop
-(`docs/superpowers/specs/2026-09-27-v2-react-loop-design.md`). This file states the new goal
+(`superpowers/specs/2026-09-27-v2-react-loop-design.md`, this folder). This file states the new goal
 and ranks the work that closes the distance to it. It replaces `PLAN.md`, the v1 strategy
 document (deleted 2026-09-27)._
 

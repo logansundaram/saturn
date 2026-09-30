@@ -397,7 +397,7 @@ def run_trust_benchmark(graph) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# The LOOP BENCHMARK (2026-09-28, pivot.md "Loop improvements" #1) — `--loop`. Measures the
+# The LOOP BENCHMARK (2026-09-28, docs/pivot.md "Loop improvements" #1) — `--loop`. Measures the
 # engine's shape on daily requests, so every loop change has a number instead of a guess.
 # Each task names the tool sequence it should take; the grader reads the turn record only:
 #

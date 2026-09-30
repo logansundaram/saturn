@@ -16,7 +16,7 @@ instead of writing the real config.yaml.
 import pytest
 
 from commands._framework import CommandContext
-from commands._utils import _ROLES, LIST_VERBS, REMOVE_VERBS
+from commands._utils import LIST_VERBS, REMOVE_VERBS
 from commands.config import _config
 from commands.knowledge import _docs
 from commands.knowledge import _memory
@@ -73,26 +73,26 @@ def test_docs_accepts_every_removal_verb(ctx, capsys, monkeypatch, verb):
 
 @pytest.mark.parametrize("verb", REMOVE_VERBS)
 def test_memory_accepts_every_removal_verb(ctx, capsys, isolated_paths, verb):
-    from stores.memory_registry import add_memory, list_memory
+    from stores.memory_registry import add_memory, entries
 
     add_memory("the sky is blue")
-    assert len(list_memory()) == 1
+    assert len(entries()) == 1
     _memory(ctx, [verb, "1"])
-    assert list_memory() == []
+    assert entries() == []
     assert "forgot:" in _out(capsys)
 
 
 def test_memory_remove_by_index_the_audit_inversion(ctx, capsys, isolated_paths):
     """'/memory remove 3' was the audit's cross-inversion example: /docs accepted 'forget' but
     /memory rejected 'remove'. The shared vocabulary makes both directions work."""
-    from stores.memory_registry import add_memory, list_memory
+    from stores.memory_registry import add_memory, entries
 
     for word in ("one", "two", "three"):
         add_memory(f"fact {word}")
     _memory(ctx, ["remove", "3"])
-    facts = list_memory()
+    facts = entries()
     assert len(facts) == 2
-    assert not any("fact three" in f for f in facts)
+    assert not any("fact three" in f["text"] for f in facts)
     assert "forgot:" in _out(capsys)
 
 
@@ -128,17 +128,24 @@ def test_config_key_is_cut(ctx, capsys, tmp_path, monkeypatch):
 
 # --- /models persists the same dotted keys the session edit sets (by default) ----------------
 
-def test_models_role_save_persists_the_dotted_key(ctx, capsys, monkeypatch, models_env,
-                                                  recording_persist):
+def _pin_tier(monkeypatch, spec: dict):
+    """Give the active tier an explicit shape for this test, independent of the live
+    config.yaml."""
     from config import get_config
 
     cfg = get_config()
-    roles = cfg._data["tiers"][cfg.active_tier]["roles"]
-    monkeypatch.setitem(roles, "tool_caller", roles["tool_caller"])
-    key = f"tiers.{cfg.active_tier}.roles.tool_caller"
+    monkeypatch.setitem(cfg._data["tiers"], cfg.active_tier, dict(spec, embedder="e"))
+    return cfg
 
-    _models(ctx, ["tool_caller", "qwen3.5:9b", "--save"])
+
+def test_models_use_save_persists_the_dotted_key(ctx, capsys, monkeypatch, models_env,
+                                                 recording_persist):
+    cfg = _pin_tier(monkeypatch, {"model": "qwen3.5:4b"})
+    key = f"tiers.{cfg.active_tier}.model"
+
+    _models(ctx, ["use", "qwen3.5:9b", "--save"])
     assert cfg.get(key) == "qwen3.5:9b"
+    assert cfg.chat_model == "qwen3.5:9b"
     assert recording_persist == [key]
     assert "(session only)" not in _out(capsys)
 
@@ -146,63 +153,45 @@ def test_models_role_save_persists_the_dotted_key(ctx, capsys, monkeypatch, mode
 def test_models_save_flag_case_insensitive_any_position(ctx, capsys, monkeypatch, models_env,
                                                         recording_persist):
     """--save / -s is still accepted (persisting is now the default): `-S` counts, anywhere."""
-    from config import get_config
+    cfg = _pin_tier(monkeypatch, {"model": "qwen3.5:4b"})
+    key = f"tiers.{cfg.active_tier}.model"
 
-    cfg = get_config()
-    roles = cfg._data["tiers"][cfg.active_tier]["roles"]
-    monkeypatch.setitem(roles, "tool_caller", roles["tool_caller"])
-    key = f"tiers.{cfg.active_tier}.roles.tool_caller"
-
-    _models(ctx, ["tool_caller", "-S", "qwen3.5:9b"])
+    _models(ctx, ["use", "-S", "qwen3.5:9b"])
     assert cfg.get(key) == "qwen3.5:9b"
     assert recording_persist == [key]
 
 
-def test_models_role_persists_by_default(ctx, capsys, monkeypatch, models_env,
-                                         recording_persist):
-    """A bare bind now writes config.yaml BY DEFAULT — a model switch should stick."""
-    from config import get_config
+def test_models_use_persists_by_default(ctx, capsys, monkeypatch, models_env,
+                                        recording_persist):
+    """A bare bind writes config.yaml BY DEFAULT — a model switch should stick."""
+    cfg = _pin_tier(monkeypatch, {"model": "qwen3.5:4b"})
 
-    cfg = get_config()
-    roles = cfg._data["tiers"][cfg.active_tier]["roles"]
-    monkeypatch.setitem(roles, "tool_caller", roles["tool_caller"])
-    key = f"tiers.{cfg.active_tier}.roles.tool_caller"
-
-    _models(ctx, ["tool_caller", "qwen3.5:9b"])
-    assert cfg.get(key) == "qwen3.5:9b"
-    assert recording_persist == [key]
+    _models(ctx, ["use", "qwen3.5:9b"])
+    assert recording_persist == [f"tiers.{cfg.active_tier}.model"]
     assert "(session only)" not in _out(capsys)
 
 
-def test_models_role_session_flag_stays_session_only(ctx, capsys, monkeypatch, models_env,
-                                                     recording_persist):
+def test_models_use_session_flag_stays_session_only(ctx, capsys, monkeypatch, models_env,
+                                                    recording_persist):
     """--session opts a single bind out of the persist-by-default."""
-    from config import get_config
+    cfg = _pin_tier(monkeypatch, {"model": "qwen3.5:4b"})
 
-    cfg = get_config()
-    roles = cfg._data["tiers"][cfg.active_tier]["roles"]
-    monkeypatch.setitem(roles, "tool_caller", roles["tool_caller"])
-
-    _models(ctx, ["tool_caller", "qwen3.5:9b", "--session"])
-    assert cfg.get(f"tiers.{cfg.active_tier}.roles.tool_caller") == "qwen3.5:9b"
+    _models(ctx, ["use", "qwen3.5:9b", "--session"])
+    assert cfg.chat_model == "qwen3.5:9b"
     assert recording_persist == []
     out = _out(capsys)
     assert "(session only)" in out and "--session" in out  # the note points at the flag
 
 
-def test_models_all_save_persists_every_role_key(ctx, capsys, monkeypatch, models_env,
-                                                 recording_persist):
-    from config import get_config
+@pytest.mark.parametrize("spelling", ["all", "tool_caller", "utility"])
+def test_models_retired_role_spellings_point_at_use(ctx, capsys, monkeypatch, models_env,
+                                                    recording_persist, spelling):
+    cfg = _pin_tier(monkeypatch, {"model": "qwen3.5:4b"})
 
-    cfg = get_config()
-    roles = cfg._data["tiers"][cfg.active_tier]["roles"]
-    for role in _ROLES:
-        monkeypatch.setitem(roles, role, roles[role])
-
-    _models(ctx, ["all", "qwen3.5:9b", "--save"])
-    assert recording_persist == [f"tiers.{cfg.active_tier}.roles.{r}" for r in _ROLES]
-    for role in _ROLES:
-        assert cfg.get(f"tiers.{cfg.active_tier}.roles.{role}") == "qwen3.5:9b"
+    _models(ctx, [spelling, "qwen3.5:9b"])
+    assert "/models use" in _out(capsys)
+    assert cfg.chat_model == "qwen3.5:4b"  # nothing bound
+    assert recording_persist == []
 
 
 def test_models_embedder_save_persists_and_still_resyncs(ctx, capsys, monkeypatch, models_env,
@@ -221,19 +210,6 @@ def test_models_embedder_save_persists_and_still_resyncs(ctx, capsys, monkeypatc
     assert models_env  # --save must not bypass the embedder→re-embed flow
 
 
-def test_models_tier_save_persists_active_tier(ctx, capsys, monkeypatch, models_env,
-                                               recording_persist):
-    from config import get_config
-
-    cfg = get_config()
-    monkeypatch.setitem(cfg._data, "active_tier", cfg._data["active_tier"])
-    other = next(t for t in cfg._data["tiers"] if t != cfg.active_tier)
-
-    _models(ctx, ["tier", other, "--save"])
-    assert cfg.active_tier == other
-    assert recording_persist == ["active_tier"]
-
-
 # --- the shared listing-verb vocabulary (`git stash list` / `docker ls` style) ----------------
 
 @pytest.mark.parametrize("verb", LIST_VERBS)
@@ -248,12 +224,12 @@ def test_docs_accepts_every_list_verb(ctx, monkeypatch, verb):
 
 @pytest.mark.parametrize("verb", LIST_VERBS)
 def test_memory_accepts_every_list_verb(ctx, capsys, isolated_paths, verb):
-    from stores.memory_registry import add_memory, list_memory
+    from stores.memory_registry import add_memory, entries
 
     add_memory("the sky is blue")
     _memory(ctx, [verb])
     assert "the sky is blue" in _out(capsys)
-    assert len(list_memory()) == 1  # a listing never mutates the store
+    assert len(entries()) == 1  # a listing never mutates the store
 
 
 @pytest.mark.parametrize("verb", LIST_VERBS)
@@ -487,3 +463,77 @@ def test_config_reload_case_insensitive(ctx, capsys, monkeypatch, spelling):
     _config(ctx, [spelling])
     assert calls == [True]
     assert "reloaded" in _out(capsys)
+
+
+# --- the 2026-09-30 command diet ---------------------------------------------------------------
+
+@pytest.mark.parametrize("sub", ["setup", "doctor", "check", "context", "persist"])
+def test_retired_config_subcommands_point_somewhere_and_change_nothing(ctx, capsys, sub):
+    from config import get_config
+
+    before = dict(get_config()._data)
+    _config(ctx, [sub, "4096"])
+    out = _out(capsys)
+    assert f"/config {sub} is gone" in out
+    assert get_config()._data == before
+
+
+def test_config_refuses_a_num_ctx_below_the_floor(ctx, capsys, monkeypatch, recording_persist):
+    from config import get_config
+
+    cfg = get_config()
+    monkeypatch.setitem(cfg._data, "runtime", dict(cfg._data.get("runtime", {})))
+    _config(ctx, ["runtime.num_ctx", "100"])
+    assert "too small" in _out(capsys)
+    assert recording_persist == []
+
+
+def test_docs_rebuild_is_the_forced_sync_and_sync_points_at_it(ctx, capsys, monkeypatch):
+    import commands.knowledge as knowledge
+
+    calls = []
+    monkeypatch.setattr(knowledge, "_sync", lambda *, force: calls.append(force))
+    _docs(ctx, ["rebuild"])
+    assert calls == [True]
+    _docs(ctx, ["sync", "--force"])
+    assert calls == [True]  # sync no longer runs anything
+    assert "/docs rebuild" in _out(capsys)
+
+
+def test_clear_takes_no_arguments_and_has_no_aliases(ctx, capsys):
+    from commands import dispatch
+    from commands._framework import _ALIASES
+    from commands.conversation import _clear
+
+    ctx.state = {"messages": ["kept"]}
+    _clear(ctx, ["--screen"])
+    assert "usage: /clear" in _out(capsys)
+    assert ctx.state == {"messages": ["kept"]}  # an argument never wipes the conversation
+    for alias in ("cls", "reset", "new"):
+        assert alias not in _ALIASES
+        dispatch(f"/{alias}", ctx)
+        assert "unknown command" in _out(capsys)
+    assert ctx.state == {"messages": ["kept"]}
+
+
+def test_memory_pending_is_gone(ctx, capsys, isolated_paths):
+    _memory(ctx, ["pending"])
+    assert "unknown" in _out(capsys).lower()
+
+
+def test_config_summary_shows_the_launch_folder_not_the_fallback_path(ctx, capsys, tmp_path):
+    from core import workspace
+
+    launched, added = tmp_path / "proj", tmp_path / "other"
+    launched.mkdir()
+    added.mkdir()
+    try:
+        workspace.set_root(launched)
+        workspace.add(added)
+        _config(ctx, [])
+    finally:
+        workspace.reset()
+    out = _out(capsys)
+    assert f"working folder          : {workspace.display(launched.resolve())}" in out
+    assert workspace.display(added.resolve()) in out and "/add-dir" in out
+    assert "database/workspace" not in out

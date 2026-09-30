@@ -9,6 +9,11 @@ import sys
 from app import __version__
 from core import mentions
 
+# How long a headless turn waits for piped stdin to have something to read. A pipe nobody
+# writes to and nobody closes (a background job, a subprocess that inherits a pipe) never
+# reaches EOF, and a blocking read on it hung `saturn -p` forever (2026-09-29).
+_STDIN_GRACE_SECONDS = 1.0
+
 
 def _build_parser():
     """The saturn CLI parser — strict (an unknown flag exits 2 instead of silently launching the
@@ -19,7 +24,7 @@ def _build_parser():
         prog="saturn",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         description=(
-            "Saturday.ai — local-first, transparent agent.\n"
+            "Saturn — local-first, transparent agent.\n"
             "\n"
             "Run with no arguments for the interactive chat loop (/help lists commands,\n"
             "/quit exits). The flags below are the headless/automation surface."
@@ -29,7 +34,8 @@ def _build_parser():
             "  Read-only tools run freely; gated (side-effecting/destructive) tool calls are\n"
             "  DENIED by default — there is no human at the approval gate, and safe-by-default\n"
             "  must hold in every mode. Pass --yolo to auto-approve them. Piped stdin attaches\n"
-            "  to the turn:\n"
+            "  to the turn when something arrives within a second; a slower producer is\n"
+            "  not waited for (write it to a file and use @file, or `< file`):\n"
             "    git diff | saturn -p \"review this change\"\n"
             "  -q is the one-shot spelling of the same turn: ONLY the final answer on stdout\n"
             "  (pipe-clean), step-line progress + a `recorded: saturn --replay <file>` receipt\n"
@@ -94,6 +100,26 @@ def _parse_cli(argv=None):
     return args
 
 
+def _stdin_ready(stdin) -> bool:
+    """Whether a read on `stdin` would return within the grace window: data waiting, or EOF
+    (a closed pipe, /dev/null and a regular file are all "ready"). A stream without a real
+    fileno (a test's StringIO, an embedder's replacement) is read as before. Windows' select()
+    takes sockets only, so a Windows pipe keeps the blocking read."""
+    if sys.platform == "win32":
+        return True
+    try:
+        fd = stdin.fileno()
+    except (OSError, ValueError, AttributeError):
+        return True
+    import select
+
+    try:
+        ready, _, _ = select.select([fd], [], [], _STDIN_GRACE_SECONDS)
+    except (OSError, ValueError):
+        return True
+    return bool(ready)
+
+
 def _read_piped_stdin() -> str:
     """Piped stdin content for a headless turn, or "" when stdin is a TTY / closed / empty.
     Read as BYTES (sys.stdin.buffer) and decoded as UTF-8 with errors='replace': Windows opens a
@@ -106,6 +132,10 @@ def _read_piped_stdin() -> str:
     try:
         stdin = sys.stdin
         if stdin is None or stdin.closed or stdin.isatty():
+            return ""
+        if not _stdin_ready(stdin):
+            print(f"saturn: stdin is open but nothing arrived within {_STDIN_GRACE_SECONDS:g}s "
+                  "— not attached", file=sys.stderr)
             return ""
         buffer = getattr(stdin, "buffer", None)
         if buffer is not None:

@@ -32,7 +32,7 @@ frame. Specifics:
   - The `tools` node renders a **tool-I/O sub-tree** under its header: one `├─ name(args)  dur`
     branch per call, the call repr sized to the terminal width and durations column-aligned. Raw
     result previews are **hidden** by default (noisy JSON) — a failed call still shows its error
-    inline (wrapped under the rail with a hanging indent), and `/trace calls` or `/trace full`
+    inline (wrapped under the rail with a hanging indent), and `/trace #id` or `/trace full`
     surfaces full outputs on demand.
   - LLM nodes annotate their trace line with the live **metrics for that step** (iteration,
     context tokens ingested, tok/s) — rendered **dim**: metrics are tertiary and must never
@@ -42,7 +42,7 @@ frame. Specifics:
     fill — the weight is the frame itself), set off by a blank line, breaking out of the dim
     rail. It's a blocking safety decision and *should* draw the eye; everything else recedes.
     Each gated call shows its risk tier, every argument on its own line, and a one-line "what
-    allowing this means" hint. The plan-review pause wears the same frame.
+    allowing this means" hint.
   - The final **response** renders under a `── response` rule as real markdown (headings, bold,
     lists, fenced code) at the app's 2-space indent, its measure capped (~100 cols) so prose
     stays readable on a wide terminal. The trust-colored Sources block and the receipt — trust
@@ -90,7 +90,7 @@ from .art import splash
 from .prompt import prompt, banner, ask, answer_question, pause_prompt, posture_line
 
 # Execution trace + recorded replays.
-from .trace import show_node, show_run, show_llm_calls, show_llm_context
+from .trace import show_node, show_run, show_llm_calls
 
 # Plan rendering (the model's checklist).
 from .plan import render_plan, show_plan
@@ -103,7 +103,6 @@ from .response import response, ResponseStream
 
 # On-demand readouts + log lines.
 from .readouts import (
-    show_context,
     note, warn, steer_note, pause_note, echo_queued,
 )
 
@@ -115,11 +114,10 @@ __all__ = [
     "set_input_preview", "reset_turn",
     "splash",
     "prompt", "banner", "ask", "answer_question", "pause_prompt", "posture_line",
-    "show_node", "show_run", "show_llm_calls", "show_llm_context",
+    "show_node", "show_run", "show_llm_calls",
     "render_plan", "show_plan",
     "ask_approval",
     "response", "ResponseStream",
-    "show_context",
     "note", "warn", "steer_note", "pause_note", "echo_queued",
     "section", "table", "risk_style", "status_glyph",
 ]

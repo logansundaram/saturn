@@ -1,10 +1,10 @@
 """
-Model factory (Phase 3) — `get_model(role)` instead of hard-coded globals.
+Model factory — `get_model()` instead of hard-coded globals.
 
-The agent references model ROLES (tool_caller, utility); this
-module resolves each role to a concrete model against the active hardware tier in
-`config.yaml` and builds the LangChain chat model. Swapping hardware is a config edit; graph
-code never names a model.
+Each hardware tier in `config.yaml` binds ONE chat model (the agent's pass and the background
+calls — compaction, the memory review, /init — share it; the `utility` role collapsed into it
+2026-09-30). This module resolves it against the active tier and builds the LangChain chat
+model. Swapping hardware is a config edit; graph code never names a model.
 
 Ollama is the only backend: nothing leaves the machine to compute the words (cloud providers
 were shelved 2026-07-03 and cut 2026-09-27). The one network boundary that remains is a REMOTE
@@ -12,8 +12,8 @@ were shelved 2026-07-03 and cut 2026-09-27). The one network boundary that remai
 to the egress ledger and refused under air-gap. Built models are cached per model id;
 `reset_models()` clears the cache after a live model change (the `/models` command).
 
-Capability descriptors come from config; the MVP requires native tool-calling + structured
-output for the loop-driving roles, and we warn (not crash) if a bound model lacks them.
+Capability descriptors come from config; the loop requires native tool-calling, and we warn
+(not crash) if the bound model does not advertise it.
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ from langchain_ollama import ChatOllama, OllamaEmbeddings
 import diag
 
 from trust import egress
-from config import MODEL_ROLES, get_config
+from config import get_config
 
 
 def _approx_bytes(messages) -> int:
@@ -139,7 +139,7 @@ def _wrap_ollama(m, model: str):
 def _build(model: str):
     # Bind num_ctx to the effective window (runtime.num_ctx override, else the model's declared
     # window) so it actually runs at the size the UI gauges against — Ollama otherwise silently
-    # caps at 2048, making the context-fill % lie. /config context drops the cache to rebind live.
+    # caps at 2048, making the context-fill % lie. Setting runtime.num_ctx drops the cache to rebind live.
     # client_kwargs carries the request timeout (guards a wedged daemon; see _ollama_client_kwargs).
     # keep_alive rides every request (runtime.keep_alive): the daemon's default unloads the
     # weights after five idle minutes and the next turn pays the whole load again.
@@ -156,27 +156,26 @@ def _build(model: str):
     )
 
 
-def get_model(role: str):
-    """Return the chat model bound to `role` under the active tier (cached).
+def get_model():
+    """Return the active tier's chat model (cached).
 
     Air-gap enforcement for a remote OLLAMA_HOST lives here (not in a wrapper) because a cached
-    remote handle would otherwise sneak a call through after the gate engaged. `/privacy airgap`
+    remote handle would otherwise sneak a call through after the gate engaged. `/policy airgap`
     drops the cache so this re-checks."""
-    spec = get_config().model_for_role(role)
+    model = get_config().chat_model
     if not egress.ollama_is_local():
         # An off-machine OLLAMA_HOST makes the "local" model network egress — through the one
         # gate so the blocked attempt always reaches the ledger.
-        egress.check_or_raise("llm", f"ollama @ {egress.ollama_endpoint()}",
-                              f"{role} → {spec.model}", provider="ollama",
-                              subject=f"role '{role}' ({spec.model})")
-    if spec.model not in _MODEL_CACHE:
-        _MODEL_CACHE[spec.model] = _build(spec.model)
-    return _MODEL_CACHE[spec.model]
+        egress.check_or_raise("llm", f"ollama @ {egress.ollama_endpoint()}", model,
+                              provider="ollama", subject=f"the model ({model})")
+    if model not in _MODEL_CACHE:
+        _MODEL_CACHE[model] = _build(model)
+    return _MODEL_CACHE[model]
 
 
-def model_id(role: str) -> str:
-    """The concrete model id serving `role` (for display: banners, /model)."""
-    return get_config().model_for_role(role).model
+def model_id() -> str:
+    """The active tier's chat model id (for display: banners, /model)."""
+    return get_config().chat_model
 
 
 
@@ -251,14 +250,6 @@ class LocalModel:
     quantization: str    # e.g. "Q4_K_M" ("" if absent)
     family: str          # e.g. "gemma", "glm4moelite" ("" if absent)
     is_embedding: bool   # heuristic: an embed-only model (can't serve a chat role)
-
-    @property
-    def size_h(self) -> str:
-        """Human-readable on-disk size (GiB/MiB)."""
-        gib = self.size_bytes / 1024**3
-        if gib >= 1:
-            return f"{gib:.1f}G"
-        return f"{self.size_bytes / 1024**2:.0f}M"
 
 
 def _looks_like_embedder(name: str, family: str, families) -> bool:
@@ -354,12 +345,11 @@ def check_models() -> list[str]:
     problems: list[str] = []
 
     need_ollama: list[str] = []
-    for role in MODEL_ROLES:
-        try:
-            need_ollama.append(cfg.model_for_role(role).model)
-        except KeyError as exc:
-            # A {provider, model} mapping from a pre-cut config, or a tier without roles.
-            problems.append(exc.args[0] if exc.args else str(exc))
+    try:
+        need_ollama.append(cfg.chat_model)
+    except KeyError as exc:
+        # A {provider, model} mapping from a pre-cut config, or a tier without a model.
+        problems.append(exc.args[0] if exc.args else str(exc))
 
     try:
         # The embedder is only required once the knowledge base holds a document: it is pulled
@@ -388,17 +378,16 @@ def check_models() -> list[str]:
                 if not _model_present(m, have):
                     problems.append(f"model not pulled: `{m}`  →  run `ollama pull {m}`")
 
-    # Capability advisories for the loop-driving roles. These used to print lazily on a model's
-    # first use (mid-turn, colliding with the live TUI); surfacing them here puts them next to
-    # the other startup warnings with the rest of the health report.
-    for role, attr, needs, consequence in (
-        ("tool_caller", "supports_tools", "native tool-calling", "the agent loop may misbehave"),
-    ):
-        spec = cfg.model_for_role(role)
-        if not getattr(cfg.capability_of(spec.model), attr):
-            problems.append(
-                f"model `{spec.model}` (role {role}) does not advertise {needs} — {consequence}"
-            )
+    # The capability advisory. It used to print lazily on a model's first use (mid-turn,
+    # colliding with the live TUI); surfacing it here puts it next to the other startup
+    # warnings with the rest of the health report.
+    try:
+        model = cfg.chat_model
+    except KeyError:
+        model = ""  # already reported above
+    if model and not cfg.capability_of(model).supports_tools:
+        problems.append(f"model `{model}` does not advertise native tool-calling — the agent "
+                        "loop may misbehave")
 
     return problems
 
@@ -425,20 +414,17 @@ def _is_think_rejection(exc: Exception) -> bool:
 # call (nodes/agent.py): prose OR a tool call, so it must fit a write_file payload (4096 tokens
 # is ~12-16 KB of text).
 NUM_PREDICT: dict = {"agent": 4096}
-# The default task per model ROLE for call sites that don't name one; the utility role's calls
-# name no task and keep the daemon's defaults.
-_ROLE_TASK = {"tool_caller": "agent"}
 
 
-def model_tag(role: str) -> str:
-    """The concrete model id serving `role`, '' when the binding can't be read."""
+def model_tag() -> str:
+    """The active chat model id, '' when the binding can't be read."""
     try:
-        return str(get_config().model_for_role(role).model)
+        return get_config().chat_model
     except Exception:
         return ""
 
 
-def invoke_kwargs(role: str, fmt: "dict | None", temp: float, task: "str | None" = None, *,
+def invoke_kwargs(fmt: "dict | None", temp: float, task: "str | None" = None, *,
                   think: bool = False) -> dict:
     """THE builder of the options every model call sends: constrained decoding (`fmt`), the
     temperature and the per-TASK decisions ride the invoke kwargs (ChatOllama forwards
@@ -452,12 +438,11 @@ def invoke_kwargs(role: str, fmt: "dict | None", temp: float, task: "str | None"
     the daemon already rejected the flag for this tag (`_NO_THINK_SUPPORT`). `think=True` is
     the agent's adaptive thinking pass (nodes/agent.py): the flag goes ON and the task's
     `num_predict` widens by `runtime.think_budget`, since thinking tokens count against it."""
-    task = task or _ROLE_TASK.get(role)
     options: dict = {"temperature": temp}
-    tag = model_tag(role)
+    tag = model_tag()
     try:
         cfg = get_config()
-        options["num_ctx"] = cfg.num_ctx_for(cfg.model_for_role(role).model)
+        options["num_ctx"] = cfg.num_ctx_for(cfg.chat_model)
     except Exception:  # a broken binding must not fail the call that would surface it
         pass
     if task is not None:
@@ -543,17 +528,7 @@ def extract_prompt_tokens(response) -> int:
     return int(meta.get("prompt_eval_count", 0) or 0)
 
 
-def was_truncated(response) -> bool:
-    """Whether the daemon stopped this generation at `num_predict` rather than at a natural end
-    (Ollama's `done_reason == "length"`). A truncated TOOL CALL never parses — the JSON is cut
-    mid-argument — and re-rolling it at a hotter temperature reproduces the cut, so callers on a
-    retry ladder read this to stop instead of spending the remaining rungs."""
-    meta = getattr(response, "response_metadata", None) or {}
-    return meta.get("done_reason") == "length"
-
-
-def active_context_window(role: str = "tool_caller") -> int:
-    """Effective context window (`num_ctx`) of the model serving `role` — the denominator of the
-    UI's fill gauge and the /config context readout. Defaults to the agent (tool_caller) role, the one
-    the status bar's model label tracks."""
-    return get_config().num_ctx_for(model_id(role))
+def active_context_window() -> int:
+    """Effective context window (`num_ctx`) of the chat model — the denominator of the UI's
+    fill gauge."""
+    return get_config().num_ctx_for(model_id())

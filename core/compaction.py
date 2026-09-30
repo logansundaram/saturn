@@ -6,7 +6,7 @@ Two tiers of compaction exist, by cost:
   - MECHANICAL (`agent._compact_history`): runs every turn, collapses OLDER turns to their Q&A and
     keeps the most recent turn's ReAct scratchpad. Fast, structural, no LLM — always on.
   - LLM SUMMARY (here): folds the turns older than the most recent into a SINGLE dense summary via
-    the `utility` model. Heavier (an LLM call), so it is NOT per-turn — it fires manually (`/compact`)
+    the chat model. Heavier (an LLM call), so it is NOT per-turn — it fires manually (`/compact`)
     or automatically when the context fills past `runtime.compact_threshold` (`agent._maybe_autocompact`).
 
 The summary is carried as a `HumanMessage` tagged with `_SUMMARY_PREFIX` so it (a) survives the
@@ -106,7 +106,7 @@ def summarize_messages(messages: list, keep_recent_turns: int = 1):
 
 
 def _llm_summary(older: list) -> str:
-    """Summarize the `older` slice into a dense continuation brief via the `utility` model. Raises
+    """Summarize the `older` slice into a dense continuation brief via the chat model. Raises
     on an LLM failure (caller treats that as a no-op)."""
     import time
 
@@ -115,6 +115,6 @@ def _llm_summary(older: list) -> str:
 
     prompt = HumanMessage(content=COMPACTION_PROMPT + _transcript(older))
     start = time.perf_counter()
-    out = get_model("utility").invoke([prompt]).content
+    out = get_model().invoke([prompt]).content
     diag.log(f"compaction: summarized {len(older)} msg(s) in {time.perf_counter() - start:.2f}s")
     return str(out).strip()

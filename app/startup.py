@@ -19,10 +19,9 @@ def startup_load(interactive: bool = True):
     `(graph, warning_or_None)`. Runs while the ring art animates in interactive mode, or
     directly (no TUI) in headless mode."""
     warn = None
-    # Read the hardware once per launch (chip / RAM / VRAM) so /models — and the first-launch
+    # Read the hardware once per launch (chip / GPU cores / RAM) so /models — and the first-launch
     # tier pick — price the ladder against a cached profile instead of re-probing. Interactive
-    # only: headless (-p) never renders /models, and the probe spawns sysctl / nvidia-smi (up to
-    # its 3 s timeout on a waking driver). Wrapped: probe() never raises, but a launch must not
+    # only: headless (-p) never renders /models, and the probe spawns sysctl / ioreg. Wrapped: probe() never raises, but a launch must not
     # depend on that.
     if interactive:
         try:
@@ -42,7 +41,7 @@ def startup_load(interactive: bool = True):
             missing = embedder_missing()
             if missing:
                 warn = (f"knowledge base not synced: the embedder {missing} is not pulled — "
-                        "`/docs sync` pulls it on consent")
+                        "`/docs rebuild` pulls it on consent")
             else:
                 sync(verbose=False)
     except Exception as exc:
@@ -66,13 +65,13 @@ def embedder_missing() -> "str | None":
         return None
 
 
-def warm_model(role: str = "tool_caller") -> bool:
-    """Load `role`'s model into the daemon with ONE minimal request, so the session's first turn
+def warm_model() -> bool:
+    """Load the chat model into the daemon with ONE minimal request, so the session's first turn
     does not pay the weight load inside its first agent call (measured 2026-09-02: 50 s and 37 s
     for a cold "hello" against 15 s warm — the difference between an agent that looks hung and
     one that answers). The request rides the same `num_ctx` every turn uses: Ollama keys the
     loaded runner on the context size, so warming at another window would load a runner the
-    first turn then evicts. Every role on a tier binds the same model, so one role suffices.
+    first turn then evicts.
     Never raises — a down daemon is the health check's report, not this one's."""
     from langchain.messages import HumanMessage
 
@@ -80,29 +79,29 @@ def warm_model(role: str = "tool_caller") -> bool:
     from core.llms import invoke_kwargs, model_tag
 
     try:
-        kwargs = invoke_kwargs(role, None, 0.0, task="agent")
+        kwargs = invoke_kwargs(None, 0.0, task="agent")
         kwargs.setdefault("options", {})["num_predict"] = 1
-        generate(get_model(role), [HumanMessage(content="ok")], tag=model_tag(role), **kwargs)
+        generate(get_model(), [HumanMessage(content="ok")], tag=model_tag(), **kwargs)
         return True
     except Exception as exc:
         diag.log(f"startup: model warm-up skipped ({exc})")
         return False
 
 
-def _warm_and_prime(role: str) -> None:
+def _warm_and_prime() -> None:
     """The warm-up thread's body: load the weights, then plant the agent's prefix checkpoint
     (core/prime.py) so the first turn's first call prefills only its request."""
-    warm_model(role)
+    warm_model()
     from core import prime
 
     prime.prime_now(only=("agent",))
 
 
-def start_warm_up(role: str = "tool_caller") -> threading.Thread:
+def start_warm_up() -> threading.Thread:
     """`warm_model` + the agent prime on a daemon thread: the REPL keeps starting while the
     weights load, and a first query typed early simply queues behind the load at the daemon —
     as it did before, minus the second load it used to pay."""
-    t = threading.Thread(target=_warm_and_prime, args=(role,), name="model-warm-up", daemon=True)
+    t = threading.Thread(target=_warm_and_prime, name="model-warm-up", daemon=True)
     t.start()
     return t
 

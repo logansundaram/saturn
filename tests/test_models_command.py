@@ -17,23 +17,22 @@ def cfg():
 
     return Config({
         "active_tier": "4b",
-        "tiers": {"4b": {"roles": {
-            "tool_caller": "qwen3.5:4b", "utility": "qwen3.5:4b",
-        }, "embedder": "qwen3-embedding:8b"}},
+        "tiers": {"4b": {"model": "qwen3.5:4b", "embedder": "qwen3-embedding:8b"}},
         "capabilities": {},
     })
 
 
 class TestBind:
-    def test_a_bind_sets_the_role_key(self, cfg, printed, monkeypatch):
+    def test_a_bind_sets_the_model_key(self, cfg, printed, monkeypatch):
         from commands import runtime
 
         monkeypatch.setattr("core.llms.reset_models", lambda: None)
         monkeypatch.setattr("commands.runtime._persist_bindings", lambda *a, **k: None)
         monkeypatch.setattr("commands.runtime._resync_rag_after_model_change", lambda: None)
-        runtime._bind(cfg, "tool_caller", "qwen3.5:9b")
+        runtime._bind(cfg, "model", "qwen3.5:9b")
 
-        assert cfg.get("tiers.4b.roles.tool_caller") == "qwen3.5:9b"
+        assert cfg.get("tiers.4b.model") == "qwen3.5:9b"
+        assert cfg.chat_model == "qwen3.5:9b"
 
     def test_the_embedder_binds_machine_wide(self, cfg, printed, monkeypatch):
         from commands import runtime
@@ -47,7 +46,7 @@ class TestBind:
 
 
 class TestConfigDoorBinds:
-    """/config writes the very same `tiers.*.roles.*` keys /models does — and, unlike a trust
+    """/config writes the very same `tiers.*.model` key /models does — and, unlike a trust
     key, persists by default."""
 
     @pytest.fixture
@@ -67,14 +66,14 @@ class TestConfigDoorBinds:
 
         _config(None, args)
 
-    def test_a_role_binding_sets_and_persists(self, cfg, wired, monkeypatch):
+    def test_a_model_binding_sets_and_persists(self, cfg, wired, monkeypatch):
         saved = []
         monkeypatch.setattr("commands.config._persist_key",
                             lambda _cfg, key: saved.append(key))
-        self._run(["tiers.4b.roles.tool_caller", "qwen3.5:9b"])
+        self._run(["tiers.4b.model", "qwen3.5:9b"])
 
-        assert cfg.get("tiers.4b.roles.tool_caller") == "qwen3.5:9b"
-        assert saved == ["tiers.4b.roles.tool_caller"]
+        assert cfg.chat_model == "qwen3.5:9b"
+        assert saved == ["tiers.4b.model"]
 
     def test_the_embedder_key_binds_too(self, cfg, wired, monkeypatch):
         monkeypatch.setattr("commands.config._persist_key", lambda *a, **k: None)

@@ -32,7 +32,7 @@ def _compact_history(messages: list, keep_recent_turns: int = 1) -> list:
     heavy tool outputs, and desyncs the model's view (`messages`) from the per-turn trace
     accumulators (`tools_called`/`tool_results`/`documents_retrieved`, reset each turn — their
     live consumers are the benchmark's grounding/gate-coverage grading, headless `--json`'s
-    `tools` field, `/trace state`, and synthesize's per-turn source numbering).
+    `tools` field, `/trace state`, and the Sources receipt's per-turn numbering).
 
     A turn starts at a REAL user HumanMessage — not a standalone mid-turn steer note (that
     belongs to the turn it corrected; treating it as a boundary would compact away the very

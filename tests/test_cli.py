@@ -9,6 +9,7 @@ subprocess.
 import io
 import json
 import sqlite3
+import sys
 
 import pytest
 
@@ -251,6 +252,65 @@ def test_piped_stdin_closed_or_absent_attaches_nothing(monkeypatch):
     assert agent._read_piped_stdin() == ""
     monkeypatch.setattr(agent.sys, "stdin", None)
     assert agent._read_piped_stdin() == ""
+
+
+def _os_pipe_stdin(monkeypatch, data: "bytes | None", close_writer: bool):
+    """A REAL pipe on sys.stdin (a fileno the readiness check can select on). Returns the
+    writer fd when it is left open so the test can close it."""
+    import os
+
+    r, w = os.pipe()
+    if data:
+        os.write(w, data)
+    if close_writer:
+        os.close(w)
+        w = None
+    monkeypatch.setattr(agent.sys, "stdin", open(r, "r", closefd=True))
+    return w
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="select() works on sockets only on Windows")
+def test_piped_stdin_open_but_silent_does_not_hang(monkeypatch, capsys):
+    # The 2026-09-29 dogfood hang: stdin is a pipe nobody writes to and nobody closes (a
+    # background job, a subprocess that inherits a pipe). The read must give up after the
+    # grace window, attach nothing, and SAY so on stderr — a slow producer is never dropped
+    # silently.
+    import os
+    import time
+
+    from app import cli
+
+    monkeypatch.setattr(cli, "_STDIN_GRACE_SECONDS", 0.05)
+    w = _os_pipe_stdin(monkeypatch, None, close_writer=False)
+    try:
+        t0 = time.monotonic()
+        assert agent._read_piped_stdin() == ""
+        assert time.monotonic() - t0 < 2
+    finally:
+        os.close(w)
+    assert "nothing arrived" in capsys.readouterr().err
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="select() works on sockets only on Windows")
+def test_piped_stdin_waiting_data_is_read_from_a_real_pipe(monkeypatch, capsys):
+    from app import cli
+
+    monkeypatch.setattr(cli, "_STDIN_GRACE_SECONDS", 0.05)
+    _os_pipe_stdin(monkeypatch, b"diff --git a b", close_writer=True)
+    assert agent._read_piped_stdin() == "diff --git a b"
+    assert capsys.readouterr().err == ""
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="select() works on sockets only on Windows")
+def test_piped_stdin_closed_empty_pipe_is_quiet(monkeypatch, capsys):
+    # `saturn -p … < /dev/null` or a producer that wrote nothing: EOF is "ready", reads "",
+    # and is not the silent-pipe case — no stderr note.
+    from app import cli
+
+    monkeypatch.setattr(cli, "_STDIN_GRACE_SECONDS", 0.05)
+    _os_pipe_stdin(monkeypatch, None, close_writer=True)
+    assert agent._read_piped_stdin() == ""
+    assert capsys.readouterr().err == ""
 
 
 def test_piped_stdin_os_read_failure_attaches_nothing(monkeypatch):

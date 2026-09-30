@@ -160,7 +160,7 @@ def run_headless(args) -> None:
         print(_json.dumps(payload, ensure_ascii=False, default=str))
 
     # -q rendering seams: the progress observer chained after the tracer's on_update, and a
-    # first-token hook that announces "synthesizing…" the moment the answer starts generating.
+    # first-token hook that announces "answering…" the moment the answer starts generating.
     # Neither exists under -p — the execution path itself is identical either way.
     trace_update = _make_on_update(tracer, run_id, show_ui=False)
     on_update = trace_update
@@ -172,12 +172,12 @@ def run_headless(args) -> None:
             trace_update(node, delta)
             progress(node, delta)
 
-        _synth_seen = {"done": False}
+        _answer_seen = {"done": False}
 
         def on_token(_text):
-            if not _synth_seen["done"]:
-                _synth_seen["done"] = True
-                print("synthesizing…", file=sys.stderr)
+            if not _answer_seen["done"]:
+                _answer_seen["done"] = True
+                print("answering…", file=sys.stderr)
 
     _started = _time.perf_counter()
     try:

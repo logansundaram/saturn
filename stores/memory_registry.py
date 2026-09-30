@@ -31,7 +31,7 @@ them in. A file written before the layers existed (bullets, no `## layer` headin
 user layer and is migrated on its next write.
 
 The `remember` / `recall` tools and `/memory` are thin wrappers over `add_memory` /
-`search_memory` / `edit_memory` / `remove_memory`; the grounding node calls `memory_context`
+`search_memory` / `edit_memory` / `remove_memory`; the grounding node calls `memory_context_split`
 with the current request so selection stays auditable (`/trace context` shows exactly what
 loaded). No FACT is written without a caller that the user drove (a tool call that faced the
 gate, a slash command, or the review screen's accept); the one read-path write is `mark_used`,
@@ -130,8 +130,6 @@ def normalize_layer(name) -> str:
 
 # ── parsing ───────────────────────────────────────────────────────────────────────────────────
 
-# The "(YYYY-MM-DD) [category] " prefix add_memory writes; stripped so dedup compares bare facts.
-_PREFIX_RE = re.compile(r"^\(\d{4}-\d{2}-\d{2}\)\s*(?:\[[^\]]*\]\s*)?")
 _DATE_RE = re.compile(r"^\((\d{4}-\d{2}-\d{2})\)\s*")
 _CATEGORY_RE = re.compile(r"^\[([^\]]*)\]\s*")
 # The trailing metadata token: `{#12 by=user run=7 used=2026-09-02 n=2 sens=health due=...}`.
@@ -141,11 +139,6 @@ _HEADING_RE = re.compile(r"^##\s+(.+?)\s*$")
 # `replaces=#n` and `/trace why` provenance can't silently point at a different fact later.
 # A hand edit that drops the line falls back to max(id)+1.
 _NEXT_ID_RE = re.compile(r"^<!--\s*next-id:\s*(\d+)\s*-->\s*$")
-
-
-def _fact_text(stored: str) -> str:
-    """Strip the date/category prefix from a stored fact line, leaving the bare fact text."""
-    return _PREFIX_RE.sub("", stored).strip()
 
 
 def _new_entry(text: str, *, layer: str = "user", category: str = "general", by: str = "user",
@@ -334,8 +327,8 @@ def _clean_text(fact) -> str:
 
 
 def _clean_category(category) -> str:
-    # The category rides inside the "[category] " prefix _PREFIX_RE parses: a newline breaks the
-    # bullet line and a "]" terminates the [^\]]* group early. A category that sanitizes to
+    # The category rides inside the bullet's "[category] " prefix: a newline breaks the bullet
+    # line and a "]" would end the tag early. A category that sanitizes to
     # nothing falls back to the untagged default.
     return " ".join(str(category or "").split()).replace("]", "").strip() or "general"
 
@@ -464,12 +457,6 @@ def entry(fact_id: int) -> dict | None:
         if e.get("id") == fact_id:
             return e
     return None
-
-
-def list_memory() -> list[str]:
-    """The stored fact lines (`(date) [category] text`, no metadata token), in file order. The
-    pre-layer shape; /memory's grouped listing reads `entries()` instead."""
-    return [_display(e) for e in _entries()]
 
 
 def search_memory(query: str = "", *, local_inference: bool | None = None) -> list[str]:
@@ -652,18 +639,6 @@ def memory_context_split(query: str = "") -> "tuple[str, str, list[int]]":
     if trailer:
         matched.append("(" + "; ".join(trailer) + " — `recall` searches everything else stored)")
     return "\n".join(always), "\n".join(matched), selected_ids(sel)
-
-
-def memory_context(query: str = "") -> "tuple[str, list[int]]":
-    """`memory_context_split` as one block: `(block, matched_ids)` — the always half first,
-    then the by-match half ("" when nothing is stored)."""
-    always, matched, ids = memory_context_split(query)
-    return "\n".join(b for b in (always, matched) if b), ids
-
-
-def read_memory_block(query: str = "") -> str:
-    """The grounding block alone (see memory_context)."""
-    return memory_context(query)[0]
 
 
 def selected_ids(sel: dict) -> list[int]:

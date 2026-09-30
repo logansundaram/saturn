@@ -75,7 +75,7 @@ CREATE TABLE IF NOT EXISTS llm_calls (
     run_id        INTEGER,
     seq           INTEGER,
     ts            TEXT,
-    node          TEXT,    -- the langgraph node the call was made from (plan/agent/replan/synthesize)
+    node          TEXT,    -- the langgraph node the call was made from (agent)
     model         TEXT,
     dur           REAL,    -- wall-clock seconds for the single model call
     prompt_tokens INTEGER,
@@ -92,137 +92,24 @@ CREATE INDEX IF NOT EXISTS ix_events_run ON events(run_id);
 CREATE INDEX IF NOT EXISTS ix_llm_calls_run ON llm_calls(run_id);
 """
 
-# Full-text index over the runs `/trace search` searches. SQLite's
-# FTS5 ships in every CPython wheel we target, but a distro build can omit it, so this is applied
-# separately from _SCHEMA and its absence degrades to a LIKE scan (search_runs) — never a failed
-# tracer. External-content table: the runs row stays the record; the index is rebuilt from it
-# when first created, and the triggers keep it current from then on.
-_FTS_SCHEMA = """
-CREATE VIRTUAL TABLE IF NOT EXISTS runs_fts USING fts5(
-    query, response, content='runs', content_rowid='run_id'
-);
-CREATE TRIGGER IF NOT EXISTS runs_fts_ai AFTER INSERT ON runs BEGIN
-  INSERT INTO runs_fts(rowid, query, response) VALUES (new.run_id, new.query, new.response);
-END;
-CREATE TRIGGER IF NOT EXISTS runs_fts_ad AFTER DELETE ON runs BEGIN
-  INSERT INTO runs_fts(runs_fts, rowid, query, response)
-    VALUES ('delete', old.run_id, old.query, old.response);
-END;
-CREATE TRIGGER IF NOT EXISTS runs_fts_au AFTER UPDATE ON runs BEGIN
-  INSERT INTO runs_fts(runs_fts, rowid, query, response)
-    VALUES ('delete', old.run_id, old.query, old.response);
-  INSERT INTO runs_fts(rowid, query, response) VALUES (new.run_id, new.query, new.response);
-END;
-"""
+# `/trace search` (CUT 2026-09-30) kept an FTS5 index over runs.query/response, maintained by
+# three SQL triggers that live IN the DB file. The tracer no longer creates or maintains it, but a
+# DB written by an earlier build still carries the triggers — and an INSERT on `runs` compiles
+# them, so on a SQLite build without fts5 every start_run would fail "no such module: fts5", and
+# on one with it every run would keep feeding an index nothing reads. Tracer.__init__ drops them
+# (plain DDL, no module needed). The orphaned `runs_fts` table itself is left alone: dropping a
+# virtual table needs its module, and the user's DB gets no destructive migration.
+_LEGACY_FTS_TRIGGERS = ("runs_fts_ai", "runs_fts_ad", "runs_fts_au")
 
 
-_FTS_TRIGGERS = ("runs_fts_ai", "runs_fts_ad", "runs_fts_au")
-
-
-def ensure_fts(conn) -> bool:
-    """Create the runs full-text index (and backfill it from the existing rows when the table or
-    its triggers were missing). Returns True when FTS5 is usable on this connection. Best-effort:
-    a build without FTS5 returns False and search_runs falls back to LIKE.
-
-    The triggers are the hazard: they live in the DB file, and an INSERT on `runs` compiles them
-    — on a build WITHOUT fts5 a trigger left behind by a build WITH it fails every start_run with
-    "no such module: fts5". So when the probe fails, the triggers are dropped (plain DDL, no
-    module needed) and the tracer keeps recording; the next fts5-capable open recreates them and
-    rebuilds the index from the rows written meanwhile."""
+def _drop_legacy_fts_triggers(conn) -> None:
+    """Best-effort: a failure here costs nothing the tracer needs."""
     try:
-        have = {row[0] for row in conn.execute(
-            "SELECT name FROM sqlite_master WHERE name IN (?, ?, ?, ?)",
-            ("runs_fts", *_FTS_TRIGGERS)).fetchall()}
-        # Probe the module before touching the schema: a virtual table whose module is missing
-        # still shows in sqlite_master, and the CREATE ... IF NOT EXISTS below would not notice.
-        conn.execute("SELECT count(*) FROM runs_fts" if "runs_fts" in have
-                     else "CREATE VIRTUAL TABLE IF NOT EXISTS runs_fts USING fts5("
-                          "query, response, content='runs', content_rowid='run_id')")
-        conn.executescript(_FTS_SCHEMA)
-        if not have.issuperset({"runs_fts", *_FTS_TRIGGERS}):
-            conn.execute("INSERT INTO runs_fts(runs_fts) VALUES ('rebuild')")
+        for trig in _LEGACY_FTS_TRIGGERS:
+            conn.execute(f"DROP TRIGGER IF EXISTS {trig}")
         conn.commit()
-        return True
     except Exception:
-        try:
-            for trig in _FTS_TRIGGERS:
-                conn.execute(f"DROP TRIGGER IF EXISTS {trig}")
-            conn.commit()
-        except Exception:
-            pass
-        return False
-
-
-# Filler the natural-language queries the tool is advertised for carry ("what did we do last
-# week"): dropped before matching so they never veto a hit. A query that is ALL filler has
-# nothing to search for and matches nothing (never a false hit on "what").
-_SEARCH_STOPWORDS = frozenset("""
-the and for with that this from what when where which who how are was were will would can
-could should did does done do into onto about after before over under then than them they
-there here have has had not but all any some our your their its his her you we us me my it
-is be been being on in at to of by or as an a if so up out no yes please make give find show
-tell let get use using run take need want like just also last week month ago yesterday today
-""".split())
-
-
-def _search_terms(text: str) -> list[str]:
-    import re
-
-    words = [t for t in re.findall(r"[\w'\-]+", str(text or "")) if len(t) > 1]
-    return [t for t in words if t.lower() not in _SEARCH_STOPWORDS][:12]
-
-
-def search_runs(db_path, text: str, limit: int = 5) -> list[dict]:
-    """Past runs whose query or recorded answer matches `text`, newest-relevant first:
-    `[{run_id, started_at, status, query, response}]`. Stopwords are dropped, then every
-    content term must match (AND); when nothing does, runs matching ANY term are returned
-    instead, best match first — so "the report we made Monday" still finds the report. FTS5
-    (bm25-ranked) when the index exists, else a LIKE scan. Terms are quoted individually so user
-    text can never inject FTS syntax, and `%`/`_` are escaped in the LIKE path. Read-side helper
-    (its own short-lived connection) — behind `/trace search`."""
-    terms = _search_terms(text)
-    if not terms:
-        return []
-    limit = max(1, min(int(limit or 5), 50))
-    conn = sqlite3.connect(str(db_path))
-    try:
-        rows = None
-        if ensure_fts(conn):
-            quoted = ['"' + t.replace('"', '""') + '"' for t in terms]
-            try:
-                for match in (" ".join(quoted), " OR ".join(quoted)):
-                    rows = conn.execute(
-                        "SELECT r.run_id, r.started_at, r.status, r.query, r.response "
-                        "FROM runs_fts f JOIN runs r ON r.run_id = f.rowid "
-                        "WHERE runs_fts MATCH ? ORDER BY bm25(runs_fts), r.run_id DESC LIMIT ?",
-                        (match, limit),
-                    ).fetchall()
-                    if rows or len(quoted) == 1:
-                        break
-            except sqlite3.Error:
-                rows = None
-        if rows is None:
-            clause = ("(LOWER(COALESCE(query,'')) LIKE ? ESCAPE '\\' "
-                      "OR LOWER(COALESCE(response,'')) LIKE ? ESCAPE '\\')")
-            params: list = []
-            for t in terms:
-                like = "%" + t.lower().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
-                params += [like, like]
-            for joiner in (" AND ", " OR "):
-                rows = conn.execute(
-                    f"SELECT run_id, started_at, status, query, response FROM runs "
-                    f"WHERE {joiner.join(clause for _ in terms)} ORDER BY run_id DESC LIMIT ?",
-                    (*params, limit),
-                ).fetchall()
-                if rows or len(terms) == 1:
-                    break
-    finally:
-        conn.close()
-    return [
-        {"run_id": rid, "started_at": started, "status": status, "query": query or "",
-         "response": response or ""}
-        for rid, started, status, query, response in rows
-    ]
+        pass
 
 
 # The run the live turn is recording into, for provenance stamps made from inside a tool
@@ -397,7 +284,7 @@ class Tracer:
             pass
         self.conn.executescript(_SCHEMA)
         self.conn.commit()
-        ensure_fts(self.conn)  # best-effort; absent FTS5 degrades to LIKE
+        _drop_legacy_fts_triggers(self.conn)
         self._seq = 0
         self._llm_seq = 0
         self._broken = False  # one-shot circuit breaker — see _trip
@@ -515,7 +402,7 @@ class Tracer:
 # A LangChain callback handler that records the raw input messages + output of every model call in
 # a turn. Attached run-scoped in the graph stream config (agent.run_turn); it rides LangChain's
 # contextvar callback propagation down into each node's model.invoke()/stream(), so it sees the
-# agent and utility calls without any node having to thread it through. Read
+# agent and background calls without any node having to thread it through. Read
 # back by `/trace invoke`.
 
 _LLM_MSG_CAP = 8000  # per-message content cap stored to the DB (the display truncates further)
@@ -642,10 +529,10 @@ class LLMTraceHandler(BaseCallbackHandler):
             return
         try:
             # A GeneratorExit is not a model failure: the CONSUMER closed the stream on purpose
-            # (the freeze latch breaking out of synthesize's loop, a cancelled turn) — langchain's
-            # stream wrapper routes it here before re-raising. Record it as `cancelled`, not
-            # `error` (whose message would be the blank str(GeneratorExit())), or /trace invoke
-            # misreports every frozen interrupt-and-correct turn as a failed synthesize call.
+            # (a cancelled turn abandoning the stream mid-generation) — langchain's stream wrapper
+            # routes it here before re-raising. Record it as `cancelled`, not `error` (whose
+            # message would be the blank str(GeneratorExit())), or /trace invoke misreports
+            # every cancelled turn as a failed model call.
             cancelled = isinstance(error, GeneratorExit)
             note = "stream closed before completion (freeze/cancel)" if cancelled else str(error)
             self._tracer.log_llm_call(

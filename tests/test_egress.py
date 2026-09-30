@@ -9,7 +9,7 @@ from config import get_config
 @pytest.fixture(autouse=True)
 def fresh_ledger(isolated_paths, monkeypatch):
     """Empty the ledger and pin air-gap off around each test. _CLEARED_AT is reset too — the
-    isolation clear() must look like a FRESH SESSION, not an operator `/privacy egress clear`
+    isolation clear() must look like a FRESH SESSION, not an operator `/policy egress clear`
     (which summary() now reports via its `cleared` marker)."""
     egress.clear()
     monkeypatch.setattr(egress, "_CLEARED_AT", 0)
@@ -76,7 +76,7 @@ def test_clear():
 
 
 def test_summary_carries_cleared_marker():
-    """summary() must say when the counts are since-the-clear: /privacy egress renders this
+    """summary() must say when the counts are since-the-clear: /policy egress renders this
     dict, and without the marker a post-clear readout would claim 'sent: 0' over a session
     that sent (the per-turn cleared_since hazard, ledger-wide)."""
     egress.record("web_search", "h", "x")

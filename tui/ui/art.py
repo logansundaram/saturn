@@ -245,8 +245,8 @@ def _saturn_plain() -> str:
 
 
 def _flag(name: str) -> bool:
-    """`SATURN_<name>`, or the old `SATURDAY_<name>` spelling (read until the next release)."""
-    return bool(os.environ.get(f"SATURN_{name}") or os.environ.get(f"SATURDAY_{name}"))
+    """The `SATURN_<name>` env flag."""
+    return bool(os.environ.get(f"SATURN_{name}"))
 
 
 def _no_splash() -> bool:

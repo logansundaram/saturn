@@ -3,7 +3,7 @@
 Split out of the old 1,000-line agent.py (2026-07-03) so each concern reads on its own:
 
     cli.py       the argparse surface (strict flags, exit 2 on typos) + piped-stdin capture
-    graph.py     build_agent(): wire the nodes/ package into the compiled plan/execute engine
+    graph.py     build_agent(): wire the nodes/ package into the compiled ReAct loop
     turn.py      run_turn(): drive one turn — stream updates + answer tokens, resolve interrupts
     session.py   cross-turn state: the per-turn state shape, fresh-turn reset, history compaction
     startup.py   shared startup work: knowledge-base sync + attachment admission warnings

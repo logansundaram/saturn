@@ -77,11 +77,11 @@ def test_help_renders_groups_map_and_no_dead_legend(capsys):
 # --- /help <name> fallbacks ----------------------------------------------------------------------
 
 def test_help_renamed_name_prints_same_pointer_as_direct(capsys):
-    dispatch("/help why", _ctx())
+    dispatch("/help plan", _ctx())
     via_help = capsys.readouterr().out
-    dispatch("/why", _ctx())
+    dispatch("/plan", _ctx())
     direct = capsys.readouterr().out
-    assert "/trace why" in via_help and "moved" in via_help
+    assert "/help" in via_help and "moved" in via_help and "plan engine was removed" in via_help
     assert via_help == direct
 
 
@@ -90,37 +90,15 @@ def test_help_unknown_name_still_errors(capsys):
     assert "unknown command" in capsys.readouterr().out
 
 
-def test_cut_commands_command_gets_pointer(capsys):
-    for spelling in ("/commands", "/cmds"):
-        dispatch(spelling, _ctx())
+def test_v01_pointers_are_gone(capsys):
+    """A pointer lives one release: the v0.1.0-era spellings were dropped 2026-09-30 and now
+    answer like any unknown name — none is registered, none is a pointer."""
+    for spelling in ("commands", "cmds", "risk", "allow", "autoapprove", "yolo", "source",
+                     "sources", "context", "ctx", "why", "ws", "workspace", "ingest", "dryrun"):
+        assert spelling not in COMMANDS, spelling
+        dispatch(f"/{spelling}", _ctx())
         out = capsys.readouterr().out
-        assert "moved" in out and "/help" in out
-
-
-def test_cut_gate_spellings_get_policy_pointer(capsys):
-    """The 2026-07-06 surface trim: the legacy gate spellings answer with a pointer to their
-    /policy lever — via /help <name> AND direct dispatch (the same _print_renamed line)."""
-    for spelling, target in (("risk", "/policy risk"), ("allow", "/policy allow"),
-                             ("autoapprove", "/policy open"), ("yolo", "/policy open")):
-        dispatch(f"/help {spelling}", _ctx())
-        via_help = capsys.readouterr().out
-        assert "moved" in via_help and target in via_help, spelling
-        dispatch(f"/{spelling}", _ctx())
-        assert capsys.readouterr().out == via_help
-
-
-def test_folded_commands_get_subview_pointer(capsys):
-    """The 2026-07-07 command fold: /source became a /trace subview, /context joined /config.
-    Each answers with a pointer to its new home — via /help <name> AND direct dispatch (the same
-    _print_renamed line) — and none is a live command any more."""
-    for spelling, target in (("source", "/trace source"), ("sources", "/trace source"),
-                             ("context", "/config context"), ("ctx", "/config context")):
-        assert spelling not in COMMANDS, f"/{spelling} should be folded, not registered"
-        dispatch(f"/help {spelling}", _ctx())
-        via_help = capsys.readouterr().out
-        assert "moved" in via_help and target in via_help, spelling
-        dispatch(f"/{spelling}", _ctx())
-        assert capsys.readouterr().out == via_help
+        assert "unknown command" in out and "moved" not in out, spelling
 
 
 def test_help_details_state_the_real_flag_grammar(capsys):

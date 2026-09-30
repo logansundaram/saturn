@@ -101,7 +101,7 @@ intent, not record). Each tool event records the agent pass that issued it.
 
 - `runtime.keep_alive` keeps the model loaded between turns; the idle prime warms the prefix.
 - Auto-compaction (`runtime.auto_compact`, threshold 0.85 of the window) summarizes older turns
-  with the utility model after a turn; the memory review queues candidates from each turn.
+  with the same model after a turn; the memory review queues candidates from each turn.
 - Headless `-p` / `-q` run the same loop with gated tools DENIED unless `--yolo`.
 - `hooks.yaml` fires on turn-start / turn-end (from `run_turn`) and before- / after-write
   (from the file tools); a before-write non-zero exit refuses the write as a failed step.

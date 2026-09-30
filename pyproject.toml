@@ -74,7 +74,7 @@ saturn = "agent:main"
 
 [tool.setuptools]
 # Root holds only entry points + foundations (see CLAUDE.md); everything else lives in the
-# functional packages below. Dev-only artifacts (benchmark.py, utilities/, tests/) are not shipped.
+# functional packages below. Dev-only artifacts (benchmark.py, tests/) are not shipped.
 py-modules = ["agent", "config", "diag", "env_keys", "textutil"]
 
 [tool.setuptools.packages.find]

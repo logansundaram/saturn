@@ -1,51 +1,9 @@
 """
-On-demand readouts (`/config context`, `/models`) and the one-off log lines (notes, warnings,
-steering/pause acknowledgements, queued-line echoes). All render in the trace-rail style and reuse the
-shared meter vocabulary (`_mini_bar`/`_meter_color`), so a gauge reads identically here, in the
-status bar, and in the live trace. None of these touch per-turn state.
+The one-off log lines (notes, warnings, steering/pause acknowledgements, queued-line echoes),
+rendered in the trace-rail style. None of these touch per-turn state.
 """
 
-from ._base import (
-    Text, _console, _RICH,
-    _ACCENT, _DIM, _RAIL_GLYPH,
-    _emit, _meter_color, _mini_bar, _rail, _truncate,
-)
-from .listing import section
-
-
-# ── context-window readout (the /config context command) ──────────────────────────────────
-def show_context(window: int, used: int, source: str, per_role: dict[str, int]) -> None:
-    """Detailed context-window readout for /config context: the active window + where it comes from, a
-    wide fill bar for the last measured usage, and the per-role windows. The compact form of
-    this fill gauge also rides the live status bar during a turn."""
-    pct = (used / window * 100) if window else 0.0
-    col = _meter_color(pct)
-    bar = _mini_bar(pct, width=28)
-
-    section("context")
-
-    if _RICH:
-        win = Text("  ")
-        win.append("window ", style=_DIM)
-        win.append(f"{window:,}", style="default")
-        win.append(" tokens", style=_DIM)
-        win.append(f"   ({source})", style=_DIM)
-        _console.print(win)
-
-        usage = _rail()
-        usage.append("usage ", style=_DIM)
-        usage.append(f" {bar}", style=col)
-        usage.append(f"  {pct:>4.0f}%", style=col)
-        usage.append(f"   {used:,} / {window:,}", style=_DIM)
-        _console.print(usage)
-    else:
-        print(f"  window {window:,} tokens   ({source})")
-        print(f"  {_RAIL_GLYPH} usage  {bar}  {pct:>4.0f}%   {used:,} / {window:,}")
-
-    if per_role:
-        roles_txt = " · ".join(f"{r} {w:,}" for r, w in per_role.items())
-        _emit(f"  roles: {roles_txt}")
-    _emit("  set with /config context <size> (or /config context auto for per-model capability)")
+from ._base import Text, _console, _RICH, _ACCENT, _DIM, _truncate
 
 
 # ── log lines (startup notices, warnings) ────────────────────────────────────────

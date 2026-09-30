@@ -27,55 +27,40 @@ from commands._utils import LIST_VERBS, REMOVE_VERBS
 @command(
     "clear",
     "Start a fresh conversation: reset state + clear the screen.",
-    aliases=("cls", "reset", "new"),
     details="""
 The "new conversation" button. Drops the in-memory conversation — the message history and every
 per-turn field (plan, iteration, accumulators) — AND clears the visible terminal, then reprints
 the session header. One command for a clean slate.
 
 What is NOT touched: config, model/tier bindings, the RAG corpus, the durable memory store
-(remember/recall), and the on-disk trace. The trace survives, so /trace and /trace calls still
-show past runs after a clear.
+(remember/recall), and the on-disk trace — /trace still shows past runs after a clear.
 
 The autosave slot IS dropped when a non-empty conversation is cleared — "fresh start" means the
 cleared conversation is not silently restorable via /resume.
-
-Pass --screen (-s) to ONLY repaint the terminal, leaving the conversation intact.
-
-Aliases /reset and /new are the same fresh-start; /cls too.
-
-Examples:
-  /clear            new conversation + clean screen
-  /clear --screen   just repaint the terminal, keep the conversation
 """,
 )
 def _clear(ctx, args):
     import subprocess
-    import sys
 
-    screen_only = bool(args) and args[0].lower() in ("--screen", "-s", "screen")
-    # Any OTHER argument must error, never fall through to the destructive default — a typo'd
-    # `--scren` asking for a repaint must not wipe the conversation (the /mcp precedent: an
-    # unrecognized verb stops instead of degrading into the default action).
-    if args and not screen_only:
-        _print(f"  unknown argument {args[0]!r} — usage: /clear [--screen]")
+    # An argument must error, never fall through to the destructive default — a typo'd flag
+    # must not wipe the conversation (the /mcp precedent: an unrecognized verb stops instead of
+    # degrading into the default action). (--screen and the /cls /reset /new aliases were cut
+    # 2026-09-30; Ctrl-L repaints.)
+    if args:
+        _print(f"  unknown argument {args[0]!r} — usage: /clear")
         return
 
-    if not screen_only:
-        # Drop the autosave slot only when a non-empty conversation was actually discarded —
-        # write_autosave's empty-guard contract (_session.py): a caller that deliberately empties
-        # the conversation clears the slot, or /clear → /quit → /resume resurrects exactly what
-        # the user cleared. Unconditional clearing would instead wipe the PREVIOUS session's
-        # autosave when /clear is typed at a fresh launch — the case the empty-guard protects.
-        had_messages = bool(ctx.state.get("messages"))
-        ctx.state = ctx.make_initial_state()
-        if had_messages:
-            clear_autosave()
+    # Drop the autosave slot only when a non-empty conversation was actually discarded —
+    # write_autosave's empty-guard contract (_session.py): a caller that deliberately empties
+    # the conversation clears the slot, or /clear → /quit → /resume resurrects exactly what
+    # the user cleared. Unconditional clearing would instead wipe the PREVIOUS session's
+    # autosave when /clear is typed at a fresh launch — the case the empty-guard protects.
+    had_messages = bool(ctx.state.get("messages"))
+    ctx.state = ctx.make_initial_state()
+    if had_messages:
+        clear_autosave()
 
     subprocess.run("clear", shell=True, check=False)
-
-    if screen_only:
-        return
 
     _reprint_banner(ctx)
     _print("  new conversation — fresh state, no message history.")
@@ -98,7 +83,7 @@ def _reprint_banner(ctx) -> None:
 
         cfg = get_config()
         n_docs = sum(1 for _ in iter_documents())
-        ui.banner(f"{cfg.active_tier}:{model_id('tool_caller')}", len(_tools), n_docs, ctx.db_path)
+        ui.banner(f"{cfg.active_tier}:{model_id()}", len(_tools), n_docs, ctx.db_path)
     except Exception:
         pass
 

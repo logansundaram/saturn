@@ -28,13 +28,6 @@ class TestLadder:
         # does not exist.
         assert set(mf._CLASS_PARAMS) == set(mf.classes())
 
-    def test_is_ladder_tag_matches_the_ladder_case_insensitively(self):
-        for _key, tag in mf.SIZE_LADDER:
-            assert mf.is_ladder_tag(tag)
-            assert mf.is_ladder_tag(tag.upper())
-        assert not mf.is_ladder_tag("qwen3.5:99b")  # a tag we do not ship is not a ladder tag
-        assert not mf.is_ladder_tag("")
-
     def test_no_size_class_key_contains_a_dot(self):
         # config.get/set/persist parse dotted paths, so a "." in a tier key splits it into two
         # segments and role binds write to the wrong place. Keep class keys dot-free.
@@ -71,32 +64,42 @@ class TestConfigResolution:
 
         return Config({
             "active_tier": "t",
-            "tiers": {"t": {"roles": {
-                "tool_caller": synth, "utility": synth,
-            }, "embedder": "qwen3-embedding:8b"}},
+            "tiers": {"t": {"model": synth, "embedder": "qwen3-embedding:8b"}},
             "capabilities": {},
         })
 
     def test_a_ladder_binding_passes_through_untouched(self):
-        spec = self._cfg().model_for_role("tool_caller")
-        assert spec.model == "qwen3.8:27b"
+        assert self._cfg().chat_model == "qwen3.8:27b"
 
     def test_an_off_ladder_binding_passes_through_untouched(self):
-        spec = self._cfg("gemma4:e4b").model_for_role("tool_caller")
-        assert spec.model == "gemma4:e4b"
+        assert self._cfg("gemma4:e4b").chat_model == "gemma4:e4b"
 
     def test_a_provider_mapping_from_a_pre_cut_config_refuses_actionably(self):
         import pytest
         from config import Config
 
-        cfg = Config({
-            "active_tier": "t",
-            "tiers": {"t": {"roles": {
-                "tool_caller": {"provider": "anthropic", "model": "claude-sonnet-4"},
-            }}},
-        })
+        cfg = Config({"active_tier": "t", "tiers": {"t": {
+            "model": {"provider": "anthropic", "model": "claude-sonnet-4"}}}})
         with pytest.raises(KeyError, match="bare Ollama model id"):
-            cfg.model_for_role("tool_caller")
+            cfg.chat_model
+
+    def test_an_old_roles_block_is_refused_with_the_line_to_write(self):
+        """The pre-2026-09-30 `roles:` shape is no longer read: the error names the exact
+        replacement line, built from the agent's old entry."""
+        import pytest
+        from config import Config
+
+        cfg = Config({"active_tier": "t", "tiers": {"t": {"roles": {
+            "planner": "old:1b", "tool_caller": "qwen3.5:9b", "utility": "qwen3.5:4b"}}}})
+        with pytest.raises(KeyError, match='old `roles:` block .* model: "qwen3.5:9b"'):
+            cfg.chat_model
+
+    def test_a_tier_without_a_model_refuses_actionably(self):
+        import pytest
+        from config import Config
+
+        with pytest.raises(KeyError, match="defines no model"):
+            Config({"active_tier": "t", "tiers": {"t": {"embedder": "e"}}}).chat_model
 
     def test_the_embedder_is_exempt(self):
         cfg = self._cfg()
@@ -106,15 +109,13 @@ class TestConfigResolution:
         """The fallback used to be "workstation", a preset that stopped shipping with the size
         ladder — so a config missing the key named a tier that does not exist and hard-failed on
         every model resolution."""
-        from config import Config, MODEL_ROLES
+        from config import Config
         from core import model_family as mf
 
-        cfg = Config({"tiers": {key: {
-                                      "roles": {r: tag for r in MODEL_ROLES},
-                                      "embedder": "qwen3-embedding:8b"}
+        cfg = Config({"tiers": {key: {"model": tag, "embedder": "qwen3-embedding:8b"}
                                 for key, tag in mf.SIZE_LADDER}})
         assert cfg.active_tier == mf.DEFAULT_CLASS
-        assert cfg.model_for_role("tool_caller").model == mf.tag_for(mf.DEFAULT_CLASS)
+        assert cfg.chat_model == mf.tag_for(mf.DEFAULT_CLASS)
 
     def test_capability_max_context_window_defaults_to_the_runtime_window(self):
         from config import Config
@@ -159,15 +160,13 @@ class TestShippedConfigMatchesTheLadder:
 
         assert tuple(self._template()["tiers"]) == mf.classes()
 
-    def test_every_tier_binds_its_ladder_tag_on_every_role(self):
-        from config import MODEL_ROLES
+    def test_every_tier_binds_its_ladder_tag(self):
         from core import model_family as mf
 
         tiers = self._template()["tiers"]
         for key, tag in mf.SIZE_LADDER:
-            roles = tiers[key]["roles"]
-            assert set(roles) == set(MODEL_ROLES), key
-            assert set(roles.values()) == {tag}, key
+            assert tiers[key]["model"] == tag, key
+            assert "roles" not in tiers[key], key
 
     def test_every_ladder_tag_has_a_capabilities_entry(self):
         from core import model_family as mf

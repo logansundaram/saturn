@@ -32,7 +32,6 @@ stores/     data + persistence: RAG corpus + its manifest, memory, snapshots, tr
 tui/        presentation: the rich-based terminal UI, type-ahead reader, system metrics
 
 tests/      offline pytest suite (no LLM, no network — conftest redirects all paths to tmp)
-utilities/  dev-only helpers (graph rendering); not shipped in the wheel
 docs/       this file + historical planning artifacts
 database/   user data at runtime (corpus, workspace, memory, sessions, permissions…)
 logging/    diagnostics, benchmarks, exports, MCP server logs (gitignored)
@@ -95,17 +94,16 @@ The whole product is one loop. Reading it end to end explains 80% of the repo:
 ### `core/` — the engine room
 | File | What it does |
 |---|---|
-| `state.py` | `AgentState` + the step-dict vocabulary of the model's checklist. `current_step` (first item with `result is None`) is the gate's step context; `gate_events` is the one non-recomputable record (human decisions); `is_turn_start` is THE turn-boundary predicate. |
-| `llms.py` | `get_model(role)` — the two-role model factory (`tool_caller` = the agent's call, `utility` = background work) over Ollama; `invoke_kwargs`, THE builder of the per-task decoding options every call sends (num_ctx, num_predict, think); locality boundary wrapping for a remote `OLLAMA_HOST`; startup health check. Cloud providers are shelved (refuse actionably). |
+| `state.py` | `AgentState` + the step-dict vocabulary of the model's checklist. `current_step` (first item with `result is None`) is the gate's step context; `gate_events` is the one non-recomputable record (human decisions); `is_turn_start` is THE turn-boundary predicate; `grounding_parts` splits the grounding into its stable / per-turn halves. |
+| `llms.py` | `get_model()` — the model factory (one chat model per tier, shared by the agent and the background calls) over Ollama; `invoke_kwargs`, THE builder of the per-task decoding options every call sends (num_ctx, num_predict, think); locality boundary wrapping for a remote `OLLAMA_HOST`; startup health check. Cloud providers are shelved (refuse actionably). |
 | `messages.py` | Every system prompt, in one place: `agent_sys_msg()` (the loop's one prompt — no tool catalog, the tools ride the native bind) plus the compaction, memory-review and /init prompts. |
 | `doctext.py` | Text out of PDF / .docx / .xlsx (`extract`) for `read_file` and `@file` attachments, and the PDF / Word loaders the knowledge base shares. A leaf; the format libraries load lazily. |
-| `context.py` | `grounding_parts` (the stable / per-turn halves of the grounding block) and `clean` (workspace paths collapse in observations). |
 | `sources.py` | `build_sources` — the answer's source numbering, shared by the Sources footer and `/trace source`. |
 | `pause.py` | The `PauseController`: the Esc pause / steer latch the agent node consults at the top of every pass. |
 | `prime.py` | The idle prefix prime: between turns (and once after the weights load) the agent's `[system][stable grounding]` prefix is re-sent through the bound model with one predicted token so the next turn's call resumes from that checkpoint. Off under tests and `runtime.prime: false`. |
 | `tool_args.py` | Tool-argument recovery: alias coercion onto real schemas + the schema hint the agent sends back on a rejected call (small-model tolerance). |
 | `compaction.py` | The heavier LLM compaction (automatic past threshold) folding old turns into a summary message. |
-| `memory_review.py` | Session-end learning, gated: collects memory candidates from each turn (steer notes, gate denials, failed tool calls) and from compaction summaries into a pending queue, optionally asks the utility model for proposals, and runs the accept-each review screen (`/memory review`, `/quit`). Never writes without a y. |
+| `memory_review.py` | Session-end learning, gated: collects memory candidates from each turn (steer notes, gate denials, failed tool calls) and from compaction summaries into a pending queue, optionally asks the model for proposals, and runs the accept-each review screen (`/memory review`, `/quit`). Never writes without a y. |
 | `hooks.py` | The user's `~/.saturn/hooks.yaml`: shell commands on turn-start / turn-end (`app/turn.py`) and before- / after-write (`tools/files.py`); a before-write non-zero exit blocks the write; `problems()` feeds the startup warning. |
 | `mentions.py` | `@file` expansion into clamped attachment blocks; drag-and-drop path detection. |
 | `workspace.py` | Where Saturn works: the launch folder, `/add-dir` folders, the one containment check (`resolve`), and the pruned walk. |
@@ -157,19 +155,18 @@ every check in the agent node. Note: `nodes/tools.py` is the *tool-execution nod
 `_utils.py` (shared grammar: removal/list verbs, `--save` parsing, toggle status). Themed
 modules: `conversation.py` (/clear /resume), `knowledge.py` (/docs
 /memory /init /undo), `runtime.py` (/tools /models /mcp), `system.py` (/help /quit
-/update), `config.py` (/config, incl. the `context` subview — the folded-in /context),
-`policy.py` (/policy — the legacy /risk /allow /autoapprove spellings were
-cut 2026-07-06 and print pointers), `privacy.py` (/privacy), `trace.py` (/trace — incl. the
-`source` subview, the folded-in /source — + export/replay engine; the folds landed
-2026-07-07 and print _RENAMED pointers). Convention: one file
-owns every view of a feature.
+/update), `config.py` (/config), `policy.py` (/policy — the gate's levers plus the egress
+ledger and air-gap, /privacy merged in 2026-09-30), `trace.py` (/trace — incl. the `source`
+subview; `context` is an alias of `invoke --full` — + export/replay engine). A cut spelling
+prints a `_RENAMED` pointer for one release. Convention: one file owns every view of a
+feature.
 
 ### `stores/` — data + persistence
 `rag.py` (corpus sync + vector store), `document_registry.py` (the knowledge-base manifest),
 `memory_registry.py` (the layered memory file: six layers, per-fact metadata token, selection
 under a cap), `snapshots.py` (pre-write snapshots for /undo), `trace.py` (the run/event/LLM-call
-trace DB behind /trace and exports, plus the `runs_fts` index behind `/trace
-search` and the current-run seam `remember` stamps provenance from).
+trace DB behind /trace and exports, plus the current-run seam `remember` stamps provenance
+from).
 
 ### `tui/` — presentation only
 `typeahead.py` (the in-turn console reader: type-ahead queue, Esc steer/pause),
@@ -192,7 +189,7 @@ deliberate name reuse. When you're jumping by filename, disambiguate here:
 | `plan` ×2 | `tools/planning.py` is the tool the model calls · `tui/ui/plan.py` renders the checklist. |
 | `approval` ×2 | `nodes/approval.py` decides + interrupts · `tui/ui/approval.py` renders the gate prompt. |
 | `config` ×2 | root `config.py` loads/persists config.yaml · `commands/config.py` is `/config`. |
-| `policy`/`privacy` | `trust/policy.py`/`trust/egress.py` are the mechanisms · `commands/policy.py`/`commands/privacy.py` are their front doors. |
+| `policy` | `trust/policy.py` (the gate) and `trust/egress.py` (ledger, air-gap) are the mechanisms · `commands/policy.py` is their one front door. |
 | `knowledge` ×2 | `tools/knowledge.py` = the RAG/memory tools · `commands/knowledge.py` = /docs /memory /init /undo. |
 
 ## Suggested reading order

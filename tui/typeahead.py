@@ -107,8 +107,8 @@ class InputQueue:
 
     def push(self, line: str) -> None:
         """Append a complete line to the queue from OUTSIDE the reader thread. Used by the REPL
-        to salvage a steering correction that landed after the turn's last step boundary (no
-        plan_gate left to consume it) — the text runs as the next message instead of being
+        to salvage a steering correction that landed after the turn's last agent pass (no
+        pass left to drain it) — the text runs as the next message instead of being
         silently dropped. Works even when the reader can't poll the console (pop() is
         availability-independent)."""
         line = (line or "").strip()

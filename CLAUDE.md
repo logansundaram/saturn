@@ -39,7 +39,7 @@ python -m pytest tests/test_policy.py -q -k prefix       # one test by name
 python benchmark.py [--strict]       # reports to logging/benchmarks/trust_<ts>.json
 python benchmark.py --loop           # the loop benchmark: daily requests graded on passes/tool choice/phantoms → loop_<ts>.json
 
-SATURN_DEBUG=1 python agent.py       # echo logging/diag.log lines to stderr (old name SATURDAY_DEBUG still read)
+SATURN_DEBUG=1 python agent.py       # echo logging/diag.log lines to stderr
 ```
 
 There is no linter or formatter configured. CI (`.github/workflows/tests.yml`) runs the suite on
@@ -66,9 +66,9 @@ ground → agent ─(no tool calls)─→ END
            └── tools ← approval      (a fully-rejected batch → agent)
 ```
 
-- `ground` assembles `state["context"]` in two halves (`~/.saturn/SATURN.md` then the workspace `SATURN.md`/`SATURDAY.md`, the knowledge-base manifest, the always-loaded
+- `ground` assembles `state["context"]` in two halves (`~/.saturn/SATURN.md` then the workspace `SATURN.md`, the knowledge-base manifest, the always-loaded
   memory layers = stable; memory matches + attachments = dynamic). No model call.
-- `agent` (`nodes/agent.py`) makes ONE native tool-calling call per pass (`tool_caller` role,
+- `agent` (`nodes/agent.py`) makes ONE native tool-calling call per pass (`get_model()`,
   `bind_tools(registry)`, streamed; think is adaptive — `runtime.think`: a pass thinks only right after a
   tool round with an error, an empty thinking pass is rerun think-off, the capped pass never thinks). Prompt order is prefix-cache order:
   `[system][stable grounding][history…][dynamic + request][turn messages…]`; the bound tool
@@ -111,9 +111,12 @@ When slicing conversation history, use `core.state.is_turn_start` — a mid-turn
 
 ### Models and config
 
-Code references model **roles** (`tool_caller` = the agent's call, `utility` = background work) via
-`core/llms.get_model(role)`; never name a model in graph code. Roles resolve through `active_tier` →
-`tiers` in `config.yaml`. Ollama is the only backend (cloud providers were cut 2026-09-27; a remote
+Each tier binds ONE chat model (`tiers.<t>.model`) — the agent's call and the background calls
+(compaction, the memory review, `/init`) share it — plus an `embedder`. Code gets it from
+`core/llms.get_model()`; never name a model in graph code. It resolves through `active_tier` →
+`tiers` in `config.yaml`; a leftover `roles:` block is refused with the one `model:` line to
+write instead (the old `SATURDAY_*` / `SATURDAY.md` / `~/.saturday` spellings are no longer read
+either, since 2026-09-30). Ollama is the only backend (cloud providers were cut 2026-09-27; a remote
 `OLLAMA_HOST` is the one network boundary, wrapped in `core/llms.py`). The qwen3.5/3.6/3.8 size ladder in
 `core/model_family.py` is the recommended default per size, not a gate: any Ollama tool-calling
 model binds.
@@ -144,6 +147,8 @@ accept). The benchmark's memory tasks and `tests/test_memory_*.py` pin this.
 ### Trust stack (`trust/`)
 
 - `policy.py` — one object behind `/policy risk|allow|open`, `runtime.auto_approve`, and `--yolo`.
+  `/policy` (`commands/policy.py`) is the ONE trust front door: its bare readout, the gate's levers,
+  and `egress` / `airgap` over `egress.py` (`/privacy` merged in 2026-09-30).
   Shell prefix matching is token-based and refuses metacharacters. Persisted in `database/permissions.json`.
 - `egress.py` — every outbound network op calls `check()` (air-gap) then `record()`. The complete list
   of egress chokepoints is `core/llms.py`, `tools/web.py`, `tools/mcp_client.py`;
@@ -190,7 +195,7 @@ terminal app's Info.plist. Readers are `untrusted=True` (shared notes, invitatio
 
 `commands/_framework.py` provides `@command(name, summary, aliases=, usage=, details=)`; one module owns
 every view of a feature (`commands/trace.py` = `/trace` + export/replay engine, etc.). Every command
-must accept `--help`; cut command spellings live in `_RENAMED` and print pointers rather than vanishing.
+must accept `--help`; cut command spellings live in `_RENAMED` and print pointers for one release, then go.
 Shared verb grammar (remove/rm/delete/…, `--save`) is in `commands/_utils.py`.
 
 ### Same name, different file

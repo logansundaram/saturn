@@ -2,8 +2,8 @@
 User-interaction tool — ask_user.
 
 The one tool whose "backend" is the human at the terminal. It pauses the RUNNING graph via
-LangGraph's `interrupt()` — the same checkpoint machinery the approval gate, plan review, and the
-freeze editor already ride — the loop's interrupt dispatcher renders the question at the prompt
+LangGraph's `interrupt()` — the same checkpoint machinery the approval gate and the Esc pause
+prompt ride — the loop's interrupt dispatcher renders the question at the prompt
 (`ui.answer_question`), and the typed answer resumes the turn as this tool's observation — a
 ToolMessage the agent reads on its next pass like any other tool output.
 

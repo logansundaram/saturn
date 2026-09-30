@@ -9,6 +9,25 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
 
 ### Added
 
+- **The model page prices speed, not just fit.** `/models` (and the first launch, which runs
+  it) now reads your Apple chip and its GPU core count and looks up the memory bandwidth and
+  GPU compute Apple publishes for it (M1 through M4, base / Pro / Max / Ultra, the binned Max
+  chips told apart by their core count; the M5 family is priced as the M4 family until one has
+  been measured here). Every tier shows an estimated decode speed —
+  bandwidth over the bytes it streams per token, calibrated against the 9b measured on an M4
+  Pro — and the recommendation is the largest tier that fits **and** decodes at 10 tok/s or
+  better; a tier that fits but would crawl is marked `fits · slow`, never picked by default. A
+  32 GB base M4 is now told the 27b fits but streams at ~6 tok/s and offered the 9b; the same
+  memory on an M4 Pro gets the 27b. The recommended row says what it feels like (`~37 tok/s ·
+  first prompt ~7 s cold, then cached`). A chip the table does not know — an Intel Mac, a
+  newer generation — is priced at the M1 baseline and the page says so.
+
+### Removed
+
+- **The NVIDIA and CPU-only branches of the hardware probe.** Saturn's platform is macOS on
+  Apple silicon; the probe no longer spawns `nvidia-smi` or reads `/proc`, and the budget is
+  always three quarters of unified memory.
+
 - **Saturn works where you launch it.** `cd` into any folder and run `saturn`: the file tools,
   the shell, `/undo`, `/init` and the folder's `SATURN.md` all work there, the way Claude Code
   works in a repo. Launched from `~`, your home folder is the workspace. The tools can't reach
@@ -54,6 +73,46 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
 
 ### Changed
 
+- **`/privacy` is part of `/policy`.** One command for your trust settings: bare `/policy` shows
+  what runs without asking and what can leave the machine (the model's and embedder's
+  locality, web tools, MCP servers, air-gap, quarantine, where your data lives) — quiet when the
+  defaults hold, colored where something is loosened or leaves. `/policy egress` is the ledger
+  and `/policy airgap` the seal, with the same behavior and `--save` rules as before. `/privacy`
+  prints a pointer for this release.
+- **The old Saturday names are no longer read.** `SATURDAY_*` environment variables (including
+  `SATURDAY_DEBUG` and `SATURDAY_HOME`), a folder's `SATURDAY.md`, the `~/.saturday` data folder
+  and a tier's `roles:` block all stopped working: use `SATURN_*`, `SATURN.md`, `~/.saturn`
+  (`$SATURN_HOME`) and `model: "<id>"`. A `config.yaml` that still has a `roles:` block says
+  exactly which line to write instead.
+- **`/trace search` is gone**, with the full-text index behind it; `/memory` is where "what did
+  I decide" lives. An existing database's index triggers are dropped on launch.
+- **Runs recorded by the v1 engine (before 2026-09-27) no longer render specially** in `/trace`
+  and `--replay`: their plan-review and synthesize steps and old step statuses show as plain
+  entries.
+- **Fewer slash commands to learn.** The first launch runs only `/models`, which now also offers
+  to pull the model of a tier you keep; `/config setup` is gone (later launches warn about
+  anything missing, `/mcp` shows MCP status). Also gone: `/config context` (the status bar shows
+  the fill; `/config runtime.num_ctx <size|auto>` sets the window), `/config persist` (use
+  `--save`), `/models rescan` and `/models tier` (pick a tier by its number on the page), the
+  `/scan` alias, `/docs sync` (every launch syncs; `/docs rebuild` re-embeds everything),
+  `/memory pending` (`/memory review` shows the same list), and `/clear --screen` with the
+  `/cls`, `/reset` and `/new` aliases. The cut `/config`, `/models` and `/docs` spellings say
+  where their job went for this release.
+- **`/trace context` is `/trace invoke --full`.** The input-only inspector duplicated what the
+  full invoke view already shows; the spelling still works and now shows the same calls whole,
+  outputs included. Its `--node` filter (a leftover from the multi-node engine) is gone.
+- **Headless `-q` progress says `answering…`** when the answer starts, not `synthesizing…`.
+- **Pointers for v0.1.0-era command names are gone.** `/ingest`, `/forget`, `/remove`,
+  `/reingest`, `/workspace`, `/ws`, `/system`, `/save`, `/load`, `/egress`, `/airgap`, `/why`,
+  `/commands`, `/dryrun`, `/risk`, `/allow`, `/autoapprove`, `/yolo`, `/source`, `/context`
+  and their short forms now answer "unknown command"; `/plan`, `/draft` and `/quick` keep
+  their pointer for this release. None of the old spellings ever changes a setting.
+- **One model per tier.** A tier now binds one chat model (`model:` in `config.yaml`) instead of
+  the `tool_caller` and `utility` roles, which every shipped tier bound to the same tag anyway;
+  compaction, the memory review and `/init` use the agent's model. `/models use <id>` replaces
+  `/models all <id>` and `/models <role> <id>` (the old spellings print a pointer). An existing
+  `config.yaml` with a `roles:` block keeps working unedited, and `/models use` updates it in
+  place.
 - **`/init` writes `SATURN.md`.** The old name, `SATURDAY.md`, is still read when no
   `SATURN.md` exists, and `/init` won't overwrite either without `--force`.
 - **Content search has a 10-second budget.** Launched from `~`, a `search_files` that matched
@@ -197,6 +256,9 @@ this section, which describe v1 mechanisms that no longer exist._
 
 ### Fixed
 
+- **`saturn -p` no longer hangs when stdin is open but nothing is written to it** (a
+  background job, a subprocess that inherits a pipe). Piped input is attached when it arrives
+  within a second; otherwise the turn runs without it and says so on stderr.
 - **Two Saturn sessions no longer erase each other's menu bar entry.** Each interactive session
   records its pid for the menu bar icon; the first session to exit removed the file even when a
   second session had since written its own, so the icon showed no agent running and its Quit

@@ -130,7 +130,7 @@ class _StatusBar:
             bar.append(f"{tps:.0f} tok/s", style="default")
 
         # ── session ── the turn-spanning gauges, one zone: context fill (it drives the agent, so
-        # it keeps its meter) and the egress counter (the live twin of /privacy egress — the
+        # it keeps its meter) and the egress counter (the live twin of /policy egress — the
         # boundary, visible). Egress appears only once non-zero, so a fresh, fully-local session
         # stays calm.
         window = status["ctx_window"]

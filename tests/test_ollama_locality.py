@@ -1,7 +1,7 @@
 """
 Ollama-locality boundary — a remote OLLAMA_HOST is network egress, never "local".
 
-The local-inference story (posture line, /privacy) keys on
+The local-inference story (posture line, /policy) keys on
 egress.ollama_is_local(): when the Ollama endpoint is off-machine, chat models are wrapped in
 the network boundary proxy (ledger-recorded), embeddings go through the embeddings
 boundary, the air-gap refuses both, and egress._inference classifies the bindings
@@ -110,7 +110,7 @@ def test_get_model_refuses_remote_ollama_under_airgap(monkeypatch, isolated_path
     mark = egress.next_seq()
     try:
         with pytest.raises(RuntimeError, match="OLLAMA_HOST"):
-            llms.get_model("tool_caller")
+            llms.get_model()
     finally:
         llms.reset_models()
     blocked = [e for e in egress.events_since(mark) if e.status == egress.BLOCKED]

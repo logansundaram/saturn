@@ -111,8 +111,8 @@ def read_file(file_path: str):
     if error:
         return error
     if not target_path.is_file():
-        # RAISED, not returned: a missing file is a failed step (status error, disclosed as an
-        # incident) exactly as before — only the text changed. The raw OSError told a redraft
+        # RAISED, not returned: a missing file is a failed call (status error, disclosed as an
+        # incident) exactly as before — only the text changed. The raw OSError told the model
         # nothing; the two namespaces (workspace vs. knowledge base, one tool each) are the
         # confusion a small model actually has, so the refusal names the namespace and, when
         # the name matches an ingested document, the tool that reads it (2026-09-02).

@@ -60,12 +60,12 @@ _TRUST_STYLE = {"sent": "yellow", "blocked": "bold red",
 
 # One-time discovery hint (receipt.take_hint — sentinel-backed, once per install): the
 # post-first-answer line teaching the inspection surfaces.
-_FIRST_ANSWER_HINT = "see this run: /trace · what left your machine: /privacy egress"
+_FIRST_ANSWER_HINT = "see this run: /trace · what left your machine: /policy egress"
 
 
 def _split_sources(text: str) -> "tuple[str, list[str] | None]":
     """Split a recorded answer into (prose, footer_lines) when it ends with the mechanical
-    `Sources:` block synthesize appends — a `Sources:` line followed only by `[n] label` lines.
+    `Sources:` block the agent appends — a `Sources:` line followed only by `[n] label` lines.
     Returns (text, None) for anything else, and the whole text renders exactly as before. The
     recorded message is never altered; this only routes the footer to the trust-colored renderer
     instead of the markdown one (which collapsed its lines into a single paragraph anyway)."""

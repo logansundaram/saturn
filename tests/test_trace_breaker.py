@@ -1,9 +1,12 @@
 """stores/trace.Tracer's circuit breaker: a per-delta write failure trips it (later deltas
 no-op instead of stalling on sqlite's busy timeout), but `end_run` is EXEMPT — the run's
 terminal status/answer row must not be lost to a transient early lock — and the breaker
-re-arms per run. `broken` is the surface agent.py's per-turn warning reads."""
+re-arms per run. `broken` is the surface agent.py's per-turn warning reads. Plus the tracer's
+other open-time and run-time seams: the current-run id, and the legacy FTS triggers it drops."""
 
 import types
+
+import pytest
 
 from stores.trace import Tracer
 
@@ -66,3 +69,73 @@ def test_loop_warning_reads_broken(tmp_path):
 
     # Tolerates any tracer-shaped object (the warning must never be a new crash source).
     assert agent._trace_warning(types.SimpleNamespace(broken=False)) is None
+
+
+def test_current_run_id_is_set_during_a_run_and_cleared_after(tmp_path, monkeypatch):
+    """The seam that stamps `run=<id>` provenance on a fact `remember` stores mid-turn."""
+    from stores import trace
+
+    monkeypatch.setattr(trace, "_CURRENT_RUN_ID", None)  # an earlier test's run left open
+    t = trace.Tracer(str(tmp_path / "db.sqlite"))
+    assert trace.current_run_id() is None
+    rid = t.start_run("thread", "q")
+    assert trace.current_run_id() == rid
+    t.end_run(rid, "ok", "a")
+    assert trace.current_run_id() is None
+    t.conn.close()
+
+
+# ── a DB written while `/trace search` existed (cut 2026-09-30) ─────────────────────────────
+# Its FTS5 triggers live in the DB file and fire on every INSERT/UPDATE of `runs`; on a SQLite
+# build without fts5 they fail every start_run. The tracer drops them at open; the orphaned
+# index table is left alone (no destructive migration of the user's db).
+
+_LEGACY_FTS = """
+CREATE VIRTUAL TABLE runs_fts USING fts5(query, response, content='runs', content_rowid='run_id');
+CREATE TRIGGER runs_fts_ai AFTER INSERT ON runs BEGIN
+  INSERT INTO runs_fts(rowid, query, response) VALUES (new.run_id, new.query, new.response);
+END;
+CREATE TRIGGER runs_fts_ad AFTER DELETE ON runs BEGIN
+  INSERT INTO runs_fts(runs_fts, rowid, query, response)
+    VALUES ('delete', old.run_id, old.query, old.response);
+END;
+CREATE TRIGGER runs_fts_au AFTER UPDATE ON runs BEGIN
+  INSERT INTO runs_fts(runs_fts, rowid, query, response)
+    VALUES ('delete', old.run_id, old.query, old.response);
+  INSERT INTO runs_fts(rowid, query, response) VALUES (new.run_id, new.query, new.response);
+END;
+"""
+
+
+def _legacy_db(path, *, missing_module=False):
+    import sqlite3
+
+    from stores import trace
+
+    conn = sqlite3.connect(str(path))
+    conn.executescript(trace._SCHEMA)
+    conn.executescript(_LEGACY_FTS)
+    conn.execute("INSERT INTO runs (thread_id, query, status) VALUES ('t', 'old run', 'ok')")
+    if missing_module:
+        # Simulate a build without fts5: point the virtual table at a module that doesn't exist.
+        conn.execute("PRAGMA writable_schema=1")
+        conn.execute("UPDATE sqlite_master SET sql=replace(sql, 'USING fts5', 'USING no_such_module') "
+                     "WHERE name='runs_fts'")
+    conn.commit()
+    conn.close()
+
+
+@pytest.mark.parametrize("missing_module", [False, True])
+def test_legacy_fts_triggers_are_dropped_and_recording_works(tmp_path, missing_module):
+    db = tmp_path / "db.sqlite"
+    _legacy_db(db, missing_module=missing_module)
+    t = Tracer(str(db))
+    rid = t.start_run("thread", "does recording still work")
+    assert rid == 2 and not t.broken
+    t.end_run(rid, "ok", "yes")
+    assert not t.broken
+    names = {r[0] for r in t.conn.execute("SELECT name FROM sqlite_master").fetchall()}
+    assert not names & {"runs_fts_ai", "runs_fts_ad", "runs_fts_au"}
+    assert "runs_fts" in names                      # the table itself is left alone
+    assert t.conn.execute("SELECT status, response FROM runs WHERE run_id = 2").fetchone() == ("ok", "yes")
+    t.conn.close()

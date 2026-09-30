@@ -54,7 +54,7 @@ def set_busy(busy: bool) -> None:
 
 
 def lineages(stable: str) -> list:
-    """`(name, role, runnable_factory, messages)` per prompt lineage — ONE since the v2 loop
+    """`(name, runnable_factory, messages)` per prompt lineage — ONE since the v2 loop
     (2026-09-27): the agent's `[system][stable grounding]`, sent through the SAME bound model
     nodes/agent.py uses, so the tool schemas the chat template renders into the system section
     are part of the cached prefix. The user message is BYTE-IDENTICAL to the node's own first
@@ -67,9 +67,9 @@ def lineages(stable: str) -> list:
         from core.llms import get_model
         from tools.registry import tool as registered
 
-        return get_model("tool_caller").bind_tools(list(registered))
+        return get_model().bind_tools(list(registered))
 
-    return [("agent", "tool_caller", bound, [agent_sys_msg(), HumanMessage(content=stable)])]
+    return [("agent", bound, [agent_sys_msg(), HumanMessage(content=stable)])]
 
 
 def prime(stable: str, only: "tuple | None" = None) -> int:
@@ -81,7 +81,7 @@ def prime(stable: str, only: "tuple | None" = None) -> int:
     from core.llms import invoke_kwargs, model_tag
 
     sent = 0
-    for name, role, factory, messages in lineages(stable):
+    for name, factory, messages in lineages(stable):
         if only is not None and name not in only:
             continue
         if _busy.is_set():
@@ -92,11 +92,11 @@ def prime(stable: str, only: "tuple | None" = None) -> int:
             # request is all prefill — and think ON regardless of the task table: a think-off
             # prime appends the empty think block after the boundary and pushes the N-4
             # checkpoint past it.
-            kwargs = invoke_kwargs(role, None, 0.0, task="agent")
+            kwargs = invoke_kwargs(None, 0.0, task="agent")
             kwargs.setdefault("options", {})["num_predict"] = 1
             if "reasoning" in kwargs:
                 kwargs["reasoning"] = True
-            generate(factory(), messages, tag=model_tag(role), **kwargs)
+            generate(factory(), messages, tag=model_tag(), **kwargs)
             sent += 1
         except Exception as exc:
             diag.log(f"prime: {name} lineage skipped ({exc})")

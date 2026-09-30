@@ -48,7 +48,7 @@ def clip(s, n: int) -> str:
 
 def human_bytes(n) -> str:
     """Byte count as a compact human label (512B, 2.0KB, 3.4MB) — ONE formatter so every trust
-    surface (the per-answer receipt, /privacy egress, the durable-log view) renders the same
+    surface (the per-answer receipt, /policy egress, the durable-log view) renders the same
     number the same way. Tolerates None/junk (reads as 0)."""
     try:
         n = int(n or 0)
@@ -96,8 +96,8 @@ def map_strings(value, fn):
 
 
 # The separator nodes/tools.py mirrors each executed call into `tool_results` with
-# (`f"{call_repr}{CALL_RESULT_SEP}{observation}"`). One constant + one parser so synthesize's
-# Sources labels recover the call half (the observation half) the same way every time.
+# (`f"{call_repr}{CALL_RESULT_SEP}{observation}"`). One constant + one parser so the
+# Sources labels (core/sources.py) recover the call half (the observation half) the same way every time.
 CALL_RESULT_SEP = " -> "
 
 
@@ -115,7 +115,7 @@ def split_call_result(entry) -> "tuple[str, str]":
 
 
 # The `[source: name, page N]` provenance marker search_knowledge_base prepends to each
-# retrieved chunk. One builder + one parser (tools/knowledge.py builds it, nodes/synthesize.py's
+# retrieved chunk. One builder + one parser (tools/knowledge.py builds it, core/sources.py's
 # Sources labels parse it back) so the two sides can't drift — the CALL_RESULT_SEP treatment.
 DOC_SOURCE_RE = re.compile(r"\[source: ([^\]]+)\]")
 
@@ -138,8 +138,8 @@ def parse_doc_sources(text) -> "list[str]":
     return names
 
 
-# The mechanical `Sources:` block synthesize appends to a cited answer — one builder
-# (nodes/synthesize.sources_footer renders through SOURCES_HEADER) and ONE parser, the
+# The mechanical `Sources:` block the agent appends to a cited answer — one builder
+# (nodes/agent.sources_footer renders through SOURCES_HEADER) and ONE parser, the
 # CALL_RESULT_SEP treatment. The readers (the footer render, /trace why's cited-sources view)
 # each hand-rolled this and already disagreed: some anchored on the trailing block, one matched the first "Sources:" ANYWHERE in the
 # answer, so prose containing the word swallowed the rest of the text.

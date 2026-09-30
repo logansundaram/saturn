@@ -48,7 +48,7 @@ def test_grounding_node_splits_stable_and_per_turn_sections(isolated_paths, monk
     from nodes import ground
 
     (isolated_paths / "database" / "workspace").mkdir(parents=True)
-    (isolated_paths / "database" / "workspace" / "SATURDAY.md").write_text("be terse")
+    (isolated_paths / "database" / "workspace" / "SATURN.md").write_text("be terse")
     monkeypatch.setattr(ground, "memory_context_split",
                         lambda q: ("- #1 likes tea", "- #2 [entities] tea shop", [2]))
     monkeypatch.setattr(ground, "mark_used", lambda ids: 0)
@@ -74,8 +74,6 @@ def test_memory_context_split_keeps_the_always_layers_query_independent(isolated
     assert always_a == always_b and "prefers tabs" in always_a
     assert "tea shop" in matched_a and matched_b == ""
     assert ids_a and not ids_b
-    # the joined block is what memory_context always returned
-    assert mr.memory_context("when does the tea shop close")[0].startswith(always_a)
 
 
 # ── plan / synthesize prompt layouts ────────────────────────────────────────────────────────
@@ -106,7 +104,7 @@ def test_prime_sends_one_boundary_request_per_lineage(monkeypatch):
             return AIMessage(content="")
 
     model = M()
-    monkeypatch.setattr("core.llms.get_model", lambda role: model)
+    monkeypatch.setattr("core.llms.get_model", lambda: model)
     monkeypatch.setattr(prime, "ENABLED", True)
     n = prime.prime("STABLE")
     assert n == 1 == len(model.calls) == model.bound
@@ -116,7 +114,7 @@ def test_prime_sends_one_boundary_request_per_lineage(monkeypatch):
     assert [m.content for m in msgs] == [agent_sys_msg().content, "STABLE"]
     assert kw["options"]["num_predict"] == 1
     assert kw["reasoning"] is True  # think ON: think-off adds tokens past the boundary
-    assert kw["options"]["num_ctx"] == llms.invoke_kwargs("tool_caller", None, 0.0)["options"]["num_ctx"]
+    assert kw["options"]["num_ctx"] == llms.invoke_kwargs(None, 0.0)["options"]["num_ctx"]
 
 
 def test_prime_never_raises_and_reports_zero_when_the_daemon_is_down(monkeypatch):
@@ -126,7 +124,7 @@ def test_prime_never_raises_and_reports_zero_when_the_daemon_is_down(monkeypatch
         def invoke(self, msgs, **kw):
             raise RuntimeError("connection refused")
 
-    monkeypatch.setattr("core.llms.get_model", lambda role: Down())
+    monkeypatch.setattr("core.llms.get_model", lambda: Down())
     monkeypatch.setattr(prime, "ENABLED", True)
     assert prime.prime("STABLE") == 0
 
@@ -158,7 +156,7 @@ def test_warm_up_thread_primes_after_the_weights_load(monkeypatch):
     from core import prime
 
     seen = []
-    monkeypatch.setattr(startup, "warm_model", lambda role="tool_caller": seen.append("warm") or True)
+    monkeypatch.setattr(startup, "warm_model", lambda: seen.append("warm") or True)
     monkeypatch.setattr(prime, "prime_now", lambda only=None: seen.append(("prime", only)) or 1)
     monkeypatch.setattr(prime, "ENABLED", True)
     monkeypatch.setattr(prime, "_config_enabled", lambda: True)
@@ -183,7 +181,7 @@ def test_prime_stops_between_lineages_when_a_turn_starts(monkeypatch):
             return AIMessage(content="")
 
     model = M()
-    monkeypatch.setattr("core.llms.get_model", lambda role: model)
+    monkeypatch.setattr("core.llms.get_model", lambda: model)
     monkeypatch.setattr(prime, "ENABLED", True)
     try:
         assert prime.prime("STABLE") == 1 == model.calls

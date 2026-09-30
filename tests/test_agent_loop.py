@@ -21,7 +21,7 @@ def test_pause_controller_lives_in_core_pause():
     assert isinstance(c, PauseController)
     c.reset()
     c.request("steer", "use metric units")
-    assert not c.pending() and c.steers_pending()
+    assert not c.pending()
     assert [r.reason for r in c.take_steers()] == ["use metric units"]
     c.request("user", "esc")
     assert c.pending() and c.peek().source == "user"
@@ -30,7 +30,7 @@ def test_pause_controller_lives_in_core_pause():
 
 
 def test_grounding_parts_treats_old_context_as_stable():
-    from core.context import grounding_parts
+    from core.state import grounding_parts
 
     assert grounding_parts({"context": "  old  "}) == ("old", "")
     assert grounding_parts({"context_stable": "s", "context_dynamic": "d"}) == ("s", "d")
@@ -38,19 +38,18 @@ def test_grounding_parts_treats_old_context_as_stable():
 
 def test_agent_task_is_think_off_with_payload_bound(monkeypatch):
     from core import llms
-    monkeypatch.setattr(llms, "model_tag", lambda role: "m")
-    kw = llms.invoke_kwargs("tool_caller", None, 0.0)
+    monkeypatch.setattr(llms, "model_tag", lambda: "m")
+    kw = llms.invoke_kwargs(None, 0.0, task="agent")
     assert kw["reasoning"] is False and kw["options"]["num_predict"] == 4096
-    assert llms._ROLE_TASK["tool_caller"] == "agent"
 
 
 def test_think_flag_rides_invoke_kwargs_with_its_budget(monkeypatch):
     """A thinking pass sends `reasoning=True` and widens num_predict by runtime.think_budget
     (thinking tokens count against the bound; the answer must still fit after them)."""
     from core import llms
-    monkeypatch.setattr(llms, "model_tag", lambda role: "m")
+    monkeypatch.setattr(llms, "model_tag", lambda: "m")
     _think_cfg(monkeypatch, think_budget=1000)
-    kw = llms.invoke_kwargs("tool_caller", None, 0.0, task="agent", think=True)
+    kw = llms.invoke_kwargs(None, 0.0, task="agent", think=True)
     assert kw["reasoning"] is True and kw["options"]["num_predict"] == 4096 + 1000
 
 
@@ -550,7 +549,7 @@ def test_prime_lineage_is_the_bound_agent_prefix(monkeypatch):
             return AIMessage(content="")
 
     monkeypatch.setattr(prime, "ENABLED", True)
-    monkeypatch.setattr("core.llms.get_model", lambda role: M())
+    monkeypatch.setattr("core.llms.get_model", lambda: M())
     assert prime.prime("STABLE") == 1
     assert sent[0][0] == "bound" and sent[0][1] > 0
     assert sent[1][1] == [agent_sys_msg().content, "STABLE"] and sent[1][2] is True

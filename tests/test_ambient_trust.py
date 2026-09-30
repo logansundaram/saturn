@@ -33,7 +33,7 @@ def _runtime(monkeypatch) -> dict:
 def test_posture_spans_default_posture_is_silent(monkeypatch):
     # Deviation-only (2026-07-06): the safe default posture (gate read_only · local inference ·
     # quarantine gate · no airgap) renders NO spans — a stock install prints no posture line at
-    # all. Silence means the defaults hold; /privacy carries the affirmative readout.
+    # all. Silence means the defaults hold; /policy carries the affirmative readout.
     rt = _runtime(monkeypatch)
     monkeypatch.setitem(rt, "auto_approve", "read_only")
     monkeypatch.setitem(rt, "airgap", False)
@@ -87,7 +87,8 @@ def test_posture_line_prints_deviations_with_pointer(capsys, monkeypatch):
     mod.posture_line()
     out = capsys.readouterr().out
     assert "GATE OFF" in out
-    assert "/privacy" in out and "/policy" in out
+    assert "/policy" in out
+    assert "/privacy" not in out  # merged into /policy 2026-09-30 — one pointer, one front door
 
 
 def test_posture_line_silent_on_default_posture(capsys, monkeypatch):
@@ -109,7 +110,7 @@ def test_posture_line_swallows_a_broken_posture(capsys, monkeypatch):
     mod = importlib.import_module("tui.ui.prompt")
     monkeypatch.setattr(receipt, "posture_spans", lambda: 1 / 0)
     mod.posture_line()  # must not raise
-    assert "/privacy" not in capsys.readouterr().out  # and must not print a guessed posture
+    assert "/policy" not in capsys.readouterr().out  # and must not print a guessed posture
 
 
 # --- per-call egress attribution (nodes/tools) ---------------------------------------------------
@@ -195,7 +196,7 @@ def test_egress_leaf_text_and_styles():
     assert style == "bold red"
 
     text, style = tr._egress_leaf({"more": 2})
-    assert "+2 more" in text and "/privacy egress" in text
+    assert "+2 more" in text and "/policy egress" in text
 
 
 def test_gate_decision_echo_renders_both_verdicts(capsys):

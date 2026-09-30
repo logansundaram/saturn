@@ -34,7 +34,7 @@ stdio server stderr goes to `logging/mcp.log` (gitignored, mirrors diag.py's dir
 NEVER the console, where it would scribble over the rich.Live TUI.
 
 Failure posture: best-effort everywhere. A server that fails to connect is reported (startup
-problems surface next to check_models' warnings, and in /mcp and /config setup) and its tools
+problems surface next to check_models' warnings, and in /mcp) and its tools
 simply don't exist this session; a tool call that fails returns an "Error: ..." observation to the
 model instead of raising; nothing here can take the REPL down. `/mcp reload` is the recovery path
 (full reconnect + re-register); a call against a dropped connection also attempts one lazy
@@ -99,7 +99,7 @@ class ServerSpec:
 
     @property
     def target(self) -> str:
-        """One-line 'where does this point' for listings (/mcp, /privacy)."""
+        """One-line 'where does this point' for listings (/mcp, /policy)."""
         if self.transport == "stdio":
             return " ".join([self.command, *self.args])
         return self.url
@@ -454,7 +454,7 @@ def call_tool(server: str, tool: str, args: dict) -> str:
 
     # Network boundary: a remote (http/sse) server call leaves the machine — gate it on air-gap and
     # record it to the egress ledger. A stdio server is a local child process (its own egress, if
-    # any, is shown in /privacy), so it isn't gated here.
+    # any, is shown in /policy), so it isn't gated here.
     if st.spec.transport in ("http", "sse"):
         host = egress.host_of(st.spec.url)  # the shared ledger host derivation (trust/egress.py)
         gblocked = egress.check("mcp", host, f"{server}.{tool}")
@@ -657,7 +657,7 @@ def shutdown() -> None:
 atexit.register(shutdown)
 
 
-# ── status / readouts (for /mcp, /privacy, /config setup, startup warnings) ───
+# ── status / readouts (for /mcp, /policy, startup warnings) ───
 
 
 @dataclass(frozen=True)

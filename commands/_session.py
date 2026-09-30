@@ -69,7 +69,7 @@ def _read_session(path: Path):
 
 
 def _swap_to_messages(ctx, messages) -> None:
-    """Rebuild a fresh state seeded with `messages` (mirrors /reset)."""
+    """Rebuild a fresh state seeded with `messages` (mirrors /clear)."""
     state = ctx.make_initial_state()
     state["messages"] = messages
     ctx.state = state

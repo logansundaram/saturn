@@ -198,7 +198,7 @@ def test_quit_runs_review_unless_skipped(isolated_paths, monkeypatch):
     assert len(calls) == 1 and ctx.should_quit
 
 
-def test_memory_command_add_edit_why_and_pending(isolated_paths, capsys):
+def test_memory_command_add_edit_why_and_done(isolated_paths, capsys):
     from commands import dispatch
 
     ctx = CommandContext(state={"messages": []}, make_initial_state=dict, db_path="")
@@ -209,12 +209,11 @@ def test_memory_command_add_edit_why_and_pending(isolated_paths, capsys):
     rv.add_pending([rv._candidate("negative", "do not: z", "veto", 6)])
     dispatch("/memory", ctx)
     dispatch("/memory why 3", ctx)
-    dispatch("/memory pending", ctx)
     dispatch("/memory done 3", ctx)
     out = capsys.readouterr().out
     assert "Remembered #1 (entities)" in out and "replaces #2" in out
     assert "Q3_final" in out and "1 candidate(s) pending review" in out
-    assert "you said it" in out and "+ [negative] do not: z" in out
+    assert "you said it" in out
     assert "done: " in out
     assert [e["id"] for e in mr.entries()] == [1]
     assert json.loads(rv.pending_path().read_text(encoding="utf-8"))["candidates"][0]["run"] == 6
@@ -316,7 +315,7 @@ def test_llm_candidates_makes_one_constrained_call_and_salvages_json(monkeypatch
     from core.messages import MEMORY_REVIEW_FORMAT, MEMORY_REVIEW_SHAPE
 
     model = _ReviewModel('Sure: {"facts":[{"layer":"commitments","text":"lease ends in March"}]} ok')
-    monkeypatch.setattr(llms, "get_model", lambda role: model)
+    monkeypatch.setattr(llms, "get_model", lambda: model)
     out = rv.llm_candidates(_transcript_msgs())
     assert [(c["layer"], c["text"], c["source"]) for c in out] == [
         ("commitments", "lease ends in March", "model")]
@@ -330,5 +329,5 @@ def test_llm_candidates_makes_one_constrained_call_and_salvages_json(monkeypatch
 def test_llm_candidates_is_empty_on_any_failure(monkeypatch, reply):
     from core import llms
 
-    monkeypatch.setattr(llms, "get_model", lambda role: _ReviewModel(reply))
+    monkeypatch.setattr(llms, "get_model", lambda: _ReviewModel(reply))
     assert rv.llm_candidates(_transcript_msgs()) == []

@@ -40,21 +40,18 @@ def is_turn_start(m) -> bool:
     return isinstance(m, HumanMessage) and not is_steer_message(m) and not is_summary(m)
 
 
-# --- The plan: the engine's data bus ------------------------------------------------------
-# (2026-07-03 engine transplant — the agentic_benchmark harness rework.)
-#
-# The plan is a first-class, mutable state object AND the engine's data bus: each step carries
-# its own `result`, written when the step executes. A step with `result is None` has not run —
-# that is THE execution pointer (`current_step`), which replaced the old positional-multiset
-# accounting over `tools_called` (gotcha #6's three cross-checked walkers are gone with it).
+# --- The plan: the model's checklist -------------------------------------------------------
+# The `plan` tool (tools/planning.py) writes it; nodes/tools.py maps a successful call onto
+# `state["plan"]`. It is intent, not record — the tool rounds that actually ran are the
+# ToolMessages. A step with `result is None` is not done yet; `current_step` (the first such
+# step) is the gate's step context.
 #
 # Step shape (plain dicts — gotcha #4: the checkpointer serializer never round-trips a custom
 # type):
 #   {step_id, label, status, intended_tool, result, needs_resolution}
 #
-#   status           display vocabulary. The `plan` tool writes "pending" / "done"; the wider
-#                    set (skipped, blocked, error, cancelled, superseded — the old engine's
-#                    incident statuses) survives for older trace records and the rail's glyphs.
+#   status           "pending" / "done" — all the `plan` tool writes (tools/planning.py). The
+#                    v1 engine's incident statuses left with it (2026-09-30).
 #   intended_tool    None since v2 (the checklist names no tool; kept for record compatibility).
 #   result           "done" for a completed item, None otherwise — `current_step` (the first
 #                    item with `result is None`) is the gate's step context.
@@ -62,12 +59,7 @@ def is_turn_start(m) -> bool:
 
 # A step in one of these statuses is retired for DISPLAY purposes; execution-wise the pointer
 # is `result is None` (a retired step always carries a result).
-TERMINAL_STATUSES = ("done", "skipped", "blocked", "error", "cancelled", "superseded")
-
-# Statuses that count as incidents — the final answer must report these actions did NOT complete.
-# `superseded` is deliberately absent: the refusal it marks was carried out by a later step, so
-# every reader (the incidents block, the write gate, the rail, /trace) treats it as record.
-INCIDENT_STATUSES = ("skipped", "blocked", "error", "cancelled")
+TERMINAL_STATUSES = ("done", "skipped")
 
 
 
@@ -86,25 +78,22 @@ def issuing_message(messages) -> "tuple[Any, set]":
 
 
 def current_step(plan: List[dict]) -> Optional[dict]:
-    """THE execution pointer: the first step whose `result` is None (not yet run). None when the
-    plan is complete or empty. Everything that asks "what is the engine working on" — the
-    execute node, the approval gate's payload, the plan-review interrupt — reads this."""
+    """The first step whose `result` is None (not done yet); None when the plan is complete or
+    empty. The approval gate's payload and its gate_events `step` label read this."""
     for step in plan or []:
         if step.get("result") is None:
             return step
     return None
 
 
-def unfinished_steps(plan: List[dict]) -> List[dict]:
-    """Steps that never ran (`result is None`) — read by synthesize when a turn lands early
-    (iteration cap, abort) so the answer is honest about work that was planned but not done."""
-    return [s for s in plan or [] if s.get("result") is None]
-
-
-def incident_steps(plan: List[dict]) -> List[dict]:
-    """Steps whose outcome is an incident (skipped/blocked/error/cancelled) — the actions the
-    final answer must plainly report as NOT completed."""
-    return [s for s in plan or [] if s.get("status") in INCIDENT_STATUSES]
+def grounding_parts(state) -> "tuple[str, str]":
+    """The grounding context as (stable, per-turn) halves — the grounding node's split
+    (`context_stable` / `context_dynamic`). A state carrying only the joined `context` (an
+    older checkpoint, a test fixture) is all-stable."""
+    stable = state.get("context_stable")
+    if stable is None and state.get("context_dynamic") is None:
+        return str(state.get("context") or "").strip(), ""
+    return str(stable or "").strip(), str(state.get("context_dynamic") or "").strip()
 
 
 def summarize_gates(gate_events) -> dict:
@@ -128,11 +117,11 @@ def summarize_gates(gate_events) -> dict:
 
 # --- Agent state ------------------------------------------------------------
 class AgentState(TypedDict):
-    # Conversation record. Human/AI/Tool messages. The engine reads curated per-step context
-    # (plan_context), not this raw history — but tool calls AND their ToolMessage observations
-    # still land here so cross-turn follow-ups ("open the second result") keep working through
-    # _compact_history's retained scratchpad, and so the approval/tools nodes can hand a call
-    # across the interrupt boundary.
+    # Conversation record. Human/AI/Tool messages. The agent's prompt is built from it (earlier
+    # turns as history, this turn's tool rounds verbatim); tool calls AND their ToolMessage
+    # observations land here so cross-turn follow-ups ("open the second result") keep working
+    # through _compact_history's retained scratchpad, and so the approval/tools nodes can hand a
+    # call across the interrupt boundary.
     messages: Annotated[List[Any], add_messages]
 
     # Convenience handle for the current turn's user query.
@@ -146,14 +135,14 @@ class AgentState(TypedDict):
     # turns while nothing on disk changed and rides every prompt as its own message right after
     # the system prompt (the daemon's prompt cache restores past it); `context_dynamic` is the
     # per-turn remainder. `context` is their join. Absent on an older checkpoint — readers go
-    # through plan_context.grounding_parts, which treats the whole `context` as stable then.
+    # through `grounding_parts` below, which treats the whole `context` as stable then.
     context_stable: str
     context_dynamic: str
 
     # Per-turn @file attachments: the contents of files the user referenced with `@path` in their
     # message, pre-formatted as a context section by `mentions.expand` and appended to `context` by
-    # the grounding node — so the agent (which reads `context`, not raw
-    # `messages`) all see the file inline. Empty when the message had no resolvable @mentions.
+    # the grounding node — so the agent sees the file inline. Empty when the message had no
+    # resolvable @mentions.
     attachments: str
 
     # The model's checklist (tools/planning.py — the `plan` tool, mapped here by nodes/tools.py),
@@ -165,9 +154,9 @@ class AgentState(TypedDict):
     # last pass answers without tools. One increment per pass.
     iteration: int
 
-    # Trace / transparency accumulators. The engine consumes observations via the plan's step
-    # results; these mirror them as a flat, append-only record for the trace store, citations,
-    # and the benchmark harness. The `operator.add` reducer appends across loop iterations
+    # Trace / transparency accumulators. The agent reads observations from the ToolMessages;
+    # these mirror them as a flat, append-only record for the trace store, citations, and the
+    # benchmark harness. The `operator.add` reducer appends across loop iterations
     # (reset to [] per turn before invoke).
     tools_called: Annotated[List[str], operator.add]
     tool_results: Annotated[List[Any], operator.add]
@@ -190,13 +179,12 @@ class AgentState(TypedDict):
     # append-reducer; reset per turn.
     gate_events: Annotated[List[dict], operator.add]
 
-    # Tokens/second from the most recent LLM call. Overwritten
-    # each LLM step; reset to 0.0 at the start of each turn. Only populated for Ollama
-    # models (response_metadata carries eval_count + eval_duration); other providers
-    # leave it 0.0.
+    # Tokens/second from the most recent LLM call. Overwritten each agent pass; reset to 0.0
+    # at the start of each turn. Read from Ollama's response_metadata (eval_count +
+    # eval_duration); a response without them leaves it 0.0.
     tok_per_sec: float
 
     # Prompt tokens ingested by the most recent LLM call — how full the context window is right
-    # now. Overwritten each LLM step (execute/synthesize); the UI gauges it against the model's
-    # context window. Persists across turns (the context only grows) rather than resetting.
+    # now. Overwritten each agent pass; the UI gauges it against the model's context window.
+    # Persists across turns (the context only grows) rather than resetting.
     context_tokens: int

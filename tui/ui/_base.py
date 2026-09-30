@@ -44,16 +44,13 @@ _PLAN = {
     "active": ("▸", f"bold {_ACCENT}"),
     "done": ("✓", "green"),
     "skipped": ("⨯", "grey30 strike"),
-    # Incident statuses (the plan/execute engine, 2026-07-03): a guarded refusal, a failed call,
-    # and steps rectify retired after a guarded/missing-item outcome. Red-family — an incident
-    # is signal, never dimmed away.
-    "blocked": ("⊘", "bold red"),
-    "error": ("✗", "red"),
-    "cancelled": ("−", "grey30 strike"),
-    # An engine refusal a later step carried out (a dangling ask the redraft then asked):
-    # record, not incident — retired like a skip, never red.
-    "superseded": ("↷", "grey30 strike"),
 }
+# (The v1 plan/execute engine's incident statuses — blocked, error, cancelled, superseded — left
+# with it, 2026-09-30: the `plan` tool writes only pending/done, and a v1 record's step now
+# renders as an unknown status rather than a guessed one.)
+
+# The air-gap's "nothing was sent" marker (the rail's egress leaf; trust/receipt draws the same).
+_BLOCKED_GLYPH = "⊘"
 
 # risk tier -> style for the approval gate. Read-only never reaches the gate, but kept for parity.
 _RISK = {
@@ -77,10 +74,9 @@ _TREE_MID, _TREE_END, _TREE_PIPE, _TREE_LEAF = "├─", "└─", "│", "└"
 
 # ── trace verbosity ───────────────────────────────────────────────────────────
 # How much of the execution trace scrolls live. The trace DB keeps everything regardless, so
-# /trace and /trace calls stay full-fidelity no matter what this is set to:
-#   "normal"  (default) — plumbing nodes (ground, update_plan) are folded out of the live rail;
-#                         their *output* still prints (update_plan's plan diff is driven by
-#                         show_plan), and their timing rolls into the next visible node.
+# /trace and /trace invoke stay full-fidelity no matter what this is set to:
+#   "normal"  (default) — plumbing (ground, an auto-approved approval pass) is folded out of
+#                         the live rail; its timing rolls into the next visible node.
 #   "verbose"           — every node line, including the folded plumbing ones and full timings.
 # Whether the trace renders at all is a separate switch (commands' show_ui / `/trace off`).
 _VERBOSITY = "normal"

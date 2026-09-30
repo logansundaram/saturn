@@ -820,8 +820,7 @@ def _close_frame(decision, n_calls: int) -> None:
     """Close the approval frame — ONCE, after every row the decision could produce. The `┗━` used
     to be part of the prompt string itself, so `e(xplain)`, the unrecognized-answer note, the
     always-allow disclosures and the per-call `s(elect)` prompts all printed BELOW the closing
-    corner: pressing `e` visibly broke the box open. Names the decision, like the plan-review
-    frame's `┗━ running the plan`."""
+    corner: pressing `e` visibly broke the box open. Names the decision."""
     text, style = _decision_label(decision, n_calls)
     if _RICH:
         tail = Text()

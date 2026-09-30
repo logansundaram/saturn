@@ -1,7 +1,7 @@
 """Drive one turn of the compiled graph.
 
 `run_turn` streams the graph (node updates for the trace/plan panel, per-token answer chunks
-for the live response) and resolves each interrupt — the approval gate, the plan-review gate —
+for the live response) and resolves each interrupt — the approval gate, the Esc pause, ask_user —
 through the caller-supplied `approver`. `_make_on_update` fans a node delta out to the tracer
 and the TUI; `_trace_warning` surfaces the trace circuit breaker's silent degradation.
 """
@@ -17,9 +17,8 @@ from tui import ui
 def run_turn(graph, payload, config, approver, on_update=None, pause=None, on_token=None):
     """Drive one turn to completion, streaming node updates and pausing at an interrupt.
 
-    `approver(interrupt_value) -> decision` resolves each interrupt — for the approval gate a bool,
-    for the plan-review gate the editor's `{action, plan}` dict — and the result is fed back as the
-    `Command(resume=...)` value. `on_update(node, delta)` is called for every node update (the trace
+    `approver(interrupt_value) -> decision` resolves each interrupt (the approval gate, the pause
+    prompt, an ask_user question) and the result is fed back as the `Command(resume=...)` value. `on_update(node, delta)` is called for every node update (the trace
     + live plan panel). `on_token(text)`, if given, receives the *agent* node's answer tokens as
     they generate (LangGraph `stream_mode="messages"`, filtered to that node) so the UI can render
     the final answer live. `pause`, if given, is a `typeahead.InputQueue` (any start()/stop() console

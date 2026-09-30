@@ -7,7 +7,7 @@ it changes OS state (a launchd job on macOS), so it faces the approval gate, and
 the exact title/body/time the human is agreeing to. It is NOT egress — nothing leaves the
 machine — so the egress ledger is untouched.
 
-The observation carries the resolved local time and the id so synthesize can report exactly
+The observation carries the resolved local time and the id so the answer can report exactly
 what was scheduled (and the human can `/notify cancel <id>` it). Every failure — an
 unparseable or past time, an unsupported platform, launchctl refusing — comes back as an
 `Error: …` string the model must relay, never invent around.

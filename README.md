@@ -28,7 +28,7 @@ Don't take the claims on faith — run one loop and check each one yourself:
 2. **Read the receipt.** The stats line under the answer carries the trust segment — here it
    shows `⇅ N sends · <bytes> → <host>` in yellow, because something *did* leave your machine,
    and the receipt says so instead of hiding it.
-3. **`/privacy egress`** — the per-event ledger: exactly what left, channel / host / bytes.
+3. **`/policy egress`** — the per-event ledger: exactly what left, channel / host / bytes.
 4. **Make it ask.** `» save a two-line summary to notes.md` — the approval gate shows the exact
    file diff and waits; bare Enter rejects (the default is always *no*).
 6. **Hold the record.** `/trace export` writes the run's complete record as JSON — the plan,
@@ -90,8 +90,7 @@ replay. The point isn't how much Saturn can do — it's that you can see and con
   (`remember` / `recall`), open commitments, dated notes, what it learned about this machine, the
   people and projects in your life, and what not to do again. Loaded selectively each turn under
   one cap, every fact carries the run it came from, and it learns at session end through a review
-  screen — nothing is written without your accept (`/memory review`). Past runs are searchable
-  too (`/trace search`).
+  screen — nothing is written without your accept (`/memory review`).
 - **It asks instead of guessing** — when a needed value, choice, or confirmation is missing,
   the agent pauses mid-run with one question (`ask_user`), and your typed answer resumes the
   turn. The alternative to asking is fabrication; Saturn asks.
@@ -117,7 +116,7 @@ replay. The point isn't how much Saturn can do — it's that you can see and con
 - **Trust receipt when it matters** — the stats line under a response says exactly how many
   bytes went to which host and how many actions faced the approval gate — whenever anything
   actually left your machine or was gated. A fully-local turn stays clean: silence means
-  nothing left. `/privacy` carries the full readout on demand.
+  nothing left. `/policy` carries the full readout on demand.
 - **Hooks** — `~/.saturn/hooks.yaml` runs your own shell commands on `turn-start`, `turn-end`,
   `before-write` and `after-write`; a `before-write` hook that exits non-zero blocks the write.
 - **Per-workspace instructions** — `/init` surveys your workspace and drafts `SATURN.md`,
@@ -183,7 +182,7 @@ Other knobs: `SATURN_INSTALL_DIR` (install dir), `SATURN_MODELS` (models to pull
 
 Saturn ships one recommended tier per parameter size (the qwen3.5–3.8 ladder); `/models`
 shows the ladder priced against your machine. Any Ollama model with native tool-calling binds
-with `/models all <id>`.
+with `/models use <id>`.
 
 > Prefer to set it up by hand, or hacking on Saturn itself? Use the **Manual install** below.
 
@@ -203,8 +202,8 @@ uv tool install saturn-agent
 Then run `saturn`. You still need [Ollama](https://ollama.com/download) running and the tier
 models pulled — for the `4b` tier that's `ollama pull qwen3.5:4b` and
 `ollama pull qwen3-embedding:8b` (multi-GB downloads; Ollama prints each one's exact size as the
-pull starts). The quick installer above does both for you, and `/config setup` reports what's
-missing — when models are missing it offers to run the pulls for you (y/N, default no). Installed this way, your data and `config.yaml` live in `~/.saturn` beside your `SATURN.md`
+pull starts). The quick installer above does both for you, and the first launch's `/models` page offers to
+run any missing pull for you (y/N, default no); later launches warn about anything missing. Installed this way, your data and `config.yaml` live in `~/.saturn` beside your `SATURN.md`
 (override with `SATURN_HOME`; an earlier install's `~/.saturday` keeps being used), and you upgrade with `pipx upgrade saturn-agent` / `uv tool upgrade
 saturn-agent` instead of `/update`.
 
@@ -223,13 +222,13 @@ saturn-agent` instead of `/update`.
   # the knowledge-base embedder (qwen3-embedding:8b) is pulled on consent by the first /docs add
   ```
 
-  > More hardware to spare? The first launch runs `/models`, which reads your chip, RAM and VRAM
-  > and offers the largest size class that fits (pulling it first); re-run `/models` any time,
+  > More hardware to spare? The first launch runs `/models`, which reads your Apple chip, its GPU
+  > cores, memory and memory bandwidth, and offers the largest size class that fits *and* runs at a
+  > usable speed (pulling it first); re-run `/models` any time,
   > or `/models list` to just see the fit table. Or edit `active_tier` in `config.yaml`
   > yourself — `9b`, `27b`, or `35b` — and pull that class's tag instead (same embedder). Any
-  > other Ollama model with native tool-calling works too: `/models all <id>`.
-  > (Small models are still less reliable at tool-calling — see the gotchas in `CLAUDE.md`;
-  > `/config setup` will say so too.)
+  > other Ollama model with native tool-calling works too: `/models use <id>`.
+  > (Small models are still less reliable at tool-calling — see the gotchas in `CLAUDE.md`.)
 
 ### 2. Clone and install
 
@@ -286,7 +285,7 @@ everything else is a turn for the agent.
 Everything lives in **`config.yaml`**:
 
 - **`active_tier`** — which size-class preset is live (`4b`, `9b`, `27b`, `35b`).
-- **`tiers`** — maps each role (`tool_caller`, the agent; `utility`, background work) to a concrete model, so
+- **`tiers`** — binds each size class to one concrete `model` (and an `embedder`), so
   swapping hardware is a one-line change. Every tag is qwen3.5/3.6/3.8 — `/models` lists the
   ladder with weights, context window, and what each needs on your machine. The shipped windows
   step up the ladder (32k for 4b, 64k for 9b/27b, 128k for 35b), sized so each tier fits
@@ -324,16 +323,15 @@ Type `/help` for the full list, or `/<command> --help` for details on any one. H
 |---|---|
 | `/help` | The grouped command list, opening with the trust-stack map (posture · activity · proof); `/help <cmd>` details one. |
 | `/models` | The model page: your hardware, the qwen ladder (six chat sizes + three embedders) priced against it, pick a row to switch — pulling what's missing on consent. |
-| `/config` | View/edit settings; `/config setup` is the health check; `/config context` is the runtime readout (context window + fill) + window resize. |
+| `/config` | View/edit settings (`/config runtime.num_ctx <size|auto>` resizes the context window). |
 | `/plan` | Show the plan; control review mode and the mid-run pause (bare subcommands report status). |
 | `/draft` | Write your OWN plan in the step editor — your next message executes YOUR steps instead of the agent's draft (same per-step reflection and approval gates). |
-| `/docs` | The knowledge base: list documents, `add <path>`, `remove <name>`, `sync`. |
+| `/docs` | The knowledge base: list documents, `add <path>`, `remove <name>`, `rebuild` (launch syncs on its own). |
 | `/tools` | List the agent's tools and their risk tiers. |
 | `/mcp` | MCP server status + the remote tools they add; `reload` after a config edit. |
 | `/memory` | See, add, edit, and review the layered facts the agent permanently remembers; `review` is the gated learning step (also runs at `/quit`), `why <n>` its provenance. |
-| `/policy` | The whole safety posture as one object: bare = status; `risk`/`allow`/`open` are its levers (bare forms report, changing is always explicit). The old `/risk`/`/allow`/`/autoapprove` spellings print a pointer here. |
+| `/policy` | Your trust settings in one place: bare = what runs without asking and what can leave the machine; `risk`/`allow`/`open` are the gate's levers, `egress` the ledger of what left, `airgap` the seal (bare forms report, changing is always explicit). |
 | `/trace source` | Show the full material behind a citation `[n]` of the last answer (folded in from `/source`). |
-| `/privacy` | The privacy surface: what CAN leave (`/privacy`), what DID (`/privacy egress`), and seal the boundary (`/privacy airgap`). |
 | `/undo` | Revert the file changes of the last turn that wrote anything. |
 | `/init` | Survey the workspace and draft `SATURN.md` standing instructions. |
 | `/trace` | Inspect past runs, tool I/O, and LLM calls; `/trace why` explains a run's decisions; `/trace export` writes the run's complete record as JSON; `/trace replay` (or `saturn --replay <file>`) re-renders an exported record anywhere — no database needed. |

@@ -9,26 +9,26 @@
 set -eu
 
 # --- config (override via env) -----------------------------------------------------
-# SATURN_* since 2026-09-29; the old SATURDAY_* spellings are still read. The clone's folder is
-# SATURN_INSTALL_DIR (old name SATURDAY_HOME) — SATURN_HOME is ~/.saturn, the user's own folder
-# (SATURN.md, hooks.yaml). A clone keeps its data beside itself, so existing installs stay put.
-REPO_URL="${SATURN_REPO:-${SATURDAY_REPO:-https://github.com/logansundaram/saturn.git}}"
-BRANCH="${SATURN_BRANCH:-${SATURDAY_BRANCH:-main}}"
-INSTALL_DIR="${SATURN_INSTALL_DIR:-${SATURDAY_HOME:-$HOME/.saturday}}"
-BIN_DIR="${SATURN_BIN:-${SATURDAY_BIN:-$HOME/.local/bin}}"
+# SATURN_* only (the old SATURDAY_* spellings stopped being read 2026-09-30). The clone's folder
+# is SATURN_INSTALL_DIR — SATURN_HOME is ~/.saturn, the user's own folder (SATURN.md,
+# hooks.yaml). A clone keeps its data beside itself, so existing installs stay put.
+REPO_URL="${SATURN_REPO:-https://github.com/logansundaram/saturn.git}"
+BRANCH="${SATURN_BRANCH:-main}"
+INSTALL_DIR="${SATURN_INSTALL_DIR:-$HOME/.saturday}"
+BIN_DIR="${SATURN_BIN:-$HOME/.local/bin}"
 MIN_PY_MAJOR=3
 MIN_PY_MINOR=10
 # Active tier for a fresh install. '4b' uses qwen3.5:4b (a light download that runs on modest
-# hardware); switch to a larger size class later via /models tier.
-TIER="${SATURN_TIER:-${SATURDAY_TIER:-4b}}"
+# hardware); switch to a larger size class later via /models.
+TIER="${SATURN_TIER:-4b}"
 # The chat model the 4b tier binds. Must match the `4b` tier binding in config.yaml — pulling
 # a different model than the tier binds breaks the first run. If you override this, rebind
-# the roles afterwards with /models. The knowledge-base embedder (qwen3-embedding:8b) is NOT
+# the tier afterwards with /models use <id>. The knowledge-base embedder (qwen3-embedding:8b) is NOT
 # pulled here: `/docs add` offers to pull it the first time a document is ingested.
-MODELS="${SATURN_MODELS:-${SATURDAY_MODELS:-qwen3.5:4b}}"
+MODELS="${SATURN_MODELS:-qwen3.5:4b}"
 # Minimum Ollama daemon version. Older daemons can't pull the current model formats (the pull
 # fails or the model runs wrong), so we update below if the installed one is behind this.
-MIN_OLLAMA="${SATURN_MIN_OLLAMA:-${SATURDAY_MIN_OLLAMA:-0.6.0}}"
+MIN_OLLAMA="${SATURN_MIN_OLLAMA:-0.6.0}"
 
 # --- output helpers ----------------------------------------------------------------
 if [ -t 1 ]; then B="$(printf '\033[1m')"; G="$(printf '\033[32m')"; Y="$(printf '\033[33m')"; R="$(printf '\033[31m')"; X="$(printf '\033[0m')"; else B=; G=; Y=; R=; X=; fi
@@ -223,4 +223,4 @@ case ":$PATH:" in
         add_to_path ;;
     esac ;;
 esac
-echo "First launch runs a setup check (/config setup). Use 'saturn -p \"your question\"' for one-shot mode."
+echo "First launch opens the model page (/models). Use 'saturn -p \"your question\"' for one-shot mode."

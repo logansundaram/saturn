@@ -49,15 +49,8 @@ _CLASS_PARAMS: dict[str, float] = {"4b": 4.7, "9b": 9.7, "27b": 27.3, "35b": 36.
 _SIZE_RE = re.compile(r":e?(\d+(?:\.\d+)?)b\b", re.IGNORECASE)
 
 
-def is_ladder_tag(model_id) -> bool:
-    """Whether `model_id` is one of the tags the ladder binds (case-insensitively). Callers that
-    want the shipped defaults for a tag they know we ship ask this."""
-    want = str(model_id or "").strip().lower()
-    return any(tag.lower() == want for _key, tag in SIZE_LADDER)
-
-
 def classes() -> tuple[str, ...]:
-    """The size-class keys, smallest first — the tier names and what /models tier accepts."""
+    """The size-class keys, smallest first — the tier names the /models page numbers."""
     return tuple(key for key, _tag in SIZE_LADDER)
 
 

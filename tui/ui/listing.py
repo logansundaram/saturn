@@ -23,8 +23,8 @@ _STYLE_ALIAS = {"dim": _DIM, "accent": _ACCENT, None: "default", "": "default"}
 
 
 def status_glyph(status: str) -> str:
-    """The marker for a plan-step status — THE one map (`_base._PLAN`), shared with the live rail,
-    the plan-review frame and the /trace replay so the same recorded step never renders with two
+    """The marker for a plan-step status — THE one map (`_base._PLAN`), shared with the live rail
+    and the /trace replay so the same recorded step never renders with two
     different markers. An unknown status reads as `?`, never guessed as pending."""
     return _PLAN.get(status, ("?", ""))[0]
 

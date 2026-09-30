@@ -30,8 +30,7 @@ _COMMAND_MODULES = [
     "conversation",  # /clear, /resume
     "knowledge",     # /docs, /memory, /init, /undo
     "notify",        # /notify — pending OS-scheduled notifications: list, cancel, test
-    "policy",        # /policy — the one gate front door (risk · allow · open)
-    "privacy",       # /privacy
+    "policy",        # /policy — the one trust front door (risk · allow · open · egress · airgap)
     "runtime",       # /tools, /models, /mcp
     "system",        # /help, /quit, /update
     "trace",         # /trace (incl. the answer/source provenance subviews)

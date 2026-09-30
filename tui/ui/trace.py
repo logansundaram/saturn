@@ -12,7 +12,7 @@ from textutil import clip, human_bytes, split_call_result
 from . import _base
 from ._base import (
     Padding, Text, _console, _RICH,
-    _ACCENT, _DIM, _FAINT, _NODE_W, _RAIL, _RAIL_GLYPH,
+    _ACCENT, _BLOCKED_GLYPH, _DIM, _FAINT, _NODE_W, _RAIL, _RAIL_GLYPH,
     _TREE_END, _TREE_LEAF, _TREE_MID, _TREE_PIPE,
     _emit, _fmt_args, _fmt_dur, _human_tokens, _rail, _term_width, _truncate,
 )
@@ -86,7 +86,7 @@ def show_node(node: str, delta: dict | None = None) -> None:
     _base._t_last = now
 
     # The plumbing node (ground) folds at normal verbosity: its timing rolls into the next
-    # visible node. Everything stays in the trace DB for /trace and /trace calls.
+    # visible node. Everything stays in the trace DB for /trace and /trace invoke.
     if node in _base._FOLD_NODES and _base._VERBOSITY != "verbose":
         return
     # approval passes through before EVERY tool round; an auto-approved pass is plumbing. When a
@@ -245,7 +245,7 @@ def _render_tool_events(events: list[dict], *, always_show_results: bool = False
     """Draw the tool-I/O sub-tree under the `tools` node header: one `├─ name(args)  dur` branch
     per call, the call repr sized to the terminal and durations column-aligned within the round so
     they read as a column. Each call's result renders as ONE clipped line beneath it (v2: watching
-    it work means seeing what came back, the Claude Code feel); `/trace calls`, `/trace full` and
+    it work means seeing what came back, the Claude Code feel); `/trace #id`, `/trace full` and
     the /trace replay (`always_show_results=True`) show the full output, word-wrapped under the
     rail with a hanging indent. A FAILED call's error always shows whole."""
     n = len(events)
@@ -306,15 +306,14 @@ def _egress_leaf(eg: dict) -> tuple[str, str]:
     air-gap refused. The `more` marker is the slice's own overflow cap."""
     if "more" in eg:
         n = eg.get("more")
-        return (f"⇅ +{n} more egress event{'s' if n != 1 else ''} — /privacy egress", "yellow")
+        return (f"⇅ +{n} more egress event{'s' if n != 1 else ''} — /policy egress", "yellow")
     host = str(eg.get("host") or "?")
     channel = str(eg.get("channel") or "")
     if eg.get("status") == "blocked":
         # `⊘`, not `⛔`: the latter is East-Asian Wide AND emoji-presentation, so terminals render
         # it as a color emoji that ignores the `bold red` style and overflows the rail column.
-        # `⊘` is the palette's existing blocked glyph (_base._PLAN["blocked"]) — same semantic,
-        # one cell, and it actually takes the style.
-        return (f"⊘ air-gap blocked {channel or 'egress'} → {host} — nothing sent", "bold red")
+        # `⊘` (_base._BLOCKED_GLYPH, the receipt's glyph too) is one cell and takes the style.
+        return (f"{_BLOCKED_GLYPH} air-gap blocked {channel or 'egress'} → {host} — nothing sent", "bold red")
     parts = [f"⇅ sent → {host}"]
     n = eg.get("n_bytes") or 0
     if n:
@@ -371,12 +370,9 @@ def _render_trace_messages(node: str, delta: dict, max_chars: int | None = None)
     """Render the messages a node ADDED — chiefly the agent's reasoning text and its tool-call
     decisions — as dim leaves under its trace row. This is the piece the default tool tree never
     surfaces, and what turns the /trace replay from a reprint of the answer into a real execution
-    log. ToolMessages are skipped (the tool sub-tree already carries their output) and the
-    synthesize node's message is skipped (it's the final answer, shown once in the response section
-    below). Used by the /trace replay (`max_chars=None`); `_msg_kind_content` normalizes message
-    forms. `max_chars` clips each leaf to a preview (the full text lives in the /trace replay)."""
-    if node == "synthesize":
-        return
+    log. ToolMessages are skipped (the tool sub-tree already carries their output). Used by the
+    /trace replay (`max_chars=None`); `_msg_kind_content` normalizes message forms. `max_chars`
+    clips each leaf to a preview (the full text lives in the /trace replay)."""
     for m in (delta.get("messages") or []):
         kind, content = _msg_kind_content(m)
         if "ToolMessage" in kind:
@@ -450,15 +446,13 @@ def show_run(run, events) -> None:
         print(f"  {when} · {status}" + (f" · {total}" if total else ""))
     _emit("")
 
-    # node-by-node replay. plan_gate is a control checkpoint with no info (folded in the live trace
-    # too); everything else shows — this IS the full drill-down, plumbing and tool outputs included.
+    # node-by-node replay: every node shows — this IS the full drill-down, plumbing (ground, an
+    # auto-approved approval pass) and tool outputs included.
     saved_seen = _base._plan_seen
     _base._plan_seen = {}  # let show_plan diff afresh over this run's plan events
     prev = start_dt
     try:
         for _seq, ts, node, _summary, data in events:
-            if node == "plan_gate":
-                continue
             delta = decode_json(data, {})
             cur = parse_ts(ts)
             dur = (cur - prev).total_seconds() if (cur and prev) else 0.0
@@ -534,7 +528,7 @@ def _llm_leaf(tag: str, text: str, style: str, cap: int | None) -> None:
 
     Draws the `  │ ` rail like every other renderer in this module (`_node_leaf`,
     `_emit_result_leaf`, `_emit_message_leaf`): this was the one leaf that opened at a bare
-    4-space indent, so `/trace invoke` and `/trace context` fell out of the gutter every other
+    4-space indent, so `/trace invoke` fell out of the gutter every other
     view sits in. The `avail` arithmetic already subtracted 4 for the rail — drawing it makes the
     existing budget correct rather than changing it."""
     import textwrap
@@ -654,83 +648,3 @@ def show_llm_calls(run, calls, full: bool = False) -> None:
             _llm_leaf("", cut, _DIM, None)
         _emit("")
 
-
-# ── context inspector (/trace context) ───────────────────────────────────────────
-# The model-level companion to /trace invoke that shows only the INPUT side — exactly what each
-# local model call was told, message by message, at full fidelity. Where `invoke` answers "what did
-# each call see and say", this answers the privacy question "what did my machine actually send the
-# model" — so it drops the outputs, keeps every input message uncut by default, and labels each with
-# its size. Grouped per node so the per-call context is diffable step to step.
-
-def show_llm_context(run, calls, *, node_filter: str | None = None, preview: bool = False) -> None:
-    """Replay the INPUT messages of a run's LLM calls — the token-for-token record of what the
-    local model was told at each node. `run` is (run_id, query, …); `calls` are the same
-    (seq, ts, node, model, dur, prompt_tokens, output_tokens, input, output, status) rows
-    /trace invoke reads. `node_filter` shows only calls from one node (case-insensitive substring);
-    `preview` clips each message instead of the default full text."""
-    from stores.trace import decode_json
-
-    run_id, query, *_rest = run
-    cap = _LLM_PREVIEW_CHARS if preview else None  # `cap`, not `clip` — textutil.clip is imported here
-
-    section(f"run #{run_id} · context", "exactly what the model was told, per node")
-    q = " ".join(str(query or "").split()) or "(empty)"
-    if _RICH:
-        qline = Text("  ")
-        qline.append("» ", style=_DIM)
-        qline.append(q, style="default")
-        _console.print(qline)
-    else:
-        print(f"  » {q}")
-
-    shown = calls
-    if node_filter:
-        nf = node_filter.lower()
-        shown = [c for c in calls if nf in str(c[2] or "").lower()]
-
-    if not shown:
-        if node_filter and calls:
-            _emit(f"  (no LLM calls from a node matching {node_filter!r} — "
-                  f"nodes this run: {', '.join(sorted({str(c[2]) for c in calls}))})")
-        else:
-            _emit("  (no LLM calls recorded for this run)")
-        return
-
-    total_in = sum((c[5] or 0) for c in shown)
-    roll = (f"  {len(shown)} call(s) · {_human_tokens(total_in)} tok of context sent"
-            + (f" · node~{node_filter}" if node_filter else ""))
-    _emit(roll if not _RICH else Text(roll, style=_DIM))
-    if not preview:
-        _emit("  (full message text — the model saw exactly this; add nothing, hide nothing)"
-              if not _RICH else Text(
-                  "  (full message text — the model saw exactly this)", style=_FAINT))
-    _emit("")
-
-    for idx, (_seq, _ts, node, model, _dur, ptok, _otok, inp, _outp, _status) in enumerate(shown, 1):
-        msgs = decode_json(inp, [])
-        toks = f" · {_human_tokens(ptok)} tok in" if ptok else ""
-        head = f"{idx}. {node} · {model} · {len(msgs)} msg(s){toks}"
-        if _RICH:
-            h = Text("  ")
-            h.append(f"{idx}. ", style=f"bold {_ACCENT}")
-            h.append(str(node), style="default")
-            h.append(f" · {model} · {len(msgs)} msg(s){toks}", style=_DIM)
-            _console.print(h)
-        else:
-            print(f"  {head}")
-
-        for m in msgs:
-            tag = _LLM_ROLE.get(m.get("role", ""), (m.get("role") or "msg")[:4])
-            body = m.get("content", "")
-            tc = m.get("tool_calls")
-            if tc:
-                names = ", ".join(str(c.get("name")) for c in tc)
-                body = (body + " " if body else "") + f"[tool_calls: {names}]"
-            _llm_leaf(tag, body or "(empty)", _DIM, cap)
-            # Disclose the recording cut (_LLM_MSG_CAP in stores/trace) so a capped message is
-            # never presented as the whole context the model received — as its own leaf, so
-            # `--preview`'s clip can't cut the disclosure off the message it describes.
-            cut = _recording_cut(m)
-            if cut:
-                _llm_leaf("", cut, _DIM, None)
-        _emit("")

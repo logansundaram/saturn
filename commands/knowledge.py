@@ -2,7 +2,7 @@
 Knowledge & workspace commands — what the agent knows and where it works, in one module (the
 /help "knowledge & workspace" theme; consolidated from one-file-per-command 2026-06-11):
 
-  /docs    the RAG corpus + workspace file listing (add/remove/sync)
+  /docs    the RAG corpus (list/add/remove/rebuild)
   /memory  the durable remember/recall facts
   /init    survey the workspace and draft SATURN.md
   /undo    revert the last turn's file changes (pre-write snapshots)
@@ -18,14 +18,13 @@ from commands._utils import is_list_verb, is_remove_verb
 # ── /docs ────────────────────────────────────────────────────────────────────────────────────
 @command(
     "docs",
-    "View and manage the RAG corpus (and see workspace files): /docs add | remove | sync.",
+    "View and manage the RAG corpus: /docs add | remove | rebuild.",
     aliases=("documents",),
-    usage="/docs [list | add <path> | remove <name> | sync [--force]]",
+    usage="/docs [list | add <path> | remove <name> | rebuild]",
     details="""
-The one front door to the document knowledge base (what search_knowledge_base retrieves from),
-plus a view of the workspace sandbox files (where the file tools read/write).
+The one front door to the document knowledge base (what search_knowledge_base retrieves from).
 
-  /docs                 list the ingested corpus + the workspace files (also: list, ls)
+  /docs                 list the ingested corpus (also: list, ls)
   /docs add <path>      copy a file into the corpus and embed it (txt/md/pdf/html/csv/docx).
                         Paths with spaces don't need quoting; a dragged file's quoted path
                         works as-is (tip: type `/docs add ` then drag the file onto the
@@ -33,17 +32,16 @@ plus a view of the workspace sandbox files (where the file tools read/write).
                         A no-op if the file is already present and unchanged (content hash).
   /docs remove <name>   remove a document: drops its vectors and manifest entry (any removal
                         verb works: remove/rm/delete/del/forget/drop)
-  /docs sync            re-scan the corpus directory and embed anything new/changed
-  /docs sync --force    full rebuild: re-embed every document (recovers a stale/corrupt cache;
-                        also how an edited rag.chunk_size/embedder change is applied on demand)
+  /docs rebuild         re-embed every document (recovers a stale/corrupt cache; also how an
+                        edited rag.chunk_size is applied on demand)
 
-Durable memory is separate — see /memory. (This command replaces the old /ingest, /forget,
-and /reingest.)
+Every launch syncs the corpus directory (new, changed and removed files) on its own, and an
+embedder switch re-embeds it. Durable memory is separate — see /memory.
 
 Examples:
   /docs add "C:\\my notes\\spec.pdf"
   /docs remove spec.pdf
-  /docs sync --force
+  /docs rebuild
 """,
 )
 def _docs(ctx, args):
@@ -58,10 +56,14 @@ def _docs(ctx, args):
         _add(rest)
     elif is_remove_verb(sub):
         _remove(rest)
+    elif sub == "rebuild":
+        _sync(force=True)
     elif sub == "sync":
-        _sync(force=any(a in ("--force", "-f", "force") for a in rest))
+        # Cut 2026-09-30: every launch syncs; `sync --force` became `rebuild`.
+        _print("  /docs sync is gone — launch syncs the corpus on its own; /docs rebuild "
+               "re-embeds everything.")
     else:
-        _print(f"  unknown subcommand '{args[0]}' — usage: /docs [list | add <path> | remove <name> | sync [--force]]")
+        _print(f"  unknown subcommand '{args[0]}' — usage: /docs [list | add <path> | remove <name> | rebuild]")
 
 
 def _list_docs() -> None:
@@ -87,7 +89,7 @@ def _list_docs() -> None:
 
 def _ensure_embedder() -> bool:
     """The lazy embedder pull: the install never pulls the embedding model, so the first
-    `/docs add` (or `/docs sync`) offers it here — the same consented `ollama pull` the /models
+    `/docs add` (or `/docs rebuild`) offers it here — the same consented `ollama pull` the /models
     page runs. True when the embedder is available (or the daemon is down, in which case the
     ingest's own error explains); False when the user declined the pull."""
     from app.startup import embedder_missing
@@ -203,12 +205,12 @@ def _sync(*, force: bool) -> None:
     "See, add, edit, and review the agent's persistent memory (the layered remember/recall store).",
     aliases=("mem",),
     usage="/memory [list [layer] | add [--layer L] [--replaces n] [--sens mark] <fact> | "
-          "edit <n> <text> | forget <n> | why <n> | review [--no-llm] | pending | stale]",
+          "edit <n> <text> | forget <n> | why <n> | review [--no-llm] | stale]",
     details="""
 The transparency surface for durable memory. What is stored here quietly shapes every answer:
 the user layer and open commitments load into the agent's context EVERY turn, the recent memo
 notes do too, and agent / entities / negative facts load whenever they match the request
-(/trace context shows the exact block a run got). This command shows and manages the store
+(/trace invoke --full shows the exact block a run got). This command shows and manages the store
 without hand-editing database/memory/memory.md (still safe to hand-edit).
 
 Layers:  user (identity, preferences, constraints) · commitments (open items, with a due date)
@@ -228,11 +230,10 @@ Layers:  user (identity, preferences, constraints) · commitments (open items, w
                              at a review), the run it came from (→ /trace why #run), last use,
                              confirmations
   /memory review             the learning step: candidates this session queued — your mid-task
-                             corrections, plan-review vetoes, gate denials, unfinished steps,
-                             the compaction summary — plus the model's own proposals from the
-                             transcript, each shown as a diff line and kept only on your y.
+                             corrections, gate denials, failed tool calls, the compaction
+                             summary — plus the model's own proposals from the transcript,
+                             each shown as a diff line and kept only on your y.
                              Also runs at /quit. --no-llm skips the model's proposals.
-  /memory pending            what the review would show, without deciding
   /memory stale              by-match facts that have not matched a request in
                              memory.stale_days (flagged, never auto-deleted)
 
@@ -249,7 +250,7 @@ def _memory(ctx, args):
     from tui import ui
 
     usage = ("  usage: /memory [list [layer] | add [--layer L] [--replaces n] [--sens mark] <fact> "
-             "| edit <n> <text> | forget <n> | why <n> | review [--no-llm] | pending | stale]")
+             "| edit <n> <text> | forget <n> | why <n> | review [--no-llm] | stale]")
 
     if not args or is_list_verb(args[0]):
         _list_memory(mr, ui, args[1] if len(args) > 1 else None)
@@ -307,19 +308,6 @@ def _memory(ctx, args):
 
     if sub == "review":
         review_pending(ctx, use_llm=not any(a.lower() in ("--no-llm", "--mechanical") for a in args))
-        return
-
-    if sub in ("pending", "queue", "candidates"):
-        from core.memory_review import load_pending, render_line
-
-        pending = load_pending()
-        if not pending:
-            ui.note("no memory candidates pending — they queue from your corrections, vetoes, "
-                    "gate denials, unfinished steps and compaction summaries.")
-            return
-        ui.section("memory · pending review", f"{len(pending)} candidate(s) · /memory review decides")
-        for c in pending:
-            _print(f"  {render_line(c)}")
         return
 
     if sub == "stale":
@@ -537,12 +525,10 @@ CLAUDE.md equivalent). The grounding node loads it into context EVERY turn, so w
 is standing guidance for the agent: what this workspace is for, its layout, your conventions.
 
 /init surveys the workspace (its file listing) and drafts the file
-with the utility model; if the workspace is empty or the model is unavailable, it writes a
+with the chat model; if the workspace is empty or the model is unavailable, it writes a
 sensible template instead. Either way: open it and edit — it's your file, the draft is a start.
 
-Refuses to overwrite existing instructions unless --force is passed. A folder may still carry the
-old name, SATURDAY.md: it keeps loading while no SATURN.md exists, counts as existing
-instructions here, and /init --force writes a SATURN.md that takes its place.
+Refuses to overwrite an existing SATURN.md unless --force is passed.
 
 Standing rules that should follow you into EVERY workspace (tone, "always metric", "never draft
 to my boss without asking") go in ~/.saturn/SATURN.md instead — hand-written, loaded every turn
@@ -575,7 +561,7 @@ def _init(ctx, args):
 
             _print("  surveying the workspace and drafting SATURN.md…")
             prompt = INIT_DRAFT_PROMPT.format(listing="\n".join(listing) or "(empty)")
-            draft = str(get_model("utility").invoke([HumanMessage(content=prompt)]).content).strip()
+            draft = str(get_model().invoke([HumanMessage(content=prompt)]).content).strip()
             # Models love to wrap file output in a code fence — unwrap it.
             if draft.startswith("```"):
                 lines = draft.splitlines()

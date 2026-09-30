@@ -5,7 +5,7 @@ This file is deliberately thin: it forces UTF-8 console output, parses the comma
 routes into the `app/` package, where the application actually lives:
 
     app/cli.py       the argparse surface + piped-stdin capture
-    app/graph.py     build_agent(): the nodes/ package wired into the plan/execute engine
+    app/graph.py     build_agent(): the nodes/ package wired into the ReAct loop
     app/turn.py      run_turn(): drive one turn (stream updates + tokens, resolve interrupts)
     app/session.py   per-turn state shape, fresh-turn reset, history compaction
     app/startup.py   shared startup: knowledge-base sync + attachment warnings

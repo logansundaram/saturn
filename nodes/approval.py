@@ -182,9 +182,8 @@ def approval_node(state: AgentState) -> Command[Literal["tools", "agent"]]:
         return Command(goto="tools")
 
     # Decision context for the gate's `e(xplain)` answer: the plan step this batch is fulfilling
-    # and the execute node's pre-action reasoning (the text content of the tool-calling
-    # AIMessage) — the same provenance /trace why reconstructs later, surfaced at the moment of
-    # decision.
+    # and the agent's pre-action reasoning (the text content of the tool-calling AIMessage) —
+    # the same provenance /trace why reconstructs later, surfaced at the moment of decision.
     reasoning = getattr(last, "content", "") or ""
     flags = quarantine.turn_flags()
     decision = interrupt(

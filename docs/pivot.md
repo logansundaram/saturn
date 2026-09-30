@@ -131,7 +131,7 @@ Five commands a person needs — `/memory`, `/skills`, `/policy`, `/trace`, `/he
 default; `/confidence`, `/privacy`, `/notify`, `/mcp`, `/models`, `/config`, `/docs`, `/undo`
 behind `/help --all`. Nothing is removed; the first screen stops looking like an audit console.
 
-### 12. Hardware-probed install (1 day)
+### 12. Hardware-probed install (1 day) — shipped 2026-09-29 (`/models` on first launch: Apple chip table, bandwidth-priced speed floor)
 `install.sh` / first run reads RAM / VRAM and recommends the tier (27b on a 32 GB Mac, 9b on
 16 GB, 4b below), pulls the model on consent, and says plainly what each tier feels like. Until
 this exists, "most users run the good model" is hoped for, not true.
@@ -170,22 +170,40 @@ shape without adding a call to the chat turn. Pivot #1 and #2 above stay the top
   pyobjc dependency). Every interactive launch installs a login item (`app/repl.py`,
   `_menubar.ensure_running()`) for an icon that lists pending notifications. Default it off, or
   cut it until the ambient-awareness work (advantages.md §5.5) gives it a job.
-- **The second model role.** All four tiers bind `utility` to the same model as `tool_caller`;
+- ~~**The second model role.**~~ Cut 2026-09-30: a tier binds one `model` (a `roles:` block is
+  still read); `/models use <id>` replaces the per-role spellings. The `capabilities` block
+  stays — it is the `num_ctx` source. Loop item 6 would now compress with the same model.
+  (Was: all four tiers bind `utility` to the same model as `tool_caller`;
   the `capabilities` block is read once for a startup warning and `max_context_window` is
   display only. Collapse each tier to `model`, `num_ctx`, `embedder`; `/models`, `config.py`
-  and every "role" reference simplify with it.
+  and every "role" reference simplify with it.)
 - ~~**The structured-output layer** (`core/structured.py`).~~ Cut 2026-09-29: the options
   builder moved to `core/llms.invoke_kwargs`, the review makes one constrained call. One caller left, the memory review's
   proposals. Move `_invoke_kwargs` / `_model_tag` into `core/llms.py`; the review makes one
   constrained call with a default.
 - ~~**`requirements.txt`.**~~ Cut 2026-09-29: install.sh installs editable from pyproject.toml. CI installs from `pyproject.toml`; a second list kept in sync is pure
   upkeep.
-- ~~**`recall_runs`** (`tools/knowledge.py`).~~ Cut 2026-09-29; `/trace search` stays. A model-facing search over the trace DB, marked
+- ~~**`recall_runs`** (`tools/knowledge.py`).~~ Cut 2026-09-29; `/trace search` followed 2026-09-30. A model-facing search over the trace DB, marked
   untrusted, overlapping memory. "What did I decide" is memory's job.
+
+- ~~**The 2026-09-30 sweep.**~~ Done: `core/context.py` (`grounding_parts` moved to
+  `core/state`; `clean` had no caller since the v2 cut), `utilities/print_graph.py`, the dead
+  helpers (`was_truncated`, `EXIT_CODE_RE`, `unfinished_steps`/`incident_steps`,
+  `steers_pending`, `is_ladder_tag`, `list_memory`/`memory_context`/`read_memory_block`,
+  `receipt.trust_parts`/`turn_parts`), the v0.1.0-era `_RENAMED` pointers, `/trace context`
+  (now `/trace invoke --full`), `docs/superpowers/TWEAKS.md` and OPTIMIZATIONS §7–9.
+
+- ~~**The 2026-09-30 command diet.**~~ Done: `/config setup` folded into `/models` + the
+  startup health check (Improve 7's "run the recommendation at first launch"), `/config
+  context`, `/config persist`, `/models rescan|tier` and `/scan`, `/docs sync` (→ `rebuild`),
+  `/memory pending`, `/clear --screen` and its aliases; `/privacy` merged into `/policy` the same
+  day. Kept by choice: named `/resume` sessions and the menu bar icon. Open: `/trace why` into
+  bare `/trace`.
 
 ### Fix (found dogfooding)
 
-- **`saturn -p` hangs when stdin is open but is not a terminal** (2026-09-29, found running
+- ~~**`saturn -p` hangs when stdin is open but is not a terminal**~~ — fixed 2026-09-30
+  (`app/cli._stdin_ready`: a one-second `select`, then a stderr note). (2026-09-29, found running
   it from a background job). Headless mode reads piped stdin to append it to the query, and
   waits forever when nothing is written. Read stdin only when something is waiting there
   (`select` on POSIX), and say so in `--help`; anyone scripting Saturn hits this.

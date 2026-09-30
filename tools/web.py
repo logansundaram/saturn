@@ -5,8 +5,8 @@ Web tools — everything that reaches the live internet.
   web_extract   — fetch + extract the readable content behind a URL.
 
 (There is deliberately no monolithic `deep_research` tool: multi-source research is the
-plan/execute loop's job — the agent composes web_search + web_extract calls, each visible in
-the plan rail, gated, and traced. A single opaque research call would hide exactly the steps
+agent loop's job — the agent composes web_search + web_extract calls, each visible in the
+trace rail, gated, and traced. A single opaque research call would hide exactly the steps
 this product exists to show; it was removed June 2026 as a scope cut. `http_request` — the
 one-call-to-any-REST-API "universal integration" — was CUT 2026-07-16: the MCP client is the
 integration surface now, and it arrives with per-server trust declarations, the egress ledger, and
@@ -46,7 +46,7 @@ def _max_results() -> int:
 
 
 def _ddg_search(query: str, max_results: int) -> dict:
-    """Keyless web search via DuckDuckGo, in the result shape the synthesize node understands
+    """Keyless web search via DuckDuckGo, shaped as the web_search observation
     ({'query', 'results': [{title, url, content}]})."""
     hits = DDGS().text(query, max_results=max_results)
     return {
@@ -113,7 +113,7 @@ def web_extract(url: str):
     if blocked:
         return blocked
     # Each URL is its own fetch, so each gets its own ledger event naming ITS host — a multi-URL
-    # extract to three hosts is three sends, and /privacy egress, the rail leaf, and the Glass
+    # extract to three hosts is three sends, and /policy egress, the rail leaf, and the Glass
     # Box must say so (recorded before the send: fail-toward-recording).
     results = {}
     for u in urls:

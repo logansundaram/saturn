@@ -14,7 +14,7 @@ class CommandContext:
     reassign via `ctx.state = ...`), and flip `should_quit` to end the loop.
 
     `make_initial_state` is injected so handlers don't import from `agent.py` (which would
-    be circular) — it's how `/reset` gets a clean state without knowing its shape."""
+    be circular) — it's how `/clear` gets a clean state without knowing its shape."""
 
     state: dict
     make_initial_state: Callable[[], dict]
@@ -88,57 +88,26 @@ def _print(line: str = "") -> None:
 _HELP_FLAGS = {"--help", "-h"}
 
 # Old command names -> where the behaviour lives now. Typing one prints a pointer instead of a
-# bare "unknown command", so muscle memory from before the /docs consolidation lands softly.
+# bare "unknown command", so muscle memory lands softly. A pointer lives for one release: the
+# v0.1.0-era spellings (/ingest, /ws, /why, /risk, /source, /context, …) were dropped 2026-09-30.
 _RENAMED = {
-    "ingest": "docs add",
-    "forget": "docs remove",
-    "remove": "docs remove",
-    "reingest": "docs sync --force",
-    # June 2026 focus pass: overlapping readouts + session commands consolidated.
-    "workspace": "docs",
-    "ws": "docs",
-    "system": "config context",
-    "sys": "config context",
-    "save": "resume save",
-    "load": "resume",
-    # June 2026 trust-surface consolidation: the boundary commands fold into the /privacy front
-    # door; /why becomes a /trace subview (both read the same trace DB).
-    "egress": "privacy egress",
-    "airgap": "privacy airgap",
-    # ("redact" pointed at /privacy redact until that subcommand was CUT 2026-07-16 — a cut
-    # feature leaves no pointer.)
-    "why": "trace why",
-    # /commands was never a real command — point the habit at the command list.
-    "commands": "help",
-    "cmds": "help",
-    # The plan engine was removed with the v2 loop (2026-09-27): /plan, /draft, /quick and the
-    # older /dryrun all point at the surviving controls (Esc pause/steer + the approval gate).
+    # The plan engine was removed with the v2 loop (2026-09-27): /plan, /draft and /quick point
+    # at the surviving controls (Esc pause/steer + the approval gate).
     "plan": "help",
     "draft": "help",
     "quick": "help",
-    "dryrun": "help",
-    "dry": "help",
-    # 2026-07-06 surface trim: the legacy top-level gate spellings fold into /policy for good.
-    # They were already thin delegations to the /policy handlers; now the pointer is the only
-    # stub — one spelling to learn, zero parallel registrations to audit.
-    "risk": "policy risk",
-    "allow": "policy allow",
-    "autoapprove": "policy open",
-    "yolo": "policy open",
-    # 2026-07-07 command fold: the citation drill-down became a /trace subview and the runtime
-    # readout joined /config (the one runtime-settings front door). (/glass — the answer-level
-    # provenance box — was CUT 2026-09-27; a cut feature leaves no pointer.)
-    "source": "trace source",
-    "sources": "trace source",
-    "context": "config context",
-    "ctx": "config context",
+    # /privacy merged into /policy (2026-09-30): one trust front door. Any `/privacy …` spelling
+    # lands here — args are not forwarded, so the pointer never runs (or flips) anything.
+    "privacy": "policy",
 }
 
 # A second, parenthesized line for redirects whose one-line pointer doesn't tell the whole story.
 _ENGINE_NOTE = ("the plan engine was removed in v2 — Esc pauses a running turn (Enter continues, "
                 "typed text steers it, q aborts), and the approval gate shows every gated call "
                 "before it runs")
-_RENAMED_NOTES: dict[str, str] = {k: _ENGINE_NOTE for k in ("plan", "draft", "quick", "dryrun", "dry")}
+_RENAMED_NOTES: dict[str, str] = {k: _ENGINE_NOTE for k in ("plan", "draft", "quick")}
+_RENAMED_NOTES["privacy"] = ("the ledger is /policy egress, the seal /policy airgap; bare /policy "
+                             "shows the whole posture")
 
 
 def _print_renamed(key: str) -> bool:

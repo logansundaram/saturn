@@ -11,13 +11,20 @@ import pytest
 
 from core import model_family
 from core.hardware import (
+    APPLE_CHIPS,
+    BASELINE,
     CLASS_COSTS,
+    DECODE_FLOOR_TOK_S,
+    DECODE_SLOW_TOK_S,
     EMBEDDER_WEIGHTS_GB,
     FALLBACK_WINDOW,
     HEADROOM_GB,
     HardwareProfile,
+    chip_speed,
+    decode_tok_s,
     kv_cache_gb,
     need_gb,
+    prefill_tok_s,
     recommend,
 )
 
@@ -26,11 +33,16 @@ _W = {"4b": 32768, "9b": 65536, "27b": 65536, "35b": 131072}
 
 
 def _profile(**over) -> HardwareProfile:
-    base = dict(
-        os_name="Darwin", arch="arm64", chip="Apple M2", cores=8, ram_gb=16.0,
-        gpu="", vram_gb=None, backend="apple",
-    )
+    """A hand-built Mac. The default is an M2 Max (400 GB/s, 38 GPU cores): fast enough that
+    every tier that FITS also clears the speed floor, so the fit tests below read as fit tests.
+    Speed fields not given are looked up from the chip the way probe() does."""
+    base = dict(os_name="Darwin", arch="arm64", chip="Apple M2 Max", cores=12, ram_gb=16.0,
+                gpu_cores=38)
     base.update(over)
+    speed = chip_speed(base["chip"], base["gpu_cores"])
+    base.setdefault("bandwidth_gbps", speed.bandwidth_gbps)
+    base.setdefault("tflops", speed.tflops)
+    base.setdefault("baseline", speed.baseline)
     return HardwareProfile(**base)
 
 
@@ -52,6 +64,15 @@ def test_kv_bytes_per_token_follow_the_hybrid_architecture():
     assert CLASS_COSTS["9b"].kv_bytes_per_token == 32 * 1024
     assert CLASS_COSTS["27b"].kv_bytes_per_token == 64 * 1024
     assert CLASS_COSTS["35b"].kv_bytes_per_token == 20 * 1024     # MoE: 10 full layers x 2 heads
+
+
+def test_bytes_read_per_token_are_the_active_weights():
+    """A dense tier streams every weight per token; the 35b MoE streams its ~3B active share."""
+    for dense in ("4b", "9b", "27b"):
+        assert CLASS_COSTS[dense].read_gb_per_token == CLASS_COSTS[dense].weights_gb
+    moe = CLASS_COSTS["35b"]
+    assert moe.read_gb_per_token == pytest.approx(23.0 * 3.0 / 36.0)
+    assert moe.read_gb_per_token < CLASS_COSTS["4b"].read_gb_per_token
 
 
 def test_need_is_weights_plus_cache_at_the_window_plus_headroom():
@@ -83,21 +104,100 @@ def test_apple_unified_memory_uses_three_quarters_of_ram(ram, expected):
     assert rec.budget_gb == pytest.approx(ram * 0.75)
 
 
-@pytest.mark.parametrize("vram, expected", [
-    (6, "4b"), (8, "4b"), (12, "9b"), (16, "9b"), (24, "27b"), (32, "35b"),
+def test_apple_chip_table_covers_every_generation_and_climbs_the_tiers():
+    """M1 through M5, base -> Pro -> Max (-> Ultra): bandwidth climbs within a generation and the
+    published numbers are the ones in the table (Apple newsroom / Wikipedia, 2026-09-29)."""
+    for gen in ("M1", "M2", "M3", "M4", "M5"):
+        names = [n for n in APPLE_CHIPS if n.split()[0] == gen]
+        assert gen in names and f"{gen} Pro" in names and f"{gen} Max" in names
+        bw = [chip_speed(f"Apple {n}", 0).bandwidth_gbps
+              for n in (gen, f"{gen} Pro", f"{gen} Max") if n in APPLE_CHIPS]
+        assert bw == sorted(bw) and len(set(bw)) == 3, gen
+    assert chip_speed("Apple M1", 0).bandwidth_gbps == pytest.approx(68.3)
+    assert chip_speed("Apple M4 Pro", 0).bandwidth_gbps == pytest.approx(273)
+
+
+def test_the_m5_family_is_priced_as_the_m4_family():
+    """The M5's per-core neural accelerators are not modelled and its runner numbers are not yet
+    measured here: each M5 tier carries its M4 counterpart's bandwidth and compute (the Ultra,
+    which the M4 never had, is two M4 Max — every Ultra has been two Max)."""
+    for m5, m4 in (("M5", "M4"), ("M5 Pro", "M4 Pro"), ("M5 Max", "M4 Max")):
+        assert APPLE_CHIPS[m5] == APPLE_CHIPS[m4], m5
+    ultra, mx = chip_speed("Apple M5 Ultra", 0), chip_speed("Apple M4 Max", 40)
+    assert ultra.bandwidth_gbps == pytest.approx(2 * mx.bandwidth_gbps)
+    assert ultra.tflops == pytest.approx(2 * mx.tflops)
+
+
+@pytest.mark.parametrize("chip, cores, gbps", [
+    ("Apple M3 Max", 30, 300), ("Apple M3 Max", 40, 400),
+    ("Apple M4 Max", 32, 410), ("Apple M4 Max", 40, 546),
+    ("Apple M5 Max", 32, 410), ("Apple M5 Max", 40, 546),
 ])
-def test_nvidia_budget_is_the_card_vram_not_system_ram(vram, expected):
-    prof = _profile(os_name="Linux", chip="AMD Ryzen 9", gpu="NVIDIA RTX", vram_gb=vram,
-                    ram_gb=256.0, backend="nvidia")
-    rec = recommend(prof, _W)
-    assert rec.size_class == expected and rec.budget_gb == vram
+def test_the_gpu_core_count_picks_the_binned_max_bandwidth(chip, cores, gbps):
+    assert chip_speed(chip, cores).bandwidth_gbps == pytest.approx(gbps)
 
 
-def test_cpu_only_uses_half_of_ram_and_caps_at_9b():
-    small = recommend(_profile(os_name="Linux", chip="Intel i5", backend="cpu", ram_gb=16.0), _W)
-    assert small.size_class == "4b" and small.budget_gb == 8.0
-    big = recommend(_profile(os_name="Linux", chip="Intel i9", backend="cpu", ram_gb=128.0), _W)
-    assert big.size_class == "9b" and "cpu" in big.reason.lower()
+def test_compute_is_the_gpu_core_count_times_the_generation_rate():
+    speed = chip_speed("Apple M4 Pro", 20)
+    assert speed.gpu_cores == 20 and speed.tflops == pytest.approx(20 * 0.46)
+    assert not speed.baseline and speed.family == "M4 Pro"
+    # No readable core count: the family's full-bin count stands in.
+    assert chip_speed("Apple M4 Pro", 0).gpu_cores == 20
+    assert chip_speed("Apple M4 Max", 0).bandwidth_gbps == pytest.approx(546)
+
+
+@pytest.mark.parametrize("chip", ["Intel(R) Core(TM) i9-9980HK", "Apple M9 Ultra", "", "AMD Ryzen 9"])
+def test_an_unrecognised_chip_falls_back_to_the_m1_baseline(chip):
+    """The baseline is the slowest Apple silicon ever shipped: a real chip is never over-promised."""
+    speed = chip_speed(chip, 0)
+    assert speed.baseline is True
+    assert speed.bandwidth_gbps == BASELINE.bandwidth_gbps == pytest.approx(68.3)
+    assert speed.tflops == pytest.approx(8 * 0.325)
+
+
+def test_decode_speed_is_bandwidth_over_the_bytes_read_per_token():
+    """Calibrated against the repo's own measurement: the 9b on the M4 Pro decodes at ~38 tok/s
+    (docs/OPTIMIZATIONS.md, 2026-09-08). 273 GB/s x 0.9 / 6.6 GB."""
+    m4pro = _profile(chip="Apple M4 Pro", gpu_cores=20, ram_gb=48.0)
+    assert decode_tok_s("9b", m4pro) == pytest.approx(38, rel=0.1)
+    assert decode_tok_s("27b", m4pro) < decode_tok_s("9b", m4pro) < decode_tok_s("4b", m4pro)
+    # The MoE streams 2 GB per token: faster than the 4b on the same machine.
+    assert decode_tok_s("35b", m4pro) > decode_tok_s("4b", m4pro)
+    # Twice the bandwidth, twice the speed.
+    m4max = _profile(chip="Apple M4 Max", gpu_cores=40, ram_gb=128.0)
+    assert decode_tok_s("9b", m4max) == pytest.approx(2 * decode_tok_s("9b", m4pro))
+
+
+def test_prefill_speed_follows_gpu_compute_over_active_params():
+    """~420 tok/s measured for the 9b on the M4 Pro (docs/OPTIMIZATIONS.md): 2 FLOPs per
+    parameter per token at ~85% of the 9.2 TFLOPS the 20 cores rate."""
+    m4pro = _profile(chip="Apple M4 Pro", gpu_cores=20, ram_gb=48.0)
+    assert prefill_tok_s("9b", m4pro) == pytest.approx(420, rel=0.15)
+    assert prefill_tok_s("27b", m4pro) < prefill_tok_s("9b", m4pro)
+    assert prefill_tok_s("35b", m4pro) > prefill_tok_s("9b", m4pro)      # 3B active
+
+
+def test_a_tier_that_fits_but_decodes_under_the_floor_is_not_recommended():
+    """A 32 GB base M4 (120 GB/s) holds the 27b (22.5 of 24 GB) but streams it at ~6 tok/s: the
+    9b is the recommendation and the 27b row says so. The same memory on an M4 Pro (273 GB/s)
+    runs the 27b at ~14 tok/s and gets it."""
+    base = recommend(_profile(chip="Apple M4", gpu_cores=10, ram_gb=32.0), _W)
+    assert base.fits["27b"] is True and base.usable["27b"] is False
+    assert base.size_class == "9b" and base.slow is False
+    assert DECODE_SLOW_TOK_S <= base.decode["27b"] < DECODE_FLOOR_TOK_S
+    pro = recommend(_profile(chip="Apple M4 Pro", gpu_cores=20, ram_gb=32.0), _W)
+    assert pro.size_class == "27b" and pro.usable["27b"] is True
+
+
+def test_when_nothing_clears_the_floor_the_fastest_fitting_tier_is_flagged_slow():
+    rec = recommend(_profile(ram_gb=16.0, bandwidth_gbps=20.0), _W)   # 4b at ~5 tok/s, 9b at ~3
+    assert rec.fits["4b"] and rec.fits["9b"] and not any(rec.usable.values())
+    assert rec.size_class == "4b" and rec.slow is True and rec.cramped is False
+
+
+def test_the_budget_is_three_quarters_of_unified_memory_on_the_baseline_too():
+    rec = recommend(_profile(chip="Intel(R) Core(TM) i7", gpu_cores=0, ram_gb=16.0), _W)
+    assert rec.budget_gb == pytest.approx(12.0) and "baseline" in rec.reason
 
 
 def test_the_window_changes_the_answer_on_the_same_machine():
@@ -114,7 +214,7 @@ def test_a_missing_window_falls_back_to_the_family_default():
 
 
 def test_a_machine_too_small_for_any_class_lands_on_the_smallest_with_a_warning():
-    rec = recommend(_profile(backend="cpu", ram_gb=2.0), _W)
+    rec = recommend(_profile(ram_gb=4.0), _W)
     assert rec.size_class == model_family.classes()[0]
     assert rec.fits == {c: False for c in model_family.classes()}
     assert rec.cramped is True
@@ -143,44 +243,38 @@ def test_a_tier_is_priced_as_the_model_it_runs_not_its_name():
 
 
 def test_recommendation_is_always_on_the_ladders():
-    for ram in (1, 4, 8, 12, 16, 24, 32, 48, 64, 96):
-        for backend in ("apple", "nvidia", "cpu"):
-            prof = _profile(ram_gb=ram, backend=backend, vram_gb=ram if backend == "nvidia" else None)
-            rec = recommend(prof, _W)
+    for ram in (1, 4, 8, 12, 16, 24, 32, 48, 64, 96, 192):
+        for name in list(APPLE_CHIPS) + ["unknown"]:
+            rec = recommend(_profile(chip=f"Apple {name}", gpu_cores=0, ram_gb=ram), _W)
             assert rec.size_class in model_family.classes()
             assert rec.embedder in model_family.embedder_classes()
+            assert rec.size_class in rec.decode and rec.size_class in rec.prefill
 
 
 # --- the probe ------------------------------------------------------------------------------------
 
-def _wire_probe(monkeypatch, *, system, machine, chip, nvidia=(None, None), ram=16.0):
+def _wire_probe(monkeypatch, *, system="Darwin", machine="arm64", chip, gpu_cores=0, ram=16.0):
     from core import hardware
 
     monkeypatch.setattr(hardware.platform, "system", lambda: system)
     monkeypatch.setattr(hardware.platform, "machine", lambda: machine)
     monkeypatch.setattr(hardware, "_cpu_brand", lambda: chip)
-    monkeypatch.setattr(hardware, "_nvidia_vram_gb", lambda: nvidia)
+    monkeypatch.setattr(hardware, "_gpu_cores", lambda: gpu_cores)
     monkeypatch.setattr(hardware, "_ram_gb", lambda: ram)
     return hardware
 
 
 def test_probe_detects_apple_silicon_from_the_brand_string_not_the_interpreter_arch(monkeypatch):
     """A Rosetta Python reports x86_64 on an M-series Mac; the chip string is the truth."""
-    hw = _wire_probe(monkeypatch, system="Darwin", machine="x86_64", chip="Apple M4 Pro", ram=48.0)
+    hw = _wire_probe(monkeypatch, machine="x86_64", chip="Apple M4 Pro", gpu_cores=20, ram=48.0)
     prof = hw.probe()
-    assert prof.backend == "apple" and prof.chip == "Apple M4 Pro" and prof.ram_gb == 48.0
+    assert prof.chip == "Apple M4 Pro" and prof.ram_gb == 48.0 and prof.gpu_cores == 20
+    assert prof.bandwidth_gbps == pytest.approx(273) and prof.baseline is False
 
 
-def test_probe_prefers_an_nvidia_card_when_present(monkeypatch):
-    hw = _wire_probe(monkeypatch, system="Linux", machine="x86_64", chip="AMD Ryzen 7 7800X3D",
-                     nvidia=("NVIDIA GeForce RTX 4090", 24.0), ram=64.0)
-    prof = hw.probe()
-    assert prof.backend == "nvidia" and prof.vram_gb == 24.0 and "4090" in prof.gpu
-
-
-def test_probe_falls_back_to_cpu(monkeypatch):
-    hw = _wire_probe(monkeypatch, system="Linux", machine="x86_64", chip="Intel Core i7")
-    assert hw.probe().backend == "cpu"
+def test_probe_reads_the_binned_max_from_the_gpu_core_count(monkeypatch):
+    hw = _wire_probe(monkeypatch, chip="Apple M4 Max", gpu_cores=32, ram=36.0)
+    assert hw.probe().bandwidth_gbps == pytest.approx(410)
 
 
 def test_probe_never_raises_when_every_reader_fails(monkeypatch):
@@ -190,10 +284,21 @@ def test_probe_never_raises_when_every_reader_fails(monkeypatch):
         raise RuntimeError("no")
 
     monkeypatch.setattr(hardware, "_cpu_brand", boom)
-    monkeypatch.setattr(hardware, "_nvidia_vram_gb", boom)
+    monkeypatch.setattr(hardware, "_gpu_cores", boom)
     monkeypatch.setattr(hardware, "_ram_gb", boom)
     prof = hardware.probe()
-    assert prof.backend == "cpu" and prof.ram_gb == 0.0
+    assert prof.chip == "" and prof.ram_gb == 0.0 and prof.gpu_cores == 0
+    assert prof.baseline is True and prof.bandwidth_gbps == BASELINE.bandwidth_gbps
+
+
+def test_gpu_cores_reader_parses_ioreg(monkeypatch):
+    from core import hardware
+
+    monkeypatch.setattr(hardware, "_run", lambda cmd, timeout=3:
+                        '+-o AGXAcceleratorG16X  <class ...>\n    {\n      "gpu-core-count" = 20\n    }')
+    assert hardware._gpu_cores() == 20
+    monkeypatch.setattr(hardware, "_run", lambda cmd, timeout=3: "")
+    assert hardware._gpu_cores() == 0
 
 
 def test_the_profile_is_probed_once_per_process_and_rescan_reprobes(monkeypatch):
@@ -219,7 +324,7 @@ def test_startup_warms_the_probe_interactively_and_never_headless(monkeypatch):
     monkeypatch.setattr(startup, "build_agent", lambda: "graph")
     assert startup.startup_load(interactive=True) == ("graph", None)
     assert calls == [1]
-    # -p never renders /models: no sysctl / nvidia-smi spawn on the one-shot path.
+    # -p never renders /models: no sysctl / ioreg spawn on the one-shot path.
     assert startup.startup_load(interactive=False) == ("graph", None)
     assert calls == [1]
 
@@ -251,9 +356,7 @@ def _ladder_cfg(active="4b", windows=_W, num_ctx=None, embedder="qwen3-embedding
 
     tiers, caps = {}, {}
     for key, tag in model_family.SIZE_LADDER:
-        tiers[key] = {
-                      "roles": {r: tag for r in ("tool_caller", "utility")},
-                      "embedder": embedder}
+        tiers[key] = {"model": tag, "embedder": embedder}
         if windows:
             caps[tag] = {"context_window": windows[key], "max_context_window": 262144}
     data = {"active_tier": active, "tiers": tiers, "capabilities": caps, "runtime": {}}
@@ -290,18 +393,15 @@ def env(monkeypatch, printed):
         "pull_rc": 0,
         "reset": 0,
         "resyncs": 0,
-        "rescans": 0,
     }
     monkeypatch.setattr("config.get_config", lambda: env["cfg"])
     monkeypatch.setattr(runtime, "_probe", lambda: env["profile"])
-    monkeypatch.setattr(runtime, "_rescan",
-                        lambda: env.__setitem__("rescans", env["rescans"] + 1) or env["profile"])
     # Like the real one: [] when the daemon is down (reachability is then probed separately).
     monkeypatch.setattr("core.llms.list_local_models",
                         lambda: [_Local(n) for n in env["pulled"]] if env["daemon"] else [])
     monkeypatch.setattr("core.llms.ollama_reachable", lambda: env["daemon"])
     monkeypatch.setattr("core.llms.reset_models", lambda: env.__setitem__("reset", env["reset"] + 1))
-    monkeypatch.setattr("commands.config._stdin_is_tty", lambda: env["tty"])
+    monkeypatch.setattr("commands._utils._stdin_is_tty", lambda: env["tty"])
     def ask(prompt, **_kw):
         if prompt.startswith("pull"):
             return env["answer"]
@@ -335,21 +435,20 @@ def _row(printed, *needles):
     return next(l for l in printed if all(n in l for n in needles))
 
 
-def test_models_absorbed_scan():
+def test_scan_is_no_longer_an_alias():
     import commands  # noqa: F401
     from commands._framework import COMMANDS, _ALIASES
-    from commands.system import _GROUPS
 
-    assert "scan" not in COMMANDS and _ALIASES["scan"] == "models"
-    assert "scan" not in dict(_GROUPS)["system"]
+    assert "scan" not in COMMANDS and "scan" not in _ALIASES
 
 
 def test_the_page_shows_the_machine_the_budget_and_both_ladders(env, printed):
     _run("list")
     blob = "\n".join(printed)
-    assert "Apple M2" in blob and "48 GB unified memory" in blob
+    assert "Apple M2 Max" in blob and "48 GB unified memory" in blob
+    assert "38 GPU cores" in blob and "400 GB/s" in blob
     assert "36 GB for models" in blob
-    assert "weights" in blob and "window" in blob and "need" in blob
+    assert "weights" in blob and "window" in blob and "need" in blob and "tok/s" in blob
     for key, tag in model_family.SIZE_LADDER:
         assert _row(printed, key, tag)
     for key, tag in model_family.EMBEDDER_LADDER:
@@ -382,10 +481,37 @@ def test_a_too_big_tier_and_a_swapping_embedder_are_marked(env, printed):
     assert "recommended" in _row(printed, "0.6b", "qwen3-embedding:0.6b")
 
 
+def test_every_tier_row_carries_its_decode_speed(env, printed):
+    """The 48 GB M2 Max: 4b ~106, 9b ~55, 27b ~21, 35b ~188 tok/s (360 GB/s effective over 1.9 GB)."""
+    _run("list")
+    assert "~106 tok/s" in _row(printed, "4b", "qwen3.5:4b")
+    assert "~21 tok/s" in _row(printed, "27b", "qwen3.8:27b")
+    assert "~188 tok/s" in _row(printed, "35b", "qwen3.6:35b")
+
+
+def test_the_recommended_tier_says_what_it_feels_like(env, printed):
+    _run("list")
+    line = _row(printed, "35b", "feels like")
+    assert "~188 tok/s" in line and "first prompt" in line and "cold" in line
+
+
+def test_a_tier_that_fits_but_is_slow_is_marked_and_not_recommended(env, printed):
+    env["profile"] = _profile(chip="Apple M4", gpu_cores=10, ram_gb=32.0)
+    _run("list")
+    assert "slow" in _row(printed, "27b", "qwen3.8:27b") and "~6 tok/s" in _row(printed, "27b", "qwen3.8:27b")
+    assert "recommended" in _row(printed, "9b", "qwen3.5:9b")
+
+
+def test_a_baseline_chip_is_named_on_the_page(env, printed):
+    env["profile"] = _profile(chip="Intel(R) Core(TM) i7", gpu_cores=0, ram_gb=16.0)
+    _run("list")
+    blob = "\n".join(printed)
+    assert "baseline" in blob and "M1" in blob
+
+
 def test_a_rebound_tier_shows_and_prices_the_model_it_runs(env, printed):
     cfg = env["cfg"]
-    for role in ("tool_caller", "utility"):
-        cfg.set(f"tiers.4b.roles.{role}", "qwen3.8:27b")
+    cfg.set("tiers.4b.model", "qwen3.8:27b")
     _run("list")
     row = _row(printed, "* 4b", "qwen3.8:27b")
     assert "17.0 GB" in row and "64k ctx" in row and "22.5 GB" in row
@@ -578,8 +704,7 @@ def test_a_rebound_tier_pulls_the_model_the_file_names(env, printed):
     """An off-ladder declaration is what the tier runs: the pick pulls exactly that model, and
     the row prices it by the size in its tag (31b costs what the 27b class costs)."""
     cfg = env["cfg"]
-    for role in ("tool_caller", "utility"):
-        cfg.set(f"tiers.27b.roles.{role}", "gemma4:31b")
+    cfg.set("tiers.27b.model", "gemma4:31b")
     env["pick"] = "3"
     env["answer"] = "y"
     _run()
@@ -606,8 +731,7 @@ def test_an_embedder_pick_aligns_every_tier_even_when_the_active_one_already_mat
 
 def test_an_embedder_switch_never_splits_a_dotted_tier_key(env, printed):
     tiers = env["cfg"].get("tiers")
-    tiers["4.5b"] = {"roles": {"tool_caller": "qwen3.5:4b"},
-                     "embedder": "qwen3-embedding:8b"}
+    tiers["4.5b"] = {"model": "qwen3.5:4b", "embedder": "qwen3-embedding:8b"}
     env["pick"] = "6"
     env["answer"] = "y"
     _run()
@@ -624,27 +748,6 @@ def test_typed_embedder_bind_is_machine_wide_too(env, printed):
                for k in model_family.classes())
 
 
-def test_a_failed_gpu_probe_is_named_on_the_page(env, printed):
-    env["profile"] = _profile(backend="cpu", ram_gb=64.0, gpu_error="TimeoutExpired: nvidia-smi")
-    _run("list")
-    blob = "\n".join(printed)
-    assert "GPU probe failed (TimeoutExpired: nvidia-smi)" in blob and "/models rescan" in blob
-
-
-def test_probe_records_why_the_gpu_reader_failed(monkeypatch):
-    from core import hardware
-
-    def boom():
-        raise ValueError("could not convert string to float: '[N/A]'")
-
-    monkeypatch.setattr(hardware.platform, "system", lambda: "Linux")
-    monkeypatch.setattr(hardware, "_cpu_brand", lambda: "AMD Ryzen 9")
-    monkeypatch.setattr(hardware, "_nvidia_vram_gb", boom)
-    monkeypatch.setattr(hardware, "_ram_gb", lambda: 64.0)
-    prof = hardware.probe()
-    assert prof.backend == "cpu" and prof.gpu_error.startswith("ValueError")
-
-
 def test_the_page_lists_the_daemon_once(env, printed, monkeypatch):
     calls = []
     monkeypatch.setattr("core.llms.ollama_reachable", lambda: calls.append(1) or True)
@@ -653,44 +756,53 @@ def test_the_page_lists_the_daemon_once(env, printed, monkeypatch):
 
 
 def test_cramped_machine_warns(env, printed):
-    env["profile"] = _profile(backend="cpu", ram_gb=2.0)
+    env["profile"] = _profile(ram_gb=4.0)
     _run("list")
     assert "too small" in "\n".join(printed)
 
 
-def test_rescan_reprobes(env, printed):
-    _run("rescan")
-    assert env["rescans"] == 1
+@pytest.mark.parametrize("sub", ["rescan", "tier 9b"])
+def test_rescan_and_tier_are_gone(env, printed, sub):
+    _run(sub)
+    assert env["cfg"].active_tier == "4b" and env["persisted"] == []
+    assert "is gone" in "\n".join(printed)
 
 
 def test_a_config_without_the_recommended_tier_is_told_so(env, printed):
     from config import Config
 
     env["cfg"] = Config({"active_tier": "4b", "tiers": {
-        "4b": {"roles": {"tool_caller": "qwen3.5:4b"},
-               "embedder": "qwen3-embedding:8b"}}, "capabilities": {}})
+        "4b": {"model": "qwen3.5:4b", "embedder": "qwen3-embedding:8b"}}, "capabilities": {}})
     _run()
     assert env["cfg"].active_tier == "4b"
     assert "not in config.yaml" in _row(printed, "35b", "qwen3.6:35b")
     assert "config.default.yaml" in "\n".join(printed)
 
 
-def test_direct_tier_switch_still_works(env, printed):
-    _run("tier 9b")
-    assert env["cfg"].active_tier == "9b" and env["persisted"] == [("active_tier", "9b")]
+def test_keeping_a_tier_whose_model_is_missing_offers_the_pull(env, printed):
+    """The gap the old /config setup check closed: `n` keeps the tier, and a model it binds
+    that isn't pulled is still offered (y/N) — declining names the command."""
+    env["pulled"] = ["qwen3-embedding:8b"]
+    env["pick"] = "n"
+    _run()
+    assert env["pull_calls"] == [] and env["cfg"].active_tier == "4b"
+    assert "ollama pull qwen3.5:4b" in "\n".join(printed)
+    env["answer"] = "y"
+    _run()
+    assert env["pull_calls"] == ["qwen3.5:4b"] and env["cfg"].active_tier == "4b"
 
 
 # --- first launch -----------------------------------------------------------------------------------
 
-def test_first_launch_runs_models_before_the_setup_check():
-    """The REPL's first-run block dispatches /models (the page + the pick), then /config setup —
-    so the doctor checks the tier the pick landed on."""
+def test_first_launch_runs_models_before_the_health_check():
+    """The REPL's first-run block dispatches /models (the page + the pick), then the health
+    check — so the warnings describe the tier the pick landed on."""
     import inspect
 
     from app import repl
 
     src = inspect.getsource(repl.run_repl)
+    first = src.index("if _first_run:\n")
     models_at = src.index('dispatch("/models"')
-    setup_at = src.index('dispatch("/config setup"')
-    assert models_at < setup_at
-    assert "if _first_run:" in src[:models_at]
+    assert first < models_at < src.index("_health_check()", models_at)
+    assert "/config setup" not in src

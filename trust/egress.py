@@ -1,31 +1,31 @@
 """
 Egress ledger + air-gap enforcement — the network boundary made visible.
 
-The product's privacy proof point used to be *asserted* (`/privacy` lists what CAN leave this
+The product's privacy proof point used to be *asserted* (`/policy` lists what CAN leave this
 machine) but never *shown* (what actually left). This module closes that gap. It is the single
 chokepoint every outbound network operation reports through, so "nothing leaves your machine"
 becomes an observable fact rather than a slogan:
 
   - `record(...)`     every successful egress (a web search, a page fetch, a remote MCP call,
                       a remote-Ollama invocation) appends one `EgressEvent` to a process-wide,
-                      append-only ledger. `/privacy egress` renders it; the status bar shows a
+                      append-only ledger. `/policy egress` renders it; the status bar shows a
                       live count.
   - `check(...)`      the air-gap gate. When `runtime.airgap` is on, an outbound op calls this
                       FIRST; it records a `blocked` event and returns a refusal string the caller
                       hands back instead of touching the network. Air-gap turns the privacy claim
                       from a promise into something the machine enforces.
 
-Air-gap is read live from `runtime.airgap` (toggled by `/privacy airgap`), exactly like the budget
+Air-gap is read live from `runtime.airgap` (toggled by `/policy airgap`), exactly like the budget
 and auto-approve knobs — so flipping it applies to the very next op. Cloud LLM egress is enforced
 separately in `llms.get_model` (it raises rather than returning a string, since a node can't run
-without its model); the `/privacy airgap` command drops the model cache so a cached remote model
+without its model); the `/policy airgap` command drops the model cache so a cached remote model
 can't sneak a call through.
 
 The ledger is per-process (one Saturn session), like `budget.py` — a live boundary monitor.
 
 This module also owns the inference-locality classifier (`_inference` + its display companions):
 "where do the words come from" is fundamentally an egress question, and this is where the loopback
-test (`ollama_is_local`) already lives. The posture line and `/privacy` both read
+test (`ollama_is_local`) already lives. The posture line and `/policy` both read
 the one classifier here. Imports only leaves (config, diag, textutil), so any module (web tools,
 mcp_client, llms, the TUI) can import it without a cycle.
 """
@@ -37,7 +37,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from urllib.parse import urlparse
 
-from config import MODEL_ROLES, get_config
+from config import get_config
 from textutil import truncate
 
 # Hard cap on retained events so a long session can't grow the ledger without bound (oldest drop).
@@ -157,7 +157,7 @@ def blocked_message(host: str, channel: str = "") -> str:
     return (
         f"Air-gap is ON — this operation{what} would send data{where} over the network, which is "
         "currently blocked. Nothing was sent. The user can allow network access with "
-        "`/privacy airgap off`."
+        "`/policy airgap off`."
     )
 
 
@@ -178,7 +178,7 @@ def check_or_raise(channel: str, host: str, detail: str = "", *, subject: str = 
     """The raising twin of `check()`, for the exits that CANNOT hand a refusal string back: an
     LLM role, an embedder, a raw-mode continuation. Delegates to check() — one gate, one
     recording site, so a future rung added inside check() refuses these exits too — then raises
-    instead of returning. `subject` names what was refused ("role 'tool_caller' (qwen3.5:9b)",
+    instead of returning. `subject` names what was refused ("the model (qwen3.5:9b)",
     "embedding", "continuing the answer on <model>") so the message stays specific.
 
     Callers must not re-implement this: an inference exit that hand-rolls the check is one the
@@ -189,7 +189,7 @@ def check_or_raise(channel: str, host: str, detail: str = "", *, subject: str = 
     raise RuntimeError(
         f"Air-gap is ON — {what} would cross the network to {host}. Nothing was sent. If "
         f"OLLAMA_HOST points off this machine, unset it to use the local daemon, or turn the "
-        f"air-gap off with `/privacy airgap off`."
+        f"air-gap off with `/policy airgap off`."
     )
 
 
@@ -206,7 +206,7 @@ def next_seq() -> int:
 
 def events_since(mark: int) -> list[EgressEvent]:
     """Events recorded at or after seq `mark`, oldest first. Seq-keyed (never an index into the
-    ledger) so the _MAX_EVENTS trim or a mid-session `/privacy egress clear` can't shift a
+    ledger) so the _MAX_EVENTS trim or a mid-session `/policy egress clear` can't shift a
     turn-start mark onto the wrong slice — the trust receipt must never read 'local-only' over a
     turn that actually sent."""
     out: list[EgressEvent] = []
@@ -225,7 +225,7 @@ def count() -> int:
 
 def summarize_events(events) -> dict:
     """Aggregate one slice of EgressEvents — THE one accounting every per-slice trust surface
-    uses (the per-answer receipt, the `/privacy egress` headline), so they can
+    uses (the per-answer receipt, the `/policy egress` headline), so they can
     never report different byte/host numbers for the same events. Returns
     {sent, blocked, bytes, hosts (first-seen order), channels (sent, first-seen)}."""
     sent = [e for e in events if getattr(e, "status", "") == SENT]
@@ -249,8 +249,8 @@ def summarize_events(events) -> dict:
 
 
 def summary() -> dict:
-    """Aggregate the ledger for the `/privacy egress` headline: totals, bytes, distinct hosts,
-    blocked. Carries `cleared`: whether a `/privacy egress clear` wiped events this session —
+    """Aggregate the ledger for the `/policy egress` headline: totals, bytes, distinct hosts,
+    blocked. Carries `cleared`: whether a `/policy egress clear` wiped events this session —
     the counts are then SINCE THE CLEAR, not the whole session, and any truth-claiming consumer
     must disclose that rather than imply an understated total. The same hazard `cleared_since`
     guards for per-turn slices, surfaced here for the whole-ledger aggregation."""
@@ -271,7 +271,7 @@ def summary() -> dict:
 
 
 def clear() -> None:
-    """Empty the ledger (a deliberate operator reset via `/privacy egress clear`). The seq counter
+    """Empty the ledger (a deliberate operator reset via `/policy egress clear`). The seq counter
     is NOT reset — outstanding turn-start marks must keep pointing past the cleared events, not
     get re-matched against new ones. The clear itself is remembered (cleared_since) so a per-turn
     consumer can tell an empty slice from a clear-emptied one instead of reporting
@@ -294,7 +294,7 @@ def cleared_since(mark: int) -> bool:
 # ── inference-locality classifier ────────────────────────────────────────────────────────────────
 # "Where do the words come from" — local (computed on this machine) vs off-machine (an Ollama
 # daemon behind a remote OLLAMA_HOST). THE one classifier: the session
-# posture line (receipt.posture_spans) and `/privacy` both read this — never
+# posture line (receipt.posture_spans) and `/policy` both read this — never
 # re-rolled. Lives here because locality IS an egress question and the loopback test
 # (ollama_is_local) already lives in this module.
 
@@ -307,12 +307,10 @@ def _inference() -> dict:
     ollama_local = ollama_is_local()
     ollama_loc = "local" if ollama_local else "remote"
     bindings = []
-    for role in MODEL_ROLES:
-        try:
-            spec = cfg.model_for_role(role)
-        except KeyError:
-            continue
-        bindings.append({"role": role, "model": spec.model, "locality": ollama_loc})
+    try:
+        bindings.append({"role": "chat", "model": cfg.chat_model, "locality": ollama_loc})
+    except KeyError:
+        pass
     try:
         bindings.append({"role": "embedder", "model": cfg.embedder_model, "locality": ollama_loc})
     except Exception:
@@ -325,14 +323,14 @@ def _inference() -> dict:
 
 def remote_ollama_label(inf: dict) -> str:
     """The display label for a remote-Ollama destination (`ollama @ <endpoint>`) — one spelling
-    for every surface that names it (posture line, /privacy tables, the report render)."""
+    for every surface that names it (posture line, /policy tables, the report render)."""
     return f"ollama @ {inf.get('remote_ollama', '?')}"
 
 
 def offmachine_destinations(inf: "dict | None" = None) -> list[str]:
     """The off-machine inference destinations as display labels: the remote Ollama endpoint
     (`remote_ollama_label`) when there is one. THE one assembly of the where-list — the session
-    posture line (receipt.posture_spans), /privacy's verdict, all print this, so they can never
+    posture line (receipt.posture_spans), /policy's verdict, all print this, so they can never
     name different destination sets for the identical posture. Takes the classifier's dict (or
     computes it fresh); empty when everything is local."""
     if inf is None:

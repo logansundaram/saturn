@@ -1,6 +1,6 @@
 # System messages — one ground truth for every prompt (keep prompts here, not inline in node
 # files). Since the v2 loop (2026-09-27) the agent sends ONE prompt (`agent_sys_msg`); the
-# utility prompts below serve the out-of-loop calls (compaction, the memory review, /init).
+# background prompts below serve the out-of-loop calls (compaction, the memory review, /init).
 
 from langchain.messages import SystemMessage
 
@@ -53,8 +53,8 @@ def agent_sys_msg() -> SystemMessage:
     return SystemMessage(content=_AGENT_SYS)
 
 
-# ── utility-role prompts (the out-of-loop LLM calls) ─────────────────────────────────────────
-# Every prompt the app sends lives here (the one-prompt-home rule), including the utility calls
+# ── background prompts (the out-of-loop LLM calls) ────────────────────────────────────────────
+# Every prompt the app sends lives here (the one-prompt-home rule), including the background calls
 # that run OUTSIDE the loop: conversation compaction, the memory review, and /init's SATURN.md
 # draft.
 

@@ -33,7 +33,7 @@ from commands._session import write_autosave
 _GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("conversation", ("clear", "resume")),
     ("knowledge & workspace", ("add-dir", "docs", "init", "memory", "rm-dir", "undo")),
-    ("trust & control", ("policy", "privacy")),
+    ("trust & control", ("policy",)),
     ("observability", ("mcp", "models", "tools", "trace")),
     ("system", ("config", "help", "notify", "quit", "update")),
 )
@@ -43,16 +43,11 @@ _GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
 # console. Order is display order.
 _DAILY: tuple[str, ...] = ("memory", "policy", "trace", "help", "quit")
 _ALL_FLAGS = {"--all", "-a", "all"}
-# (The legacy gate spellings — /risk · /allow · /autoapprove — were CUT 2026-07-06: they were
-# thin delegations to /policy's subcommands and now land on _RENAMED pointers, so the listing
-# carries ONE gate-policy surface instead of four. The 2026-07-07 command fold likewise dropped
-# /source into a /trace subview and /context into /config — both are _RENAMED pointers now, so
-# the observability row lists one process surface (/trace) and the runtime inventory.)
 
 # The three-line trust-stack map /help opens with: where the boundary POSTURE is set, where the
 # live ACTIVITY shows, and where the shareable RECORD comes from.
 _TRUST_MAP = (
-    ("posture", "/privacy · /policy"),
+    ("posture", "/policy"),
     ("activity", "receipt · /trace"),
     ("record", "/trace export · replay"),
 )
@@ -112,7 +107,7 @@ def _help(ctx, args):
         more = len(COMMANDS) - len(rows)
         ui.section("slash commands", "/help <command> details one · /help --all lists every command")
         ui.table(rows)
-        _print(f"  {more} more (config, docs, models, privacy, …): /help --all")
+        _print(f"  {more} more (config, docs, models, mcp, …): /help --all")
         _print("")
         return
 
@@ -175,7 +170,7 @@ def _quit(ctx, args):
 
 
 # ── /update ──────────────────────────────────────────────────────────────────────────────────
-# Saturday ships as a git clone (install.sh), so the repo root IS the install.
+# Saturn ships as a git clone (install.sh), so the repo root IS the install.
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -196,10 +191,10 @@ def _git(*args: str, timeout: float = 60):
 
 @command(
     "update",
-    "Update Saturday to the latest version (git pull at the install root).",
+    "Update Saturn to the latest version (git pull at the install root).",
     usage="/update [--check]",
     details="""
-Pulls the latest Saturday from the git remote it was installed from (the install scripts clone
+Pulls the latest Saturn from the git remote it was installed from (the install scripts clone
 the repo, so the repo root IS the install).
 
   /update          fast-forward pull; lists what came in; reinstalls Python dependencies if
@@ -223,7 +218,7 @@ def _update(ctx, args):
         _print("  git did not respond — cannot self-update.")
         return
     if rc != 0:
-        _print(f"  {_REPO_ROOT} is not a git repository — was Saturday installed by hand?")
+        _print(f"  {_REPO_ROOT} is not a git repository — was Saturn installed by hand?")
         _print("  installed via pipx/uv? update with `pipx upgrade saturn-agent` "
                "(or `uv tool upgrade saturn-agent`).")
         _print("  otherwise re-install with the install script, or replace the files yourself.")
@@ -294,6 +289,6 @@ def _update(ctx, args):
                 _print(f"  pip install failed: {tail[0] if tail else 'unknown error'}")
                 _print(f"  run it yourself: {sys.executable} -m pip install -e {_REPO_ROOT}")
 
-        _print("  restart Saturday (/quit and relaunch) to run the new version.")
+        _print("  restart Saturn (/quit and relaunch) to run the new version.")
     except subprocess.TimeoutExpired:
         _print("  update timed out — check your network and try again.")

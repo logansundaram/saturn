@@ -2,11 +2,11 @@
 #
 # This file externalizes everything that used to be hard-coded across llms.py, rag.py,
 # document_registry.py, and agent.py: the model bindings, the filesystem paths, and the
-# loop/safety knobs. The agent references model ROLES, never concrete model ids — so
+# loop/safety knobs. Graph code never names a concrete model id — so
 # swapping hardware is a one-line `active_tier` change here and never touches graph logic.
 
 # Which hardware-tier preset (under `tiers:` below) is live. Change this one line to
-# re-point every role at a different model set.
+# re-point Saturn at a different model.
 active_tier: 4b
 
 # ---------------------------------------------------------------------------
@@ -15,11 +15,11 @@ active_tier: 4b
 paths:
   database: database
   documents: database/documents
-  workspace: database/workspace
+  workspace: database/workspace         # fallback only: the working folder is where you launch saturn
   cache: database/cache                # persisted RAG vector store + corpus/summary caches
   memory: database/memory/memory.md   # persistent durable-facts store (remember/recall)
   db_sqlite: database/db.sqlite        # SqliteSaver checkpoints + trace
-  sessions: database/sessions          # saved conversations (/save and /load)
+  sessions: database/sessions          # saved conversations (/resume save <name>, /resume <name>)
   snapshots: database/snapshots        # per-turn pre-write file snapshots (/undo)
   permissions: database/permissions.json  # persisted /policy risk overrides + allow prefixes
   exports: logging/exports             # /trace export run records (audit artifacts)
@@ -45,8 +45,8 @@ runtime:
   # approval gate. One of: read_only | side_effecting | destructive.
   auto_approve: read_only
   # Ollama context window (`num_ctx`) for every local model. `null` = auto: each model uses its
-  # `capabilities.<model>.context_window` below. An integer overrides all roles at once (the
-  # /config context command sets this live). Without it Ollama silently caps the window at 2048.
+  # `capabilities.<model>.context_window` below. An integer overrides every model at once (the
+  # /config runtime.num_ctx command sets this live). Without it Ollama silently caps the window at 2048.
   num_ctx: null
   # Read timeout (seconds) for a single local-model call. Guards against a WEDGED Ollama daemon
   # (accepts the connection but never responds) hanging a turn forever — a turn that times out now
@@ -78,10 +78,10 @@ runtime:
   # mapping each number to the tool call/document behind it. false restores unadorned answers.
   citations: true
   # Air-gap: when true, every network egress is blocked and recorded — web tools refuse, remote MCP
-  # calls refuse, and a cloud-bound role refuses to run (the turn fails with an actionable message).
-  # Privacy made enforceable + verifiable, not just asserted. Toggle live with `/privacy airgap
-  # on|off`; `/privacy airgap` (bare) proves the current posture. Every blocked attempt shows in
-  # `/privacy egress`.
+  # calls refuse, and a remote Ollama refuses to run (the turn fails with an actionable message).
+  # Privacy made enforceable + verifiable, not just asserted. Toggle live with `/policy airgap
+  # on|off`; `/policy airgap` (bare) proves the current posture. Every blocked attempt shows in
+  # `/policy egress`.
   airgap: false
   # Prompt-injection quarantine (quarantine.py): UNTRUSTED tool output (web, remote
   # MCP, the ingested corpus) is scanned for instruction-shaped content ("ignore your previous
@@ -141,7 +141,7 @@ memory:
   # A by-match fact (agent / entities / negative / older memo) that has not matched a request
   # in this many days is flagged stale in /memory — flagged, never auto-deleted.
   stale_days: 90
-  # Whether /memory review (and /quit, when candidates are pending) asks the utility model to
+  # Whether /memory review (and /quit, when candidates are pending) asks the model to
   # propose facts from the session transcript on top of the mechanical candidates (steer
   # notes, plan vetoes, gate denials, unfinished steps, the compaction summary). Every
   # candidate still faces the review screen — nothing is written without your accept.
@@ -207,52 +207,42 @@ shell:
   env_scrub: [API_KEY, SECRET, TOKEN, PASSWORD, CREDENTIAL, ANTHROPIC, OPENAI, AWS_, GITHUB_]
 
 # ---------------------------------------------------------------------------
-# Hardware-tier presets. Each maps the agent's roles -> concrete Ollama model ids.
-#
-# Roles: tool_caller (the agent's one native tool-calling call per pass — it reasons, calls
-# tools and writes the answer), utility (cheap background tasks: history compaction, the memory
-# review's proposals, /init's draft). `embedder` is separate.
+# Hardware-tier presets. Each binds ONE chat model (`model`: the agent's native tool-calling
+# call per pass, and the background calls — history compaction, the memory review's proposals,
+# /init's draft) and an `embedder`.
 # ---------------------------------------------------------------------------
 tiers:
   # One tier per parameter size, each binding the recommended qwen3.5-3.8 tag at that size
   # (core/model_family.py). The KEY is the size class, so a version bump (a future qwen3.9:27b)
   # is a one-line edit to the binding below and `active_tier` never churns. The ladder is a
   # recommendation, not a gate: any Ollama model with native tool-calling binds here (or via
-  # `/models all <id>`); `/models` prices an off-ladder tag by the size in its name.
+  # `/models use <id>`); `/models` prices an off-ladder tag by the size in its name.
   # (A tier key must not contain a "." — config.get/set/persist parse dotted paths, and a "."
-  # in a tier key silently splits it into two segments and corrupts a role bind.)
+  # in a tier key silently splits it into two segments and corrupts the model bind.)
   #
   # The fresh-install default. Must stay in sync with the model list the install scripts pull
   # (install.sh SATURN_MODELS) — a fresh install sets this tier active, so a
   # mismatch breaks the first run.
   4b:
-    roles:
-      tool_caller: "qwen3.5:4b"
-      utility: "qwen3.5:4b"
+    model: "qwen3.5:4b"
     embedder: qwen3-embedding:8b
 
   9b:
-    roles:
-      tool_caller: "qwen3.5:9b"
-      utility: "qwen3.5:9b"
+    model: "qwen3.5:9b"
     embedder: qwen3-embedding:8b
 
   27b:
-    roles:
-      tool_caller: "qwen3.8:27b"
-      utility: "qwen3.8:27b"
+    model: "qwen3.8:27b"
     embedder: qwen3-embedding:8b
 
   35b:
-    roles:
-      tool_caller: "qwen3.6:35b"
-      utility: "qwen3.6:35b"
+    model: "qwen3.6:35b"
     embedder: qwen3-embedding:8b
 
 # ---------------------------------------------------------------------------
 # Capability descriptors, keyed by model id. The engine REQUIRES native tool-calling +
-# structured output; check_models() warns if a model bound to a
-# role that needs a capability lacks it. Unknown models fall back to the conservative
+# structured output; check_models() warns if the bound model
+# lacks it. Unknown models fall back to the conservative
 # defaults in config.py (tools + structured output assumed true, vision false).
 # (The claude-sonnet / gpt-4o entries left with the cloud-model shelve, 2026-07-03.)
 # ---------------------------------------------------------------------------
@@ -265,13 +255,13 @@ capabilities:
   # The windows step up the ladder with the hardware each tier lands on (2026-09-01). Every tag
   # is a hybrid (3 linear-attention layers per full-attention layer), so the KV cache is cheap:
   # 32 KB/token for 4b-9b, 64 KB/token for 27b, 20 KB/token for the 35b MoE. Priced so each tier
-  # fits its home machine with ~1.5 GB headroom (/scan shows the arithmetic):
+  # fits its home machine with ~1.5 GB headroom (/models shows the arithmetic):
   #   4b        32k   the 8 GB laptop / CPU-only end: 3.4 + 1.0 cache + headroom < 6 GB
   #   9b        64k   a 16 GB Mac (12 GB budget): 6.6 + 2.0 = ~10 GB
   #   27b       64k   a 32 GB Mac or a 24 GB card: 17 + 4.0 = ~22.5 GB (128k would need 26.5)
   #   35b      128k   36 GB+ unified memory: 23 + 2.5 = ~27 GB - the cache is so small that the
   #                   one big window on the ladder costs less than 27b's 64k does
-  # Raise or lower any of these live with /config context; /scan re-prices the fit table.
+  # Override every window with /config runtime.num_ctx; /models re-prices the fit table.
   "qwen3.5:4b":
     supports_tools: true
     context_window: 32768

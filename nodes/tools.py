@@ -161,9 +161,9 @@ def tool_node(state: AgentState):
         # this call sent over the network, or what air-gap blocked.
         sent = _egress_slice(egress_mark)
         # Structural outcome stamp (nodes/agent.py's incidents note and guards read it off the message):
-        # derived HERE, where the call actually ran, so a step's status never has to be sniffed
+        # derived HERE, where the call actually ran, so a call's status never has to be sniffed
         # back out of observation text — a successful read of a file whose content happens to
-        # start with "ERROR:" or "Blocked …" must not fail its step. "blocked" = every boundary
+        # start with "ERROR:" or "Blocked …" must not count as a failure. "blocked" = every boundary
         # event this call produced was an air-gap refusal (the observation is the refusal).
         boundary = [e for e in sent if isinstance(e, dict) and "status" in e]
         if not ok:
@@ -181,10 +181,10 @@ def tool_node(state: AgentState):
             )
         )
         tools_called.append(name)
-        # Retrieval results go to documents_retrieved (synthesize's "Retrieved documents"); every
-        # other tool's result is paired with its call in tool_results ("Tool results") so synthesis
-        # can't divorce the value from what it answers. Keeping retrieval OUT of tool_results avoids
-        # feeding the same passage to the synthesizer twice.
+        # Retrieval results go to documents_retrieved; every other tool's result is paired with
+        # its call in tool_results so the value stays tied to what it answers. core/sources.py
+        # numbers both for the Sources receipt — keeping retrieval OUT of tool_results keeps a
+        # passage from being cited twice.
         if name in RETRIEVAL_TOOLS:
             documents_retrieved.append(clamped)
         elif name == PLAN_TOOL:

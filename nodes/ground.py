@@ -46,11 +46,10 @@ wants the whole thing (/trace context, older checkpoints).
 #                                  to my boss without asking"; hand-written, follows the user
 #                                  everywhere ($SATURN_HOME overrides the directory);
 #   <workspace>/SATURN.md          per-workspace — conventions, goals, what matters here; drafted
-#                                  by /init (the old name, SATURDAY.md, is still read when no
-#                                  SATURN.md exists). Where the two conflict the
+#                                  by /init. Where the two conflict the
 #                                  workspace file wins, and the prompt says so.
 # Each is capped so a runaway file can't eat the context window.
-_INSTRUCTIONS_FILES = ("SATURN.md", "SATURDAY.md")
+_INSTRUCTIONS_FILES = ("SATURN.md",)  # (the old SATURDAY.md stopped loading 2026-09-30)
 _INSTRUCTIONS_CAP = 6000
 
 
@@ -74,8 +73,7 @@ def _read_capped(path: Path) -> str:
 
 
 def _read_instructions() -> "tuple[str, str]":
-    """The workspace instructions as (file name, text) — SATURN.md first, the old SATURDAY.md
-    when only it exists; ("", "") when neither does."""
+    """The workspace instructions as (file name, text); ("", "") when there are none."""
     from core import workspace as _ws
 
     workspace = _ws.root()
@@ -183,9 +181,8 @@ def grounding_node(state: AgentState) -> dict:
             diag.log(f"grounding_node : memory last-used stamp failed: {exc}")
 
     # Files the user attached to THIS message with `@path` (resolved + read by mentions.expand in the
-    # REPL loop, stashed on state). Folded in here so the planner/agent/synthesize — which read this
-    # context, not the raw messages — all see the file contents inline. Empty on a turn with no
-    # resolvable mentions.
+    # REPL loop, stashed on state). Folded in here so the agent sees the file contents inline in the
+    # request's dynamic grounding. Empty on a turn with no resolvable mentions.
     attachments = state.get("attachments", "")
     if attachments:
         sections.append(attachments)

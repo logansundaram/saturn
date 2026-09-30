@@ -379,14 +379,14 @@ def sync(*, force: bool = False, verbose: bool = True, on_file=None) -> dict:
 
     Loads the cached store, then by content hash: embeds new/changed files, drops vectors +
     manifest entries for removed files, and leaves unchanged files alone. An embedder OR
-    chunking-config change (or `force=True`, used by /docs sync --force) triggers a full
+    chunking-config change (or `force=True`, used by /docs rebuild) triggers a full
     re-embed. The manifest is additionally reconciled against disk directly, so a removed file
     loses its manifest entry even on a full rebuild (where the index was just reset and cannot
     name it). Re-dumps the store and rewrites the index only when something actually changed.
     Returns a stats dict: added / updated / removed / unchanged / rebuilt.
 
     `on_file(source, i, n)` (optional) is called before each file is embedded — the progress
-    hook the /docs sync command renders, so a long re-embed isn't silent.
+    hook /docs rebuild renders, so a long re-embed isn't silent.
 
     A startup whose corpus hasn't changed does zero embedding calls — that's the whole point."""
     embedder = get_config().embedder_model

@@ -16,6 +16,17 @@ from langchain.messages import HumanMessage
 from stores import memory_registry as mr
 
 
+def _context(query: str = "") -> "tuple[str, list[int]]":
+    """The grounding memory block as one string (the always half, then the by-match half) and
+    the ids the turn stamps — what the grounding node's two halves add up to."""
+    always, matched, ids = mr.memory_context_split(query)
+    return "\n".join(b for b in (always, matched) if b), ids
+
+
+def _block(query: str = "") -> str:
+    return _context(query)[0]
+
+
 @pytest.fixture
 def mem(isolated_paths):
     return isolated_paths
@@ -42,8 +53,8 @@ def test_layer_spellings_fold_unknown_is_its_own_by_match_section_garble_is_user
     assert layers == {"send the deck Friday": "commitments", "never use sudo": "negative",
                       "garbled": "user", "pip needs --break-system-packages here": "tools"}
     # A typo'd layer must never promote a fact into the always-loaded set: it loads by match.
-    assert "pip needs" not in mr.read_memory_block("what time is it")
-    assert "[tools]" in mr.read_memory_block("install it with pip")
+    assert "pip needs" not in _block("what time is it")
+    assert "[tools]" in _block("install it with pip")
     assert "## tools" in mr._read_raw()  # and it round-trips as its own section
 
 
@@ -53,7 +64,7 @@ def test_superseding_fact_wins(mem):
     assert "replaces #1" in report and "Paris" in report
     texts = [e["text"] for e in mr.entries()]
     assert texts == ["I live in Berlin"]
-    block = mr.read_memory_block("where do I live")
+    block = _block("where do I live")
     assert "Berlin" in block and "Paris" not in block
     # A dangling replaces= is reported, not fatal — the new fact still lands.
     assert "no fact #99" in mr.add_memory("I like tea", replaces=99)
@@ -123,7 +134,7 @@ def test_legacy_flat_file_reads_as_user_layer_and_migrates_on_write(mem):
     ents = mr.entries()
     assert [e["id"] for e in ents] == [1, 3, 4]  # #2 was forgotten; ids are never reused
     assert "## user" in mr._read_raw()
-    assert mr.list_memory()[0] == "(2026-06-01) [preference] terse answers"
+    assert mr._display(mr.entries()[0]) == "(2026-06-01) [preference] terse answers"
 
 
 def test_hand_written_bullet_without_token_and_braces_in_text(mem):
@@ -149,22 +160,22 @@ def test_always_layers_load_whole_and_match_layers_load_by_request(mem):
     mr.add_memory("'the deck' means Q3_investor_update.pptx", layer="entities")
     mr.add_memory("do not suggest migrating to Postgres again", layer="negative")
 
-    quiet = mr.read_memory_block("what time is it")
+    quiet = _block("what time is it")
     assert "terse answers" in quiet and "weekly summary" in quiet and "(due 2026-09-05)" in quiet
     assert "medium.com" not in quiet and "deck" not in quiet and "Postgres" not in quiet
 
-    hit = mr.read_memory_block("open the deck and summarize it")
+    hit = _block("open the deck and summarize it")
     assert "Q3_investor_update" in hit and "[entities]" in hit
     assert "Postgres" not in hit
-    assert "[negative]" in mr.read_memory_block("should we move to postgres?")
+    assert "[negative]" in _block("should we move to postgres?")
 
 
 def test_memo_digest_is_the_recent_tail_older_memos_by_match(mem):
     for i in range(8):
         mr.add_memory(f"note {i}: decided thing-{i}", layer="memo")
-    block = mr.read_memory_block("unrelated request")
+    block = _block("unrelated request")
     assert "note 7" in block and "note 3" in block and "note 2" not in block
-    assert "note 0" in mr.read_memory_block("what was thing-0 about")
+    assert "note 0" in _block("what was thing-0 about")
 
 
 def test_cap_omits_and_names_what_did_not_load(mem):
@@ -172,7 +183,7 @@ def test_cap_omits_and_names_what_did_not_load(mem):
         mr.add_memory(f"user fact number {i} with some padding words to spend the budget")
     sel = mr.select_for_context("", cap=400)
     assert sel["always"] and sel["omitted"] > 0
-    block, _ids = mr.memory_context("")
+    block, _ids = _context("")
     assert "not loaded" not in block  # the default cap (4000) holds thirty short facts
     small = mr.select_for_context("", cap=400)
     assert small["omitted"] == 30 - len(small["always"])
@@ -191,7 +202,7 @@ def test_sensitive_facts_withheld_when_inference_is_remote(mem):
 def test_mark_used_stamps_matched_only_and_stale_flags(mem):
     mr.add_memory("always loaded", layer="user")
     mr.add_memory("pdf files need /docs add before search", layer="agent")
-    block, ids = mr.memory_context("search the pdf report")
+    block, ids = _context("search the pdf report")
     assert "pdf files" in block and ids == [2]
     assert mr.mark_used(ids) == 1
     assert mr.mark_used(ids) == 0  # same day: no rewrite
@@ -283,7 +294,7 @@ def test_memo_digest_is_stamped_used_and_never_reads_stale(mem):
     mr._memory_path().parent.mkdir(parents=True, exist_ok=True)
     mr._memory_path().write_text(f"## memo\n- ({old}) decided on sqlite {{#1 by=user}}\n")
     assert mr.is_stale(mr.entry(1))  # never loaded yet, learned long ago
-    block, ids = mr.memory_context("unrelated request")
+    block, ids = _context("unrelated request")
     assert "decided on sqlite" in block and ids == [1]  # the digest rides -> it is stamped
     mr.mark_used(ids)
     assert not mr.is_stale(mr.entry(1))

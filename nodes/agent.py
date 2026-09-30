@@ -39,7 +39,6 @@ from langgraph.types import interrupt
 
 import diag
 from config import get_config
-from core.context import grounding_parts
 from langchain_core.exceptions import OutputParserException
 from pydantic import ValidationError
 
@@ -48,12 +47,11 @@ from core.llms import (extract_prompt_tokens, extract_tok_per_sec, generate, get
 from core.llms import stream as llm_stream
 from core.messages import agent_sys_msg
 from core.pause import get_pause_controller
-from core.state import STEER_PREFIX, AgentState, is_steer_message, is_turn_start, issuing_message
+from core.state import (STEER_PREFIX, AgentState, grounding_parts, is_steer_message, is_turn_start,
+                        issuing_message)
 from core.tool_args import coerce_args, schema_hint, tool_for_args
 from core.sources import build_sources
 from textutil import SOURCES_HEADER, clip, fmt_args, split_sources_footer
-
-ROLE = "tool_caller"
 
 # The hygiene observations — one producer each; the rail and the tests key on them.
 ALREADY_DECLINED_TEXT = ("Not executed: the user already declined this exact call this turn. "
@@ -189,14 +187,14 @@ def _generate(llm_input: list, *, tools: bool, think: bool = False) -> AIMessage
     stream stays the answer."""
     from tools.registry import tool as registered
 
-    model = get_model(ROLE)
+    model = get_model()
     runnable = model.bind_tools(list(registered)) if tools else model
-    kwargs = invoke_kwargs(ROLE, None, 0.0, task="agent", think=think)
+    kwargs = invoke_kwargs(None, 0.0, task="agent", think=think)
     full = None
-    for chunk in llm_stream(runnable, llm_input, tag=model_tag(ROLE), **kwargs):
+    for chunk in llm_stream(runnable, llm_input, tag=model_tag(), **kwargs):
         full = chunk if full is None else full + chunk
     if full is None:  # a model that streamed nothing — blocking fallback
-        full = generate(runnable, llm_input, tag=model_tag(ROLE), **kwargs)
+        full = generate(runnable, llm_input, tag=model_tag(), **kwargs)
     content = full.content if isinstance(full.content, str) else str(full.content)
     calls = []
     for tc in getattr(full, "tool_calls", None) or []:

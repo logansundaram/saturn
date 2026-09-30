@@ -80,7 +80,7 @@ def run_repl() -> None:
     cfg = get_config()
     n_docs = sum(1 for _ in iter_documents())  # same definition RAG ingests by
     ui.banner(
-        f"{cfg.active_tier}:{model_id('tool_caller')}", len(_tools), n_docs, DB_PATH
+        f"{cfg.active_tier}:{model_id()}", len(_tools), n_docs, DB_PATH
     )
     # Launched from "/" or an unreadable folder, core/workspace fell back to home — say so once.
     from core import workspace as _ws
@@ -92,30 +92,30 @@ def run_repl() -> None:
         ui.warn(f"working in {_ws.display(_ws.root())}, not the folder Saturn was started in — "
                 "cd to a specific folder and restart to work there")
     # The session's trust posture, deviation-only (receipt.posture_spans): silent on a
-    # default-safe install; speaks (with the /privacy · /policy pointers) when the gate is
+    # default-safe install; speaks (with the /policy pointer) when the gate is
     # loosened, the air-gap holds, inference leaves the machine, or a guard is weakened.
     ui.posture_line()
 
-    # First-run sentinel, checked early: when it is absent, /config setup auto-runs just below
-    # (once the command context exists) and reports every gap once, formatted — so the standalone
-    # warning pass here is SKIPPED on first launch (the same problems would otherwise print twice
-    # on the install's very first screen). The sentinel lives in the database directory so
-    # deleting the database also resets first-run (a full reinstall should re-check).
+    # First-run sentinel: when it is absent, /models runs just below (once the command context
+    # exists) and the health check waits until after it — the pick may change the tier. The
+    # sentinel lives in the database directory so deleting the database also resets first-run
+    # (a full reinstall should re-check).
     _setup_sentinel = get_config().path("database") / ".setup_done"
     _first_run = not _setup_sentinel.exists()
 
-    # Health-check the active tier up front: a down daemon / un-pulled model is
-    # surfaced now with an actionable fix, rather than as a generic turn failure on the first query.
-    # Non-fatal — the REPL still starts (commands work; an affected turn fails cleanly).
-    if not _first_run:
+    def _health_check() -> None:
+        """Surface a down daemon / un-pulled model now, with the fix, rather than as a generic
+        turn failure on the first query. Non-fatal — the REPL still starts. A healthy tier gets
+        its weights loaded on a background thread, so the first query does not pay the model
+        load inside its first agent call (app.startup.warm_model)."""
         problems = check_models()
         for problem in problems:
             ui.warn(problem)
-        # A healthy tier gets its weights loaded NOW, on a background thread, so the first
-        # query does not pay the model load inside its first agent call (app.startup.warm_model).
-        # First launch skips it: /models below may change the tier before the first query.
         if not problems:
             start_warm_up()
+
+    if not _first_run:
+        _health_check()
     # MCP servers connected (or failed) while registry imported — surface any problems with the
     # rest of the startup health report. /mcp shows the full status any time.
     from tools import mcp_client
@@ -133,33 +133,24 @@ def run_repl() -> None:
         ui.warn(_policy_problem)
 
     # Carries the live session into slash-command handlers. `make_initial_state` lets
-    # /reset rebuild state without commands.py importing back into agent.py.
+    # /clear rebuild state without commands.py importing back into agent.py.
     cmd_ctx = commands.CommandContext(
         state=state,
         make_initial_state=_initial_state,
         db_path=DB_PATH,
     )
 
-    # First-run setup check: if the sentinel hasn't been written yet (checked above, where it
-    # also suppresses the duplicate warning pass), auto-run /config setup so a fresh install
-    # surfaces any gaps (Ollama down, models not pulled, keys missing) before the user's first
-    # query, rather than as a confusing turn failure. Non-fatal: a dispatch error mustn't
-    # prevent the REPL from starting.
+    # First launch: /models prices the ladder against this machine and asks which tier and
+    # embedder to run (Enter = the recommendation; missing models are pulled on consent), then
+    # the health check examines the tier the session will actually use. Non-fatal: a dispatch
+    # error mustn't prevent the REPL from starting.
     if _first_run:
-        # /models FIRST: the page prices the ladder against this machine and asks which tier and
-        # embedder to run (Enter = the recommendation; missing models are pulled on consent), so
-        # the setup check below examines the tier the session will actually use. Same sentinel,
-        # same re-run story (/models any time).
-        ui.note("First launch — choose your models, then /config setup runs "
-                "(won't repeat; re-run any time with /models or /config setup).")
+        ui.note("First launch — choose your models (won't repeat; re-run any time with /models).")
         try:
             commands.dispatch("/models", cmd_ctx)
         except Exception as exc:
             ui.warn(f"/models failed: {exc}")
-        try:
-            commands.dispatch("/config setup", cmd_ctx)
-        except Exception as exc:
-            ui.warn(f"/config setup failed: {exc}")
+        _health_check()
         try:
             _setup_sentinel.parent.mkdir(parents=True, exist_ok=True)
             _setup_sentinel.touch()
@@ -190,11 +181,6 @@ def run_repl() -> None:
         on_change=ui.set_input_preview, on_steer=ui.steer_note, on_pause=ui.pause_note,
     )
     pause_controller = get_pause_controller()
-
-    # Dev-only graph render. Import lazily here when enabling: utilities/ is deliberately not
-    # part of the installed wheel (pyproject.toml), so a module-level import would crash every
-    # pipx/uv-installed launch.
-    # from utilities.print_graph import print_graph; print_graph(graph=graph)
 
     def _next_input() -> str:
         """The next line to process: anything the user typed-ahead while the last turn ran is
@@ -267,7 +253,7 @@ def run_repl() -> None:
             commands.dispatch(user_input, cmd_ctx)
             if cmd_ctx.should_quit:
                 break
-            state = cmd_ctx.state  # a command (e.g. /reset) may have swapped state out
+            state = cmd_ctx.state  # a command (e.g. /clear) may have swapped state out
             continue
 
         if not user_input.strip():

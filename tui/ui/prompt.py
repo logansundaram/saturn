@@ -127,8 +127,8 @@ def posture_line() -> None:
     """One line under the banner stating the live trust posture (trust.receipt.posture_spans) —
     deviation-only (2026-07-06 declutter): a default-safe posture (gate read_only · local
     inference · quarantine gate) prints NOTHING; the line appears only when something is
-    loosened or leaves the machine, with the `/privacy · /policy` pointers riding along so the
-    drill-downs are named exactly when there is something to drill into. Also prints nothing if
+    loosened or leaves the machine, with the `/policy` pointer riding along so the drill-down
+    is named exactly when there is something to drill into. Also prints nothing if
     the posture can't be read: a guessed posture is worse than none."""
     try:
         from trust import receipt
@@ -145,12 +145,10 @@ def posture_line() -> None:
                 line.append(" · ", style=_DIM)
             line.append(text, style=_POSTURE_LINE_STYLE.get(kind, _DIM))
         line.append("   ", style=_DIM)
-        line.append("/privacy", style=_ACCENT)
-        line.append(" · ", style=_DIM)
         line.append("/policy", style=_ACCENT)
         _console.print(line)
     else:
-        print("  " + " · ".join(t for t, _ in spans) + "   /privacy · /policy")
+        print("  " + " · ".join(t for t, _ in spans) + "   /policy")
 
 
 # ── input prompt ───────────────────────────────────────────────────────────────

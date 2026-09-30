@@ -3,21 +3,19 @@ Runtime-inventory commands — what the agent is running on and with, in one mod
 "observability" readouts; consolidated from one-file-per-command 2026-06-11):
 
   /tools    the registered tools + risk tiers
-  /models   the model page: hardware scan, the qwen ladders priced against it, pick a tier /
-            embedder (absorbed /scan 2026-09-01; `scan` stays as an alias)
+  /models   the model page: the hardware, the qwen ladders priced against it, pick a tier /
+            embedder; also the first-launch setup and its consented `ollama pull`s
   /mcp      MCP server status + remote tools; reload
-
-(/context folded into /config as `/config context` 2026-07-07 — the runtime readout + num_ctx
-setter belong under the one runtime-settings front door.)
 """
 
 from __future__ import annotations
 
 from commands._framework import command, _print
 from commands._utils import (
-    _ROLES, _resync_rag_after_model_change, is_list_verb, pull_one as _pull_one, run_pulls,
+    _resync_rag_after_model_change, is_list_verb, pull_one as _pull_one, run_pulls,
     split_persist_flags,
 )
+from config import tier_chat_model
 from core import model_family
 from tools.registry import tool as TOOLS, risk_of
 
@@ -67,7 +65,7 @@ def _persist_bindings(cfg, keys: list[str]) -> None:
 
 
 def _bind(cfg, target: str, model: str, *, session: bool = False) -> None:
-    """Bind a role / all roles / the embedder to a local Ollama model id (a bare scalar in
+    """Bind the chat model ("model") or the embedder to a local Ollama model id (a bare scalar in
     config.yaml). The change PERSISTS to config.yaml by default (a model switch should stick);
     session=True applies it live only."""
     from core.llms import reset_models
@@ -79,17 +77,10 @@ def _bind(cfg, target: str, model: str, *, session: bool = False) -> None:
         _switch_embedder(cfg, model, session=session)
         return
 
-    if target == "all":
-        for role in _ROLES:
-            cfg.set(f"tiers.{cfg.active_tier}.roles.{role}", model)
-        reset_models()
-        _print(f"  all roles -> {model} on tier '{cfg.active_tier}'{tag}.")
-        keys = [f"tiers.{cfg.active_tier}.roles.{role}" for role in _ROLES]
-    else:
-        cfg.set(f"tiers.{cfg.active_tier}.roles.{target}", model)
-        reset_models()
-        _print(f"  {target} -> {model} on tier '{cfg.active_tier}'{tag}.")
-        keys = [f"tiers.{cfg.active_tier}.roles.{target}"]
+    keys = [f"tiers.{cfg.active_tier}.model"]
+    cfg.set(keys[0], model)
+    reset_models()
+    _print(f"  model -> {model} on tier '{cfg.active_tier}'{tag}.")
     if session:
         _print("  omit --session to save to config.yaml.")
     else:
@@ -98,14 +89,14 @@ def _bind(cfg, target: str, model: str, *, session: bool = False) -> None:
 
 
 # ── the /models page ─────────────────────────────────────────────────────────────────────────
-# One page (2026-09-01, the /scan fold): the machine, its memory budget, and the two ladders —
+# One page: the machine, its memory budget, and the two ladders —
 # the six chat tiers and the three qwen3-embedding sizes — each priced against the budget at the
 # window this config gives it (core/hardware.py), marked pulled / recommended / too big, and
 # numbered so one keystroke picks a tier or an embedder. The old verbatim `ollama list` view is
 # gone: the ladder is one recommended tag per size, priced against this machine — a model off
-# the ladder still binds (`/models all <id>`) and is priced by the size in its tag.
+# the ladder still binds (`/models use <id>`) and is priced by the size in its tag.
 # Bare /models prompts; `list` renders only; the probe itself is cached at startup (hardware
-# doesn't change mid-session) and `rescan` re-reads it.
+# doesn't change mid-session).
 
 
 def _probe():
@@ -113,12 +104,6 @@ def _probe():
     from core.hardware import profile
 
     return profile()
-
-
-def _rescan():
-    from core.hardware import profile
-
-    return profile(rescan=True)
 
 
 def _k(n: int) -> str:
@@ -137,8 +122,8 @@ def _active_embedder(cfg) -> "str | None":
 
 
 def _tier_binding(cfg, key: str) -> "tuple[str, str]":
-    """(declared, running) for a size-class tier: what config.yaml literally binds to its chat
-    roles (the tool_caller's entry; "" when the tier is not declared) and what selecting it would
+    """(declared, running) for a size-class tier: what config.yaml literally binds as its chat
+    model ("" when the tier is not declared) and what selecting it would
     RUN — the declaration itself, or the ladder tag for a class this config never declared."""
     declared = _tier_model(cfg, key)
     if not declared:
@@ -147,20 +132,10 @@ def _tier_binding(cfg, key: str) -> "tuple[str, str]":
 
 
 def _tier_running_models(cfg, key: str) -> list[str]:
-    """The chat models selecting a tier would RUN (roles only, deduplicated; the embedder is a
-    separate, machine-wide pick): each role's declared id. A tier declared without roles runs
-    the ladder tag. Dict access, never the dotted path — a tier key may contain a dot."""
-    tier = (cfg.get("tiers", {}) or {}).get(key) or {}
-    out: list[str] = []
-    for entry in (tier.get("roles", {}) or {}).values():
-        if isinstance(entry, dict):
-            entry = entry.get("model", "")
-        model = str(entry or "")
-        if not model:
-            continue
-        if model not in out:
-            out.append(model)
-    return out or [model_family.tag_for(key)]
+    """The chat model selecting a tier would RUN, as a one-item list (the embedder is a separate,
+    machine-wide pick): its declared id, or the ladder tag for a tier declared without one. Dict
+    access, never the dotted path — a tier key may contain a dot."""
+    return [_tier_model(cfg, key) or model_family.tag_for(key)]
 
 
 def _class_windows(cfg) -> dict:
@@ -178,7 +153,7 @@ def _cost_classes(cfg) -> dict:
 
 
 def _switch_tier(cfg, key: str, *, session: bool) -> None:
-    """The same switch `/models tier` performs: set live, rebuild models on next use, persist
+    """The tier switch a page pick performs: set live, rebuild models on next use, persist
     unless session-only, re-embed if the embedder moved."""
     from core.llms import reset_models
 
@@ -235,8 +210,15 @@ def _pulled_cell(models: list, up: bool, have: set) -> tuple:
 
 def _render_page(cfg, prof, rec, *, up: bool, have: set) -> None:
     """The readout, in the app's one listing vocabulary (section / table / note — the shapes
-    /privacy and /policy render with; they own the no-rich fallback)."""
-    from core.hardware import CLASS_COSTS, EMBEDDER_WEIGHTS_GB, HEADROOM_GB
+    /policy renders with; they own the no-rich fallback)."""
+    from core.hardware import (
+        BASELINE_FAMILY,
+        CLASS_COSTS,
+        DECODE_FLOOR_TOK_S,
+        DECODE_SLOW_TOK_S,
+        EMBEDDER_WEIGHTS_GB,
+        HEADROOM_GB,
+    )
     from tui import ui
 
     active = cfg.active_tier
@@ -244,30 +226,36 @@ def _render_page(cfg, prof, rec, *, up: bool, have: set) -> None:
     emb_model = _active_embedder(cfg)
     active_emb = model_family.embedder_class_of(emb_model)
 
-    facts = [prof.chip or "unknown CPU"]
+    facts = [prof.chip or "unknown chip"]
     if prof.cores:
         facts.append(f"{prof.cores} cores")
-    facts.append(f"{prof.ram_gb:g} GB " + ("unified memory" if prof.backend == "apple" else "RAM"))
-    if prof.vram_gb:
-        facts.append(f"{prof.vram_gb:g} GB VRAM ({prof.gpu})")
+    if prof.gpu_cores:
+        facts.append(f"{prof.gpu_cores} GPU cores")
+    facts.append(f"{prof.ram_gb:g} GB unified memory")
+    facts.append(f"{prof.bandwidth_gbps:g} GB/s")
     ui.section("models", " · ".join(facts))
     ui.table([("budget", f"{rec.budget_gb:g} GB for models", (rec.reason, "dim"))], styles=["dim"])
     _print("")
 
     dim = lambda *cells: tuple((c, "dim") for c in cells)  # noqa: E731
-    rows = [dim("#", "tier", "model", "weights", "window", "need", "", "", "")]
+    rows = [dim("#", "tier", "model", "weights", "window", "need", "speed", "", "")]
     n = 0
     for key in model_family.classes():
         n += 1
         declared, running = _tier_binding(cfg, key)
+        speed = rec.decode.get(key, 0.0)
         if key not in defined:
             status = ("not in config.yaml", "yellow")
         elif key == rec.size_class:
-            status = ("▸ recommended", "accent")
-        elif rec.fits.get(key):
-            status = ("fits", "dim")
-        else:
+            status = ("▸ recommended" + (" (slow)" if rec.slow else ""), "accent")
+        elif not rec.fits.get(key):
             status = ("too big", "yellow")
+        elif rec.usable.get(key):
+            status = ("fits", "dim")
+        elif speed >= DECODE_SLOW_TOK_S:
+            status = ("fits · slow", "yellow")
+        else:
+            status = ("fits · too slow", "yellow")
         rows.append((
             (str(n), "dim"),
             ("* " if key == active else "  ") + key,
@@ -275,11 +263,12 @@ def _render_page(cfg, prof, rec, *, up: bool, have: set) -> None:
             (f"{CLASS_COSTS[rec.cost_classes.get(key, key)].weights_gb:>5.1f} GB", "dim"),
             (f"{_k(rec.windows[key]):>4} ctx", "dim"),
             f"{rec.needs[key]:>5.1f} GB",
+            (f"~{speed:.0f} tok/s".rjust(10), "dim"),
             _pulled_cell([running], up, have),
             status,
         ))
     rows.append(("",))
-    rows.append(dim("", "embedder", "model", "weights", "", "need", "", ""))
+    rows.append(dim("", "embedder", "model", "weights", "", "need", "", "", ""))
     for key in model_family.embedder_classes():
         n += 1
         tag = model_family.embedder_tag_for(key)
@@ -296,6 +285,7 @@ def _render_page(cfg, prof, rec, *, up: bool, have: set) -> None:
             (f"{EMBEDDER_WEIGHTS_GB[key]:>5.1f} GB", "dim"),
             "",
             f"{rec.embedder_needs[key]:>5.1f} GB",
+            "",
             _pulled_cell([tag], up, have),
             status,
         ))
@@ -303,14 +293,21 @@ def _render_page(cfg, prof, rec, *, up: bool, have: set) -> None:
 
     override = cfg.num_ctx_override
     src = (f"runtime.num_ctx = {override} overrides every window" if override
-           else "windows from config.yaml context_window (/config context to change)")
-    ui.note(f"* active · ✓ pulled · need = weights + KV cache at that window + {HEADROOM_GB:g} GB headroom")
+           else "windows from config.yaml context_window (/config runtime.num_ctx to change)")
+    ui.note(f"* active · ✓ pulled · need = weights + KV cache at that window + {HEADROOM_GB:g} GB headroom"
+            f" · speed = est. decode at {prof.bandwidth_gbps:g} GB/s")
     ui.note(src)
+    if not rec.cramped:
+        decode = rec.decode[rec.size_class]
+        ui.note(f"{rec.size_class} feels like: ~{decode:.0f} tok/s (a paragraph in ~{150 / decode:.0f} s)"
+                f" · first prompt ~{rec.first_prompt_s():.0f} s cold, then cached"
+                + (f" · under the {DECODE_FLOOR_TOK_S:g} tok/s floor: every tier that fits is slow here"
+                   if rec.slow else ""))
+    if prof.baseline:
+        ui.warn(f"chip not recognised ({prof.chip or 'no brand string'}) — speed is priced at the "
+                f"{BASELINE_FAMILY} baseline; the fit column is still this machine's memory")
     if not up:
         ui.warn("ollama daemon not reachable — start it with `ollama serve` (pulled state unknown)")
-    if prof.gpu_error:
-        ui.warn(f"GPU probe failed ({prof.gpu_error}) — budgeted as if there were no accelerator; "
-                "`/models rescan` once the driver is up")
     if defined and emb_model is None:
         ui.warn(f"tier '{active}' has no embedder in config.yaml — pick an embedder row to set "
                 "one on every tier")
@@ -435,13 +432,13 @@ def _apply_pick(cfg, kind: str, key: str, rec, *, have: set, session: bool) -> N
         _switch_embedder(cfg, models[0], session=session)
 
 
-def _models_page(cfg, *, prompt: bool, session: bool = False, rescan: bool = False) -> None:
+def _models_page(cfg, *, prompt: bool, session: bool = False) -> None:
     """Render the page; with `prompt`, ask and apply."""
     from core.hardware import recommend
     from core.llms import list_local_models, ollama_reachable
     from tui import ui
 
-    prof = _rescan() if rescan else _probe()
+    prof = _probe()
     rec = recommend(prof, _class_windows(cfg), _cost_classes(cfg))
     # One daemon round trip: the model list answers reachability too; the probe only has to
     # tell "daemon down" from "nothing pulled" when the list came back empty (check_models'
@@ -454,13 +451,21 @@ def _models_page(cfg, *, prompt: bool, session: bool = False, rescan: bool = Fal
         # With no daemon there is nothing a pick could be applied to (the models can't even be
         # listed).
         return
-    from commands.config import _stdin_is_tty
+    from commands._utils import _stdin_is_tty
 
     if not _stdin_is_tty():
         return
     picks = _pick(rec, cfg.active_tier)
     if picks is None:
         ui.note(f"staying on '{cfg.active_tier}'")
+        # Keeping a tier whose model isn't here still offers the pull (the embedder waits for
+        # the first /docs add).
+        from core.llms import _model_present
+
+        missing = [m for m in _tier_running_models(cfg, cfg.active_tier)
+                   if not _model_present(m, have)]
+        if missing:
+            _offer_pull(missing, f"tier {cfg.active_tier}")
         return
     active_emb = model_family.embedder_class_of(_active_embedder(cfg))
     if picks == [("tier", rec.size_class)] and _confirm_embedder(rec, active_emb):
@@ -476,30 +481,32 @@ def _models_page(cfg, *, prompt: bool, session: bool = False, rescan: bool = Fal
 def _tier_model(cfg, key: str) -> str:
     """What a tier actually binds, read straight off the tiers mapping (dict access, never the
     dotted cfg.get path — a tier name may contain a dot)."""
-    tier = (cfg.get("tiers", {}) or {}).get(key) or {}
-    roles = tier.get("roles", {}) or {}
-    entry = roles.get("tool_caller") or next(iter(roles.values()), None)
-    if isinstance(entry, dict):
-        entry = entry.get("model", "")
-    return str(entry or "")
+    return tier_chat_model((cfg.get("tiers", {}) or {}).get(key) or {})
+
+
+_RETIRED_TARGETS = ("all", "tool_caller", "utility")
 
 
 @command(
     "models",
     "The model page: your hardware, the qwen ladder priced against it, pick a tier / embedder.",
-    aliases=("model", "scan"),
-    usage="/models [list|rescan] [--session] | /models tier <name> | /models <role|all|embedder> <id> [--session]",
+    aliases=("model",),
+    usage="/models [list] [--session] | /models use|embedder <id> [--session]",
     details="""
-Shows the machine (chip, cores, memory, VRAM), the memory budget the model runner can address,
-and the two ladders priced against it: the six chat tiers (one recommended tag per size, the most
-advanced of the qwen3.5-3.8 line) and the three qwen3-embedding sizes. Each row carries its weights,
-the context window this config gives it, the memory it needs at that window, whether it is
-pulled (✓), and whether it fits — with the recommendation marked ▸.
+Shows the machine (Apple chip, cores, GPU cores, unified memory, memory bandwidth), the memory
+budget the model runner can address, and the two ladders priced against it: the four chat tiers
+(one recommended tag per size, the most advanced of the qwen3.5-3.8 line) and the three
+qwen3-embedding sizes. Each row carries its weights, the context window this config gives it, the
+memory it needs at that window, its estimated decode speed, whether it is pulled (✓), and whether
+it fits — with the recommendation marked ▸: the largest tier that fits AND runs at 10 tok/s or
+better. A tier that fits but would crawl reads `fits · slow` and is never the default.
 
-  budget     Apple silicon: ~75% of unified memory · NVIDIA: the card's VRAM ·
-             CPU only: 50% of RAM, capped at the 9b class
+  budget     ~75% of unified memory (what macOS lets the GPU address)
   need       weights + KV cache at the window + 1.5 GB headroom (only 1 in 4 layers of these
              hybrid models keeps a cache, which is why the numbers are small)
+  speed      memory bandwidth over the weights streamed per token — the M1–M5 families'
+             published numbers, the binned Max chips told apart by GPU core count; a chip the
+             table does not know is priced at the M1 baseline and the page says so
   embedder   the largest that fits BESIDE the recommended tier, so lookups never evict it
 
 The rows are numbered. Enter takes the recommended tier; a number picks that one row (a "too
@@ -511,14 +518,12 @@ on every tier (it is a machine choice).
 
   /models                    the page, then the prompt
   /models list               the page only (`ls` / --check work too)
-  /models rescan             probe the hardware again (it is read once at startup and cached)
-  /models tier <name>        switch the tier directly
-  /models all <id>           point every role at one Ollama model (any tag with native tool-calling)
-  /models <role> <id>        re-point one role — tool_caller (the agent) or utility
+  /models use <id>           run any Ollama model with native tool-calling on this tier
   /models embedder <id>      switch the embedding model by name (re-embeds the corpus)
 
 Every switch PERSISTS to config.yaml by default; --session applies it live only. Runs on the
-very first launch (right before /config setup). Models are Ollama ids.
+very first launch. Keeping a tier whose model isn't pulled offers the pull too. Models are
+Ollama ids.
 """,
 )
 def _models(ctx, args):
@@ -537,23 +542,10 @@ def _models(ctx, args):
         _models_page(cfg, prompt=False)
         return
 
-    if sub == "rescan":
-        _models_page(cfg, prompt=True, session=session, rescan=True)
-        return
-
-    if sub == "tier":
-        if len(args) < 2:
-            _models_page(cfg, prompt=False)
-            return
-        tier = args[1]
-        # Dict membership, not the dotted cfg.get("tiers.<tier>") path lookup — a tier key
-        # containing a literal dot would otherwise be misread as two path segments and always
-        # report unknown (hit this with the size-class key "0.8b", renamed to "800m" for the
-        # same reason — see core/model_family.py).
-        if tier not in cfg.get("tiers", {}):
-            _print(f"  unknown tier: {tier} (defined: {list(cfg.get('tiers', {}))})")
-            return
-        _switch_tier(cfg, tier, session=session)
+    if sub in ("rescan", "tier"):
+        # Cut 2026-09-30: the hardware doesn't change mid-session, and the page's numbered
+        # pick switches tiers.
+        _print(f"  /models {sub} is gone — /models shows the page; pick a tier by its number.")
         return
 
     if sub == "embedder":
@@ -563,24 +555,21 @@ def _models(ctx, args):
         _bind(cfg, "embedder", args[1], session=session)
         return
 
-    if sub == "all":
-        if len(args) < 2:
-            _print("  usage: /models all <model_id> [--session]")
-            return
-        _bind(cfg, "all", args[1], session=session)
+    if sub in _RETIRED_TARGETS:
+        # The per-role spellings left with the utility role (2026-09-30): one model per tier.
+        _print(f"  /models {sub} is now /models use <model_id> — a tier runs one model.")
         return
 
-    role = sub
-    if role not in _ROLES:
-        _print(f"  unknown target: {role} (roles: {', '.join(_ROLES)}; or 'all'/'embedder'/'tier'/'list'/'rescan')")
+    if sub != "use":
+        _print(f"  unknown target: {sub} (list/use/embedder)")
         return
     if len(args) < 2:
-        _print(f"  usage: /models {role} <model_id> [--session]")
+        _print("  usage: /models use <model_id> [--session]")
         return
     if len(args) > 2:
-        _print(f"  too many arguments — usage: /models {role} <model_id> [--session]")
+        _print("  too many arguments — usage: /models use <model_id> [--session]")
         return
-    _bind(cfg, role, args[1], session=session)
+    _bind(cfg, "model", args[1], session=session)
 
 
 # ── /mcp ─────────────────────────────────────────────────────────────────────────────────────
@@ -606,7 +595,7 @@ are shown here as advisory hints only — they never drive the gate.
                  /policy risk --save overrides re-apply; session-only overrides reset to the
                  declared tier, like every session-only setting.
 
-Adding a server (config.yaml; secrets via ${VAR} from .env — /config key):
+Adding a server (config.yaml; secrets via ${VAR}, plain env vars from .env or your shell):
 
   mcp:
     servers:

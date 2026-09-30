@@ -35,11 +35,7 @@ def _resolve_env_path() -> Path:
 
 
 def _wheel_data_home() -> Path:
-    for var in ("SATURDAY_HOME", "SATURN_HOME"):
-        if os.environ.get(var):
-            return Path(os.environ[var]).expanduser()
-    legacy = Path.home() / ".saturday"
-    return legacy if (legacy / "config.yaml").is_file() else Path.home() / ".saturn"
+    return Path(os.environ.get("SATURN_HOME") or Path.home() / ".saturn").expanduser()
 
 
 _ENV_PATH = _resolve_env_path()

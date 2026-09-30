@@ -299,12 +299,6 @@ def test_grounding_names_the_working_folder_and_reads_its_saturn_md(launched, tm
     assert "be terse" in text
 
 
-def test_clean_collapses_the_launch_folder(launched):
-    from core.context import clean
-
-    assert clean(f"wrote {launched}/notes/a.txt in {launched}") == "wrote notes/a.txt in ."
-
-
 def test_agent_prompt_points_at_the_working_folder():
     from core.messages import agent_sys_msg
 

@@ -88,10 +88,6 @@ class PauseController:
         with self._lock:
             self._request = None
 
-    def steers_pending(self) -> bool:
-        with self._lock:
-            return bool(self._steers)
-
     def take_steers(self) -> list:
         """Drain the queued steering corrections, oldest first."""
         with self._lock:

@@ -1,11 +1,11 @@
 """
 Lightweight diagnostic log.
 
-Node/tool timing lines and soft, non-fatal warnings (a planner structured-output miss, judge
-failures) are diagnostics — useful when debugging, noise during normal use.
+Node/tool timing lines and soft, non-fatal warnings (a malformed model output retried, an
+empty thinking pass rerun) are diagnostics — useful when debugging, noise during normal use.
 They used to `print()` straight to stdout, where they collided with the rich.Live status bar and
 the styled trace rail in the TUI. They now go here instead: appended to a file under `logging/`
-(gitignored) and silent on the console by default. Set the env var `SATURN_DEBUG=1` (or the old `SATURDAY_DEBUG=1`) to also echo
+(gitignored) and silent on the console by default. Set the env var `SATURN_DEBUG=1` to also echo
 them to stderr during development.
 
 No project imports, so this is safe to import from any node/tool/store without circular-import risk.
@@ -31,11 +31,7 @@ def _resolve_log_dir() -> Path:
 
 
 def _wheel_data_home() -> Path:
-    for var in ("SATURDAY_HOME", "SATURN_HOME"):
-        if os.environ.get(var):
-            return Path(os.environ[var]).expanduser()
-    legacy = Path.home() / ".saturday"
-    return legacy if (legacy / "config.yaml").is_file() else Path.home() / ".saturn"
+    return Path(os.environ.get("SATURN_HOME") or Path.home() / ".saturn").expanduser()
 
 
 _LOG_DIR = _resolve_log_dir()
@@ -52,7 +48,7 @@ def _get() -> logging.Logger:
     """Lazily build the singleton file logger (and an optional stderr echo under SATURN_DEBUG)."""
     global _logger
     if _logger is None:
-        lg = logging.getLogger("saturday.diag")
+        lg = logging.getLogger("saturn.diag")
         lg.setLevel(logging.DEBUG)
         lg.propagate = False  # don't bubble into the root logger / stdout
         if not lg.handlers:
@@ -64,7 +60,7 @@ def _get() -> logging.Logger:
             except Exception:
                 # A log sink must never break the app; degrade to no file handler.
                 pass
-            if os.getenv("SATURN_DEBUG") or os.getenv("SATURDAY_DEBUG"):
+            if os.getenv("SATURN_DEBUG"):
                 sh = logging.StreamHandler()
                 sh.setFormatter(logging.Formatter("%(message)s"))
                 lg.addHandler(sh)

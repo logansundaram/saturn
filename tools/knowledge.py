@@ -4,8 +4,8 @@ Local-knowledge tools — what the agent already knows, on this machine.
   search_knowledge_base — semantic search over the local RAG store (the ingested corpus).
   remember / recall     — durable facts via `memory_registry` (the layered markdown store).
 
-(`recall_runs`, a model-facing search over the trace DB, was cut 2026-09-29: "what did I
-decide" is memory's job. `/trace search` still searches past runs for the user.)
+(`recall_runs`, a model-facing search over the trace DB, was cut 2026-09-29, and `/trace
+search` 2026-09-30: "what did I decide" is memory's job.)
 
 Kept separate from the live-web tools (`web.py`): these search the user's OWN data, not the
 internet. (remember/recall lived in tools/memory.py until the 2026-06-11 leaf consolidation.)
@@ -33,8 +33,8 @@ def search_knowledge_base(query: str):
     docs = get_vector_store().similarity_search(query, k=retrieval_k())
     if not docs:
         return "No relevant documents found in the knowledge base."
-    # textutil.doc_source_label — the one builder of the `[source: …]` marker synthesize's
-    # Sources labels parse back (parse_doc_sources); construction and parsing can't drift.
+    # textutil.doc_source_label — the one builder of the `[source: …]` marker the answer's
+    # Sources labels (core/sources.py) parse back (parse_doc_sources); construction and parsing can't drift.
     return "\n\n".join(
         doc_source_label(d.metadata.get("source", "unknown"), d.metadata.get("page"))
         + f"\n{d.page_content}"

@@ -3,18 +3,17 @@ Learn at session end, gated — the review pass that turns the memory notepad in
 grows (PLAN.md, "memory as the learning layer", mechanism 1).
 
 Three adjacent stores used to hold learnable signal and discard it: the compaction summary, the
-steer notes / plan vetoes / gate denials / unfinished steps inside a turn's state, and the trace.
+steer notes / gate denials / failed tool calls inside a turn's state, and the trace.
 This module collects that signal as CANDIDATES — typed, provenance-stamped proposals for the
 memory file — and puts every one in front of the user before anything is written:
 
   collect_turn(state, run_id)     after each interactive turn: mechanical candidates from the
-                                  turn's steer notes (agent), plan vetoes + gate denials
-                                  (negative), unfinished steps (commitments), failed steps
-                                  (agent). Appended to the PENDING file, never to memory.
+                                  turn's steer notes (agent), gate denials (negative),
+                                  failed tool calls (agent). Appended to the PENDING file, never to memory.
   note_compaction(summary, run)   when auto-compaction fires: the summary's bullets as memo
                                   candidates (the summary itself is persisted beside the
                                   memory file as last_summary.md — the record, not a fact).
-  llm_candidates(messages)        optional: the utility model proposes facts from the session
+  llm_candidates(messages)        optional: the model proposes facts from the session
                                   transcript (memory.review_llm). Same pending queue, same gate.
   run_review(candidates, ask, …)  the screen: each candidate rendered as a `+` diff line
                                   against the memory file, accepted one at a time (y / n / e to
@@ -254,7 +253,7 @@ def llm_enabled() -> bool:
 
 
 def llm_candidates(messages: list, run_id=None) -> list[dict]:
-    """Ask the utility model for durable facts worth keeping from this session's transcript.
+    """Ask the model for durable facts worth keeping from this session's transcript.
     Proposals only — every one still faces the review screen. ONE constrained call (a flat JSON
     schema for the decoder plus the shape hint as a trailing HumanMessage — never a
     SystemMessage, which Ollama rejects mid-conversation for qwen3.8 models); the outermost
@@ -282,8 +281,8 @@ def llm_candidates(messages: list, run_id=None) -> list[dict]:
             return []
         messages = [HumanMessage(content=MEMORY_REVIEW_PROMPT + transcript),
                     HumanMessage(content=MEMORY_REVIEW_SHAPE)]
-        resp = generate(get_model("utility"), messages, tag=model_tag("utility"),
-                        **invoke_kwargs("utility", MEMORY_REVIEW_FORMAT, 0.0))
+        resp = generate(get_model(), messages, tag=model_tag(),
+                        **invoke_kwargs(MEMORY_REVIEW_FORMAT, 0.0))
         content = str(getattr(resp, "content", "") or "")
         start, end = content.find("{"), content.rfind("}")
         out = _Proposal.model_validate_json(content[start:end + 1]) if end > start >= 0 else _Proposal()

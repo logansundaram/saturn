@@ -1,10 +1,9 @@
 """
-Runtime configuration for Saturday.ai (Phase 3).
+Runtime configuration for Saturn.
 
 Loads `config.yaml` once and exposes it through a small typed accessor so the rest of the
-codebase never hard-codes a model id or a filesystem path again. The agent references model
-*roles* (tool_caller, utility) and the factory in `llms.py` resolves each role to a concrete
-Ollama model id against the active hardware tier.
+codebase never hard-codes a model id or a filesystem path again. Each hardware tier binds ONE
+chat model (`tiers.<tier>.model`) plus an embedder; the factory in `llms.py` builds it.
 
 Nothing here imports from the rest of the project, so it is safe to import from anywhere
 (no circular-import risk).
@@ -35,15 +34,14 @@ from core import model_family  # stdlib-only leaf: importing it keeps config's n
 # `runtime.auto_approve` tier.
 RISK_ORDER = ["read_only", "side_effecting", "destructive"]
 
-# The config keys that describe the TRUST POSTURE. Declared here, beside RISK_ORDER and
-# MODEL_ROLES, because it is a security classification rather than a UI detail: any layer may
+# The config keys that describe the TRUST POSTURE. Declared here, beside RISK_ORDER, because it is a security classification rather than a UI detail: any layer may
 # need to ask "is this key a trust key" (the /config setter is only the first caller), and a knob
 # added without this classification silently gains persist-by-default — which is exactly the
 # footgun the set exists to close.
 #
 # The rule: a trust key is EXEMPT from the persist-by-default inversion (2026-07-07). Setting one
 # applies for the session; persisting takes an explicit --save — the same fail-closed convention
-# that keeps the canonical toggles (/policy open, /privacy airgap) on the opt-IN --save parser.
+# that keeps the canonical toggles (/policy open, /policy airgap) on the opt-IN --save parser.
 TRUST_KEYS = frozenset({
     "runtime.auto_approve",
     "runtime.airgap",
@@ -60,19 +58,11 @@ def saturn_home() -> Path:
 
 
 def wheel_data_home() -> Path:
-    """Where a wheel (pipx/uv) install keeps config.yaml and its data, first match wins:
-    `$SATURDAY_HOME` (the old name, when set), `$SATURN_HOME`, `~/.saturday` when an earlier
-    install already keeps its config.yaml there (2026-09-29: one home is ~/.saturn now, and no
-    one's data moves), else `~/.saturn`. diag.py and env_keys.py repeat this rule — they import
-    nothing project-side — and tests/test_data_home.py pins the three together."""
-    if os.environ.get("SATURDAY_HOME"):
-        return Path(os.environ["SATURDAY_HOME"]).expanduser()
-    if os.environ.get("SATURN_HOME"):
-        return Path(os.environ["SATURN_HOME"]).expanduser()
-    legacy = Path.home() / ".saturday"
-    if (legacy / "config.yaml").is_file():
-        return legacy
-    return Path.home() / ".saturn"
+    """Where a wheel (pipx/uv) install keeps config.yaml and its data: `$SATURN_HOME`, else
+    `~/.saturn` — the same folder as `saturn_home()`. diag.py and env_keys.py repeat this rule
+    (they import nothing project-side) and tests/test_data_home.py pins the three together.
+    (The old `$SATURDAY_HOME` / `~/.saturday` fallbacks were cut 2026-09-30.)"""
+    return saturn_home()
 
 
 def _resolve_config_path() -> Path:
@@ -85,7 +75,7 @@ def _resolve_config_path() -> Path:
     config.default.yaml.
 
     Installed mode (pipx/uv/pip wheel): the user's editable copy lives in `wheel_data_home()`
-    (~/.saturn; an earlier install's ~/.saturday stays where it is), seeded on first run from the packaged default that the wheel ships
+    (~/.saturn), seeded on first run from the packaged default that the wheel ships
     to <venv>/share/saturn/ (see pyproject.toml). Keeping the live copy out of site-packages
     means a persisted /config edit survives a `pipx upgrade`.
     """
@@ -136,19 +126,10 @@ def config_path() -> Path:
     """The live config.yaml this session loaded (clone: beside the code; wheel: the data home)."""
     return _CONFIG_PATH
 
-# THE two model roles the loop binds (config.yaml `roles:`, llms.get_model's vocabulary):
-# `tool_caller` is the agent's one call per pass, `utility` the out-of-loop background work
-# (compaction, the memory review's proposals, /init's draft). One home so every surface that
-# iterates roles (the readout commands, llms.check_models, the locality classifier behind the
-# posture line) walks the SAME tuple. (planner / synthesizer / judge left with the plan engine
-# 2026-09-27; a config.yaml that still lists them is read fine — the keys are simply unused.)
-MODEL_ROLES = ("tool_caller", "utility")
-
-@dataclass(frozen=True)
-class ModelSpec:
-    """A resolved role binding: the Ollama model id serving a role."""
-
-    model: str
+def tier_chat_model(tier: dict) -> str:
+    """The chat model a tier binds: its `model:` id, "" when it declares none."""
+    model = tier.get("model")
+    return str(model) if model and not isinstance(model, dict) else ""
 
 
 @dataclass(frozen=True)
@@ -166,7 +147,7 @@ class Capability:
 
 
 class Config:
-    """Thin wrapper over the parsed YAML dict with typed, role-aware accessors."""
+    """Thin wrapper over the parsed YAML dict with typed accessors."""
 
     def __init__(self, data: dict):
         self._data = data
@@ -188,7 +169,7 @@ class Config:
             node = node.setdefault(part, {})
         node[parts[-1]] = _coerce(value)
 
-    # --- tier / roles ------------------------------------------------------
+    # --- tier / model ------------------------------------------------------
     @property
     def active_tier(self) -> str:
         # The fallback is the ladder's default CLASS, not a retired preset name: "workstation"
@@ -206,22 +187,28 @@ class Config:
             )
         return tier
 
-    def model_for_role(self, role: str) -> ModelSpec:
-        """Resolve a role to a concrete model id. Falls back to the `utility` role, then to
-        the first role defined, so a missing role never crashes the graph."""
+    @property
+    def chat_model(self) -> str:
+        """The active tier's chat model id — the one model every call uses: the agent's pass,
+        compaction, the memory review's proposals, /init's draft."""
         tier = self._tier()
-        roles = tier.get("roles", {})
-        entry = roles.get(role) or roles.get("utility")
-        if entry is None and roles:
-            entry = next(iter(roles.values()))
-        if entry is None:
-            raise KeyError(f"tier '{self.active_tier}' defines no roles")
-        if isinstance(entry, dict):
+        if isinstance(tier.get("model"), dict):
             raise KeyError(
-                f"role '{role}' on tier '{self.active_tier}' is a mapping ({entry!r}) — bind a "
-                f"bare Ollama model id (the {{provider, model}} form left with cloud support)"
+                f"tier '{self.active_tier}' binds a mapping — bind a bare Ollama model id "
+                "(the {provider, model} form left with cloud support)"
             )
-        return ModelSpec(model=str(entry))
+        model = tier_chat_model(tier)
+        if not model and isinstance(tier.get("roles"), dict):
+            # The pre-2026-09-30 shape: no longer read — say exactly what to write instead.
+            roles = tier["roles"]
+            was = roles.get("tool_caller") or next(iter(roles.values()), "")
+            raise KeyError(
+                f"tier '{self.active_tier}' still uses the old `roles:` block — replace it in "
+                f"config.yaml with one line: model: \"{was}\""
+            )
+        if not model:
+            raise KeyError(f"tier '{self.active_tier}' defines no model")
+        return model
 
     @property
     def embedder_model(self) -> str:
@@ -233,7 +220,7 @@ class Config:
         if not model:
             raise KeyError(
                 f"tier '{self.active_tier}' defines no 'embedder' in config.yaml — add one "
-                "(e.g. embedder: qwen3-embedding:8b) or switch tiers (/models tier)."
+                "(e.g. embedder: qwen3-embedding:8b) or switch tiers (/models)."
             )
         return str(model)
 
@@ -270,7 +257,7 @@ class Config:
     @property
     def num_ctx_override(self) -> "int | None":
         """Session/config override for the Ollama context window (`runtime.num_ctx`), or None to
-        let each model use its capability `context_window`. Set live by /config context."""
+        let each model use its capability `context_window`. Set live by /config runtime.num_ctx."""
         v = self.get("runtime.num_ctx")
         try:
             n = int(v)
@@ -438,7 +425,7 @@ def persist(dotted_key: str) -> Path:
     """Write the current in-memory value of `dotted_key` back to config.yaml in place (comments and
     layout preserved) so it survives a restart. Returns the config path. Covers the scalar leaves a
     user actually tunes — the runtime knobs, `active_tier`, the web/shell settings, the paths.
-    Deeper structural edits (per-tier role bindings) belong in the file or `/models`."""
+    Deeper structural edits belong in the file or `/models`."""
     value = get_config().get(dotted_key)
     # newline="" both ways: read_text's universal-newline mode would fold CRLF to \n before
     # _set_yaml_scalar captures each line's ending, and write_text would then re-expand every

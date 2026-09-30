@@ -23,7 +23,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from langchain.messages import HumanMessage, AIMessage, ToolMessage
 
-from core.state import current_step, unfinished_steps, incident_steps
+from core.state import current_step
 from nodes.tools import _clamp_observation, _MAX_OBSERVATION
 
 
@@ -38,16 +38,6 @@ def test_current_step_is_first_without_result():
     assert current_step(plan)["step_id"] == 2
     assert current_step([_step(1, result="x", status="done")]) is None
     assert current_step([]) is None and current_step(None) is None
-
-
-def test_unfinished_and_incident_views():
-    plan = [
-        _step(1, result="ok", status="done"),
-        _step(2, result="declined", status="skipped"),
-        _step(3),
-    ]
-    assert [s["step_id"] for s in unfinished_steps(plan)] == [3]
-    assert [s["step_id"] for s in incident_steps(plan)] == [2]
 
 
 # --- the mechanical recorder: observation -> current step's result + stamped status ----------

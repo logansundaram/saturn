@@ -25,9 +25,10 @@ def _connect(db_path):
 
 # (The `calls`, `cost`, and `state` subviews were CUT 2026-07-16 — `calls` duplicated the
 # per-run drill-down's tool I/O, `cost` was the readout half of the already-cut cloud-era token
-# budget (local users read tok/s + context fill live in the status bar and /config context),
+# budget (local users read tok/s + context fill live in the status bar),
 # and `state` was a developer debugging dump wearing a user command. /trace is why · source ·
-# invoke · context · search · export · replay now; `answer` left with the Glass Box.)
+# invoke · context · export · replay now; `answer` left with the Glass Box, and `search` —
+# the FTS5 index over past runs — was CUT 2026-09-30.)
 
 
 def _to_int(s) -> Optional[int]:
@@ -108,7 +109,7 @@ def _load_run(conn, run_id, *,
 # the record format /trace replay renders offline. (The --md report format was CUT 2026-07-16.
 # The sha256 integrity digest + the verify flows — /trace verify, saturn verify — were CUT
 # 2026-07-03: a digest stored inside the file it protects verifies after any edit that recomputes
-# it, so it only ever caught accidental corruption; real verification returns in Phase 3 with
+# it, so it only ever caught accidental corruption; real verification would return with
 # signing. Legacy exports still carry `integrity`/`signature` blocks — replay ignores them.)
 
 # The versioned artifact-format marker embedded in every export (layout versioning).
@@ -498,14 +499,14 @@ def _fmt_call_args(args) -> str:
 @command(
     "trace",
     "Observability hub: drill-down of recorded runs + live trace control.",
-    usage="/trace [#id | -l [n] | why | source | invoke | context"
-          " | search <words> | export | replay | on|off|full]",
+    usage="/trace [#id | -l [n] | why | source | invoke"
+          " | export | replay | on|off|full]",
     details="""
 Expands one recorded run from the trace database (database/db.sqlite) into the full replay the
-live trace abbreviates: the query, every node with its step time and metrics, the plan as it
-advanced, the agent's reasoning and tool-call decisions at each step (the execution detail the
-live trace omits), each tool call WITH its output (the live trace hides that too), and — last and
-de-emphasized — the recorded final answer. This is the execution log, not a reprint of the
+live trace abbreviates: the query, every node of the loop with its step time and metrics, the
+checklist (if the model wrote one), the agent's reasoning and tool-call decisions at each pass,
+each tool call WITH its output (the live trace hides that), and — last and de-emphasized — the
+recorded final answer. This is the execution log, not a reprint of the
 response.
 
 With no argument it expands the MOST RECENT run. Select another run by id, or list runs to find
@@ -527,16 +528,8 @@ Subviews:
                        numbering the answer used. Bare lists the numbered sources.
   /trace invoke [#id]  the LLM calls of a run: each model call's INPUT messages + OUTPUT, with
                        timing + token counts. Defaults to the most recent run with LLM calls; add
-                       --full to show whole messages, -l to list runs that have them.
-  /trace context [#id] the context inspector: exactly what the local model was told at each node —
-                       every input message, at full fidelity, no outputs. The legible companion to
-                       the privacy story ("see literally what your machine sent the model").
-                       --node <name> focuses one node so the per-step context is diffable;
-                       --preview clips; -l lists runs that have LLM calls.
-  /trace search <words> full-text search over every recorded run's request and answer (SQLite
-                       FTS5 over the runs table — no embedder): "what did we do last week",
-                       the report from Monday. Each hit names its run id for /trace #id, /trace
-                       why #id, or /trace export. -l <n> caps the hits (default 8).
+                       --full to show whole messages — literally what your machine sent the model
+                       (`/trace context` is the same view, full) — -l to list runs that have them.
   /trace export [#id]  write a run's complete record (events + tool I/O + LLM calls) to a
                        self-contained replayable JSON file under logging/exports/; -o <path>
                        to choose the destination. The record you can hand to someone else
@@ -564,15 +557,14 @@ def _trace(ctx, args):
     if args and args[0].lower() in ("invoke", "--invoke", "llm", "--llm", "model", "models"):
         return _show_llm_calls(ctx, args[1:])
     if args and args[0].lower() in ("context", "--context", "ctx", "prompt", "prompts"):
-        return _show_llm_context(ctx, args[1:])
-    if args and args[0].lower() in ("search", "--search", "find", "grep"):
-        return _search(ctx, args[1:])
+        # The context inspector folded into invoke (2026-09-30): the same calls, whole.
+        return _show_llm_calls(ctx, ["--full", *args[1:]])
     if args and args[0].lower() in ("export", "--export"):
         return _export(ctx, args[1:])
     if args and args[0].lower() in ("replay", "--replay"):
         return _replay(ctx, args[1:])
-    # ("calls"/"cost"/"state" were CUT 2026-07-16 — the run selector prints its "ignoring
-    # unrecognized argument" note for the old spellings.)
+    # ("calls"/"cost"/"state" were CUT 2026-07-16 and "search" 2026-09-30 — the run selector
+    # prints its "ignoring unrecognized argument" note for the old spellings.)
     # NOTE: no "0"/"1" verbosity aliases here — a bare digit is a RUN ID (`/trace 1` drills into
     # run #1, same as `/trace #1`); the digit aliases used to eat it and toggle verbosity instead.
     if args and args[0].lower() in ("on", "off", "full", "normal", "quiet", "verbose",
@@ -608,39 +600,6 @@ def _trace(ctx, args):
         ).fetchall()
 
     ui.show_run(run, events)
-
-
-def _search(ctx, args):
-    """`/trace search <words>` — full-text search over recorded runs (stores/trace.search_runs:
-    FTS5 when the build has it, LIKE otherwise). Hits name their run id so every other /trace
-    view can drill in."""
-    from stores.trace import search_runs
-
-    limit = 8
-    words = []
-    it = iter(args)
-    for a in it:
-        if a.lower() in ("-l", "--limit", "-n"):
-            nxt = next(it, None)
-            if nxt and str(nxt).isdigit():
-                limit = max(1, int(nxt))
-            continue
-        words.append(a)
-    text = " ".join(words).strip()
-    if not text:
-        _print("  usage: /trace search <words>   [-l <n>]")
-        return
-    rows = search_runs(ctx.db_path, text, limit=limit)
-    if not rows:
-        _print(f"  no recorded run matches {text!r}")
-        return
-    _print(f"  {len(rows)} run(s) matching {text!r} — best match first  (/trace #<id> expands one):")
-    for r in rows:
-        when = str(r.get("started_at") or "")[:16].replace("T", " ")
-        _print(f"    #{r['run_id']:<4} {when}  {str(r.get('status')):<7} {_clip(r['query'], 60)}")
-        answer = " ".join(str(r.get("response") or "").split())
-        if answer:
-            _print(f"          ↳ {_clip(answer, 110)}")
 
 
 def _show_llm_calls(ctx, args):
@@ -698,68 +657,6 @@ def _show_llm_calls(ctx, args):
         ).fetchall()
 
     ui.show_llm_calls(run, calls, full=full)
-
-
-def _show_llm_context(ctx, args):
-    """`/trace context [#id]` — the context inspector: exactly what the local model was told at each
-    node, message by message, at full fidelity (the INPUT half of /trace invoke, no outputs). The
-    legible companion to the privacy story — "see literally what your machine sent the model". Full
-    text by default; `--node <name>` focuses one node so per-step context is diffable; `--preview`
-    clips; `-l` lists runs that have LLM calls."""
-    from tui import ui
-
-    node_filter: Optional[str] = None
-    preview = False
-
-    def consume(low, a, it):
-        nonlocal node_filter, preview
-        if low in ("--node", "-n", "node"):
-            node_filter = next(it, None)
-            return True
-        if low in ("--preview", "-p", "preview", "--clip"):
-            preview = True
-            return True
-        return False
-
-    run_id, count, list_mode = _parse_run_selector(args, consume=consume)
-
-    with _connect(ctx.db_path) as conn:
-        has_table = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='llm_calls'"
-        ).fetchone()
-        if not has_table:
-            _print("  (no LLM calls recorded yet — run a query first)")
-            return
-
-        if list_mode:
-            rows = conn.execute(
-                "SELECT c.run_id, COUNT(*) AS n, COALESCE(SUM(c.prompt_tokens), 0), r.query "
-                "FROM llm_calls c LEFT JOIN runs r ON r.run_id = c.run_id "
-                "GROUP BY c.run_id ORDER BY c.run_id DESC LIMIT ?",
-                (max(1, count or 10),),
-            ).fetchall()
-            if not rows:
-                _print("  (no LLM calls recorded yet)")
-                return
-            _print("  runs with recorded context — newest first  (/trace context #<id> to inspect):")
-            for rid, n, ptok, query in rows:
-                _print(f"    #{rid:<4} {n:>2} call(s)  {int(ptok or 0):>7} tok in  {_clip(query, 46)}")
-            return
-
-        run_id, run = _load_run(
-            conn, run_id, latest_from="llm_calls",
-            empty_msg="  (no LLM calls recorded yet — run a query first)",
-            hint="/trace context -l",
-        )
-        if run is None:
-            return
-        calls = conn.execute(
-            "SELECT seq, ts, node, model, dur, prompt_tokens, output_tokens, input, output, status "
-            "FROM llm_calls WHERE run_id = ? ORDER BY seq, id",
-            (run_id,),
-        ).fetchall()
-
-    ui.show_llm_context(run, calls, node_filter=node_filter, preview=preview)
 
 
 # ── /trace source — the raw material behind a citation ────────────────────────────────────────

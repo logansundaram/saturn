@@ -226,7 +226,7 @@ def test_each_plan_rerender_is_delimited_by_a_progress_header(fresh_plan_display
     assert "plan · 0/4" in capsys.readouterr().out
 
     plan[0]["status"] = "done"
-    plan[1]["status"] = "error"      # an incident is finished too — the count is progress, not success
+    plan[1]["status"] = "done"
     ui.show_plan(plan)
     out = capsys.readouterr().out
     assert "plan · 2/4" in out
@@ -255,9 +255,8 @@ def test_meter_color_never_wears_the_risk_vocabulary():
 
 def test_air_gap_glyph_is_one_cell_and_shared_by_rail_and_receipt():
     """`⛔` is East-Asian Wide AND emoji-presentation: terminals paint it as a color emoji that
-    ignores the `bold red` style and overflows the rail column. `⊘` is the palette's existing
-    blocked glyph — one cell, and it takes the style. The rail and the receipt must name the same
-    fact with the same glyph."""
+    ignores the `bold red` style and overflows the rail column. `⊘` is one cell, and it takes the
+    style. The rail and the receipt must name the same fact with the same glyph."""
     import unicodedata
 
     from trust import receipt, egress
@@ -267,13 +266,13 @@ def test_air_gap_glyph_is_one_cell_and_shared_by_rail_and_receipt():
 
     text, style = trace._egress_leaf({"channel": "web_search", "host": "h", "status": "blocked"})
     glyph = text[0]
-    assert glyph == base._PLAN["blocked"][0]          # the one blocked glyph in the palette
+    assert glyph == base._BLOCKED_GLYPH               # the one blocked glyph in the palette
     assert unicodedata.east_asian_width(glyph) != "W"  # one cell, so the rail stays aligned
     assert style == "bold red"                         # …and the style is what carries the alarm
 
-    parts = receipt.trust_parts(
+    parts = [t for t, _ in receipt.trust_spans(
         [egress.EgressEvent(ts="t", channel="web_search", host="h", n_bytes=0,
-                            status=egress.BLOCKED)], 0)
+                            status=egress.BLOCKED)], 0)]
     assert any(p.startswith(glyph) for p in parts)
 
 
@@ -313,12 +312,12 @@ def test_recording_cut_reports_the_right_number_and_survives_the_clip(capsys):
 
 def test_recording_cut_is_disclosed_on_the_output_side_too(capsys):
     """stores.trace._msg_out stamps `truncated` on the OUTPUT message as well, but /trace invoke
-    disclosed it only for inputs — so a synthesize/plan reply longer than _LLM_MSG_CAP was
+    disclosed it only for inputs — so an agent reply longer than _LLM_MSG_CAP was
     presented under `--full` as the model's complete output."""
     import json
 
     trace = importlib.import_module("tui.ui.trace")
-    call = (1, 0, "synthesize", "qwen3.5:9b", 0.4, 100, 2400,
+    call = (1, 0, "agent", "qwen3.5:9b", 0.4, 100, 2400,
             json.dumps([{"role": "system", "content": "be brief"}]),
             json.dumps({"content": "y" * 8000, "truncated": 9500, "tool_calls": []}),
             "ok")

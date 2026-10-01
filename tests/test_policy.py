@@ -201,6 +201,27 @@ def test_approves_tier_threshold_and_allowlist(isolated_paths):
         _restore_tier(prev)
 
 
+def test_airgap_holds_the_shell_and_mcp_for_the_human(isolated_paths, monkeypatch):
+    """Air-gap cannot see inside a shell command or an MCP server process, so under it neither
+    is ever auto-approved — not by an allowlisted prefix, not by an open gate. Every other tool
+    keeps its tier."""
+    from config import get_config
+
+    prev = policy.tier()
+    try:
+        policy.add_shell_allow("git pull")
+        policy.set_tier("destructive")
+        assert policy.approves("run_shell", "destructive", {"command": "git pull"})
+        monkeypatch.setitem(get_config()._data["runtime"], "airgap", True)
+        assert policy.airgap_holds("run_shell") and policy.airgap_holds("mcp_srv_post")
+        assert not policy.airgap_holds("write_file")
+        assert not policy.approves("run_shell", "destructive", {"command": "git pull"})
+        assert not policy.approves("mcp_srv_post", "read_only", {})
+        assert policy.approves("write_file", "side_effecting", {})
+    finally:
+        _restore_tier(prev)
+
+
 def test_set_gate_off_round_trip_restores_threshold(isolated_paths):
     """/autoapprove is a view of the threshold: on -> destructive (everything approves),
     off -> the PREVIOUS threshold, not a guess."""

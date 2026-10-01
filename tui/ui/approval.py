@@ -565,6 +565,13 @@ def _render_quarantine_banner(value: dict) -> None:
                 "YOU intended")
 
 
+def _gate_notes(value: dict) -> list:
+    """The approval node's reasons a call the tier would have let through is asking anyway
+    (an air-gap hold, a model-composed URL), or []. Garbage payloads read as none."""
+    notes = value.get("notes") if isinstance(value, dict) else None
+    return [str(n) for n in notes] if isinstance(notes, (list, tuple)) else []
+
+
 def _render_explain(value: dict) -> None:
     """The `e(xplain)` answer: WHY the agent wants this batch — the plan step it is fulfilling and
     its recorded pre-action reasoning (the same provenance /trace why reconstructs afterward,
@@ -872,12 +879,14 @@ def ask_approval(value: dict) -> "bool | dict":
         _render_quarantine_banner(value)
     except Exception as exc:  # display only — the prompt below still asks
         _frame_note(f"quarantine banner failed to render ({type(exc).__name__}: {exc})")
-    # A quarantine escalation is the ONE way a read_only call reaches this prompt, i.e. exactly
-    # when its arguments are the attack surface — so it forces the full-width argument view for
-    # the whole batch rather than the truncated repr. Read defensively: a malformed payload must
-    # cost the wider view, never the prompt.
+    for note in _gate_notes(value):
+        _frame_note(f"⚠ {note}")
+    # A quarantine escalation or a hold is the ONE way a read_only call reaches this prompt, i.e.
+    # exactly when its arguments are the attack surface — so it forces the full-width argument
+    # view for the whole batch rather than the truncated repr. Read defensively: a malformed
+    # payload must cost the wider view, never the prompt.
     try:
-        quarantined = bool(_quarantine_flags(value))
+        quarantined = bool(_quarantine_flags(value)) or bool(_gate_notes(value))
     except Exception:
         quarantined = False
     for i, tc in enumerate(tool_calls, 1):

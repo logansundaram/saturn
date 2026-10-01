@@ -694,3 +694,28 @@ def test_loop_benchmark_run_is_offline_gradable(monkeypatch, isolated_paths):
     from config import get_config
     leftovers = sorted(p.name for p in get_config().path("workspace").glob("bench_*"))
     assert leftovers == []
+
+
+def test_headless_yolo_still_refuses_what_the_airgap_holds(monkeypatch, capsys):
+    """--yolo pre-approves the gate, not the air-gap: with no human to judge whether a shell
+    command uses the network, a headless run under air-gap refuses it and approves the rest."""
+    from app import headless
+    from config import get_config
+    from trust import policy
+
+    prev = policy.tier()
+    try:
+        policy.set_gate_off(True)
+        monkeypatch.setitem(get_config()._data["runtime"], "airgap", True)
+        decision = headless.headless_approver({"type": "approval_request", "tool_calls": [
+            {"id": "c1", "name": "run_shell", "args": {"command": "git pull"}},
+            {"id": "c2", "name": "web_search", "args": {"query": "q"}},
+        ]})
+        assert decision == {"approved_ids": ["c2"]}
+        assert "air-gap" in capsys.readouterr().err
+        monkeypatch.setitem(get_config()._data["runtime"], "airgap", False)
+        assert headless.headless_approver({"type": "approval_request", "tool_calls": [
+            {"id": "c1", "name": "run_shell", "args": {"command": "git pull"}}]}) is True
+    finally:
+        policy.set_tier(prev)
+        policy._tier_before_gate_off = None

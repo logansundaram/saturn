@@ -140,6 +140,56 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
 - **`recall_runs`,** the model-facing search over past runs. Remembering what you decided is
   memory's job; `/trace search` still searches past runs for you.
 
+### Security
+
+- **A shell command no longer hides from the egress ledger.** `git pull`, `curl` or `pip` can
+  reach the network without Saturn seeing it, and the ledger used to say nothing left the
+  machine. Every `run_shell` run and every call to a stdio MCP server is now recorded as
+  `untracked`: the answer's receipt counts it and `/policy egress` lists the command, so
+  neither ever claims the boundary stayed closed over one. With the air-gap on, a shell
+  command or MCP call always asks first — an allowlisted prefix or an open gate no longer
+  lets it through — and a headless run refuses it even with `--yolo`.
+- **A fetch can't carry your data out unasked.** `web_extract` never prompts, but it sends
+  its URL. When the model composes an address after reading a file, a note, an email or a web
+  page — one that appears in nothing you typed and nothing a tool returned — the gate now
+  shows it to you first. A URL you typed or one a search returned runs as before. The same
+  goes for an address on this machine or your local network that you did not type, and a
+  public page can no longer redirect a fetch onto one. `runtime.quarantine: warn` turns the
+  holds off.
+- **The injection scan covers failures and the shell.** An MCP server's error text and a
+  failed command's output are scanned and fenced like any other outside content, and so is
+  everything `run_shell` prints. After flagged content, the extra approval now waits for the
+  first call that can send or change something instead of being spent on a plan update.
+- **A remote Ollama can't pass as local.** `OLLAMA_HOST=http://127.evil.example.com` was
+  classified as loopback because its name starts with `127.`; the address is now parsed.
+- **`remember` records who confirmed a fact.** A fact stored by a call you approved is
+  `by=user`; one stored while the gate was open is `by=inferred`, as a review candidate is.
+
+### Fixed
+
+- **A turn that fills the context window is trimmed before the next one.** Auto-compaction
+  only folded older turns, so a single long research turn left the window full and the next
+  request pushed the system prompt off the front. The finished turn's tool results are now cut
+  to a head and a tail when it is the one that filled the window.
+- **The last pass of a long turn no longer re-reads the whole prompt.** At the pass limit the
+  tools used to be taken away, which changed the start of the prompt and cost a full prefill
+  (10 s at 7.5k tokens on the 4b; over a minute on a full window, enough to time the turn
+  out). The pass now keeps its tools: a further call is refused, and the model answers from
+  what it has.
+- **Calendar times with an offset land at the right hour.** `15:00Z` was written as 15:00
+  local. `list_calendar_events` also accepts the bare days its description offered (`today`,
+  `tomorrow`, `next monday`) and `in 1 week`; reminders accept a weekday (`monday at 9am`).
+- **A reminder more than a year out fires on its real date.** launchd's calendar has no year,
+  so it fired on this year's date and deleted itself. A reminder whose minute passed while the
+  Mac was off now shows at the next login instead of a year later.
+- **The answer's notes and Sources say what happened.** A read that succeeded twice and was
+  refused a third time is no longer reported as "could not be completed"; the Sources list no
+  longer cites failed or blocked calls, or writes. Re-running the same test command after an
+  edit is no longer refused as a repeat.
+- **`list_directory(name=…)` and `current_time(query=…)` run** instead of being refused as
+  another tool's call.
+- **`web_extract` stops reading a response at 5 MB.**
+
 ### The v2 cut (2026-09-27)
 
 #### Removed

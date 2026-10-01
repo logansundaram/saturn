@@ -65,11 +65,22 @@ def _compact_history(messages: list, keep_recent_turns: int = 1) -> list:
     return kept + messages[boundary:]
 
 
+def _chars(messages: list) -> int:
+    return sum(len(str(getattr(m, "content", "") or "")) for m in messages)
+
+
 def _maybe_autocompact(state: AgentState, run_id=None) -> AgentState:
     """If the turn that just finished left the context filled past `runtime.compact_threshold`, fold
     the older turns into an LLM summary (compaction.summarize_messages) so the NEXT turn doesn't
     re-send — and overflow — the window. This is the heavier LLM compaction; the mechanical
     `_compact_history` still runs every turn regardless.
+
+    The summary keeps the most recent turn verbatim, and that turn is usually what filled the
+    window (one research turn of ten reads). So when folding the older turns leaves the estimated
+    fill still past the threshold — or there was nothing older to fold — the tool results that
+    remain are trimmed to a head and a tail (compaction.trim_observations). Without that the next
+    request starts over the threshold and its first tool result overflows num_ctx, where Ollama
+    drops the system prompt and tool catalog from the front with no error.
 
     Best-effort and non-fatal: disabled via `runtime.auto_compact`, skipped when the fill is unknown,
     and any summary failure leaves the history untouched (summarize_messages swallows it). Mutates +
@@ -89,11 +100,25 @@ def _maybe_autocompact(state: AgentState, run_id=None) -> AgentState:
     if used / window < threshold:
         return state
 
-    from core.compaction import summarize_messages
+    from core.compaction import summarize_messages, trim_observations
 
+    before = _chars(state["messages"])
     new_msgs, stats = summarize_messages(state["messages"])
-    if stats["summarized_turns"] > 0 and stats["after"] < stats["before"]:
-        state["messages"] = new_msgs
+    folded = stats["summarized_turns"] > 0 and stats["after"] < stats["before"]
+    kept = new_msgs if folded else state["messages"]
+    # The fill after folding, estimated from what was removed at ~4 characters a token (tool
+    # output runs denser, so this errs toward trimming).
+    trimmed = 0
+    if (used - (before - _chars(kept)) / 4) / window >= threshold:
+        kept, trimmed = trim_observations(kept)
+    if folded or trimmed:
+        state["messages"] = kept
+    if trimmed:
+        ui.note(
+            f"auto-compacted: trimmed {trimmed} tool result(s) from the last turn — context "
+            f"was {used / window * 100:.0f}% full ({_human_int(used)}/{_human_int(window)} tok)."
+        )
+    if folded:
         ui.note(
             f"auto-compacted {stats['summarized_turns']} earlier turn(s) "
             f"({stats['before']}→{stats['after']} messages) — context was "

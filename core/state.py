@@ -9,10 +9,10 @@ from typing_extensions import TypedDict, Annotated
 # The agent node injects a mid-turn steering correction as a HumanMessage. When it can't merge the
 # note into the trailing message it appends a STANDALONE HumanMessage carrying this prefix —
 # which is NOT a turn boundary. Everything that slices the conversation by "last HumanMessage"
-# (agent._compact_history, compaction.summarize_messages, the grounding recap) must test
-# boundaries via is_turn_start
-# below — never a hand-rolled isinstance check — or a steered turn gets mis-sliced: the steer
-# note mistaken for the question, the real question compacted away.
+# (app/session._compact_history, compaction.summarize_messages, nodes/agent._turn_start, the
+# approval node's provenance read) must test boundaries via is_turn_start below — never a
+# hand-rolled isinstance check — or a steered turn gets mis-sliced: the steer note mistaken for
+# the question, the real question compacted away.
 STEER_PREFIX = "[Steering correction from the user, mid-task — adjust your approach accordingly]:"
 
 
@@ -28,11 +28,11 @@ def is_turn_start(m) -> bool:
     steer note (that belongs to the turn it corrected) and not a compaction summary (carried
     history, not a question).
 
-    THE turn-boundary predicate. Every conversation slicer (agent._compact_history,
-    compaction.summarize_messages, the grounding recap) keys off this one function — the
-    three-clause filter used to be re-spelled at each
-    site, and the fifth copy drifted (summarize_messages missed the steer check, compacting a
-    steered turn's real question away)."""
+    THE turn-boundary predicate. Every conversation slicer (app/session._compact_history,
+    compaction.summarize_messages, nodes/agent._turn_start) keys off this one function — the
+    three-clause filter used to be re-spelled at each site, and the fifth copy drifted
+    (summarize_messages missed the steer check, compacting a steered turn's real question
+    away)."""
     # Lazy: keeps core.state import-light. No cycle — compaction imports this module at top,
     # but state itself only reaches for compaction when the predicate is actually called.
     from core.compaction import is_summary
@@ -48,17 +48,20 @@ def is_turn_start(m) -> bool:
 #
 # Step shape (plain dicts — gotcha #4: the checkpointer serializer never round-trips a custom
 # type):
-#   {step_id, label, status, intended_tool, result, needs_resolution}
+#   {step_id, label, status, result}
 #
-#   status           "pending" / "done" — all the `plan` tool writes (tools/planning.py). The
-#                    v1 engine's incident statuses left with it (2026-09-30).
-#   intended_tool    None since v2 (the checklist names no tool; kept for record compatibility).
-#   result           "done" for a completed item, None otherwise — `current_step` (the first
-#                    item with `result is None`) is the gate's step context.
-#   needs_resolution always False since v2 (kept for record compatibility).
+#   status   "pending" / "done" — all the `plan` tool writes (tools/planning.py). The v1
+#            engine's incident statuses left with it (2026-09-30).
+#   result   "done" for a completed item, None otherwise — `current_step` (the first item with
+#            `result is None`) is the gate's step context.
+#
+# A record written before v2 also carries `intended_tool` / `needs_resolution` and may carry a
+# `skipped` status; the renderers read those with .get() so `/trace` and `--replay` still draw
+# an old run, and nothing writes them any more.
 
 # A step in one of these statuses is retired for DISPLAY purposes; execution-wise the pointer
-# is `result is None` (a retired step always carries a result).
+# is `result is None` (a retired step always carries a result). `skipped` is only ever read off
+# a pre-v2 record.
 TERMINAL_STATUSES = ("done", "skipped")
 
 
@@ -146,17 +149,18 @@ class AgentState(TypedDict):
     attachments: str
 
     # The model's checklist (tools/planning.py — the `plan` tool, mapped here by nodes/tools.py),
-    # stored as plain dicts {step_id, label, status, intended_tool, result, needs_resolution}.
+    # stored as plain dicts {step_id, label, status, result}.
     # Rendered by the rail and read by the gate's step context; intent, not record.
     plan: List[dict]
 
-    # Agent passes this turn, bounded by runtime.max_iterations (nodes/agent.py): past it the
-    # last pass answers without tools. One increment per pass.
+    # Agent passes this turn, bounded by runtime.max_iterations (nodes/agent.py): from that
+    # pass on no tool call runs and the turn ends in an answer. One increment per pass.
     iteration: int
 
     # Trace / transparency accumulators. The agent reads observations from the ToolMessages;
-    # these mirror them as a flat, append-only record for the trace store, citations, and the
-    # benchmark harness. The `operator.add` reducer appends across loop iterations
+    # these mirror them as a flat, append-only record: `tools_called` names every executed
+    # call; `tool_results` / `documents_retrieved` hold what the answer could draw on — the
+    # calls that completed and gathered something (the Sources receipt, /trace source). The `operator.add` reducer appends across loop iterations
     # (reset to [] per turn before invoke).
     tools_called: Annotated[List[str], operator.add]
     tool_results: Annotated[List[Any], operator.add]

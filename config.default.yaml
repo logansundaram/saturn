@@ -29,7 +29,8 @@ paths:
 # ---------------------------------------------------------------------------
 runtime:
   # Agent passes per turn (2026-09-27: one pass = one model call, which may issue several tool
-  # calls). The last allowed pass answers without tools and says what is undone.
+  # calls). From this pass on no tool call runs: a call is refused and the model answers from
+  # what it has, saying what is undone.
   max_iterations: 16
   # Adaptive thinking, on evidence. A pass thinks, with a bounded budget, only when the tool
   # round just before it had an error (a tool failure or a refused call) — the one place the
@@ -73,12 +74,16 @@ runtime:
   # compaction always runs; this is the heavier LLM summary. `/compact` triggers it on demand.
   auto_compact: true
   compact_threshold: 0.85
-  # Answer provenance: number the gathered tool results/retrieved documents handed to the
-  # agent, ask it to cite the matching [n] inline, and append a mechanical "Sources" footer
-  # mapping each number to the tool call/document behind it. false restores unadorned answers.
+  # Answer provenance: append a mechanical "Sources" footer listing the tool calls and
+  # documents the answer drew on (completed reads and searches — not failed calls, not
+  # writes). Each line's number is the handle for `/trace source <n>`. false restores
+  # unadorned answers.
   citations: true
-  # Air-gap: when true, every network egress is blocked and recorded — web tools refuse, remote MCP
-  # calls refuse, and a remote Ollama refuses to run (the turn fails with an actionable message).
+  # Air-gap: when true, every network egress Saturn makes is blocked and recorded — web tools
+  # refuse, remote MCP calls refuse, and a remote Ollama refuses to run (the turn fails with an
+  # actionable message). A shell command or a stdio MCP server is another process Saturn cannot
+  # see inside, so under air-gap each one always asks you first (no allowlist, no open gate),
+  # and a headless run refuses them.
   # Privacy made enforceable + verifiable, not just asserted. Toggle live with `/policy airgap
   # on|off`; `/policy airgap` (bare) proves the current posture. Every blocked attempt shows in
   # `/policy egress`.

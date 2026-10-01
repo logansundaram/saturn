@@ -52,8 +52,14 @@ each costing a chat turn nothing):
 2. **steer** — Esc + text mid-turn lands as a `STEER_PREFIX` HumanMessage (not a turn boundary;
    `core.state.is_turn_start` is the one predicate). Drained only PAST the pause: a resumed
    interrupt re-runs the node from the top, so steers taken before it would be lost.
-3. **cap** — past `runtime.max_iterations` (16) the pass runs with tools UNBOUND and a budget
-   note: a real answer, never a stub.
+3. **cap** — from pass `runtime.max_iterations` (16) on, no tool call runs. The pass is the same
+   bound call (nothing appended, so the prompt extends the cached prefix); a call it emits is
+   answered with `BUDGET_TEXT` and routes back, and the next pass answers. A model that calls
+   again is rerun once with tools UNBOUND and a budget note: a real answer, never a stub.
+   Measured 2026-10-01 at 7.5k prompt tokens: the unbound pass re-prefilled everything (4b
+   10.1 s, 9b 9.2 s) where the bound one paid 0.3–0.5 s, and both models answered in text once
+   their calls were refused; the 9b ignored a budget NOTE while tools were bound, which is why
+   the refusal, not a note, is the mechanism.
 4. **generate** — `_generate`, the one seam tests replace: `bind_tools(registry)`, streamed,
    chunks folded into one AIMessage. Options ride `core/llms.invoke_kwargs` (num_ctx,
    `num_predict` 4096 for the agent task, `reasoning` explicitly off). Thinking is adaptive
@@ -68,13 +74,15 @@ each costing a chat turn nothing):
    back to `agent` (no gate, no execution): an unknown tool; arguments that belong to another
    tool (`recall(fact=…)` → "those belong to remember"); missing required arguments after
    alias coercion (`core/tool_args`); a repeat of a call the user DECLINED this turn; a third
-   identical call (`STALL_REPEATS`). `ask_user` runs alone — a resumed interrupt re-executes
+   identical call with nothing changed since the first (`STALL_REPEATS` — a completed write,
+   edit or command in between resets the count, so edit → test → edit → test is not a stall). `ask_user` runs alone — a resumed interrupt re-executes
    the tools node, so siblings in its batch are answered with `ASK_ALONE_TEXT`.
 6. **answer** — a message without tool calls IS the answer. The incidents note (calls that
    were declined, blocked or failed, read off the ToolMessages' `saturn_status` stamp; a
-   call's LAST outcome decides, so one that failed and then ran is not listed) and the
-   Sources receipt (every call and document the turn gathered, numbered as `/trace source`
-   numbers them) are appended to the RECORDED message, never the stream.
+   call's LAST outcome decides, so one that failed and then ran is not listed; a stall refusal is
+   not an outcome, and a call refused at the cap reads "not run") and the Sources receipt (the
+   completed calls and documents the turn gathered — not failures, not writes — numbered as
+   `/trace source` numbers them) are appended to the RECORDED message, never the stream.
 
 A text preamble before a tool call is not part of the response: `app/turn.py` shows it as the
 rail's agent leaf and discards it from the response region.
@@ -85,8 +93,11 @@ Takes the issuing message's calls minus those already answered
 (`core.state.issuing_message`, shared with `route_after_agent` and the tools node) and asks
 `trust/policy.approves(name, risk, args)` for each. Read-only calls pass; anything past
 `runtime.auto_approve` (`read_only` by default) `interrupt()`s for the human, per batch or per
-call, with always-allow grants scoped by `runtime.grant_scope`. A batch following
-quarantine-flagged output is escalated to the gate regardless of tier. Rejected calls get a
+call, with always-allow grants scoped by `runtime.grant_scope`. The next batch
+that can act (send or change something) after quarantine-flagged output is escalated to the gate
+regardless of tier; a `web_extract` URL the model composed after external content entered the
+conversation, or a private address the user did not type, is held too (`quarantine.url_hold`);
+under air-gap `run_shell` and MCP calls always ask (`policy.airgap_holds`). Rejected calls get a
 decline ToolMessage (the declined-repeat guard keeps that "no" for the rest of the turn); a
 fully-rejected batch routes back to `agent`. Every human decision lands in `gate_events`, the
 one record nothing can recompute.
@@ -95,8 +106,8 @@ one record nothing can recompute.
 
 Runs the pending calls one after another (serial, so egress events attribute to their call by
 sequence). Per call: the observation is clamped to `_MAX_OBSERVATION` (12,000 characters,
-head and tail); the egress slice is attached; untrusted output (web, MCP, files, notes, mail)
-is scanned by `trust/quarantine.py` and fenced as data; a structural `saturn_status` stamp
+head and tail); the egress slice is attached; untrusted output (web, MCP, files, the shell,
+notes, mail — a failed call's text too) is scanned by `trust/quarantine.py` and fenced as data; a structural `saturn_status` stamp
 (`done` / `error` / `blocked` / `skipped`) rides the ToolMessage so no reader has to sniff
 outcome from text — a tool reports failure by RAISING `tools.toolspec.ToolError` (an edit
 whose text was not found, a non-zero shell exit, a refused path, an MCP error), which the node
@@ -151,8 +162,8 @@ nothing — each guard fires only on its failure shape.
 
 1. **A hygiene budget per turn.** The 4b's supersession spiral was 14 passes with 7 hygiene
    bounces before it answered; today the only bounds are the pass cap (16) and the third
-   identical call. After N bounced calls in one turn (3), run the capped last pass — tools
-   unbound — and answer. Deterministic; `nodes/agent.py`.
+   identical call. After N bounced calls in one turn (3), go straight to the cap's refusal and
+   answer. Deterministic; `nodes/agent.py`.
 2. **A failure-aware final pass.** That same run ended with "I've updated my memory" over an
    incidents note saying it had not. When the last tool round was all errors or declines, the
    final pass gets a one-line note — "these calls did not happen: …; say so" — before it
@@ -171,7 +182,9 @@ nothing — each guard fires only on its failure shape.
 5. **A token budget for the prompt** (pivot loop item 2). Ten reads on a 32k window push the
    system prompt off the front. `_llm_input` becomes a budgeted projection: an observation a
    later pass has already moved past collapses to a one-line stub in the PROMPT only — state,
-   the trace and replay stay whole. Subsumes the clamp long-term.
+   the trace and replay stay whole. Subsumes the clamp long-term. (Between turns this is
+   handled since 2026-10-01: auto-compaction trims the finished turn's tool results when it
+   filled the window. Within one turn it is still open.)
 6. **A question is an answer** (pivot loop item 3). Delete the `ask_user` interrupt: when the
    model needs a value it answers with the question and the turn ends; the reply is the next
    turn with the history intact. Removes the run-alone hack (`ASK_ALONE_TEXT`), the headless

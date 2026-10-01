@@ -100,9 +100,9 @@ replay. The point isn't how much Saturn can do — it's that you can see and con
   detached-process surface), with a timeout so a hung command can't wedge the turn. A command
   never reads your terminal (a prompt for input gets end-of-input at once), and a non-zero exit
   is a failed step the answer tells you about.
-- **Cited answers** — answers that drew on tools or documents cite their sources inline (`[1]`)
-  and end with a Sources list mapping each number to the exact tool call or document behind it;
-  `/trace source 3` shows the full material behind any citation.
+- **Sourced answers** — an answer that drew on tools or documents ends with a Sources list of
+  the exact calls and documents behind it (completed reads and searches; a failed call is in
+  the incidents note instead); `/trace source 3` shows the full material behind any line.
 - **MCP servers** — plug in any [Model Context Protocol](https://modelcontextprotocol.io) server
   (stdio or remote HTTP/SSE) by declaring it in `config.yaml`; its tools join the agent behind
   the **same approval gate** as everything else. Remote tools always prompt until *you* lower

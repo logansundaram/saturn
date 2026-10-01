@@ -2,11 +2,10 @@
 web.py egress attribution — the ledger must name the host ACTUALLY contacted.
 
 API-less since 2026-07-06: web_search is keyless DuckDuckGo (one send, one event naming
-duckduckgo.com), web_extract fetches each page itself (one event PER URL naming ITS host — a
-multi-URL extract to three hosts is three sends, and /policy egress and the rail leaf must
-say so). The air-gap check stays single and up-front (it keys on airgap_on(),
-not the host); recording is fail-toward-recording, before the send. (The Tavily backend and its
-fallback double-record contract left with the API-less pivot.)
+duckduckgo.com), web_extract fetches one page itself (one event naming ITS host, plus one per
+further host a redirect reaches). The air-gap check is up-front; recording is
+fail-toward-recording, before the send. (The Tavily backend and its fallback double-record
+contract left with the API-less pivot.)
 
 Everything runs offline: DDGS and the local extractor are stubbed.
 """
@@ -84,20 +83,28 @@ def test_extract_local_records_target_host(monkeypatch):
     assert [(e.host, e.channel) for e in egress.events()] == [("example.org", "web_extract")]
 
 
-def test_extract_empty_list_records_nothing():
+def test_extract_empty_url_records_nothing():
     # No URL → nothing sent → nothing recorded (the old top-of-function record logged a phantom
-    # event for an empty call). .func bypasses the str schema to reach the list-tolerant body.
+    # event for an empty call).
     with pytest.raises(ToolError, match="No URL"):
-        web.web_extract.func(url=[])
+        web.web_extract.invoke({"url": "  "})
     assert egress.count() == 0
 
 
-def test_extract_empty_list_records_nothing_under_airgap(monkeypatch):
+def test_extract_empty_url_records_nothing_under_airgap(monkeypatch):
     # The empty guard precedes the air-gap check: an empty call must not put a phantom BLOCKED
-    # event with the garbage host "[]" into the ledger for a send that could never have happened.
+    # event into the ledger for a send that could never have happened.
     monkeypatch.setitem(get_config()._data["runtime"], "airgap", True)
     with pytest.raises(ToolError, match="No URL"):
-        web.web_extract.func(url=[])
+        web.web_extract.invoke({"url": ""})
+    assert egress.count() == 0
+
+
+def test_extract_takes_one_url_as_its_schema_says():
+    """The schema is `url: str`, so a list never reaches the body — there is no multi-URL
+    path to keep in step with the ledger."""
+    with pytest.raises(Exception):
+        web.web_extract.invoke({"url": ["https://a.example/x", "https://b.example/y"]})
     assert egress.count() == 0
 
 
@@ -112,30 +119,14 @@ def test_extract_airgap_blocks_before_any_fetch(monkeypatch):
     assert [e.status for e in egress.events()] == [egress.BLOCKED]
 
 
-def test_extract_multi_url_records_every_host(monkeypatch):
-    # Each URL in a multi-URL extract is its own fetch — each host gets its own ledger event.
-    # (Previously one event named only the first host, hiding real egress to every other host
-    # from /policy egress, the rail leaf, and the receipt.)
-    monkeypatch.setattr(web, "_local_extract", lambda u: f"text of {u}")
-    out = web.web_extract.func(url=["https://a.example/x", "https://b.example/y",
-                                    "https://c.example/z"])
-    assert set(out) == {"https://a.example/x", "https://b.example/y", "https://c.example/z"}
-    assert [(e.host, e.channel, e.status) for e in egress.events()] == [
-        ("a.example", "web_extract", egress.SENT),
-        ("b.example", "web_extract", egress.SENT),
-        ("c.example", "web_extract", egress.SENT),
-    ]
-
-
 def _redirecting_get(chain):
-    """A stand-in for httpx.get over `chain` = {url: (status, location_or_body)}; records the
-    URLs actually requested, and refuses to be asked to follow redirects itself."""
+    """A stand-in for web._get over `chain` = {url: (status, location_or_body)}; records the
+    URLs actually requested."""
     import httpx
 
     asked = []
 
-    def get(url, *, follow_redirects, **_kw):
-        assert follow_redirects is False  # every hop is Saturn's, so every host is recorded
+    def get(url):
         asked.append(url)
         status, value = chain[url]
         req = httpx.Request("GET", url)
@@ -154,7 +145,7 @@ def test_extract_records_every_host_a_redirect_reaches(monkeypatch):
         "https://tracker.b.example/r?id=1": (301, "/final"),
         "https://tracker.b.example/final": (200, "<html><body><p>hello</p></body></html>"),
     })
-    monkeypatch.setattr(web.httpx, "get", get)
+    monkeypatch.setattr(web, "_get", get)
     monkeypatch.setattr("trafilatura.extract", lambda html, **kw: "hello")
     assert web.web_extract.invoke({"url": "https://a.example/x"}) == "hello"
     assert asked == ["https://a.example/x", "https://tracker.b.example/r?id=1",
@@ -165,7 +156,7 @@ def test_extract_records_every_host_a_redirect_reaches(monkeypatch):
 
 def test_extract_redirect_loop_is_a_failure(monkeypatch):
     get, _asked = _redirecting_get({"https://a.example/x": (302, "https://a.example/x")})
-    monkeypatch.setattr(web.httpx, "get", get)
+    monkeypatch.setattr(web, "_get", get)
     with pytest.raises(ToolError, match="redirect"):
         web.web_extract.invoke({"url": "https://a.example/x"})
 
@@ -187,3 +178,69 @@ def test_http_request_is_cut():
     from tools.registry import tools_by_name
 
     assert "http_request" not in tools_by_name
+
+
+def test_a_public_page_cannot_redirect_the_fetch_into_the_private_network(monkeypatch):
+    """A redirect is the server choosing the next URL. One that points a public fetch at this
+    machine or the LAN is refused, not followed — and nothing is sent to the private host."""
+    import httpx
+
+    def fake_get(url):
+        return httpx.Response(302, headers={"location": "http://127.0.0.1:11434/api/tags"},
+                              request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(web, "_get", fake_get)
+    with pytest.raises(ToolError, match="private"):
+        web._fetch("https://example.com/start")
+    assert egress.events() == []  # the hop was never recorded because it was never sent
+
+
+def _serve(monkeypatch, handler):
+    """Route web._get's client through an in-process transport — the real request path, no
+    network."""
+    import httpx
+
+    real = httpx.Client
+    monkeypatch.setattr(web.httpx, "Client",
+                        lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
+
+
+def test_fetch_stops_reading_a_body_past_the_cap(monkeypatch):
+    """A page is read up to the cap and no further: one endless or enormous response must not
+    be pulled into memory whole (the observation clamp only trims what was already read)."""
+    import httpx
+
+    served = []
+
+    def body():
+        for _ in range(1000):
+            served.append(1)
+            yield b"x" * 65536
+
+    _serve(monkeypatch, lambda request: httpx.Response(200, content=body()))
+    monkeypatch.setattr(web, "_MAX_FETCH_BYTES", 200_000)
+    text = web._fetch("https://example.com/huge")
+    assert 200_000 <= len(text) < 200_000 + 65536
+    assert len(served) < 10
+
+
+def test_fetch_never_follows_redirects_itself_and_names_saturn(monkeypatch):
+    import httpx
+
+    seen = {}
+
+    def handler(request):
+        seen["ua"] = request.headers["user-agent"]
+        return httpx.Response(200, text="<p>ok</p>")
+
+    clients = []
+    real = httpx.Client
+
+    def client(**kw):
+        clients.append(kw)
+        return real(transport=httpx.MockTransport(handler), **kw)
+
+    monkeypatch.setattr(web.httpx, "Client", client)
+    assert web._fetch("https://example.com/") == "<p>ok</p>"
+    assert clients[0]["follow_redirects"] is False   # every hop is Saturn's, so every host is recorded
+    assert "Saturn" in seen["ua"] and "Saturday" not in seen["ua"]

@@ -7,17 +7,21 @@ judge is a deterministic check here, in this order, and each costs the common ca
 
   1. steer      a mid-turn correction (Esc + text) lands as a STEER_PREFIX HumanMessage;
   2. pause      an Esc pause interrupt()s for the pause prompt: continue / steer / abort;
-  3. cap        past runtime.max_iterations the pass runs with tools UNBOUND and a budget note
-                — a real answer, never a stub;
+  3. cap        from pass runtime.max_iterations on, no tool call runs: the pass is the same
+                bound call (same prompt, so the daemon's prompt cache holds on the turn's
+                largest prompt), and a call it emits is answered with the budget refusal and
+                routed back for the answer. A model that answers the refusal with more calls
+                is rerun once with tools UNBOUND and a budget note — a real answer, never a
+                stub (measured 2026-10-01: unbinding re-prefills the whole prompt);
   4. generate   the call (the `_generate` seam the tests replace). Adaptive thinking
                 (`runtime.think`, on evidence since 2026-09-29): a pass thinks, under
                 `runtime.think_budget`, only when the tool round just before it had an error —
                 the one place the model needs a new approach. Pass one, a clean round, a
-                declined or blocked call and the capped pass stay think-off. A thinking pass
+                declined or blocked call and the capped passes stay think-off. A thinking pass
                 that returns neither text nor a call is rerun once think-off;
   5. hygiene    on each emitted call: unknown tool, missing arguments (core/tool_args),
-                a repeat of a call the user DECLINED this turn, or a third identical call —
-                each answered with an error ToolMessage that routes straight back here;
+                a repeat of a call the user DECLINED this turn, or a third identical call
+                with nothing changed since the first — each answered with an error ToolMessage that routes straight back here;
   6. answer     a message without tool calls gets the mechanical trailers (the Sources
                 receipt, the incidents note) on the RECORDED message — never on the stream.
 
@@ -66,14 +70,16 @@ MALFORMED_NOTE = ("Your previous reply was not a valid tool call (its arguments 
 MALFORMED_TEXT = ("I could not complete this: the model produced a malformed tool call twice. "
                   "Please rephrase the request.")
 UNKNOWN_TOOL_TEXT = "Error: unknown tool {name!r}. Use only the tools you were given."
+BUDGET_TEXT = ("Not executed: the action budget for this turn is spent, so no further tool call "
+               "will run. Answer now from what you have, and state plainly what was not done.")
 BUDGET_NOTE = ("The action budget for this turn is spent. Answer now from what you have, and "
                "state plainly what was not done.")
 ABORT_TEXT = "Stopped at your request."
 NO_ANSWER_TEXT = "No answer text was produced for this turn."
 INCIDENTS_NOTE_HEADER = "Note — the following could not be completed:"
 
-# A call may repeat once (a re-read after an edit is legitimate); the third identical call this
-# turn is a loop.
+# A call may repeat once (a re-read is legitimate); the third identical call with nothing
+# changed in between is a loop.
 STALL_REPEATS = 2
 _INCIDENT_STATUSES = ("skipped", "blocked", "error")
 _INCIDENT_CAP = 160
@@ -144,7 +150,7 @@ def _history(messages: list) -> list:
 
 
 def _llm_input(state: AgentState, messages: list, extra: "list | None" = None) -> list:
-    """`extra` rides at the very end and is never a turn boundary (the capped pass's budget
+    """`extra` rides at the very end and is never a turn boundary (the hard stop's budget
     note is a HumanMessage, which is_turn_start would otherwise read as a new request)."""
     stable, dynamic = grounding_parts(state)
     out = [agent_sys_msg()]
@@ -182,8 +188,8 @@ def _calls_of(ai) -> "tuple[list, set]":
 def _generate(llm_input: list, *, tools: bool, think: bool = False) -> AIMessage:
     """ONE streamed call (the test seam). Tokens reach the UI through LangGraph's messages
     mode (app/turn.py filters this node); the chunks are folded into one AIMessage here so
-    state/trace/autosave see exactly what the model produced. `tools=False` is the capped last
-    pass: no bind, so the model can only answer. `think=True` is an adaptive thinking pass:
+    state/trace/autosave see exactly what the model produced. `tools=False` is the cap's hard
+    stop: no bind, so the model can only answer. `think=True` is an adaptive thinking pass:
     the reasoning rides the chunks' `reasoning_content`, never `content`, so the response
     stream stays the answer."""
     from tools.registry import tool as registered
@@ -300,6 +306,21 @@ def _is_empty(ai: AIMessage) -> bool:
 # ── hygiene ───────────────────────────────────────────────────────────────────────────────────
 
 
+def _repeats_since_change(key: str, rounds: list) -> int:
+    """How many times this exact call has been made since something last changed. A completed
+    call to a tool that is not read_only (an edit, a write, a command) resets the count: the
+    same `pytest -q` after an edit is a new question, not a repeat."""
+    from tools.registry import DECLARED_RISK
+
+    n = 0
+    for k, name, _args, status, _obs in rounds:
+        if k == key:
+            n += 1
+        elif status == "done" and DECLARED_RISK.get(name, "destructive") != "read_only":
+            n = 0
+    return n
+
+
 def _hygiene(call: dict, rounds: list, malformed: bool = False) -> "tuple[dict, ToolMessage | None]":
     """The corrected call, or the ToolMessage that answers it instead of running it."""
     from tools.registry import tools_by_name
@@ -324,10 +345,10 @@ def _hygiene(call: dict, rounds: list, malformed: bool = False) -> "tuple[dict, 
         problem = ("the arguments were not an object" if not isinstance(raw, dict)
                    else f"required arguments missing from {raw!r}")
         return refuse("Error: " + schema_hint(name, problem))
-    same = [r for r in rounds if r[0] == _call_key(name, args)]
-    if any(r[3] == "skipped" for r in same):
+    key = _call_key(name, args)
+    if any(r[3] == "skipped" for r in rounds if r[0] == key):
         return refuse(ALREADY_DECLINED_TEXT, "skipped")
-    if len(same) >= STALL_REPEATS:
+    if _repeats_since_change(key, rounds) >= STALL_REPEATS:
         return refuse(STALL_TEXT)
     return {**call, "args": args}, None
 
@@ -339,16 +360,17 @@ def sources_footer(tool_results, documents_retrieved) -> str:
     """The receipt of what informed the answer: one line per tool call / document, in the order
     they were gathered (core.sources — the same numbering /trace source uses).
     '' when nothing was."""
-    _tools, _docs, sources = build_sources(tool_results, documents_retrieved)
+    sources = build_sources(tool_results, documents_retrieved)
     if not sources:
         return ""
-    return SOURCES_HEADER + "\n" + "\n".join(f"  [{n}] {label}" for n, label in sources)
+    return SOURCES_HEADER + "\n" + "\n".join(f"  [{n}] {label}" for n, label, _text in sources)
 
 
 _INCIDENT_WORDING = {
     "skipped": "declined at the approval gate — not done",
     "blocked": "blocked by the air-gap — nothing was sent",
 }
+_BUDGET_WORDING = "not run: the turn's action budget was spent"
 
 
 def incidents(this_turn: list) -> list:
@@ -356,16 +378,26 @@ def incidents(this_turn: list) -> list:
     by the air-gap (blocked), or failed (error) — read off the ToolMessages' structural stamp
     and worded for the user (the observations are written for the model). One line per
     distinct call: a declined call the model re-issued is one incident, not two. A call's LAST
-    outcome decides — one that failed and then ran when re-issued is not an incident."""
-    rounds = _rounds(this_turn)
-    last = {key: status for key, _n, _a, status, _o in rounds}
+    outcome decides — one that failed and then ran when re-issued is not an incident. The stall
+    guard's and the cap's refusals are not outcomes: a stalled call already ran twice, and those
+    runs are what happened to it; a call refused at the cap is reported as not run, unless the
+    same call did run earlier in the turn."""
+    rounds = [r for r in _rounds(this_turn) if r[4] != STALL_TEXT]
+    last = {key: status for key, _n, _a, status, obs in rounds if obs != BUDGET_TEXT}
     out = []
     seen: set = set()
     for key, name, args, status, obs in rounds:
-        if status not in _INCIDENT_STATUSES or last[key] not in _INCIDENT_STATUSES or key in seen:
+        if key in seen:
             continue
+        if obs == BUDGET_TEXT:
+            if key in last:
+                continue
+            why = _BUDGET_WORDING
+        elif status not in _INCIDENT_STATUSES or last[key] not in _INCIDENT_STATUSES:
+            continue
+        else:
+            why = _INCIDENT_WORDING.get(status) or f"failed: {clip(' '.join(obs.split()), _INCIDENT_CAP)}"
         seen.add(key)
-        why = _INCIDENT_WORDING.get(status) or f"failed: {clip(' '.join(obs.split()), _INCIDENT_CAP)}"
         out.append(f"{name}({fmt_args(args or {}, 60)}) — {why}")
     return out
 
@@ -426,24 +458,34 @@ def agent_node(state: AgentState):
     if pause_steer is not None:  # typed at the pause prompt: after anything queued before it
         new.append(_steer_message(pause_steer))
 
-    # 3. the cap — the last pass answers without tools. The budget note rides the prompt only
-    # (never state: a HumanMessage there would read as a new turn boundary).
-    capped = iteration >= get_config().max_iterations
-    extra = [HumanMessage(content=BUDGET_NOTE)] if capped else []
+    # 3. the cap — from pass max_iterations on, no tool call runs. The pass itself is unchanged
+    # (tools stay bound, nothing is appended), so its prompt extends the cached prefix; a call
+    # it emits is refused in step 5 and the refusal routes back here for the answer.
+    cap = get_config().max_iterations
+    capped = iteration >= cap
 
     # 4. generate — a malformed model output is retried once, then answered honestly; any
     # other failure propagates (the REPL reports "Turn failed").
     this_turn = _this_turn(messages + new)
     think = _wants_think(this_turn, capped)
-    llm_input = _llm_input(state, messages + new, extra)
-    ai = _generate_or_retry(llm_input, tools=not capped, think=think)
+    llm_input = _llm_input(state, messages + new)
+    ai = _generate_or_retry(llm_input, tools=True, think=think)
     if think and ai is not None and _is_empty(ai):
         # On a pass whose right move is a short answer, a thinking model can write the answer
         # inside its reasoning and emit nothing (qwen3.5 4b and 9b, 2026-09-29). The same
         # pass think-off answers; its prefix is already cached, so the rerun is cheap.
         diag.log("agent_node : thinking pass returned nothing — rerunning think-off")
         think = False
-        ai = _generate_or_retry(llm_input, tools=not capped, think=False)
+        ai = _generate_or_retry(llm_input, tools=True, think=False)
+    if ai is not None and iteration > cap and _calls_of(ai)[0]:
+        # The hard stop: the model was told its calls will not run and called again. Take the
+        # tools away — the one pass that pays a full re-prefill (the system section changes),
+        # which is why it is the last resort and not the cap itself. The budget note rides the
+        # prompt only (never state: a HumanMessage there would read as a new turn boundary).
+        diag.log("agent_node : calls again past the budget refusal — rerunning with tools unbound")
+        _retract_stream()
+        ai = _generate_or_retry(_llm_input(state, messages + new, [HumanMessage(content=BUDGET_NOTE)]),
+                                tools=False, think=False)
     if ai is None:
         updates["messages"] = new + [AIMessage(content=_with_trailers(MALFORMED_TEXT, state, this_turn))]
         diag.log(f"agent_node : {time.perf_counter() - start:.4f}s (malformed output twice)")
@@ -454,7 +496,7 @@ def agent_node(state: AgentState):
     updates["context_tokens"] = extract_prompt_tokens(stats)
 
     calls, malformed = _calls_of(ai)
-    if not calls or capped:
+    if not calls or iteration > cap:
         # 6. the answer
         final = AIMessage(content=_with_trailers(ai.content, state, this_turn),
                           response_metadata=ai.response_metadata,
@@ -468,7 +510,12 @@ def agent_node(state: AgentState):
     rounds = _rounds(this_turn)
     kept, replies = [], []
     for call in calls:
-        fixed, reply = _hygiene(call, rounds, malformed=call["id"] in malformed)
+        if capped:  # the budget is spent: nothing runs, whatever the call is
+            fixed, reply = call, ToolMessage(content=BUDGET_TEXT, tool_call_id=call["id"],
+                                             name=str(call.get("name") or ""),
+                                             additional_kwargs={"saturn_status": "error"})
+        else:
+            fixed, reply = _hygiene(call, rounds, malformed=call["id"] in malformed)
         kept.append(fixed)
         replies.append(reply)
     # ask_user runs ALONE: its interrupt re-executes the tools node from the top on resume, so

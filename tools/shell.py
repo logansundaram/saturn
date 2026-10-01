@@ -34,6 +34,7 @@ import subprocess
 
 from config import get_config
 from tools.toolspec import ToolError, register_tool
+from trust import egress
 
 # Fallback when config.yaml has no `shell.timeout` (or an invalid one). Mirrors the local-helper
 # style web.py uses for its own knobs — no config.py property needed for a single tool-local value.
@@ -102,7 +103,9 @@ def _format(returncode: int, stdout: str, stderr: str) -> str:
     return f"{header}\n{body}" if body else f"{header} (no output)"
 
 
-@register_tool("destructive")
+# untrusted: a command prints what it read (a downloaded file, a server's reply), so its output
+# is scanned like read_file's.
+@register_tool("destructive", untrusted=True)
 def run_shell(command: str):
     """Runs a shell command on the host machine and returns its combined stdout+stderr plus the exit code. Use this for anything no other tool covers: running scripts or quick one-off code, build/test commands, git, package managers, inspecting the system. `command` is a single command line interpreted by /bin/sh — chain steps with the shell's own operators (`;`, `&&`, `|`). It runs inside the working folder and is terminated if it outlives the shell timeout — never start a server or watcher with it. This is a powerful, irreversible action and always requires user approval; do not assume it succeeded — check the returned exit code."""
     timeout = _timeout()
@@ -132,6 +135,11 @@ def run_shell(command: str):
             start_new_session=True,
         )
 
+        # A command can reach the network (git pull, curl, pip) and nothing here can see it:
+        # the run goes on the egress ledger as UNTRACKED, before it starts, so the receipt and
+        # /policy egress never claim the boundary stayed closed over it. Under air-gap the gate
+        # holds every run_shell for the human (policy.airgap_holds).
+        egress.record("shell", "?", command, status=egress.UNTRACKED)
         # Popen + communicate (not subprocess.run): on timeout we need the child's pid to kill
         # its whole process tree — run() kills only the direct child, leaving grandchildren alive.
         proc = subprocess.Popen(command, **popen_kwargs)

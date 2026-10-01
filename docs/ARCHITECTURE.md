@@ -60,10 +60,11 @@ The whole product is one loop. Reading it end to end explains 80% of the repo:
      Around the call, deterministic checks in a fixed order: a pause (Esc) `interrupt()`s for
      the pause prompt (continue / steer / abort); a steer (Esc + text) lands as a
      `STEER_PREFIX` message, drained only past the pause so a resumed interrupt cannot lose it;
-     past `runtime.max_iterations` the last pass runs with tools unbound and a
-     budget note; each emitted call passes hygiene (unknown tool, missing or malformed
+     from pass `runtime.max_iterations` on no call runs (the pass stays bound so the cached
+     prefix holds; an emitted call is answered with the budget refusal, and a model that calls
+     again is rerun once with tools unbound); each emitted call passes hygiene (unknown tool, missing or malformed
      arguments via `core/tool_args`, arguments that belong to another tool, a repeat of a call the user declined this turn, a third
-     identical call — each answered with an error ToolMessage back to the model). A message
+     identical call with nothing changed in between — each answered with an error ToolMessage back to the model). A message
      without tool calls is the answer: the Sources receipt and the incidents note (declined /
      blocked / failed calls, read off the ToolMessages' `saturn_status` stamp; a call's last
      outcome decides, so one that failed and then ran is not listed) are appended to the
@@ -149,9 +150,9 @@ every check in the agent node. Note: `nodes/tools.py` is the *tool-execution nod
 | File | What it does |
 |---|---|
 | `policy.py` | THE gate policy object. `approves(name, risk, args)` is the single question the approval node asks; `/policy risk`·`allow`·`open` and `--yolo` are all views of it. A shell always-allow prefix covers a command only past the metacharacter screen and the argument-tail screen (interpreters, capability flags, globs and brace expansion, paths outside the workspace — bare or as a flag's value). Durable state in `database/permissions.json`. |
-| `egress.py` | The network chokepoint: in-memory egress ledger (every exit calls `check` then `record`), the air-gap gate, and the inference-locality classifier (`ollama_is_local`). |
+| `egress.py` | The network chokepoint: in-memory egress ledger (every exit calls `check` then `record`), the air-gap gate, and the inference-locality classifier (`ollama_is_local`). `UNTRACKED` marks a run Saturn cannot see inside (`run_shell`, a stdio MCP server); `is_private_host` keeps a model-chosen fetch off local services. |
 | `secret_scan.py` | Credential-shaped values (key patterns, JWTs, private keys) as display-safe findings; `scan_args` backs the gate's secret-argument warning. |
-| `quarantine.py` | Prompt-injection quarantine: scan untrusted observations, fence instruction-shaped content as data, escalate the next tool batch to the gate. Also screens corpus/attachment admission. |
+| `quarantine.py` | Prompt-injection quarantine: scan untrusted observations (a failed call's text included), fence instruction-shaped content as data, escalate the next batch that can act to the gate. `url_hold` gates a `web_extract` URL the model composed after external content, or a private address the user did not type. Also screens corpus/attachment admission. |
 | `receipt.py` | The ambient surfaces: per-answer trust receipt spans, the session posture line, one-time discovery hints. |
 
 ### `commands/` — the slash-command layer

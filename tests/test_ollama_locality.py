@@ -32,6 +32,10 @@ def test_ollama_is_local_default(monkeypatch):
         ("http://192.168.1.50:11434", False),
         ("gpu-box.local:11434", False),
         ("https://ollama.example.com", False),
+        # a NAME that merely starts with "127." is a remote host, not the loopback range
+        ("http://127.evil.example.com", False),
+        ("127.0.0.2:11434", True),
+        ("http://[::1]:11434", True),
     ],
 )
 def test_ollama_is_local_endpoint_forms(monkeypatch, host, expected):

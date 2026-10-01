@@ -277,6 +277,28 @@ def test_remember_tool_passes_layer_replaces_and_run_provenance(mem, monkeypatch
     assert recall.invoke({"query": "zzz"}) == "No matching facts in persistent memory."
 
 
+def test_remember_is_by_user_only_when_a_human_approved_the_call(mem):
+    """`by=user` means a person said yes to THIS fact. A `remember` that ran because the tier
+    was raised or the gate was open had no such yes: it is stored `by=inferred`, the same
+    provenance a review candidate carries, so /memory shows which facts nobody confirmed."""
+    from langchain.messages import AIMessage
+
+    import nodes.tools as tn
+
+    def run(call_id, fact, gate_events):
+        msg = AIMessage(content="", tool_calls=[
+            {"name": "remember", "args": {"fact": fact}, "id": call_id}])
+        tn.tool_node({"messages": [msg], "gate_events": gate_events})
+
+    approved = [{"calls": [{"id": "c1", "name": "remember", "approved": True}],
+                 "decision": "approved", "quarantine": False, "step": None}]
+    run("c1", "I live in Paris", approved)
+    run("c2", "I like tea", [])            # auto-approved: no gate event for this call
+    run("c3", "I own a boat", approved)    # another call's approval is not this call's
+    assert [(e["text"], e["by"]) for e in mr.entries()] == [
+        ("I live in Paris", "user"), ("I like tea", "inferred"), ("I own a boat", "inferred")]
+
+
 # ── review fixes (2026-09-02) ───────────────────────────────────────────────────────────────
 
 

@@ -65,6 +65,8 @@ def test_parse_when_iso_with_offset_is_kept():
     ("in 3 days", timedelta(days=3)),
     ("20m", timedelta(minutes=20)),
     ("+2h", timedelta(hours=2)),
+    ("in 1 week", timedelta(weeks=1)),
+    ("2 weeks", timedelta(weeks=2)),
 ])
 def test_parse_when_relative(text, delta):
     assert parse_when(text, now=NOW) == NOW + delta
@@ -99,6 +101,26 @@ def test_parse_when_allow_past_accepts_earlier_times():
     assert parse_when("today at 09:00", now=NOW, allow_past=True) == NOW.replace(hour=9, minute=0)
 
 
+def test_parse_when_weekday_names_the_next_such_day():
+    # NOW is Saturday 2026-09-05 14:30.
+    assert parse_when("monday at 9am", now=NOW) == NOW.replace(day=7, hour=9, minute=0, second=0, microsecond=0)
+    assert parse_when("next friday 16:00", now=NOW) == NOW.replace(day=11, hour=16, minute=0, second=0, microsecond=0)
+    # the same weekday as today means a week from now, never today
+    assert parse_when("saturday at 15:00", now=NOW) == NOW.replace(day=12, hour=15, minute=0, second=0, microsecond=0)
+
+
+def test_parse_when_bare_day_needs_whole_day():
+    """A reminder for a bare 'tomorrow' has no time to fire at, so it is refused with the fix;
+    a calendar window asks for whole days and gets the day's first minute."""
+    with pytest.raises(NotifyError, match="tomorrow at 09:00"):
+        parse_when("tomorrow", now=NOW)
+    midnight = NOW.replace(hour=0, minute=0, second=0, microsecond=0)
+    assert parse_when("today", now=NOW, allow_past=True, whole_day=True) == midnight
+    assert parse_when("tomorrow", now=NOW, whole_day=True) == midnight + timedelta(days=1)
+    assert parse_when("yesterday", now=NOW, allow_past=True, whole_day=True) == midnight - timedelta(days=1)
+    assert parse_when("next monday", now=NOW, whole_day=True) == midnight + timedelta(days=2)
+
+
 def test_parse_when_refuses_garbage():
     with pytest.raises(NotifyError, match="could not understand"):
         parse_when("whenever", now=NOW)
@@ -119,7 +141,9 @@ def test_schedule_writes_a_plist_and_bootstraps_it(agents):
         plist = plistlib.load(fh)
 
     assert plist["Label"] == "com.saturn.notify.ab12cd34"
-    assert plist["RunAtLoad"] is False
+    # RunAtLoad + the guard below: a job whose minute passed while the Mac was off shows at the
+    # next login instead of waiting a year for the calendar date to come round again.
+    assert plist["RunAtLoad"] is True
     assert plist["StartCalendarInterval"] == {"Month": 9, "Day": 5, "Hour": 15, "Minute": 30}
     prog = plist["ProgramArguments"]
     assert prog[:2] == ["/bin/sh", "-c"]
@@ -131,6 +155,9 @@ def test_schedule_writes_a_plist_and_bootstraps_it(agents):
     assert f"rm -f {path}" in script
     assert "launchctl bootout gui/501/com.saturn.notify.ab12cd34" in script
     assert script.index("osascript") < script.index("rm -f") < script.index("bootout")
+    # the year guard runs first: launchd's calendar interval has no year
+    due = int(n.when.replace(second=0, microsecond=0).timestamp())
+    assert script.startswith(f'[ "$(date +%s)" -ge {due} ] || exit 0 ; ')
     # listing metadata rides inside the plist
     meta = plist["SaturnNotification"]
     assert meta["id"] == "ab12cd34"
@@ -138,6 +165,23 @@ def test_schedule_writes_a_plist_and_bootstraps_it(agents):
     assert meta["when"] == n.when.isoformat(timespec="minutes")
 
     assert calls == [["launchctl", "bootstrap", "gui/501", str(path)]]
+
+
+def test_the_year_guard_holds_a_job_until_its_real_date():
+    """StartCalendarInterval is month/day/hour/minute — a reminder 13 months out would fire on
+    this year's date and delete itself. The guard exits before the display (and before the
+    self-removal) until the scheduled moment has actually arrived."""
+    import subprocess
+
+    def fires(when):
+        script = macos._guard(when) + " ; echo fired"
+        return subprocess.run(["/bin/sh", "-c", script], capture_output=True, text=True).stdout.strip()
+
+    real_now = datetime.now().astimezone()
+    assert fires(real_now + timedelta(days=400)) == ""
+    assert fires(real_now - timedelta(minutes=1)) == "fired"
+    # launchd fires at the START of the minute, before a `when` that carries seconds
+    assert fires(real_now.replace(second=59)) == "fired"
 
 
 def test_schedule_escapes_applescript_and_shell_metacharacters(agents):

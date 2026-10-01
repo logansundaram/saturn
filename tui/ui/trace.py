@@ -7,7 +7,7 @@ so a turn reads the same whether it's happening now or being inspected later.
 
 import time
 
-from textutil import clip, human_bytes, split_call_result
+from textutil import clip, fmt_call, human_bytes, split_call_result
 
 from . import _base
 from ._base import (
@@ -389,15 +389,19 @@ def _render_trace_messages(node: str, delta: dict, max_chars: int | None = None)
 def _enrich_results(events: list[dict], results: list, cap: int = 1200) -> list[dict]:
     """Pair each recorded tool event with the fuller `call -> observation` from tool_results
     (collapsed to one line, capped), so the /trace replay shows real output where the live tree
-    deliberately showed nothing. Falls back to the event's own preview when no pair exists."""
+    deliberately showed nothing. Paired by the CALL, not by position: tool_results holds only the
+    calls that completed and gathered something (nodes/tools.py), so a failed call, a plan
+    update or a knowledge-base search has no entry and keeps its own preview."""
+    # THE one parser of the `name(args) -> observation` serialization nodes/tools.py builds.
+    pending = [split_call_result(r) for r in results]
     out = []
-    for i, ev in enumerate(events):
+    for ev in events:
         ev = dict(ev)
-        if i < len(results):
-            # THE one parser of the `name(args) -> observation` serialization nodes/tools.py
-            # builds (a separator-less entry yields the whole string, never an empty drop).
-            _, obs = split_call_result(results[i])
-            obs = clip(obs, cap)
+        label = fmt_call(str(ev.get("name")), ev.get("args") if isinstance(ev.get("args"), dict) else {})
+        hit = next((p for p in pending if p[0] == label), None) if ev.get("ok", True) else None
+        if hit is not None:
+            pending.remove(hit)
+            obs = clip(hit[1], cap)
             if obs:
                 ev["result"] = obs
         out.append(ev)

@@ -23,8 +23,8 @@ from langgraph.types import interrupt, Command
 import diag
 from trust import policy
 from trust import quarantine
-from tools.registry import risk_of
-from core.state import AgentState, current_step, issuing_message
+from tools.registry import DECLARED_RISK, risk_of
+from core.state import AgentState, current_step, is_steer_message, is_turn_start, issuing_message
 
 # The decline observation a rejected call gets. The structural `saturn_status: skipped` stamp on
 # the ToolMessage is what readers key on (nodes/agent.py's declined-repeat guard + incidents).
@@ -32,6 +32,49 @@ DECLINE_TEXT = (
     "Execution declined by the user. Do not retry this action; tell the user you "
     "did not perform it."
 )
+
+
+AIRGAP_NOTE = ("air-gap is on: Saturn cannot see inside a shell command or an MCP server — "
+               "approve only if this will not use the network")
+
+
+def _can_act(name: str) -> bool:
+    """Whether a call can send something out or change something — what a quarantine escalation
+    exists to put in front of the human. The DECLARED tier counts as well as the live one: a
+    tier the user relaxed must not take the tool out from under the escalation."""
+    return (quarantine.is_outbound(name) or risk_of(name) != "read_only"
+            or DECLARED_RISK.get(name, "destructive") != "read_only")
+
+
+def _provenance(state) -> "tuple[str, str, bool]":
+    """(what the user typed, everything else in the conversation, whether any of that came from
+    an untrusted tool or an attachment) — the three facts quarantine.url_hold reads."""
+    user, seen = [], [str(state.get("attachments") or ""), str(state.get("context") or "")]
+    untrusted = bool(state.get("attachments"))
+    for m in state.get("messages") or []:
+        text = str(getattr(m, "content", "") or "")
+        if is_turn_start(m) or is_steer_message(m):
+            user.append(text)
+            continue
+        seen.append(text)
+        if isinstance(m, ToolMessage) and quarantine.is_untrusted(str(m.name or "")):
+            untrusted = True
+    return "\n".join(user), "\n".join(seen), untrusted
+
+
+def _url_holds(tool_calls: list, state) -> dict:
+    """{call id: reason} for the web_extract calls whose URL must face the human."""
+    fetches = [tc for tc in tool_calls if tc.get("name") == "web_extract"]
+    if not fetches:
+        return {}
+    prov = _provenance(state)
+    out = {}
+    for tc in fetches:
+        args = tc.get("args")
+        why = quarantine.url_hold(str((args if isinstance(args, dict) else {}).get("url") or ""), *prov)
+        if why:
+            out[tc["id"]] = why
+    return out
 
 
 def gate_event(
@@ -163,18 +206,23 @@ def approval_node(state: AgentState) -> Command[Literal["tools", "agent"]]:
 
     # Quarantine escalation (runtime.quarantine = gate): a previous tool result this turn carried
     # instruction-shaped content, so this batch's arguments may derive from injected text — every
-    # call in it faces the human ONCE regardless of risk tier. PEEK here, consume only after the
+    # call in it that can act (send or change something) faces the human ONCE regardless of risk
+    # tier. A batch of local read-only calls (a plan update, a re-read) is not what the
+    # escalation is for: it passes and leaves it armed. PEEK here, consume only after the
     # interrupt resolves: LangGraph re-executes this node from the top on resume, so a consuming
     # check would already be spent on the re-run, `gated` would recompute without the escalation,
     # and the user's rejection of the batch would be silently discarded (an all-auto-approved
     # batch would skip the interrupt entirely and run). The interrupt payload carries the flags so
     # the prompt can say why a normally-silent call is suddenly asking.
-    escalated = quarantine.gate_pending() if tool_calls else False
+    escalated = quarantine.gate_pending() and any(_can_act(tc["name"]) for tc in tool_calls)
+    # The URL hold: a read_only fetch still sends its URL (quarantine.url_hold).
+    holds = _url_holds(tool_calls, state)
 
     gated = [
         tc
         for tc in tool_calls
-        if escalated
+        if (escalated and _can_act(tc["name"]))
+        or tc["id"] in holds
         or not policy.approves(tc["name"], risk_of(tc["name"]), tc.get("args"))
     ]
 
@@ -186,6 +234,10 @@ def approval_node(state: AgentState) -> Command[Literal["tools", "agent"]]:
     # the same provenance /trace why reconstructs later, surfaced at the moment of decision.
     reasoning = getattr(last, "content", "") or ""
     flags = quarantine.turn_flags()
+    # Why a call the tier would have let through is asking anyway — said at the prompt.
+    notes = [f"{tc['name']}: {holds[tc['id']]}" for tc in gated if tc["id"] in holds]
+    if any(policy.airgap_holds(tc["name"]) for tc in gated):
+        notes.append(AIRGAP_NOTE)
     decision = interrupt(
         {
             "type": "approval_request",
@@ -201,6 +253,7 @@ def approval_node(state: AgentState) -> Command[Literal["tools", "agent"]]:
             "step": current_step(state.get("plan", [])),
             "reasoning": reasoning if isinstance(reasoning, str) else str(reasoning),
             "quarantine": {"flags": flags} if flags else None,
+            "notes": notes or None,
         }
     )
 
@@ -239,7 +292,7 @@ def approval_node(state: AgentState) -> Command[Literal["tools", "agent"]]:
     event = gate_event(
         gated,
         approved_ids,
-        quarantine=bool(escalated),
+        quarantine=bool(escalated or holds),
         step=(step or {}).get("label"),
     )
 

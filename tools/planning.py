@@ -32,9 +32,7 @@ def to_plan(steps) -> list:
             "step_id": len(out) + 1,
             "label": label,
             "status": status,
-            "intended_tool": None,
             "result": "done" if status == "done" else None,
-            "needs_resolution": False,
         })
     return out
 

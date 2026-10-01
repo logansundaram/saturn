@@ -156,7 +156,7 @@ def test_capped_pass_and_the_off_knob_never_think(monkeypatch):
     agent.agent_node(_state(hard, iteration=5))
     _think_cfg(monkeypatch, think="on")
     agent.agent_node(_state([HumanMessage(content="q")]))
-    assert seen == [(False, False), (True, False), (True, True)]
+    assert seen == [(True, False), (True, False), (True, True)]
 
 
 def test_agent_sys_msg_is_stable_and_names_plan_tool():
@@ -180,10 +180,8 @@ def test_plan_tool_maps_onto_step_dicts():
     steps = to_plan([{"label": "read both files", "status": "done"},
                      {"label": "total", "status": "pending"}, {"label": "", "status": "x"}])
     assert steps == [
-        {"step_id": 1, "label": "read both files", "status": "done", "intended_tool": None,
-         "result": "done", "needs_resolution": False},
-        {"step_id": 2, "label": "total", "status": "pending", "intended_tool": None,
-         "result": None, "needs_resolution": False},
+        {"step_id": 1, "label": "read both files", "status": "done", "result": "done"},
+        {"step_id": 2, "label": "total", "status": "pending", "result": None},
     ]
     assert "2 step" in plan.invoke({"steps": [{"label": "a"}, {"label": "b", "status": "done"}]})
 
@@ -301,6 +299,11 @@ def test_hygiene_refuses_arguments_that_belong_to_another_tool(monkeypatch):
     assert tool_for_args("list_directory", {"path": "src"}) is None
     assert tool_for_args("recall", {"text": "coffee"}) is None
     assert tool_for_args("recall", {"q": "coffee"}) is None
+    # A stray argument is redirected only when it NAMES another tool's own argument and names
+    # exactly one tool: a loose alias ("name", "query") fits half the registry and proves nothing.
+    assert tool_for_args("list_directory", {"name": "src"}) is None
+    assert tool_for_args("current_time", {"query": "now"}) is None
+    assert tool_for_args("current_time", {"timezone": "UTC"}) is None
 
     monkeypatch.setattr(agent, "_generate", lambda i, *, tools, think=False: AIMessage(
         content="", tool_calls=[_call("recall", {"fact": "I live in Berlin", "replaces": "#2"}, "a")]))
@@ -354,24 +357,130 @@ def test_stall_refuses_third_identical_call(monkeypatch):
     assert agent.route_after_agent({"messages": out2["messages"]}) == "approval"
 
 
-def test_iteration_cap_answers_without_tools(monkeypatch):
+def test_a_stall_refusal_is_not_reported_as_a_failed_call():
+    """The stall guard refuses a third identical call because the call ALREADY ran twice. The
+    refusal is not that call's outcome: the answer must not tell the user a read that succeeded
+    'could not be completed'."""
+    from nodes import agent
+
+    args = {"file_path": "a.txt"}
+    turn = ([HumanMessage(content="q")] + _round("read_file", args, "c1") + _round("read_file", args, "c2")
+            + _round("read_file", args, "c3", agent.STALL_TEXT, "error"))
+    assert agent.incidents(turn) == []
+    # a call that never succeeded is still an incident, stall refusal or not
+    turn = ([HumanMessage(content="q")] + _round("read_file", args, "c1", "Error: gone", "error")
+            + _round("read_file", args, "c2", "Error: gone", "error")
+            + _round("read_file", args, "c3", agent.STALL_TEXT, "error"))
+    assert agent.incidents(turn) == ["read_file(file_path='a.txt') — failed: Error: gone"]
+
+
+def test_stall_guard_counts_repeats_since_something_changed(monkeypatch):
+    """Edit, test, edit, test: the third `pytest -q` is not a loop — a write landed since the
+    last one, so its result is new information. Only repeats with nothing changed in between
+    are a stall."""
+    from nodes import agent
+
+    test = {"command": "pytest -q"}
+    prior = ([HumanMessage(content="fix the test")]
+             + _round("run_shell", test, "c1", "1 failed", "error")
+             + _round("edit_file", {"file_path": "a.py", "old": "x", "new": "y"}, "c2", "edited")
+             + _round("run_shell", test, "c3", "1 failed", "error")
+             + _round("edit_file", {"file_path": "a.py", "old": "y", "new": "z"}, "c4", "edited"))
+    monkeypatch.setattr(agent, "_generate", lambda i, *, tools, think=False: AIMessage(
+        content="", tool_calls=[_call("run_shell", test, "c5")]))
+    out = agent.agent_node(_state(prior))
+    assert agent.route_after_agent({"messages": out["messages"]}) == "approval"
+
+    # a read in between changes nothing, and a FAILED write changed nothing either
+    prior = ([HumanMessage(content="fix the test")]
+             + _round("run_shell", test, "c1", "1 failed", "error")
+             + _round("read_file", {"file_path": "a.py"}, "c2")
+             + _round("run_shell", test, "c3", "1 failed", "error")
+             + _round("edit_file", {"file_path": "a.py", "old": "q", "new": "z"}, "c4", "Error: not found", "error"))
+    out = agent.agent_node(_state(prior))
+    assert out["messages"][-1].content == agent.STALL_TEXT
+
+
+def _cap_state(extra_passes=0, extra_msgs=()):
+    """A turn standing at the cap: the next pass is number max_iterations (+ extra_passes)."""
     from config import get_config
+
+    prior = [HumanMessage(content="q")] + _round("read_file", {"file_path": "a"}, "c1") + list(extra_msgs)
+    return _state(prior, iteration=get_config().max_iterations - 1 + extra_passes)
+
+
+def test_at_the_cap_calls_are_refused_and_the_prompt_is_unchanged(monkeypatch):
+    """The cap does not change the prompt. The pass at max_iterations is an ordinary bound pass
+    — same system section, same catalog, so the daemon's prompt cache holds on the turn's
+    largest prompt — and any call it emits is answered here with the budget refusal, which
+    routes straight back for the answer."""
     from nodes import agent
 
     seen = {}
 
     def fake(llm_input, *, tools, think=False):
-        seen["tools"] = tools
-        seen["last"] = llm_input[-1].content
+        seen.update(tools=tools, last=llm_input[-1], think=think)
+        return AIMessage(content="", tool_calls=[_call("read_file", {"file_path": "b"}, "c2"),
+                                                 _call("web_search", {"query": "z"}, "c3")])
+
+    monkeypatch.setattr(agent, "_generate", fake)
+    out = agent.agent_node(_cap_state())
+    assert seen["tools"] is True and seen["think"] is False
+    assert isinstance(seen["last"], ToolMessage)             # no budget note appended
+    refusals = out["messages"][-2:]
+    assert [m.content for m in refusals] == [agent.BUDGET_TEXT] * 2
+    assert [m.tool_call_id for m in refusals] == ["c2", "c3"]
+    assert agent.route_after_agent({"messages": out["messages"]}) == "agent"
+
+
+def test_a_text_answer_at_the_cap_is_just_the_answer(monkeypatch):
+    from nodes import agent
+
+    monkeypatch.setattr(agent, "_generate", lambda i, *, tools, think=False: AIMessage(content="all done"))
+    out = agent.agent_node(_cap_state())
+    assert out["messages"][-1].content.startswith("all done")
+    assert agent.INCIDENTS_NOTE_HEADER not in out["messages"][-1].content
+
+
+def test_after_the_refusal_the_answer_names_what_was_not_run(monkeypatch):
+    from nodes import agent
+
+    refused = _round("read_file", {"file_path": "b"}, "c2", agent.BUDGET_TEXT, "error")
+    seen = {}
+
+    def fake(llm_input, *, tools, think=False):
+        seen.update(tools=tools, think=think)
+        return AIMessage(content="I read a; b was not read.")
+
+    monkeypatch.setattr(agent, "_generate", fake)
+    out = agent.agent_node(_cap_state(extra_passes=1, extra_msgs=refused))
+    assert seen == {"tools": True, "think": False}           # still the cached prefix; never thinks
+    final = out["messages"][-1].content
+    assert final.startswith("I read a; b was not read.")
+    assert agent.INCIDENTS_NOTE_HEADER in final
+    assert "read_file(file_path='b') — not run: the turn's action budget was spent" in final
+
+
+def test_a_model_that_keeps_calling_gets_the_tools_taken_away(monkeypatch):
+    """The hard stop: a model that answers its refused calls with more calls is rerun once
+    with tools unbound and the budget note — a real answer, never a stub, never another pass."""
+    from nodes import agent
+
+    refused = _round("read_file", {"file_path": "b"}, "c2", agent.BUDGET_TEXT, "error")
+    seen = []
+
+    def fake(llm_input, *, tools, think=False):
+        seen.append((tools, llm_input[-1].content))
+        if tools:
+            return AIMessage(content="let me try", tool_calls=[_call("read_file", {"file_path": "c"}, "c3")])
         return AIMessage(content="partial")
 
     monkeypatch.setattr(agent, "_generate", fake)
-    prior = [HumanMessage(content="q")] + _round("read_file", {"file_path": "a"}, "c1", "err", "error")
-    out = agent.agent_node(_state(prior, iteration=get_config().max_iterations))
-    assert seen["tools"] is False and seen["last"] == agent.BUDGET_NOTE
+    out = agent.agent_node(_cap_state(extra_passes=1, extra_msgs=refused))
+    assert [t for t, _ in seen] == [True, False] and seen[1][1] == agent.BUDGET_NOTE
     final = out["messages"][-1]
-    assert final.content.startswith("partial")
-    assert agent.INCIDENTS_NOTE_HEADER in final.content and "read_file" in final.content
+    assert final.content.startswith("partial") and not getattr(final, "tool_calls", None)
+    assert agent.route_after_agent({"messages": out["messages"]}) == "end"
 
 
 def test_steer_is_injected_before_the_call(monkeypatch):
@@ -863,11 +972,14 @@ def test_cap_lands_on_the_max_iterations_pass(monkeypatch):
     from config import get_config
     from nodes import agent
 
-    seen = []
-    monkeypatch.setattr(agent, "_generate", lambda i, *, tools, think=False: seen.append(tools) or AIMessage(content="a"))
-    agent.agent_node(_state([HumanMessage(content="q")], iteration=get_config().max_iterations - 2))
-    agent.agent_node(_state([HumanMessage(content="q")], iteration=get_config().max_iterations - 1))
-    assert seen == [True, False]
+    monkeypatch.setattr(agent, "_generate", lambda i, *, tools, think=False: AIMessage(
+        content="", tool_calls=[_call("read_file", {"file_path": "a"}, "c1")]))
+    cap = get_config().max_iterations
+    before = agent.agent_node(_state([HumanMessage(content="q")], iteration=cap - 2))
+    at = agent.agent_node(_state([HumanMessage(content="q")], iteration=cap - 1))
+    assert agent.route_after_agent({"messages": before["messages"]}) == "approval"
+    assert agent.route_after_agent({"messages": at["messages"]}) == "agent"
+    assert at["messages"][-1].content == agent.BUDGET_TEXT
 
 
 def test_plan_call_is_not_a_source():

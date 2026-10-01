@@ -14,7 +14,7 @@ for searching a large memory or confirming a specific detail.
 """
 
 from textutil import doc_source_label
-from tools.toolspec import register_tool
+from tools.toolspec import human_approved, register_tool
 
 from stores.memory_registry import add_memory, search_memory
 
@@ -61,7 +61,10 @@ def remember(fact: str, category: str = "general", layer: str = "user", replaces
     conversation-specific details."""
     from stores.trace import current_run_id
 
-    return add_memory(fact, category, layer=layer, replaces=replaces or None, by="user",
+    # by=user is a person's yes to THIS fact (the gate). A call that ran because the tier was
+    # raised or the gate was open is the model's inference, and is recorded as one.
+    by = "user" if human_approved() else "inferred"
+    return add_memory(fact, category, layer=layer, replaces=replaces or None, by=by,
                       run_id=current_run_id(), sensitivity=(sensitivity or "").strip() or None)
 
 

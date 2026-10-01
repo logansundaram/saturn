@@ -475,7 +475,7 @@ def _render_why(ui, run, events, calls):
         _print("")
     else:
         _print("  what it relied on")
-        _print("    (no tools ran — answered from the model's own knowledge + context)")
+        _print("    (nothing gathered — answered from the model's own knowledge + context)")
         _print("")
 
     # Provenance footer of the answer, if the agent attached one (the [n] → source map).
@@ -660,10 +660,10 @@ def _show_llm_calls(ctx, args):
 
 
 # ── /trace source — the raw material behind a citation ────────────────────────────────────────
-# The citations footer maps each inline [n] to a one-line label; this shows the FULL tool
-# result / retrieved passage behind that number, rebuilt with the same numbering the agent
-# saw (core.sources.build_sources over the turn's accumulators), so [3] here is exactly the
-# [3] in the answer. Closes the provenance loop in one keystroke instead of a /trace drill-down.
+# The Sources footer gives each thing the answer drew on a number and a one-line label; this
+# shows the FULL tool result / retrieved passage behind that number, rebuilt with the same
+# numbering (core.sources.build_sources over the turn's accumulators), so [3] here is exactly
+# the [3] under the answer. Closes the provenance loop in one keystroke instead of a /trace drill-down.
 
 
 def lookup_source(state: dict, n: int) -> "tuple[str, str] | None":
@@ -671,18 +671,11 @@ def lookup_source(state: dict, n: int) -> "tuple[str, str] | None":
     Pure over the state accumulators so it's testable without a turn."""
     from core.sources import build_sources
 
-    tool_results = (state or {}).get("tool_results") or []
-    docs = (state or {}).get("documents_retrieved") or []
-    numbered_tools, numbered_docs, sources = build_sources(tool_results, docs)
-    entries = numbered_tools + numbered_docs
-    if not (1 <= n <= len(entries)):
+    state = state or {}
+    sources = build_sources(state.get("tool_results"), state.get("documents_retrieved"))
+    if not (1 <= n <= len(sources)):
         return None
-    label = sources[n - 1][1]
-    # Strip the `[n] ` numbering prefix build_sources added for the prompt.
-    text = entries[n - 1]
-    prefix = f"[{n}] "
-    if text.startswith(prefix):
-        text = text[len(prefix):]
+    _n, label, text = sources[n - 1]
     return label, text
 
 
@@ -691,9 +684,7 @@ def _source(ctx, args):
     from core.sources import build_sources
 
     state = ctx.state or {}
-    tool_results = state.get("tool_results") or []
-    docs = state.get("documents_retrieved") or []
-    _, _, sources = build_sources(tool_results, docs)
+    sources = build_sources(state.get("tool_results"), state.get("documents_retrieved"))
 
     if not sources:
         _print("  (the last answer drew on no gathered sources — nothing to cite)")
@@ -701,7 +692,7 @@ def _source(ctx, args):
 
     if not args:
         _print("  sources of the last answer  (/trace source <n> for the full text):")
-        for n, label in sources:
+        for n, label, _text in sources:
             _print(f"    [{n}] {label}")
         return
 

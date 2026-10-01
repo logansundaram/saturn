@@ -20,6 +20,7 @@ their established names.
 
 from __future__ import annotations
 
+import contextvars
 import time
 from functools import wraps
 
@@ -44,6 +45,17 @@ class ToolError(Exception):
     """A tool call that did not do its job — raised, never returned, so the tools node stamps
     the round `error`: the adaptive think wakes on it and the answer's incidents note tells the
     user. The message is written for the model; the node hands it back as the observation."""
+
+
+# Whether the call now executing was approved by a human at the gate — set by the tools node
+# around each call from state["gate_events"], read by a tool whose record depends on it
+# (`remember` stamps a fact by=user only for a call a person said yes to). False anywhere else:
+# an auto-approved call, a direct invoke.
+_HUMAN_APPROVED: contextvars.ContextVar = contextvars.ContextVar("human_approved", default=False)
+
+
+def human_approved() -> bool:
+    return bool(_HUMAN_APPROVED.get())
 
 
 def register_tool(risk: str = "destructive", *, retrieval: bool = False, untrusted: bool = False):

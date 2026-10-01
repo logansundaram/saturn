@@ -131,3 +131,25 @@ def test_check_or_raise_delegates_to_check(monkeypatch):
     monkeypatch.setattr(egress, "check", fake_check)
     egress.check_or_raise("llm", "h", "d", provider="p")  # allowed: returns without raising
     assert seen["args"] == ("llm", "h", "d", "p")
+
+
+def test_untracked_run_is_neither_sent_nor_silent():
+    """A shell command or a stdio MCP server is a process Saturn cannot see inside. Its run is
+    recorded as UNTRACKED: never counted as a send, and never absent — so no surface can claim
+    the boundary stayed closed over a turn that ran one."""
+    egress.record("shell", "?", "git pull", status=egress.UNTRACKED)
+    s = egress.summary()
+    assert (s["sent"], s["blocked"], s["untracked"]) == (0, 0, 1)
+    assert s["hosts"] == [] and s["bytes"] == 0
+    assert egress.count() == 0  # the status bar counts what crossed or was blocked
+    assert [e.status for e in egress.events()] == [egress.UNTRACKED]
+
+
+@pytest.mark.parametrize("host, private", [
+    ("localhost", True), ("127.0.0.1", True), ("::1", True), ("0.0.0.0", True),
+    ("192.168.1.1", True), ("10.0.0.7", True), ("169.254.169.254", True),
+    ("printer.local", True), ("nas", True), ("app.localhost", True),
+    ("example.com", False), ("8.8.8.8", False), ("127.evil.example.com", False),
+])
+def test_is_private_host(host, private):
+    assert egress.is_private_host(host) is private

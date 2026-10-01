@@ -2,9 +2,9 @@
 Tool-execution node for the v2 loop (agent → approval → tools → agent).
 
 tool_node executes the tool calls on the last AI message, appends the results as ToolMessages
-back into `messages` (so the model sees them next pass), and mirrors each
-`name(args) -> result` into the trace accumulators — paired so the record can't divorce a value
-from the call that produced it.
+back into `messages` (so the model sees them next pass), and mirrors each completed gathering
+call as `name(args) -> result` into the source accumulators — paired so the record can't divorce
+a value from the call that produced it. Every call, whatever its outcome, is in `tool_events`.
 """
 
 import time
@@ -14,14 +14,11 @@ from langgraph.errors import GraphInterrupt
 
 from trust import egress
 from trust import quarantine
-from tools.registry import tools_by_name, RETRIEVAL_TOOLS
+from tools.registry import DECLARED_RISK, tools_by_name, RETRIEVAL_TOOLS
 from tools.planning import PLAN_TOOL, to_plan
-from tools.toolspec import ToolError
+from tools.toolspec import _HUMAN_APPROVED, ToolError
 from core.state import AgentState, issuing_message
-from textutil import CALL_RESULT_SEP, clip, fmt_args, head_tail
-
-# Cap each argument's length so a big write_file payload doesn't bloat the trace/synthesis input.
-_MAX_ARG_REPR = 200
+from textutil import CALL_RESULT_SEP, clip, fmt_call, head_tail
 
 # Cap the one-line result preview carried in tool_events (UI tree); the full observation still
 # rides messages/tool_results untouched.
@@ -54,12 +51,6 @@ def _preview(observation: str) -> str:
     return clip(observation, _MAX_RESULT_PREVIEW)
 
 
-def _fmt_call(name: str, args: dict) -> str:
-    """Render a tool call like  calculate(expression='847 * 293 + 12450')  for the trace and
-    for synthesis, so results stay linked to the call that produced them."""
-    return f"{name}({fmt_args(args, _MAX_ARG_REPR)})"
-
-
 # Cap the per-call egress annotation carried in tool_events: a call rarely produces more than a
 # couple of boundary events, but a runaway one must not bloat every delta / trace row.
 _MAX_EGRESS_EVENTS = 4
@@ -74,7 +65,9 @@ def _egress_slice(mark: int) -> list[dict]:
     else records egress while one runs, so the slice belongs to exactly this call. Best-effort:
     an unreadable ledger yields no annotation, never an error."""
     try:
-        events = egress.events_since(mark)
+        # An UNTRACKED run (a shell command, a stdio MCP call) crossed no boundary Saturn saw:
+        # the receipt counts it, but it is neither a send nor a block to annotate here.
+        events = [e for e in egress.events_since(mark) if e.status != egress.UNTRACKED]
     except Exception:
         return []
     out = [
@@ -102,6 +95,13 @@ def tool_node(state: AgentState):
         tc for tc in (getattr(last, "tool_calls", None) or []) if tc["id"] not in answered
     ]
 
+    # The calls a human said yes to at the gate (auto-approved calls have no gate event).
+    approved_ids = {
+        c.get("id")
+        for ev in state.get("gate_events") or [] if isinstance(ev, dict)
+        for c in ev.get("calls") or [] if isinstance(c, dict) and c.get("approved")
+    }
+
     tool_messages = []
     tools_called = []
     tool_results = []
@@ -121,6 +121,7 @@ def tool_node(state: AgentState):
             observation = f"Error: unknown tool '{name}'."
             ok = False
         else:
+            approved_token = _HUMAN_APPROVED.set(tool_call["id"] in approved_ids)
             try:
                 observation = selected.invoke(args)
             except GraphInterrupt:
@@ -136,6 +137,8 @@ def tool_node(state: AgentState):
             except Exception as exc:  # surface tool errors to the model instead of crashing
                 observation = f"Error calling {name}: {exc}"
                 ok = False
+            finally:
+                _HUMAN_APPROVED.reset(approved_token)
         dur = time.perf_counter() - start
         if name == PLAN_TOOL and ok:
             # The checklist is state, not an observation: the rail, the gate's step context and
@@ -151,9 +154,11 @@ def tool_node(state: AgentState):
         # that carries instruction-shaped content is flagged (rail warning + gate context — and,
         # in `gate` mode, one fresh approval prompt for the next batch) and fenced between
         # explicit data-not-instructions markers before the model sees it. Clean content passes
-        # through byte-identical. See quarantine.py.
+        # through byte-identical. A FAILED call is scanned too: a remote server writes its own
+        # error text, and a failed command's output is as external as a successful one's. See
+        # quarantine.py.
         q_kinds: list[str] = []
-        if ok and quarantine.active() and quarantine.is_untrusted(name):
+        if quarantine.active() and quarantine.is_untrusted(name):
             # Scan an untrusted result (web/http/MCP/corpus) for instruction-shaped content (the
             # data-as-instructions check) and fence it before the model sees it.
             findings = quarantine.scan(clamped)
@@ -185,18 +190,23 @@ def tool_node(state: AgentState):
             )
         )
         tools_called.append(name)
-        # Retrieval results go to documents_retrieved; every other tool's result is paired with
-        # its call in tool_results so the value stays tied to what it answers. core/sources.py
-        # numbers both for the Sources receipt — keeping retrieval OUT of tool_results keeps a
-        # passage from being cited twice.
-        if name in RETRIEVAL_TOOLS:
+        # What the answer could draw on — the Sources receipt, /trace source and /trace why
+        # number these (core/sources.py). Only a call that COMPLETED and returns material: a
+        # failed or air-gap-blocked call informed nothing (it is in the incidents note), and a
+        # tool declared side_effecting (write_file, remember, schedule_notification) returns a
+        # confirmation of what it changed, not something to cite. Retrieval results go to
+        # documents_retrieved, every other tool's to tool_results paired with its call —
+        # keeping retrieval OUT of tool_results keeps a passage from being cited twice.
+        if call_status != "done" or DECLARED_RISK.get(name) == "side_effecting":
+            pass
+        elif name in RETRIEVAL_TOOLS:
             documents_retrieved.append(clamped)
         elif name == PLAN_TOOL:
             pass  # the checklist is state, not a source the answer drew on
         else:
             # The call paired with its observation (CALL_RESULT_SEP); the Sources receipt's
             # labels split on it to recover the call half from the observation.
-            tool_results.append(f"{_fmt_call(name, args)}{CALL_RESULT_SEP}{clamped}")
+            tool_results.append(f"{fmt_call(name, args)}{CALL_RESULT_SEP}{clamped}")
         # Structured per-call record for the UI's tool-I/O tree (args + result preview + timing).
         event = {
             "name": name,

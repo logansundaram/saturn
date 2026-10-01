@@ -10,6 +10,10 @@ becomes an observable fact rather than a slogan:
                       a remote-Ollama invocation) appends one `EgressEvent` to a process-wide,
                       append-only ledger. `/policy egress` renders it; the status bar shows a
                       live count.
+  - `UNTRACKED`       the ledger's honest gap: `run_shell` and stdio MCP servers are processes
+                      whose network use Saturn cannot observe, so each run is recorded with
+                      this status. Under air-gap they are held for the human instead
+                      (`policy.airgap_holds`) — the one boundary a string check cannot enforce.
   - `check(...)`      the air-gap gate. When `runtime.airgap` is on, an outbound op calls this
                       FIRST; it records a `blocked` event and returns a refusal string the caller
                       hands back instead of touching the network. Air-gap turns the privacy claim
@@ -32,6 +36,7 @@ mcp_client, llms, the TUI) can import it without a cycle.
 
 from __future__ import annotations
 
+import ipaddress
 import os
 from dataclasses import dataclass
 from datetime import datetime
@@ -46,6 +51,10 @@ _MAX_EVENTS = 5000
 # Egress statuses, for display + filtering.
 SENT = "sent"        # left the machine
 BLOCKED = "blocked"  # air-gap refused it before anything was sent
+# A process Saturn cannot see inside ran — a shell command, a stdio MCP server. It may have used
+# the network; nothing here can say. Never counted as a send, never left off the ledger: a turn
+# that ran one must not read as "nothing left this machine".
+UNTRACKED = "untracked"
 
 
 @dataclass(frozen=True)
@@ -96,7 +105,42 @@ def ollama_is_local() -> bool:
         name = (urlparse(endpoint).hostname or "").lower()
     except Exception:
         return False
-    return name in ("localhost", "::1", "0.0.0.0") or name.startswith("127.")
+    return is_loopback_host(name)
+
+
+def is_loopback_host(name: str) -> bool:
+    """Whether a hostname is THIS machine: `localhost`, or a literal address in the loopback
+    range (127.0.0.0/8, ::1) or the unspecified address a local daemon binds. Parsed as an
+    address, never matched as a string prefix — `127.evil.example.com` is a remote name."""
+    name = (name or "").strip().lower()
+    if name == "localhost":
+        return True
+    try:
+        addr = ipaddress.ip_address(name)
+    except ValueError:
+        return False
+    return addr.is_loopback or addr.is_unspecified
+
+
+# Names that resolve inside the local network by convention (mDNS, the loopback TLD, RFC 8375 /
+# common router suffixes). A bare single-label name ("nas") is local by construction.
+_PRIVATE_SUFFIXES = (".local", ".localhost", ".internal", ".lan", ".home.arpa")
+
+
+def is_private_host(name: str) -> bool:
+    """Whether a hostname points at this machine or a private network: loopback, an RFC 1918 /
+    link-local / reserved literal address (the cloud metadata address is link-local), or a name
+    that only resolves locally. No DNS lookup — a public name that RESOLVES to a private
+    address is out of this check's sight. Used to keep a model-chosen fetch off local services
+    (trust/quarantine.url_hold, tools/web._fetch)."""
+    name = (name or "").strip().lower().rstrip(".")
+    if is_loopback_host(name):
+        return True
+    try:
+        addr = ipaddress.ip_address(name)
+    except ValueError:
+        return "." not in name or name.endswith(_PRIVATE_SUFFIXES)
+    return addr.is_private or addr.is_link_local or addr.is_reserved or addr.is_multicast
 
 
 def _host_label(host: str) -> str:
@@ -219,17 +263,19 @@ def events_since(mark: int) -> list[EgressEvent]:
 
 
 def count() -> int:
-    """Number of egress events recorded this session (for the status-bar indicator)."""
-    return len(_LEDGER)
+    """Number of boundary events this session — sends and air-gap blocks — for the status-bar
+    indicator. Untracked runs are not counted: the bar counts what crossed or was refused."""
+    return sum(1 for e in _LEDGER if e.status != UNTRACKED)
 
 
 def summarize_events(events) -> dict:
     """Aggregate one slice of EgressEvents — THE one accounting every per-slice trust surface
     uses (the per-answer receipt, the `/policy egress` headline), so they can
     never report different byte/host numbers for the same events. Returns
-    {sent, blocked, bytes, hosts (first-seen order), channels (sent, first-seen)}."""
+    {sent, blocked, untracked, bytes, hosts (first-seen order), channels (sent, first-seen)}."""
     sent = [e for e in events if getattr(e, "status", "") == SENT]
     blocked = [e for e in events if getattr(e, "status", "") == BLOCKED]
+    untracked = [e for e in events if getattr(e, "status", "") == UNTRACKED]
     hosts: list[str] = []
     channels: list[str] = []
     for e in sent:
@@ -242,6 +288,7 @@ def summarize_events(events) -> dict:
     return {
         "sent": len(sent),
         "blocked": len(blocked),
+        "untracked": len(untracked),
         "bytes": sum(_safe_int(getattr(e, "n_bytes", 0)) for e in sent),
         "hosts": hosts,
         "channels": channels,
@@ -263,6 +310,7 @@ def summary() -> dict:
         "total": len(_LEDGER),
         "sent": agg["sent"],
         "blocked": agg["blocked"],
+        "untracked": agg["untracked"],
         "bytes": agg["bytes"],
         "hosts": agg["hosts"],
         "by_channel": by_channel,

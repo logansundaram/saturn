@@ -434,11 +434,15 @@ def _egress(ctx, args):
         f"{s['sent']} egress event(s), {_human_bytes(s['bytes'])} sent to "
         f"{len(hosts)} host(s)"
         + (f", {s['blocked']} blocked" if s["blocked"] else "")
+        + (f", {s['untracked']} untracked" if s["untracked"] else "")
         + airgap
     )
     ui.section("egress", headline)
     if cleared:
         _print("  (ledger cleared this session — counts are since the clear)")
+    if s["untracked"]:
+        _print("  untracked = a shell command or stdio MCP server ran; Saturn cannot see whether")
+        _print("  it used the network (air-gap holds these for your approval).")
 
     shown = evs[-limit:] if limit else evs
     if limit and len(evs) > limit:
@@ -449,6 +453,7 @@ def _egress(ctx, args):
         when = (e.ts or "")[11:19]
         status = (
             ("BLOCKED", ui.risk_style("destructive")) if e.status == egress.BLOCKED
+            else ("UNTRACKED", "yellow") if e.status == egress.UNTRACKED
             else (_human_bytes(e.n_bytes), "dim")
         )
         rows.append((when, e.channel, e.host, e.detail, status))

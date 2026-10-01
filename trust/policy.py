@@ -31,8 +31,8 @@ allowing "git status" would also wave through "git status; rm -rf ~" — the gat
 on anything it can't read at a glance. A background run_shell call (detached, timeout-free) is
 never prefix-exempt either: the prefix was granted for a bounded foreground run, not a daemon.
 
-Imports only config + diag (both leaves), so registry.py, the approval node, and the TUI can
-import this freely.
+Imports only config + diag + trust.egress (all leaves), so registry.py, the approval node, and
+the TUI can import this freely.
 """
 
 from __future__ import annotations
@@ -44,6 +44,7 @@ import time
 
 import diag
 from config import get_config, persist, RISK_ORDER
+from trust import egress
 
 # Any of these in a command means it can do more than its first tokens say — chaining, piping,
 # redirection, substitution. Such a command is never prefix-exempt; the human reads it at the gate.
@@ -135,10 +136,22 @@ def set_gate_off(off: bool) -> None:
 # --- the one gate question ----------------------------------------------------------------
 
 
+def airgap_holds(name: str) -> bool:
+    """Whether air-gap holds this tool for the human. Air-gap refuses every network op Saturn
+    makes itself (egress.check), but a shell command and an MCP server are other processes:
+    whether `git pull` or a stdio server touches the network cannot be checked from here. So
+    while air-gap is on, neither is ever auto-approved — not by the tier, an allowlisted prefix
+    or an open gate — and a headless run, which has no human, refuses them."""
+    return egress.airgap_on() and (name == "run_shell" or name.startswith("mcp_"))
+
+
 def approves(name: str, risk: str, args: "dict | None" = None) -> bool:
     """Whether a tool call runs WITHOUT facing the human. The approval node asks this for every
     pending call; the only two ways through are the tier threshold and (for run_shell only) a
-    user-persisted /policy allow prefix on the exact command."""
+    user-persisted /policy allow prefix on the exact command — and neither applies to a call
+    the air-gap holds (`airgap_holds`)."""
+    if airgap_holds(name):
+        return False
     if auto_approves(risk):
         return True
     if name == "run_shell":

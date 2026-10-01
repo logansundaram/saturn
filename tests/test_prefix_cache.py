@@ -64,6 +64,24 @@ def test_grounding_node_splits_stable_and_per_turn_sections(isolated_paths, monk
     assert ground.stable_grounding() == stable
 
 
+def test_grounding_node_reads_the_memory_store_once_a_turn(isolated_paths, monkeypatch):
+    """One selection returns both halves; a second call re-read and re-parsed the memory file
+    on the first node of every turn."""
+    from nodes import ground
+
+    asked = []
+
+    def split(q=""):
+        asked.append(q)
+        return "- #1 likes tea", "- #2 [entities] tea shop", [2]
+
+    monkeypatch.setattr(ground, "memory_context_split", split)
+    monkeypatch.setattr(ground, "mark_used", lambda ids: 0)
+    out = ground.grounding_node({"messages": [], "current_query": "tea", "attachments": ""})
+    assert asked == ["tea"]
+    assert "likes tea" in out["context_stable"] and "tea shop" in out["context_dynamic"]
+
+
 def test_memory_context_split_keeps_the_always_layers_query_independent(isolated_paths):
     from stores import memory_registry as mr
 

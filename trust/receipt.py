@@ -67,10 +67,10 @@ def _gated_span(gated_calls: int) -> "tuple[str, str]":
 
 def trust_spans(events: list, gated_calls: int = 0) -> list[tuple[str, str]]:
     """The receipt's trust segment from one turn's egress events + gated-call count, as
-    `(text, kind)` spans — kind ∈ `sent`|`blocked`|`gated` — so the styled renderer can
+    `(text, kind)` spans — kind ∈ `sent`|`blocked`|`untracked`|`gated` — so the styled renderer can
     color each fact semantically while the plain path prints the identical bare text.
 
-    Deviation-only: EMPTY when nothing was sent, blocked, or gated (the calm local turn — the
+    Deviation-only: EMPTY when nothing was sent, blocked, run untracked, or gated (the calm local turn — the
     receipt is then just the dim run stats); otherwise a compact send summary (count · bytes ·
     first host, `+n` for more), blocked attempts (air-gap), and the gated count. Accounting
     comes from egress.summarize_events — the same aggregation /policy egress
@@ -94,6 +94,10 @@ def trust_spans(events: list, gated_calls: int = 0) -> list[tuple[str, str]]:
         # span's bold-red style. Kept in step with the rail's air-gap leaf (tui/ui/trace.
         # _egress_leaf) — the receipt and the trace must name the same fact with the same glyph.
         spans.append((f"⊘ {agg['blocked']} blocked", "blocked"))
+    if agg["untracked"]:
+        # Shell commands / stdio MCP calls: processes whose network use Saturn cannot see. A
+        # count, not an alarm (the human approved each at the gate) — but never silence.
+        spans.append((f"{agg['untracked']} untracked", "untracked"))
     if gated_calls:
         spans.append(_gated_span(gated_calls))
     return spans

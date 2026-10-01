@@ -14,7 +14,7 @@ queries (6.5s warm, 15s cold, for a window across eight calendars; 0.7s narrowed
 the tool lets the agent narrow by calendar name, and the default window is one week.
 
 Times go through the notify grammar (`notify.parse_when`, `allow_past` so a query can look
-backward). AppleScript dates are built field by field (`mkdate`) — the `date "…"` literal form
+backward; the list window also takes a bare day). AppleScript dates are built field by field (`mkdate`) — the `date "…"` literal form
 is locale-dependent and never used. Every failure raises ToolError (an `Error: …` observation, stamped error).
 Nothing here is egress.
 """
@@ -48,31 +48,40 @@ def _now() -> datetime:
 
 
 def _mkdate(dt: datetime) -> str:
-    """The AppleScript expression building `dt` as a local Calendar date."""
+    """The AppleScript expression building `dt` as a local Calendar date. Calendar dates are
+    local wall-clock, so a time given with an offset (`15:00Z`) is converted first — its raw
+    hour would land the event hours off."""
+    dt = dt.astimezone()
     secs = dt.hour * 3600 + dt.minute * 60 + dt.second
     return f"my mkdate({dt.year}, {dt.month}, {dt.day}, {secs})"
 
 
 def _iso(dt: datetime) -> str:
-    return dt.isoformat(timespec="minutes")[:16]
+    """The local wall-clock time, as the events themselves are reported."""
+    return dt.astimezone().isoformat(timespec="minutes")[:16]
 
 
-def _when(text: str, default: datetime) -> datetime:
-    """Parse a user time, allowing the past; empty means `default`."""
+def _when(text: str, default: datetime, *, whole_day: bool = False) -> datetime:
+    """Parse a user time, allowing the past; empty means `default`. `whole_day` accepts a bare
+    day ('today', 'next monday') as that day's first minute — a window bound, not an event."""
     text = str(text or "").strip()
-    return notify.parse_when(text, now=_now(), allow_past=True) if text else default
+    if not text:
+        return default
+    return notify.parse_when(text, now=_now(), allow_past=True, whole_day=whole_day)
 
 
 @register_tool("read_only", untrusted=True)
 def list_calendar_events(start: str = "", end: str = "", calendars: str = ""):
     """List Apple Calendar events on this Mac between `start` and `end` (ISO 8601, 'today',
-    'tomorrow at 09:00', 'in 3 days'; default: the coming week from today). `calendars` is an
+    'tomorrow', 'next monday', 'tomorrow at 09:00', 'in 3 days'; a bare day means its first
+    minute, so today's events are start='today', end='tomorrow'; default: the coming week from
+    today). `calendars` is an
     optional comma-separated list of calendar names to search; empty means every calendar.
     Returns calendar, uid, title, start, end, all_day, location for each event, soonest first."""
     try:
         today = _now().replace(hour=0, minute=0, second=0, microsecond=0)
-        d1 = _when(start, today)
-        d2 = _when(end, d1 + timedelta(days=7))
+        d1 = _when(start, today, whole_day=True)
+        d2 = _when(end, d1 + timedelta(days=7), whole_day=True)
     except notify.NotifyError as exc:
         raise ToolError(str(exc)) from exc
     if d2 <= d1:

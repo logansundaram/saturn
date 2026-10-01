@@ -30,7 +30,7 @@ saturn -q "query"                    # pipe-friendly one-shot (answer only on st
 saturn -p "query" --json --export run.json
 saturn --replay logging/exports/run_1.json   # render an exported record, no DB/models needed
 
-# tests — fully offline (no Ollama, no network, no embedder); ~4s for ~1300 tests
+# tests — fully offline (no Ollama, no network, no embedder); ~4s for ~1150 tests
 python -m pytest tests/ -q
 python -m pytest tests/test_engine.py -q                 # one file
 python -m pytest tests/test_policy.py -q -k prefix       # one test by name
@@ -76,17 +76,23 @@ ground → agent ─(no tool calls)─→ END
   `core/prime.py` caches. The checks around the call are deterministic, in this order, and each
   is pinned by `tests/test_agent_loop.py`: **pause** (Esc → `interrupt({"type": "pause"})` →
   `ui.pause_prompt`: continue / steer / abort) → **steer** (Esc + text → a `STEER_PREFIX`
-  HumanMessage; drained only past the pause, since a resumed interrupt re-runs the node) → **cap** (`runtime.max_iterations` passes; the last pass runs with tools UNBOUND and a budget
+  HumanMessage; drained only past the pause, since a resumed interrupt re-runs the node) → **cap** (from pass `runtime.max_iterations` on no tool call runs: the pass stays an ordinary
+  bound call so the cached prefix holds, a call it emits is answered with `BUDGET_TEXT` and routed
+  back for the answer; a model that calls again is rerun once with tools UNBOUND and a budget
   note — a real answer, never a stub) → generate → **hygiene** on each emitted call (unknown tool,
   missing arguments via `core/tool_args.coerce_args`, malformed JSON, a repeat of a call the user
-  DECLINED this turn, a third identical call — each answered with an error ToolMessage that routes
-  straight back to `agent`, no gate, no model call) → **answer** (a message without tool calls IS
+  DECLINED this turn, a third identical call with nothing changed in between — each answered with
+  an error ToolMessage that routes straight back to `agent`, no gate, no model call) → **answer** (a message without tool calls IS
   the answer; the Sources receipt and the incidents note are appended to the RECORDED message,
   never the stream). `nodes.agent._generate` is the one model seam tests replace.
 - `approval` asks `trust/policy.approves(name, risk, args)` — the ONE gate question — on the
   issuing message's calls MINUS those the agent already answered, and interrupts the graph for the
-  human when it says no. A fully-rejected batch routes back to `agent`; the declined-repeat guard
-  keeps that "no" for the rest of the turn.
+  human when it says no. Two holds sit beside it, both from `trust/quarantine.py`: the escalation
+  after flagged output (the next batch that can ACT — send or change something) and the URL hold
+  (`url_hold`: a `web_extract` address the model composed after external content entered the
+  conversation, or a private address the user did not type). The prompt says why (`notes`). A
+  fully-rejected batch routes back to `agent`; the declined-repeat guard keeps that "no" for the
+  rest of the turn.
 - `tools` (the node, not the package) executes, clamps the observation, records egress, fences
   injection-suspicious content (`trust/quarantine.py`), and maps a `plan` call onto `state["plan"]`.
 
@@ -99,7 +105,7 @@ streams under `── response` as it generates (`app/turn.py` filters LangGraph
 
 `plan(steps=[{label, status}])` is a read-only tool the prompt asks for only on multi-step tasks.
 `nodes/tools.py` maps a successful call onto `state["plan"]` as the same **plain dicts**
-`{step_id, label, status, intended_tool, result, needs_resolution}` every reader already renders
+`{step_id, label, status, result}` every reader already renders
 (the rail's `show_plan`, the gate's `step` context via `current_step()` = first item with
 `result is None`, `/trace why`, replay, the headless `plan` field). It is intent, not record:
 the answer's incidents note reads the tool rounds that actually ran (the ToolMessages'
@@ -123,7 +129,8 @@ either, since 2026-09-30). Ollama is the only backend (cloud providers were cut 
 `core/model_family.py` is the recommended default per size, not a gate: any Ollama tool-calling
 model binds.
 
-`runtime.max_iterations` bounds agent passes per turn; past it the last pass answers without tools.
+`runtime.max_iterations` bounds the passes that may run tools; from that pass on calls are refused
+and the turn ends in an answer (one pass later at most).
 
 `config.yaml` is **gitignored user data**, seeded on first run from the tracked template
 `config.default.yaml` (or `~/.saturn/config.yaml` for wheel installs — `config.wheel_data_home`). Change defaults in the
@@ -157,9 +164,14 @@ accept). The benchmark's memory tasks and `tests/test_memory_*.py` pin this.
 - `egress.py` — every outbound network op calls `check()` (air-gap) then `record()`. The complete list
   of egress chokepoints is `core/llms.py`, `tools/web.py`, `tools/mcp_client.py`;
   `tests/test_no_new_egress.py` fails on a network-client import anywhere else. A new chokepoint is a
-  deliberate edit to that test plus check/record wiring. A remote `OLLAMA_HOST` counts as egress.
-- `quarantine.py` — untrusted output (web, MCP, corpus) is scanned, fenced as data, and the next tool
-  batch is escalated to the gate.
+  deliberate edit to that test plus check/record wiring. A remote `OLLAMA_HOST` counts as egress
+  (`is_loopback_host` parses the address; never match it as a string). `run_shell` and stdio MCP
+  servers are processes the ledger cannot see inside: each run is recorded `UNTRACKED` (never a
+  send, never absent), and under air-gap `policy.airgap_holds` keeps them from being
+  auto-approved — headless refuses them even with `--yolo`.
+- `quarantine.py` — untrusted output (web, MCP, files, shell, corpus — a FAILED call's text too) is
+  scanned, fenced as data, and the next batch that can act is escalated to the gate; `url_hold`
+  is the exfiltration hold on `web_extract` (above).
 
 ### Tools
 
@@ -167,6 +179,10 @@ Define a tool in its own module under `tools/` with `@register_tool(risk=...)` f
 `tools/registry.py` imports the modules to trigger registration — nothing else to edit. A call that
 did not do its job RAISES `toolspec.ToolError` (never returns an error string): the tools node
 stamps it `error`, which wakes the adaptive think and puts it in the answer's incidents note.
+Only a call that completed and gathered something is a source (`tool_results` /
+`documents_retrieved`): failed or blocked calls and `side_effecting` tools are not cited.
+`toolspec.human_approved()` tells a tool whether a person approved THIS call at the gate
+(`remember` stamps `by=user` only then, `by=inferred` otherwise).
 Unknown risk fails closed to `destructive`; `run_shell` is always `destructive`. MCP tools register as `mcp_<server>_<tool>`
 and never trust a server's self-declared tier. `tools/toolspec.py` is separate from `registry.py`
 precisely to avoid the import cycle — keep it that way.

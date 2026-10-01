@@ -59,6 +59,62 @@ def _replay_receipt(dest) -> str:
     return f"recorded: saturn --replay {path}"
 
 
+def headless_approver(value):
+    """Resolve interrupts with no human present. Gated tool calls are DENIED: the
+    approval gate (the user seeing and approving the exact action) is the product's
+    safety boundary, and headless mode silently approving a run_shell or write_file
+    would delete it. --yolo opens the gate policy itself, so under it the only
+    interrupts that still fire are the quarantine ESCALATIONS (they gate
+    independently of the policy threshold) — and those are approved here, because
+    --yolo is exactly the user pre-approving everything; denying them would make
+    '--yolo to allow them' a lie. The one thing --yolo does not pre-approve is the
+    air-gap: a call it holds (policy.airgap_holds — a shell command, an MCP server)
+    needs a human to judge whether it touches the network, and there is none here.
+    The decline path is already honest — the agent tells
+    the user the action was not performed. Any other interrupt type (the Esc pause never
+    arms headless) resumes unchanged via a bare True, which the agent node reads as
+    "continue"."""
+    if isinstance(value, dict) and value.get("type") == "approval_request":
+        from trust import policy
+
+        calls = value.get("tool_calls", [])
+        if policy.gate_off():
+            held = [tc for tc in calls if policy.airgap_holds(str(tc.get("name") or ""))]
+            if not held:
+                return True
+            print(
+                "denied under air-gap: " + ", ".join(tc.get("name", "?") for tc in held)
+                + " — a shell command or MCP server may use the network, and headless mode "
+                "has no human to check it; turn the air-gap off to allow them.",
+                file=sys.stderr,
+            )
+            return {"approved_ids": [tc.get("id") for tc in calls if tc not in held]}
+        names = ", ".join(tc.get("name", "?") for tc in calls)
+        why = (
+            " (escalated by the injection quarantine — a prior result looked "
+            "instruction-shaped)"
+            if value.get("quarantine")
+            else ""
+        )
+        if value.get("notes"):
+            why += " (" + "; ".join(str(n) for n in value["notes"]) + ")"
+        print(
+            f"denied gated tool call(s): {names}{why} — headless mode does not "
+            "approve gated actions; re-run with --yolo to allow them.",
+            file=sys.stderr,
+        )
+        return False
+    if isinstance(value, dict) and value.get("type") == "ask_user":
+        # No human to ask headless: note the unanswered question on stderr; the bare True
+        # resume makes the tool report "no answer" honestly (never a fabricated one).
+        print(
+            f"ask_user went unanswered (headless mode): {value.get('question')}",
+            file=sys.stderr,
+        )
+        return True
+    return True
+
+
 def run_headless(args) -> None:
     """Run one query headlessly (the -p and -q paths): load, run the turn, print the answer
     (or the -p --json object) to stdout, write the export record (-p: on --export; -q:
@@ -106,48 +162,6 @@ def run_headless(args) -> None:
         "callbacks": [tracer.llm_handler(run_id)],
     }
 
-    def _headless_approver(value):
-        """Resolve interrupts with no human present. Gated tool calls are DENIED: the
-        approval gate (the user seeing and approving the exact action) is the product's
-        safety boundary, and headless mode silently approving a run_shell or write_file
-        would delete it. --yolo opens the gate policy itself above, so under it the only
-        interrupts that still fire are the quarantine ESCALATIONS (they gate
-        independently of the policy threshold) — and those are approved here, because
-        --yolo is exactly the user pre-approving everything; denying them would make
-        '--yolo to allow them' a lie. The decline path is already honest — the agent tells
-        the user the action was not performed. Any other interrupt type (the Esc pause never
-        arms headless) resumes unchanged via a bare True, which the agent node reads as
-        "continue"."""
-        if isinstance(value, dict) and value.get("type") == "approval_request":
-            from trust import policy
-
-            if policy.gate_off():
-                return True
-            names = ", ".join(
-                tc.get("name", "?") for tc in value.get("tool_calls", [])
-            )
-            why = (
-                " (escalated by the injection quarantine — a prior result looked "
-                "instruction-shaped)"
-                if value.get("quarantine")
-                else ""
-            )
-            print(
-                f"denied gated tool call(s): {names}{why} — headless mode does not "
-                "approve gated actions; re-run with --yolo to allow them.",
-                file=sys.stderr,
-            )
-            return False
-        if isinstance(value, dict) and value.get("type") == "ask_user":
-            # No human to ask headless: note the unanswered question on stderr; the bare True
-            # resume makes the tool report "no answer" honestly (never a fabricated one).
-            print(
-                f"ask_user went unanswered (headless mode): {value.get('question')}",
-                file=sys.stderr,
-            )
-            return True
-        return True
-
     # --json: one machine-readable result object on stdout (the scripting/pipe contract).
     # Built from the same state/trace the interactive receipts render; `default=str` so an
     # odd arg value in tool_events can never crash the dump after the run itself succeeded.
@@ -185,7 +199,7 @@ def run_headless(args) -> None:
             graph,
             state,
             config,
-            approver=_headless_approver,
+            approver=headless_approver,
             on_update=on_update,
             on_token=on_token,
         )

@@ -67,6 +67,18 @@ def fmt_args(args: dict, cap: int) -> str:
     return ", ".join(f"{k}={truncate(repr(v), cap)}" for k, v in (args or {}).items())
 
 
+# Cap each argument's repr in a mirrored call so a big write_file payload doesn't bloat the
+# trace or the Sources labels.
+CALL_ARG_REPR = 200
+
+
+def fmt_call(name: str, args: dict) -> str:
+    """A tool call as `calculate(expression='847 * 293')` — the call half of a mirrored
+    tool-result entry (see CALL_RESULT_SEP below). One builder, so the trace replay can find a
+    call's entry by rebuilding its label instead of counting positions."""
+    return f"{name}({fmt_args(args, CALL_ARG_REPR)})"
+
+
 def iter_strings(value):
     """Every string leaf inside a nested dict/list/tuple value (dict KEYS and scalars skipped —
     neither can carry a secret worth scanning). THE one walker over a tool call's argument tree:

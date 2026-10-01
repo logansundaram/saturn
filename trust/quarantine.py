@@ -19,9 +19,11 @@ This module is the boundary:
                         leaf; the approval gate shows the flags so the human knows the batch they
                         are approving follows injection-flagged content.
   gate_pending() /      the control escalation (mode `gate`): after a flagged observation, the
-  consume_gate()        NEXT tool batch faces the approval gate regardless of risk tier — a tool
-                        call whose arguments may derive from injected text gets one fresh human
-                        look. The approval node PEEKS (gate_pending) to decide gating and consumes
+  consume_gate()        next tool batch that can ACT — send something out (is_outbound) or change
+                        something (a tier above read_only) — faces the approval gate regardless
+                        of risk tier: a call whose arguments may derive from injected text gets
+                        one fresh human look. A batch of local read-only calls (a plan update, a
+                        re-read) passes and leaves it armed. The approval node PEEKS (gate_pending) to decide gating and consumes
                         only after its interrupt resolves — LangGraph re-runs an interrupted node
                         from the top, so consuming up front would spend the escalation before the
                         human ever answered — and only when the batch was not fully REJECTED (a
@@ -30,13 +32,20 @@ This module is the boundary:
                         once per let-through flag so it costs one extra prompt, not a prompt per
                         call forever.
 
+  url_hold(...)         the exfiltration hold (mode `gate`), independent of the scanner: a
+                        read_only fetch still SENDS its URL. A web_extract address that the
+                        model composed after external content entered the conversation, or one
+                        on this machine / a private network that the user did not type, faces
+                        the human. A URL the user typed or a tool returned runs as before.
+
 `runtime.quarantine` (read live): off | warn | gate (default gate — safe by default).
   off   no scanning at all.
   warn  scan + fence + show flags in the rail/gate, but never escalate gating.
-  gate  warn, plus the one-batch gate escalation above.
+  gate  warn, plus the gate escalation and the URL hold above.
 
-Per-turn state is reset by `reset_turn()` (called from agent._fresh_turn). Imports only config +
-textutil (leaf), so tool_node, the approval node, and the TUI can all import it freely.
+Per-turn state is reset by `reset_turn()` (called from agent._fresh_turn). Imports only config,
+textutil and trust.egress (leaves), so tool_node, the approval node, and the TUI can all import
+it freely.
 """
 
 from __future__ import annotations
@@ -46,6 +55,7 @@ from dataclasses import dataclass
 
 from config import get_config
 from textutil import clip
+from trust import egress
 
 _MODES = ("off", "warn", "gate")
 
@@ -53,14 +63,16 @@ _MODES = ("off", "warn", "gate")
 # and — since 2026-09-29 — the file tools that return file CONTENTS (read_file, search_files). The
 # workspace is the launch folder (all of home when launched from ~), which holds downloaded and
 # third-party files, so what they return is data, not the user's own words. list_directory and
-# find_files return names only and stay trusted.
+# find_files return names only and stay trusted. run_shell joined 2026-10-01: `cat` of that same
+# downloaded file, or `curl`, prints exactly what read_file / web_extract would have returned.
 #
 # The classification is DECLARED AT REGISTRATION (@register_tool(untrusted=True) /
 # register_tool_object(untrusted=True)) and PUSHED here by tools/registry at startup and by
 # /mcp reload — quarantine stays a leaf (imports config + textutil only), so the registry pushes
 # instead of being imported. The hard-coded set below is only the fallback for code paths that
 # never load the registry (unit tests, partial imports); with a push in effect it is unused.
-UNTRUSTED_TOOLS = {"web_search", "web_extract", "search_knowledge_base", "read_file", "search_files"}
+UNTRUSTED_TOOLS = {"web_search", "web_extract", "search_knowledge_base", "read_file", "search_files",
+                   "run_shell"}
 _UNTRUSTED_PREFIX = "mcp_"  # every remote MCP tool (fallback-mode heuristic)
 _UNTRUSTED_OVERRIDE: "set[str] | None" = None  # the registry-pushed set; None = fallback mode
 
@@ -71,6 +83,16 @@ def set_untrusted_tools(names) -> None:
     a new external-fetch tool is untrusted because its own registration says so."""
     global _UNTRUSTED_OVERRIDE
     _UNTRUSTED_OVERRIDE = set(names)
+
+
+# Tools that SEND model-chosen text off this machine (the web tools; every MCP tool, by the same
+# reserved prefix as above). They mirror the egress chokepoints tests/test_no_new_egress.py pins.
+OUTBOUND_TOOLS = {"web_search", "web_extract"}
+
+
+def is_outbound(tool_name: str) -> bool:
+    """Whether a call to this tool sends its arguments off the machine."""
+    return tool_name in OUTBOUND_TOOLS or tool_name.startswith(_UNTRUSTED_PREFIX)
 
 
 @dataclass(frozen=True)
@@ -182,6 +204,50 @@ def wrap_observation(observation: str, findings: list[Finding]) -> str:
         + observation
         + "\n<<<UNTRUSTED CONTENT END>>>"
     )
+
+
+# --- the URL hold ----------------------------------------------------------------------------
+
+_SCHEME = re.compile(r"^[a-z][a-z0-9+.-]*://", re.IGNORECASE)
+
+COMPOSED_URL_NOTE = ("this address was composed by the model after it read external content — "
+                     "it appears in nothing you typed and nothing a tool returned")
+PRIVATE_URL_NOTE = ("this address is on this machine or a private network, and you did not "
+                    "type it")
+
+
+def _url_forms(url: str) -> "set[str]":
+    """The spellings under which a URL counts as already present: as given, without the scheme,
+    without a leading www., each with and without a trailing slash."""
+    bare = _SCHEME.sub("", url.strip())
+    forms = {url.strip(), bare}
+    if bare.lower().startswith("www."):
+        forms.add(bare[4:])
+    return {f.lower() for form in forms for f in (form, form.rstrip("/")) if f}
+
+
+def _mentions(text: str, url: str) -> bool:
+    low = (text or "").lower()
+    return any(form in low for form in _url_forms(url))
+
+
+def url_hold(url: str, user_text: str, seen_text: str, after_untrusted: bool) -> "str | None":
+    """Why a fetch of `url` must face the human, or None. `user_text` is everything the user
+    typed; `seen_text` everything else in the conversation (tool results, earlier answers,
+    attachments); `after_untrusted` whether any of that came from outside the trust boundary.
+
+    A URL the user typed is theirs. Otherwise a private address is held always (a local service
+    trusts localhost), and a URL found nowhere in the conversation is held once external content
+    could have steered it: carrying what the model read out in a query string is the one thing
+    a read_only fetch can do with injected instructions. Verbatim presence is the test — a URL
+    copied from a search result passes; one built around private text cannot."""
+    if mode() != "gate" or not url or _mentions(user_text, url):
+        return None
+    if egress.is_private_host(egress.host_of(url)):
+        return PRIVATE_URL_NOTE
+    if after_untrusted and not _mentions(seen_text, url):
+        return COMPOSED_URL_NOTE
+    return None
 
 
 # --- per-turn flag state (reset by agent._fresh_turn) ---------------------------------------

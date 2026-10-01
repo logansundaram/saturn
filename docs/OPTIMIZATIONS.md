@@ -47,8 +47,10 @@ everything that changed sits after such a checkpoint. The agent's prompt is buil
   message and a per-step tool set re-prefilled every step whole (8k tokens, 20 s). The loop
   binds the whole registry on every pass, byte-identical, and the prime binds it too, so the
   catalog is paid once. The cost moved: anything that changes the bound catalog moves the first
-  bytes of the prompt and forces one cold prefill of everything, and the capped last pass (tools
-  unbound, `runtime.max_iterations`) prefills cold once. Catalog experiments (`docs/engine.md`
+  bytes of the prompt and forces one cold prefill of everything. The cap used to be such a
+  change (tools unbound: 10 s of prefill at 7.5k tokens on the 4b, measured 2026-10-01); it now
+  keeps the tools bound and refuses the call instead (0.3–0.5 s), and only a model that calls
+  again past the refusal pays the cold prefill. Catalog experiments (`docs/engine.md`
   item 7) fight the cache for the same reason.
 - **[have] Same `num_ctx` on every request** (`core/llms.invoke_kwargs`, the warm-up, the
   prime). Ollama keys the loaded runner on the context size; a mismatch reloads the model and
@@ -59,7 +61,7 @@ everything that changed sits after such a checkpoint. The agent's prompt is buil
 ## 2. Fewer tokens through the model
 
 - **[have] Deterministic checks, not model calls.** The loop's hygiene (unknown tool, missing
-  arguments, a repeat of a declined call, a third identical call) answers with an error
+  arguments, a repeat of a declined call, a third identical call, a call past the cap) answers with an error
   ToolMessage — no gate, no model call — and the Sources and incidents trailers are appended
   mechanically. There is no judge and no answer rewrite: the model's last message is the answer.
   The plan engine's rewrite had cost ~10 s of decode per single-step turn (run 45: the step

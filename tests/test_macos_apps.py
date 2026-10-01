@@ -9,7 +9,7 @@ is exercised on the Linux CI leg and the honest-refusal path on a Mac.
 """
 
 import subprocess
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -308,6 +308,36 @@ def test_list_events_accepts_relative_times_and_end_before_start_is_an_error(mac
     assert "my mkdate(2026, 9, 7, 32400)" in s and "my mkdate(2026, 9, 8, 36000)" in s
     out = _err("list_calendar_events", {"start": "2026-09-09", "end": "2026-09-08"})
     assert out.startswith("Error:") and "before" in out
+
+
+def test_list_events_accepts_the_bare_days_its_description_offers(mac, clock):
+    """'What's on my calendar today?' — the schema says 'today' works, so it must."""
+    mac.reply("")
+    _tool("list_calendar_events").invoke({"start": "today", "end": "tomorrow"})
+    s = mac.script()
+    assert "my mkdate(2026, 9, 6, 0)" in s and "my mkdate(2026, 9, 7, 0)" in s
+    _tool("list_calendar_events").invoke({"start": "today", "end": "in 1 week"})
+    assert "my mkdate(2026, 9, 13, 36000)" in mac.script()
+    _tool("list_calendar_events").invoke({"start": "next monday", "end": "next friday"})
+    assert "my mkdate(2026, 9, 7, 0)" in mac.script() and "my mkdate(2026, 9, 11, 0)" in mac.script()
+
+
+def test_event_times_with_an_offset_land_at_the_local_wall_clock(mac, clock):
+    """Calendar dates are local wall-clock. '15:00Z' is 15:00 UTC, which is some other hour
+    here — the fields are converted, and the observation reports the local time it wrote."""
+    mac.reply("uid-9\n")
+    start = datetime(2026, 9, 8, 15, 0, tzinfo=timezone.utc)
+    local = start.astimezone()
+    out = _tool("create_calendar_event").invoke(
+        {"calendar": "Work", "title": "Sync", "start": "2026-09-08T15:00Z"})
+    secs = local.hour * 3600 + local.minute * 60
+    assert f"my mkdate({local.year}, {local.month}, {local.day}, {secs})" in mac.script()
+    assert out["start"] == local.isoformat(timespec="minutes")[:16]
+    # an offset far from any real zone, so the test bites wherever it runs
+    far = datetime(2026, 9, 8, 15, 0, tzinfo=timezone(timedelta(hours=14))).astimezone()
+    _tool("create_calendar_event").invoke(
+        {"calendar": "Work", "title": "Sync", "start": "2026-09-08T15:00+14:00"})
+    assert f"my mkdate({far.year}, {far.month}, {far.day}, {far.hour * 3600 + far.minute * 60})" in mac.script()
 
 
 def test_list_events_bad_time_is_an_error(mac, clock):

@@ -45,6 +45,11 @@ def test_multiple_hosts_collapse_to_plus_n():
     assert "api.tavily.com +1" in label
 
 
+def test_untracked_runs_are_named_not_counted_as_sends():
+    ev = egress.EgressEvent(ts="t", channel="shell", host="?", status=egress.UNTRACKED)
+    assert receipt.trust_spans([ev, ev], 0) == [("2 untracked", "untracked")]
+
+
 def test_gate_count_appends():
     assert _parts([], 3)[-1] == "3 calls gated"
     assert _parts([], 1)[-1] == "1 call gated"

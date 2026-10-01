@@ -118,11 +118,13 @@ def now_section(now: "datetime | None" = None) -> str:
             f"{now.strftime('%H:%M')} local time (UTC{offset[:3]}:{offset[3:]})")
 
 
-def stable_grounding() -> str:
+def stable_grounding(memory_always: "str | None" = None) -> str:
     """The query-independent half of the grounding block — what the idle prime re-sends between
     turns. Byte-identical to the `context_stable` the next turn's grounding_node builds unless
     the knowledge base, the instructions files or the always-loaded memory layers changed
-    in between (in which case the prime simply misses and the turn prefills it, as before)."""
+    in between (in which case the prime simply misses and the turn prefills it, as before).
+    `memory_always` is the always-loaded memory block when the caller already selected it
+    (grounding_node, which needs the by-match half of the same selection); None reads it here."""
     sections = ["## Grounding context", _working_folder_section()]
 
     global_instructions = _read_global_instructions()
@@ -147,7 +149,7 @@ def stable_grounding() -> str:
 
     # The always-loaded memory layers (user, commitments, the memo digest) are query-independent
     # — the stable half. The by-match facts land in the dynamic half below.
-    always, _matched, _ids = memory_context_split("")
+    always = memory_context_split("")[0] if memory_always is None else memory_always
     if always:
         sections.append(
             "### Persistent memory (what the user asked me to remember and what I learned; "
@@ -159,7 +161,10 @@ def stable_grounding() -> str:
 def grounding_node(state: AgentState) -> dict:
     start = time.perf_counter()
 
-    stable = stable_grounding()
+    # ONE memory selection per turn: its always half is query-independent and rides the
+    # stable block, its by-match half the dynamic one below.
+    always, matched, matched_ids = memory_context_split(state.get("current_query", ""))
+    stable = stable_grounding(always)
     sections = [now_section()]
 
     # Selected against THIS request (memory_registry.select_for_context): agent/entities/
@@ -169,7 +174,6 @@ def grounding_node(state: AgentState) -> dict:
     # get their last-used stamped (the expiry signal /memory flags stale on) — the one
     # read-path write, and it touches no fact text; best-effort — a stamp failure must never
     # fail the first node of every turn.
-    _always, matched, matched_ids = memory_context_split(state.get("current_query", ""))
     if matched:
         sections.append(
             "### Memory facts matched to this request (same store; #id as above)\n" + matched

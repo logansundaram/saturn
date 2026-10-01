@@ -453,8 +453,9 @@ def call_tool(server: str, tool: str, args: dict) -> str:
         raise ToolError(f"MCP server '{server}' is not configured.")
 
     # Network boundary: a remote (http/sse) server call leaves the machine — gate it on air-gap and
-    # record it to the egress ledger. A stdio server is a local child process (its own egress, if
-    # any, is shown in /policy), so it isn't gated here.
+    # record it to the egress ledger. A stdio server is a local child process: what it does with
+    # the network is out of Saturn's sight, so its call is recorded as UNTRACKED (never a send),
+    # and under air-gap the gate holds it for the human (policy.airgap_holds).
     if st.spec.transport in ("http", "sse"):
         host = egress.host_of(st.spec.url)  # the shared ledger host derivation (trust/egress.py)
         gblocked = egress.check("mcp", host, f"{server}.{tool}")
@@ -465,6 +466,8 @@ def call_tool(server: str, tool: str, args: dict) -> str:
         except Exception:
             n_bytes = 0
         egress.record("mcp", host, f"{server}.{tool}", provider=server, n_bytes=n_bytes)
+    else:
+        egress.record("mcp", server, f"{server}.{tool}", provider=server, status=egress.UNTRACKED)
 
     # Lazy reconnect: a server that crashed or dropped (state error/disconnected) gets ONE fresh
     # connection attempt per call. /mcp reload remains the full recovery (re-lists + re-registers).

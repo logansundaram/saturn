@@ -38,12 +38,15 @@ def test_http_call_is_recorded_with_its_args_unchanged(monkeypatch, isolated_pat
     assert args == {"text": ANTHROPIC_KEY, "headers": [BEARER]}  # nothing rewrites the args
 
 
-def test_stdio_server_is_not_egress(monkeypatch, isolated_paths):
+def test_stdio_server_call_is_untracked_not_a_send(monkeypatch, isolated_paths):
     mc = _forge(monkeypatch, transport="stdio")
     mark = egress.next_seq()
     with pytest.raises(ToolError):
         mc.call_tool("srv", "post", {"text": ANTHROPIC_KEY})
-    assert egress.events_since(mark) == []  # a local child process is not network egress
+    # A local child process is not a recorded SEND — but Saturn cannot see what it does with
+    # the network, so the call is on the ledger as untracked.
+    assert [(e.channel, e.host, e.status) for e in egress.events_since(mark)] == [
+        ("mcp", "srv", egress.UNTRACKED)]
 
 
 def test_map_strings_visits_exactly_what_iter_strings_yields():

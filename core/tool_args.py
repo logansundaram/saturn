@@ -155,7 +155,12 @@ def tool_for_args(name: str, args) -> Optional[str]:
     """The OTHER tool whose required arguments `args` supplies when none of them fits `name` —
     the small-model slip `recall(fact=…, replaces=…)` for `remember`. None when the arguments
     fit `name` (or nothing else), so a legitimate call is never second-guessed. A no-required-
-    args tool like recall would otherwise swallow foreign arguments silently and run."""
+    args tool like recall would otherwise swallow foreign arguments silently and run.
+
+    The other tool is matched on its arguments' REAL names, and only when exactly one tool
+    fits: the alias lists are for forgiving a call to the right tool, and a loose alias
+    (`name`, `query`, `text`) fits half the registry — `list_directory(name=…)` is not a
+    find_files call."""
     if not isinstance(args, dict) or not args:
         return None
     keys = {k.lower() for k in args if isinstance(k, str)}
@@ -166,12 +171,9 @@ def tool_for_args(name: str, args) -> Optional[str]:
     own_names |= {n for opt in _OPTIONAL.get(name, []) for n in ([opt] if isinstance(opt, str) else opt)}
     if keys & own_names:
         return None
-    for other, required in _ARG_ALIASES.items():
-        if other == name or not required:
-            continue
-        if all(any(a in keys for a in names) for names in required.values()):
-            return other
-    return None
+    fits = [other for other, required in _ARG_ALIASES.items()
+            if other != name and required and all(arg in keys for arg in required)]
+    return fits[0] if len(fits) == 1 else None
 
 
 def schema_hint(name: str, problem: str) -> str:

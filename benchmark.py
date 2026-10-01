@@ -406,7 +406,7 @@ def run_trust_benchmark(graph) -> dict:
 #   missing_tool:a|b   none of a required group ran (any one of the group satisfies it)
 #   phantom            no tool ran and the answer DESCRIBES the action ("I'll read the file now")
 #   stub               an empty answer or one of the loop's honest-failure texts
-#   capped             the turn hit runtime.max_iterations (the budget answer)
+#   capped             the turn ran past runtime.max_iterations (the budget answer)
 #   hygiene:n          n calls the agent node refused (unknown tool, bad arguments, a repeat)
 #   wrong_answer       none of the task's expected tokens appears in the answer
 #   file_missing /     the file a write task should have produced is absent / lacks its token
@@ -782,8 +782,14 @@ def run_query(graph, query: str) -> dict:
         # Loop-shape facts (the loop benchmark grades these): calls the agent node answered
         # itself — a ToolMessage with no tool_events record (hygiene: unknown tool, bad
         # arguments, a repeat; the harness auto-approves, so no gate declines land here) —
-        # and whether the turn ran into the pass cap.
-        n_tool_msgs = sum(1 for m in result["messages"] if isinstance(m, ToolMessage))
+        # and whether the turn ran into the pass cap. A call refused AT the cap is the cap, not
+        # a hygiene bounce; a capped turn is one that needed the pass after max_iterations (its
+        # calls at the cap were refused, or it lost its tools) — a text answer on the last
+        # allowed pass is an ordinary finish.
+        from nodes.agent import BUDGET_TEXT
+
+        n_tool_msgs = sum(1 for m in result["messages"]
+                          if isinstance(m, ToolMessage) and m.content != BUDGET_TEXT)
         hygiene = max(0, n_tool_msgs - len(result.get("tool_events") or []))
         iterations = int(result.get("iteration") or 0)
         return {
@@ -792,7 +798,7 @@ def run_query(graph, query: str) -> dict:
             "response": last_msg.content,
             "latency_s": elapsed,
             "hygiene": hygiene,
-            "capped": iterations >= get_config().max_iterations,
+            "capped": iterations > get_config().max_iterations,
             "context_tokens": result.get("context_tokens"),
             "plan": [
                 {"label": s["label"], "status": s["status"]} for s in plan

@@ -167,6 +167,20 @@ def test_tool_node_attaches_blocked_events_and_silent_calls_get_none(monkeypatch
     assert "egress" not in silent  # a local-only call carries no boundary annotation
 
 
+def test_an_untracked_run_is_not_a_rail_boundary_leaf(isolated_paths):
+    """The rail's egress leaves mark what crossed or was blocked. A shell run is on the ledger
+    as untracked (the receipt counts it) but is not annotated as a send, and stays `done`."""
+    from langchain.messages import AIMessage
+
+    import nodes.tools as tn
+
+    msg = AIMessage(content="", tool_calls=[
+        {"name": "run_shell", "args": {"command": "echo hi"}, "id": "c1"}])
+    delta = tn.tool_node({"messages": [msg]})
+    assert "egress" not in delta["tool_events"][0]
+    assert delta["messages"][0].additional_kwargs["saturn_status"] == "done"
+
+
 def test_egress_slice_caps_a_runaway_call(isolated_paths):
     import nodes.tools as tn
 

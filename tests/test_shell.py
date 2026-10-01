@@ -111,3 +111,15 @@ def test_env_scrub_is_a_trust_key():
     from commands.config import _TRUST_KEYS
 
     assert "shell.env_scrub" in _TRUST_KEYS
+
+
+def test_every_run_is_recorded_as_untracked_egress(isolated_paths):
+    """The shell can reach the network without Saturn seeing it, so each run leaves a ledger
+    entry naming the command — the receipt and /policy egress say 'untracked', never 'nothing
+    left'."""
+    from trust import egress
+
+    mark = egress.next_seq()
+    run_shell.invoke({"command": "echo hi"})
+    evs = egress.events_since(mark)
+    assert [(e.channel, e.status, e.detail) for e in evs] == [("shell", egress.UNTRACKED, "echo hi")]

@@ -51,10 +51,10 @@ def _trust_spans() -> list:
 
 # Trust-span kind -> semantic style: the same yellow/red vocabulary the posture line colors the
 # identical facts with — a boundary crossing must not render with the weight of a tok/s gauge.
-# `gated` stays dim (a count, not a signal — the human already approved those); `unknown` is
-# yellow (the slice may hide a send). No `local`
-# kind anymore: a calm local turn emits no trust spans at all (deviation-only, 2026-07-06).
-_TRUST_STYLE = {"sent": "yellow", "blocked": "bold red",
+# `gated` and `untracked` stay dim (counts, not signals — the human approved those calls);
+# `unknown` is yellow (the slice may hide a send). No `local` kind anymore: a calm local turn
+# emits no trust spans at all (deviation-only, 2026-07-06).
+_TRUST_STYLE = {"sent": "yellow", "blocked": "bold red", "untracked": _DIM,
                 "gated": _DIM, "unknown": "yellow", "human": "cyan",
                 "uncertain": "red"}
 

@@ -3,11 +3,16 @@ LLM conversation compaction — fold older turns into a dense summary so a long 
 re-sending full transcripts and outgrowing the context window.
 
 Two tiers of compaction exist, by cost:
-  - MECHANICAL (`agent._compact_history`): runs every turn, collapses OLDER turns to their Q&A and
-    keeps the most recent turn's ReAct scratchpad. Fast, structural, no LLM — always on.
+  - MECHANICAL (`app/session._compact_history`): runs every turn, collapses OLDER turns to their
+    Q&A and keeps the most recent turn's ReAct scratchpad. Fast, structural, no LLM — always on.
   - LLM SUMMARY (here): folds the turns older than the most recent into a SINGLE dense summary via
     the chat model. Heavier (an LLM call), so it is NOT per-turn — it fires manually (`/compact`)
-    or automatically when the context fills past `runtime.compact_threshold` (`agent._maybe_autocompact`).
+    or automatically when the context fills past `runtime.compact_threshold`
+    (`app/session._maybe_autocompact`).
+
+The summary cannot shrink the most recent turn, and that is usually the one that filled the
+window. `trim_observations` is the mechanical answer for it: every tool result is cut to a head
+and a tail, so the calls and their outcomes stay and a follow-up still has something to refer to.
 
 The summary is carried as a `HumanMessage` tagged with `_SUMMARY_PREFIX` so it (a) survives the
 mechanical per-turn compaction that follows — which keeps HumanMessages — and (b) reads to the model
@@ -21,7 +26,7 @@ import diag
 from langchain.messages import AIMessage, HumanMessage, ToolMessage
 
 from core.state import is_turn_start
-from textutil import truncate
+from textutil import head_tail, truncate
 
 # Tag marking the synthetic summary message. Kept on a HumanMessage so it rides through the
 # mechanical compaction (which keeps Human + final-AI) instead of being dropped.
@@ -103,6 +108,26 @@ def summarize_messages(messages: list, keep_recent_turns: int = 1):
     # (Steer notes still render in the summary transcript as "User:" lines via _role.)
     stats["summarized_turns"] = sum(1 for m in older if is_turn_start(m))
     return new, stats
+
+
+# What one tool result keeps when the context is compacted: ~1.5k characters is the call's
+# gist (a file's opening, a page's lead, a command's last lines) at a tenth of the clamp.
+_TRIM_CAP = 1500
+_TRIM_MARKER = ("\n… [{dropped} characters dropped when the context was compacted — call the "
+                "tool again to read them] …\n")
+
+
+def trim_observations(messages: list, cap: int = _TRIM_CAP) -> "tuple[list, int]":
+    """Cut every ToolMessage over `cap` characters to a head and a tail. Returns the new list
+    and how many were cut. Structure is untouched — same messages, ids and outcome stamps — so
+    no tool call is orphaned and the incidents record still reads true."""
+    out, trimmed = [], 0
+    for m in messages:
+        if isinstance(m, ToolMessage) and len(str(m.content)) > cap:
+            m = m.model_copy(update={"content": head_tail(str(m.content), cap, marker=_TRIM_MARKER)})
+            trimmed += 1
+        out.append(m)
+    return out, trimmed
 
 
 def _llm_summary(older: list) -> str:

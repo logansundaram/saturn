@@ -335,6 +335,19 @@ def test_policy_egress_lists_the_ledger_and_clears(gate, ctx, capsys, monkeypatc
     assert "cleared" in capsys.readouterr().out  # a cleared ledger never reads as "nothing left"
 
 
+def test_policy_egress_never_claims_closed_over_an_untracked_run(gate, ctx, capsys, monkeypatch):
+    from trust import egress
+
+    egress.clear()
+    monkeypatch.setattr(egress, "_CLEARED_AT", 0)
+    egress.record("shell", "?", "git pull", status=egress.UNTRACKED)
+    dispatch("/policy egress", ctx)
+    out = capsys.readouterr().out
+    assert "nothing has left" not in out and "stayed closed" not in out
+    assert "1 untracked" in out and "UNTRACKED" in out and "git pull" in out
+    assert "cannot see" in out  # the row's meaning is said, not left to guess
+
+
 def test_policy_airgap_bare_is_status_only(gate, ctx, capsys, monkeypatch):
     import config as config_mod
 

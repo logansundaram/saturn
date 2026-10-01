@@ -8,11 +8,12 @@ from nodes.agent import sources_footer
 def test_numbering_is_continuous_across_sections():
     tools = ["calculate(expression='1+1') -> 2", "web_search(query='x') -> results…"]
     docs = ["[source: handbook.md]\nsome passage"]
-    numbered_tools, numbered_docs, sources = build_sources(tools, docs)
-    assert [s[0] for s in sources] == [1, 2, 3]
-    assert numbered_tools[0].startswith("[1] calculate")
-    assert numbered_tools[1].startswith("[2] web_search")
-    assert numbered_docs[0].startswith("[3] [source: handbook.md]")
+    sources = build_sources(tools, docs)
+    assert [(n, label) for n, label, _text in sources] == [
+        (1, "calculate(expression='1+1')"), (2, "web_search(query='x')"),
+        (3, "knowledge base: handbook.md")]
+    # the third field is the full text behind the number (what /trace source prints)
+    assert sources[0][2] == tools[0] and sources[2][2] == docs[0]
 
 
 def test_tool_label_is_the_call_repr():
@@ -38,8 +39,78 @@ def test_footer_shape_and_empty_case():
 
 
 def test_empty_inputs():
-    numbered_tools, numbered_docs, sources = build_sources([], [])
-    assert numbered_tools == [] and numbered_docs == [] and sources == []
+    assert build_sources([], []) == []
+
+
+def _run(monkeypatch, name, tool, cid="c1"):
+    from langchain.messages import AIMessage
+
+    import nodes.tools as tn
+
+    monkeypatch.setitem(tn.tools_by_name, name, tool)
+    msg = AIMessage(content="", tool_calls=[{"name": name, "args": {"a": 1}, "id": cid}])
+    return tn.tool_node({"messages": [msg]})
+
+
+class _Returns:
+    def __init__(self, value):
+        self.value = value
+
+    def invoke(self, args):
+        return self.value
+
+
+class _Fails:
+    def invoke(self, args):
+        from tools.toolspec import ToolError
+
+        raise ToolError("no such file")
+
+
+def test_a_failed_call_is_not_a_source(monkeypatch):
+    """The receipt lists what informed the answer. A read that failed informed nothing — it is
+    in the incidents note, and must not also be cited as a source."""
+    assert _run(monkeypatch, "read_file", _Fails())["tool_results"] == []
+    assert _run(monkeypatch, "search_knowledge_base", _Fails())["documents_retrieved"] == []
+    out = _run(monkeypatch, "read_file", _Returns("hello"))
+    assert out["tool_results"] == ["read_file(a=1) -> hello"]
+
+
+def test_an_airgap_blocked_call_is_not_a_source(monkeypatch, isolated_paths):
+    from config import get_config
+    from trust import egress
+
+    class Blocked:
+        def invoke(self, args):
+            return egress.check("web_search", "duckduckgo.com", "q")
+
+    monkeypatch.setitem(get_config()._data["runtime"], "airgap", True)
+    assert _run(monkeypatch, "web_search", Blocked())["tool_results"] == []
+
+
+def test_an_action_is_not_a_source(monkeypatch):
+    """write_file, remember, schedule_notification… return a confirmation, not material: a
+    tool declared side_effecting changes something, it does not inform the answer."""
+    for name in ("write_file", "remember", "schedule_notification", "create_note"):
+        assert _run(monkeypatch, name, _Returns("done"))["tool_results"] == [], name
+    # a shell command's output is material (test results, a log)
+    assert _run(monkeypatch, "run_shell", _Returns("3 passed"))["tool_results"]
+
+
+def test_trace_replay_pairs_results_with_their_own_call():
+    """/trace pairs each recorded call with its fuller output. Failed calls, plan calls and
+    knowledge-base searches have no entry in tool_results, so pairing by position would hang
+    one call's output on another."""
+    from tui.ui.trace import _enrich_results
+
+    events = [
+        {"name": "read_file", "args": {"file_path": "missing.md"}, "result": "Error: no such file", "ok": False},
+        {"name": "plan", "args": {"steps": []}, "result": "ok", "ok": True},
+        {"name": "read_file", "args": {"file_path": "a.md"}, "result": "short", "ok": True},
+    ]
+    results = ["read_file(file_path='a.md') -> the full text of a.md"]
+    out = _enrich_results(events, results)
+    assert [e["result"] for e in out] == ["Error: no such file", "ok", "the full text of a.md"]
 
 
 def test_split_call_result_is_the_one_parser():

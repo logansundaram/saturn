@@ -6,7 +6,7 @@ conversation as STEER_PREFIX notes. Process-level singleton: the CLI runs one tu
 
 Determinism across the interrupt: a resumed `interrupt()` re-executes its node from the top, so
 the node reads the pause non-destructively (`pending()`/`peek()`) and `clear()`s only after the
-interrupt returns. (Lived in core/plan_ops.py until the plan engine's removal, 2026-09-27.)"""
+interrupt returns."""
 
 from __future__ import annotations
 
@@ -57,13 +57,13 @@ class PauseController:
 
     def request(self, source: str, reason: str = "") -> None:
         """Ask for a pause at the next step boundary — or, for source "steer", QUEUE a mid-turn
-        correction. Two slots, not one (transplanted from the engine isolate, 2026-08-15): a
-        pause is a request to INTERRUPT, a steer a request to adjust WITHOUT interrupting, and
-        the agent node handles them on different paths. Sharing one slot let a steer typed after an
-        Esc-pause overwrite the pause (the user saw the ⏸ acknowledgement and never got the
-        editor), so steers queue and are drained only PAST any pause interrupt — the pause
-        outranks the steer, the path to interrupt() evaluates identically on both LangGraph
-        passes, and a steer is never taken on a pass the interrupt then discards. For pauses the latest request wins (only the most recent reason is shown)."""
+        correction. Two slots, not one: a pause is a request to INTERRUPT, a steer a request to
+        adjust WITHOUT interrupting, and the agent node handles them on different paths. One
+        shared slot would let a steer typed after an Esc-pause overwrite the pause, so steers
+        queue and are drained only PAST any pause interrupt — the pause outranks the steer, the
+        path to interrupt() evaluates identically on both LangGraph passes, and a steer is never
+        taken on a pass the interrupt then discards. For pauses the latest request wins (only
+        the most recent reason is shown)."""
         with self._lock:
             if source == "steer":
                 self._steers.append(PauseRequest(source=source, reason=reason))

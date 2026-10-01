@@ -33,6 +33,7 @@ from datetime import datetime
 from pathlib import Path
 
 from notify import Notification, NotifyError
+from tools.applescript import quote
 
 LABEL_PREFIX = "com.saturn.notify."
 
@@ -59,15 +60,13 @@ def _run(argv: list[str]) -> str:
     return proc.stdout or ""
 
 
-def _applescript_string(text: str) -> str:
-    """An AppleScript double-quoted string literal: backslash and quote escaped, newlines
-    flattened (AppleScript literals don't interpret \\n and a raw newline would end the line)."""
-    flat = " ".join(str(text or "").split())
-    return '"' + flat.replace("\\", "\\\\").replace('"', '\\"') + '"'
+def _flat(text: str) -> str:
+    """One line: a notification shows a single line, so whitespace runs (newlines too) collapse."""
+    return quote(" ".join(str(text or "").split()))
 
 
 def _display_script(title: str, body: str) -> str:
-    return f"display notification {_applescript_string(body)} with title {_applescript_string(title)}"
+    return f"display notification {_flat(body)} with title {_flat(title)}"
 
 
 def _guard(when: datetime) -> str:

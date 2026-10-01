@@ -1,8 +1,6 @@
 """
-The gate policy — ONE object behind every approval decision.
-
-What used to be five separate gate-relaxation mechanisms are now views over this module
-(the v1.x "policy-as-configuration" consolidation):
+The gate policy — ONE object behind every approval decision. Every gate-relaxation
+mechanism is a view over this module:
 
   runtime.auto_approve   the policy's tier threshold — tools AT OR BELOW it run without
                          prompting. The baseline lives in config.yaml like every other knob;
@@ -12,9 +10,6 @@ What used to be five separate gate-relaxation mechanisms are now views over this
   --yolo (headless)      the same view, applied at process start.
   /policy risk           edits a TOOL's tier (live in registry.TOOL_RISK; persisted here).
   /policy allow          edits the run_shell prefix allowlist (persisted here).
-
-(The legacy top-level command spellings /risk, /allow, /autoapprove were CUT 2026-07-06 —
-_RENAMED pointers cover the muscle memory; the mechanisms themselves are unchanged.)
 
 Durable state is one small, versionable JSON file at `config.path("permissions")`
 (database/permissions.json): `risk_overrides` ({tool: tier}, applied over declared tiers at
@@ -50,10 +45,10 @@ from trust import egress
 # redirection, substitution. Such a command is never prefix-exempt; the human reads it at the gate.
 _SHELL_META = re.compile(r"[;&|<>`$\n\r]")
 
-# --- the argument-tail screen (transplanted from the gating isolate, 2026-08-15) ------------
+# --- the argument-tail screen -------------------------------------------------------------
 #
-# A token-prefix grant validated only its HEAD, so `git log --output=<abs>` and
-# `git -c core.pager=!sh -c id` rode in on a benign-looking grant. These tables close the NAMED
+# A token-prefix grant that validated only its HEAD would let `git log --output=<abs>` and
+# `git -c core.pager=!sh -c id` ride in on a benign-looking grant. These tables close the NAMED
 # laundering paths in the tokens AFTER a granted prefix; the screen re-runs at USE against the
 # live command text (never validate-once) and can only ever tighten. It is a denylist and stays
 # defense-in-depth: the boundary is the human approving the exact reviewed command.
@@ -101,7 +96,7 @@ def set_tier(new_tier: str, save: bool = False) -> str:
     if save:
         persist("runtime.auto_approve")
     # An explicit tier choice supersedes any gate-open snapshot: `/policy open off` must never
-    # restore a tier ABOVE the one the user set last (transplanted from the gating isolate).
+    # restore a tier ABOVE the one the user set last.
     _tier_before_gate_off = None
     return new_tier
 
@@ -111,7 +106,7 @@ def auto_approves(risk: str) -> bool:
     return get_config().auto_approves(risk)
 
 
-# /policy open is not a sixth mechanism — it's this: threshold = destructive (every tier passes).
+# /policy open is not a separate switch — it's this: threshold = destructive (every tier passes).
 # Remember what the threshold was so `off` restores it instead of guessing.
 _tier_before_gate_off: "str | None" = None
 
@@ -197,8 +192,7 @@ def _load() -> dict:
         data = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(data, dict):
             raise ValueError(f"expected a JSON mapping, got {type(data).__name__}")
-        # Field SHAPES get the same treatment as a garbled file (transplanted from the gating
-        # isolate): a wrong-typed field is never iterated as-is — a string shell_allow would
+        # Field SHAPES get the same treatment as a garbled file: a wrong-typed field is never iterated as-is — a string shell_allow would
         # turn each character into an allowlist prefix, a list risk_overrides would raise in
         # the registry — so it fails closed to defaults through the same recorded/renamed path.
         overrides = data.get("risk_overrides", {})
@@ -274,14 +268,12 @@ def clear_risk_override(tool: str) -> bool:
     return True
 
 
-# --- grant lifecycle (transplanted from the gating isolate, 2026-08-15) ---------------------
+# --- grant lifecycle ------------------------------------------------------------------------
 #
 # Every always-allow grant carries a LIFETIME. `task` dies at the next turn boundary (the
 # default — the shortest lifetime, so an unknown/garbled scope fails closed to it), `session`
-# dies with the process, and only `persist` reaches permissions.json. Before this, the gate's `a`
-# dropped a tool's tier for the whole session and persisted a shell prefix forever from one
-# keypress — the longest-lived grant in the gate, with nothing to see or revoke it (lingering
-# authority: a grant that outlives the task that motivated it). The `/policy allow` COMMAND is an
+# dies with the process, and only `persist` reaches permissions.json — a grant must not outlive
+# the task that motivated it unless the user chose that. The `/policy allow` COMMAND is an
 # explicit allowlist edit and stays persist-scoped; only the gate's `a` takes the default.
 
 GRANT_SCOPES = ("task", "session", "persist")
@@ -291,12 +283,9 @@ _task_allow: list = []
 _session_allow: list = []
 
 # Undo callbacks run at the task boundary for non-shell grants (tier drops). Registered by
-# nodes/approval._apply_always_grants — this module imports only config + diag, so the undo lives
-# with the code that applied it.
+# nodes/approval._apply_always_grants — this module stays a leaf (it never imports tools/), so
+# the undo lives with the code that applied it.
 _task_restorers: list = []
-
-# Every grant, revoke and expiry, in order — the audit trail (grant_log()).
-_grant_log: list = []
 
 
 def default_grant_scope() -> str:
@@ -312,23 +301,6 @@ def default_grant_scope() -> str:
 def on_task_end(fn) -> None:
     """Register an undo to run at the next task boundary (returns the tool name it restored)."""
     _task_restorers.append(fn)
-
-
-def grant_tool_tier(name: str, scope: str, restore=None) -> None:
-    """Record a tool-tier always-allow grant: the audit entry, plus its task-scoped undo.
-
-    The shell half of the same gate decision goes through `grant_shell_prefix`, which logs a
-    `grant` event; the tier half logged NOTHING — only its expiry — so `grant_log()`, documented
-    as "every grant, revoke and expiry, in order", could not answer "was this tool ever granted?".
-    Both halves of one keypress now leave the same kind of record.
-
-    The REGISTRY mutation deliberately stays with the caller (nodes/approval): this module imports
-    only config + diag so it stays a leaf, which is why the undo arrives as a callback rather than
-    policy reaching into tools/. Pass `restore=None` for a grant with nothing to undo (a persisted
-    drop, or a tier that was already read_only)."""
-    _grant_log.append({"event": "grant", "at": time.time(), "tool": str(name), "scope": scope})
-    if scope == "task" and restore is not None:
-        on_task_end(restore)  # the one registration seam — never a direct list write
 
 
 def begin_task() -> None:
@@ -356,23 +328,14 @@ def end_task() -> dict:
             diag.log(f"policy: task-boundary restore failed: {exc}")
             failed.append(f"{type(exc).__name__}: {exc}")
     _task_restorers.clear()
-    if expired or restored or failed:
-        _grant_log.append({"event": "expire", "at": time.time(),
-                           "prefixes": expired, "tools": restored, "failed": failed})
     return {"prefixes": expired, "tools": restored, "failed": failed}
 
 
-def grant_log() -> list:
-    """The audit trail: every grant, revoke and expiry, in order (session-scoped, in memory)."""
-    return list(_grant_log)
-
-
 def reset_grants() -> None:
-    """Drop every in-memory grant, restorer and log entry (tests; never called by the app)."""
+    """Drop every in-memory grant and restorer (tests; never called by the app)."""
     _task_allow.clear()
     _session_allow.clear()
     _task_restorers.clear()
-    _grant_log.clear()
 
 
 # --- run_shell prefix allowlist (/policy allow) -----------------------------------------
@@ -423,7 +386,6 @@ def add_shell_allow(prefix: str, scope: "str | None" = None) -> bool:
         if any(g["prefix"].lower() == prefix.lower() for g in store):
             return False
         store.append({"prefix": prefix, "granted_at": time.time(), "scope": scope})
-    _grant_log.append({"event": "grant", "at": time.time(), "prefix": prefix, "scope": scope})
     return True
 
 
@@ -438,15 +400,12 @@ def remove_shell_allow(token: str) -> "str | None":
     for store in (_task_allow, _session_allow):
         for i, g in enumerate(store):
             if g["prefix"].lower() == target.lower():
-                removed = store.pop(i)["prefix"]
-                _grant_log.append({"event": "revoke", "at": time.time(), "prefix": removed})
-                return removed
+                return store.pop(i)["prefix"]
     data = _load()
     for i, p in enumerate(data["shell_allow"]):
         if p.lower() == target.lower():
             removed = data["shell_allow"].pop(i)
             _save(data)
-            _grant_log.append({"event": "revoke", "at": time.time(), "prefix": removed})
             return removed
     return None
 
@@ -561,7 +520,7 @@ def grant_shell_prefix(prefix: str, command: str, *, dry_run: bool = False,
 
     The UI calls this with dry_run=True at decision time, while the approval interrupt is still
     pending: persisting then would let the node's re-run recompute the batch as ungated and lose
-    the human's decision from gate_events (gotcha #7) — so the UI only collects the validated
+    the human's decision from gate_events — so the UI only collects the validated
     grant, and the approval node applies it here past the interrupt. Never raises: every refusal
     is a (False, why) so a typed metacharacter degrades to "it keeps prompting", never a dead
     turn."""

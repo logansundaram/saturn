@@ -1,5 +1,5 @@
 """
-Where Saturn works (2026-09-29; spec docs/superpowers/specs/2026-09-29-launch-folder-workspace-design.md).
+Where Saturn works (spec: docs/superpowers/specs/2026-09-29-launch-folder-workspace-design.md).
 
 The launch folder is the workspace: `agent.main` calls `set_root(cwd)` once, and the file tools,
 the shell's working directory, the folder's SATURN.md and `/init` follow it. Folders added with
@@ -7,7 +7,7 @@ the shell's working directory, the folder's SATURN.md and `/init` follow it. Fol
 tools/files._resolve is a thin wrapper over it.
 
 Nothing set (the offline tests, the benchmark, a tool imported outside the app) → the root is the
-configured `paths.workspace`, exactly the pre-2026-09-29 behaviour.
+configured `paths.workspace`.
 """
 
 from __future__ import annotations

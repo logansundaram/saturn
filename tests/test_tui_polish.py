@@ -1,7 +1,7 @@
 """
 TUI polish helpers — the one-time discovery-hint sentinels (receipt.take_hint), the empty-Esc
-pause acknowledgement path (typeahead on_pause), the posture-at-the-prompt derivation
-(tui.ui.prompt._posture_flags), and the status bar's trailing key legend. All pure/offline.
+pause acknowledgement path (typeahead on_pause), the live posture flags
+(tui.ui._base._posture_flags), and the status bar's trailing key legend. All pure/offline.
 
 NOTE: `tui.ui.prompt` / `tui.ui.response` the ATTRIBUTES are functions (the package re-exports
 them flat), so the submodules are reached via importlib.import_module, never `from tui.ui import`.
@@ -83,22 +83,29 @@ def test_pause_note_prints_acknowledgement(capsys):
     assert "pausing at the next pass" in capsys.readouterr().out
 
 
-# --- posture at the prompt (live derivation, same reads as the status bar) ----------------------
+# --- live posture flags (the status bar + the prompt's rprompt read the same flags) -------------
 
 def test_posture_flags_read_live_config(monkeypatch):
-    mod = importlib.import_module("tui.ui.prompt")
+    base = importlib.import_module("tui.ui._base")
+    prompt_mod = importlib.import_module("tui.ui.prompt")
     from config import get_config
 
     rt = get_config()._data.setdefault("runtime", {})
     monkeypatch.setitem(rt, "auto_approve", "read_only")
     monkeypatch.setitem(rt, "airgap", False)
-    assert mod._posture_flags() == []  # default posture: nothing to announce
+    assert base._posture_flags() == []  # default posture: nothing to announce
+    assert prompt_mod._posture_rprompt() == []
+
+    monkeypatch.setitem(rt, "auto_approve", "side_effecting")  # loosened: a bar fact only
+    assert base._posture_flags() == [("side_effecting", "warn")]
+    assert prompt_mod._posture_rprompt() == []
 
     monkeypatch.setitem(rt, "auto_approve", "destructive")  # the gate is OPEN, not "at a tier"
     monkeypatch.setitem(rt, "airgap", True)
-    flags = mod._posture_flags()
-    assert [k for _, k in flags] == ["gate", "airgap"]
-    assert flags[0][0] == "⚠ GATE OFF"
+    flags = base._posture_flags()
+    assert flags == [("⚠ GATE OFF", "risk"), ("⛓ AIRGAP", "accent")]
+    assert [text for _, text in prompt_mod._posture_rprompt()] == ["⚠ GATE OFF", " · ", "⛓ AIRGAP"]
+    assert all(kind in base._POSTURE_STYLE for _, kind in flags)
 
 
 # --- the styled receipt's kind -> style map ------------------------------------------------------
@@ -186,29 +193,42 @@ def test_show_plan_renders_a_replan_redraft_even_when_ids_and_statuses_match(
 
 def test_statusbar_key_legend_trails_the_bar():
     sb = importlib.import_module("tui.ui.statusbar")
-    if not sb._RICH:
-        pytest.skip("rich not available")
     plain = sb._StatusBar().__rich__().plain
     # Trailing on purpose: the bar trims from the right on narrow terminals, so the legend is
     # the first thing sacrificed.
     assert plain.rstrip().endswith("esc pause · ctrl-c cancel")
 
 
+def test_statusbar_counts_egress_once_something_crossed():
+    # The counter reads egress.count() inside a broad except — a missing function would hide
+    # the counter silently, so pin it.
+    from trust import egress
+    sb = importlib.import_module("tui.ui.statusbar")
+    egress.clear()
+    assert "egress" not in sb._StatusBar().__rich__().plain
+    egress.record("web_search", "h", "q")
+    egress.record("shell", "?", "git pull", status=egress.UNTRACKED)
+    try:
+        assert "⇅ 1 egress" in sb._StatusBar().__rich__().plain
+    finally:
+        egress.clear()
+
+
 # ── an unknown plan status is rendered as UNKNOWN, never guessed as pending ─────────────────
-# (transplanted from the visibility isolate: views over instrumentation, never a guess)
 
 
-def test_unknown_plan_status_renders_as_unknown_never_pending(monkeypatch):
+def test_unknown_plan_status_renders_as_unknown_never_pending():
     from tui.ui import plan as plan_ui
+    from tui.ui._base import _RAIL_GLYPH
 
-    monkeypatch.setattr(plan_ui, "_RICH", False)
-    row = plan_ui._plan_line_bare({"step_id": 1, "label": "x", "status": "garbage"},
-                                  show_tool=False)
-    assert "?" in row and "garbage" in row
-    assert not row.lstrip().startswith("·")  # the pending glyph would be a guess
+    def row(step):
+        return plan_ui._plan_line(step, show_tool=False).plain.lstrip().removeprefix(_RAIL_GLYPH)
+
+    unknown = row({"step_id": 1, "label": "x", "status": "garbage"})
+    assert "?" in unknown and "garbage" in unknown
+    assert not unknown.lstrip().startswith("·")  # the pending glyph would be a guess
     # a step carrying no status at all is still pending (the producer's default)
-    row = plan_ui._plan_line_bare({"step_id": 1, "label": "x"}, show_tool=False)
-    assert row.lstrip().startswith("·")
+    assert row({"step_id": 1, "label": "x"}).lstrip().startswith("·")
 
 
 # ── Tier-2 instrument surfaces ───────────────────────────────────────────────────────────────
@@ -277,22 +297,19 @@ def test_air_gap_glyph_is_one_cell_and_shared_by_rail_and_receipt():
 
 
 def test_llm_leaf_draws_the_rail_like_every_other_leaf(capsys):
-    """The one leaf that opened at a bare 4-space indent, so `/trace invoke` and `/trace context`
-    fell out of the gutter every other view sits in. Its `avail` arithmetic already subtracted 4
-    for the rail — drawing it makes the existing budget correct."""
+    """`/trace invoke`'s leaves sit in the same rail gutter as every other trace view."""
     trace = importlib.import_module("tui.ui.trace")
     base = importlib.import_module("tui.ui._base")
     trace._llm_leaf("sys", "a message body", base._DIM, None)
     out = capsys.readouterr().out
     assert base._RAIL_GLYPH in out
-    assert out.lstrip("\n").startswith(f"  {base._RAIL_GLYPH} ") or not trace._RICH
+    assert out.lstrip("\n").startswith(f"  {base._RAIL_GLYPH} ")
 
 
 def test_recording_cut_reports_the_right_number_and_survives_the_clip(capsys):
-    """Two bugs: the delta was computed against the DISPLAY preview constant (a different number
-    entirely), and the marker was appended to a body that was then clipped to that same length —
-    so it was cut off for exactly the long messages it described, and suppressed under `--full`
-    where a silently capped message matters most."""
+    """The disclosure is measured against the recorded content (not the display preview), and is
+    its own leaf — appended to the body, the preview clip would cut it off for exactly the long
+    messages it describes."""
     trace = importlib.import_module("tui.ui.trace")
 
     recorded = "x" * 8000            # stores.trace caps content at _LLM_MSG_CAP
@@ -326,16 +343,13 @@ def test_recording_cut_is_disclosed_on_the_output_side_too(capsys):
 
 
 # ── the status bar names the last FINISHED node, never a running one ─────────────────────────
-# show_node is fed from a node's *update* event, which LangGraph emits on completion — so the bar
-# said `▸ plan` in active styling while `execute` was running, contradicting the `✓ plan` rail
-# line directly above it. No active-node signal exists to render (that needs a graph hook).
+# show_node is fed from a node's *update* event, which LangGraph emits on completion. No
+# active-node signal exists to render (that needs a graph hook).
 
 
 def test_statusbar_names_the_last_finished_node_in_past_tense(monkeypatch):
     sb = importlib.import_module("tui.ui.statusbar")
     base = importlib.import_module("tui.ui._base")
-    if not sb._RICH:
-        pytest.skip("rich not available")
 
     monkeypatch.setattr(base, "_status", dict(base._status, node="plan"))
     plain = sb._StatusBar().__rich__().plain
@@ -346,8 +360,6 @@ def test_statusbar_names_the_last_finished_node_in_past_tense(monkeypatch):
 def test_statusbar_seeds_a_started_turn_before_any_node_completes(monkeypatch):
     sb = importlib.import_module("tui.ui.statusbar")
     base = importlib.import_module("tui.ui._base")
-    if not sb._RICH:
-        pytest.skip("rich not available")
 
     monkeypatch.setattr(sb, "_live_start", lambda: None)
     monkeypatch.setattr(base, "_status", dict(base._status))
@@ -359,24 +371,9 @@ def test_statusbar_seeds_a_started_turn_before_any_node_completes(monkeypatch):
     assert f"✓ {base._NODE_STARTING}" not in plain
 
 
-# ── synthesize's rail row must not land inside the open response block ───────────────────────
-# Its update fires when the node COMPLETES — after the answer began streaming — and rich inserts
-# a console print above a live display, so the row shoved the streaming answer down mid-stream.
-# The row is skipped at normal verbosity; everything ELSE about the node must still land.
-
-
-def _fresh_trace():
-    base = importlib.import_module("tui.ui._base")
-    base._trace_started = False
-    base._t_last = None
-    base._status = dict(base._status, node="", iteration=0, tools=0, tok_per_sec=0.0)
-    return base
-
-
 # ── streaming vs finished measure: the answer must not re-wrap when it lands ─────────────────
-# The live tail and the finished markdown rendered at different widths (full terminal vs
-# min(term, _BODY_WIDTH)), so on any terminal wider than ~102 columns every line break in the
-# answer moved the instant finish() ran. Both now render at min(term, _BODY_WIDTH).
+# The live tail and the finished markdown both render at min(term, _BODY_WIDTH), so no line
+# break in the answer moves the instant finish() runs.
 
 
 @pytest.mark.parametrize("width", [80, 110, 160])
@@ -390,8 +387,6 @@ def test_streaming_tail_and_final_body_break_lines_in_the_same_places(width, mon
     its asterisks), so geometry is only comparable where the text is the same text."""
     resp = importlib.import_module("tui.ui.response")
     base = importlib.import_module("tui.ui._base")
-    if not resp._RICH:
-        pytest.skip("rich not available")
 
     from rich.console import Console
 
@@ -425,8 +420,6 @@ def test_the_streaming_tail_indents_every_visual_row_not_every_newline(monkeypat
     first row of each paragraph."""
     resp = importlib.import_module("tui.ui.response")
     base = importlib.import_module("tui.ui._base")
-    if not resp._RICH:
-        pytest.skip("rich not available")
 
     from rich.console import Console
 

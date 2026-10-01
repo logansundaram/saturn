@@ -1,10 +1,9 @@
 """
 Learn at session end, gated — the review pass that turns the memory notepad into something that
-grows (PLAN.md, "memory as the learning layer", mechanism 1).
+grows.
 
-Three adjacent stores used to hold learnable signal and discard it: the compaction summary, the
-steer notes / gate denials / failed tool calls inside a turn's state, and the trace.
-This module collects that signal as CANDIDATES — typed, provenance-stamped proposals for the
+Learnable signal lives in the compaction summary, the steer notes / gate denials / failed tool
+calls inside a turn's state, and the trace. This module collects it as CANDIDATES — typed, provenance-stamped proposals for the
 memory file — and puts every one in front of the user before anything is written:
 
   collect_turn(state, run_id)     after each interactive turn: mechanical candidates from the
@@ -35,7 +34,7 @@ from pathlib import Path
 from langchain.messages import HumanMessage
 
 import diag
-from core.state import is_turn_start, STEER_PREFIX
+from core.state import STEER_PREFIX, this_turn
 from stores.memory_registry import _atomic_write, normalize_layer
 from textutil import clip
 
@@ -76,16 +75,6 @@ def _candidate(layer: str, text: str, source: str, run_id=None, *, due=None,
 
 # ── mechanical candidates from one turn ───────────────────────────────────────────────────────
 
-def _this_turn(messages: list) -> list:
-    """The messages of the most recent turn (from its real question onward)."""
-    start = 0
-    for i in range(len(messages) - 1, -1, -1):
-        if is_turn_start(messages[i]):
-            start = i
-            break
-    return list(messages[start:])
-
-
 def collect_turn(state: dict, run_id=None) -> list[dict]:
     """Mechanical candidates from a finished turn's state. Pure (no I/O) — the REPL appends the
     result to the pending queue with `add_pending`. Deterministic sources only:
@@ -98,7 +87,7 @@ def collect_turn(state: dict, run_id=None) -> list[dict]:
     query = clip(" ".join(str(state.get("current_query") or "").split()), 90)
     ctx = f" (while: {query})" if query else ""
 
-    for m in _this_turn(state.get("messages") or []):
+    for m in this_turn(state.get("messages") or []):
         # A steer is a standalone STEER_PREFIX HumanMessage (nodes/agent.py); the merged form
         # older records carry ("<query>\n<STEER_PREFIX> <reason>") is read the same way.
         if not isinstance(m, HumanMessage) or STEER_PREFIX not in str(m.content):

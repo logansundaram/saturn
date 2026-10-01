@@ -2,11 +2,11 @@
 Runtime configuration for Saturn.
 
 Loads `config.yaml` once and exposes it through a small typed accessor so the rest of the
-codebase never hard-codes a model id or a filesystem path again. Each hardware tier binds ONE
+codebase never hard-codes a model id or a filesystem path. Each hardware tier binds ONE
 chat model (`tiers.<tier>.model`) plus an embedder; the factory in `llms.py` builds it.
 
-Nothing here imports from the rest of the project, so it is safe to import from anywhere
-(no circular-import risk).
+It imports only the stdlib-only leaves `diag` and `core.model_family`, so it is safe to import
+from anywhere (no circular-import risk).
 
 Live edits: `set(dotted_key, value)` mutates the in-memory config for the session (used by
 the `/config` slash command). `reload()` re-reads the file from disk. `persist(dotted_key)`
@@ -17,7 +17,6 @@ shred the heavily-commented file; the surgical line edit keeps it intact.)
 
 from __future__ import annotations
 
-import os
 import re
 import shutil
 import sys
@@ -28,6 +27,7 @@ from typing import Any
 import yaml
 
 from core import model_family  # stdlib-only leaf: importing it keeps config's no-cycle property
+from diag import saturn_home  # the one data-home rule (diag is a leaf)
 
 # Risk tiers, ordered low -> high. Shared with the approval gate (registry.risk_of returns
 # one of these strings). A tool runs without prompting iff its tier <= the configured
@@ -39,7 +39,7 @@ RISK_ORDER = ["read_only", "side_effecting", "destructive"]
 # added without this classification silently gains persist-by-default — which is exactly the
 # footgun the set exists to close.
 #
-# The rule: a trust key is EXEMPT from the persist-by-default inversion (2026-07-07). Setting one
+# The rule: a trust key is EXEMPT from persist-by-default. Setting one
 # applies for the session; persisting takes an explicit --save — the same fail-closed convention
 # that keeps the canonical toggles (/policy open, /policy airgap) on the opt-IN --save parser.
 TRUST_KEYS = frozenset({
@@ -50,31 +50,15 @@ TRUST_KEYS = frozenset({
     "runtime.grant_scope",  # session/persist lengthen how long an always-allow grant lives
 })
 
-def saturn_home() -> Path:
-    """The user's own Saturn folder: `$SATURN_HOME`, else `~/.saturn` — hand-written files that
-    follow the user everywhere (the global SATURN.md, hooks.yaml), and a new wheel install's
-    data (`wheel_data_home`)."""
-    return Path(os.environ.get("SATURN_HOME") or Path.home() / ".saturn").expanduser()
-
-
-def wheel_data_home() -> Path:
-    """Where a wheel (pipx/uv) install keeps config.yaml and its data: `$SATURN_HOME`, else
-    `~/.saturn` — the same folder as `saturn_home()`. diag.py and env_keys.py repeat this rule
-    (they import nothing project-side) and tests/test_data_home.py pins the three together.
-    (The old `$SATURDAY_HOME` / `~/.saturday` fallbacks were cut 2026-09-30.)"""
-    return saturn_home()
-
-
 def _resolve_config_path() -> Path:
     """Locate the live config.yaml.
 
     Clone mode (the curl installers and manual installs): config.yaml sits next to this file at
-    the repo root. Since 2026-07-10 the live file is UNTRACKED user data (persisted /config
-    edits land in it; a tracked live config dirtied the tree on every saved setting and broke
-    /update's ff-only pull) — it is seeded on first run from the tracked template
-    config.default.yaml.
+    the repo root. The live file is UNTRACKED user data (persisted /config edits land in it; a
+    tracked one would dirty the tree and break /update's ff-only pull) — it is seeded on first
+    run from the tracked template config.default.yaml.
 
-    Installed mode (pipx/uv/pip wheel): the user's editable copy lives in `wheel_data_home()`
+    Installed mode (pipx/uv/pip wheel): the user's editable copy lives in `saturn_home()`
     (~/.saturn), seeded on first run from the packaged default that the wheel ships
     to <venv>/share/saturn/ (see pyproject.toml). Keeping the live copy out of site-packages
     means a persisted /config edit survives a `pipx upgrade`.
@@ -85,9 +69,8 @@ def _resolve_config_path() -> Path:
         return local
     local_default = root / "config.default.yaml"
     if local_default.exists():
-        # Clone mode, first run (or a pull that removed the old tracked config.yaml): seed the
-        # live copy from the template. Upstream default changes land in the template; the
-        # user's live file is never touched by git again.
+        # Clone mode, first run: seed the live copy from the template. Upstream default changes
+        # land in the template; the user's live file is never touched by git.
         try:
             shutil.copy(local_default, local)
         except OSError:
@@ -96,7 +79,7 @@ def _resolve_config_path() -> Path:
             # persist() reports "not persisted" cleanly; the next writable launch seeds.
             return local_default
         return local
-    home = wheel_data_home()
+    home = saturn_home()
     user_cfg = home / "config.yaml"
     if not user_cfg.exists():
         share = Path(sys.prefix) / "share" / "saturn"
@@ -116,9 +99,8 @@ def _resolve_config_path() -> Path:
 
 _CONFIG_PATH = _resolve_config_path()
 # Data root: every `paths.*` entry resolves against the directory holding the live config.yaml —
-# the repo root in clone mode, wheel_data_home() for a wheel install. User data never lands in
-# site-packages, where an upgrade would clobber it. (diag.py and env_keys.py mirror this lookup;
-# they deliberately import nothing project-side, so keep the three in step.)
+# the repo root in clone mode, saturn_home() for a wheel install (= diag.data_root()). User data
+# never lands in site-packages, where an upgrade would clobber it.
 _REPO_ROOT = _CONFIG_PATH.parent
 
 
@@ -139,11 +121,6 @@ class Capability:
 
     supports_tools: bool = True
     context_window: int = 8192
-    # The model's ARCHITECTURAL maximum — display only (the /models metrics columns). Kept
-    # separate from context_window on purpose: context_window is what num_ctx_for hands
-    # ChatOllama, and every qwen3.x tag reports a 262144 maximum that would exhaust VRAM on any
-    # consumer card if it were requested per call. Never collapse these two fields.
-    max_context_window: int = 0
 
 
 class Config:
@@ -172,9 +149,8 @@ class Config:
     # --- tier / model ------------------------------------------------------
     @property
     def active_tier(self) -> str:
-        # The fallback is the ladder's default CLASS, not a retired preset name: "workstation"
-        # stopped shipping with the size ladder, so a config missing the key resolved to a tier
-        # that does not exist and hard-failed on every model resolution (2026-08-16).
+        # The fallback is the ladder's default CLASS, so a config missing the key still names a
+        # tier that exists.
         return self._data.get("active_tier", model_family.DEFAULT_CLASS)
 
     def _tier(self) -> dict:
@@ -199,7 +175,7 @@ class Config:
             )
         model = tier_chat_model(tier)
         if not model and isinstance(tier.get("roles"), dict):
-            # The pre-2026-09-30 shape: no longer read — say exactly what to write instead.
+            # A v0.1.0 `roles:` block is refused — say exactly what to write instead.
             roles = tier["roles"]
             was = roles.get("tool_caller") or next(iter(roles.values()), "")
             raise KeyError(
@@ -229,11 +205,9 @@ class Config:
         spec = caps.get(model)
         if not spec:
             return Capability()  # conservative defaults
-        cw = spec.get("context_window", 8192)
         return Capability(
             supports_tools=spec.get("supports_tools", True),
-            context_window=cw,
-            max_context_window=spec.get("max_context_window", cw),
+            context_window=spec.get("context_window", 8192),
         )
 
     # --- runtime knobs -----------------------------------------------------

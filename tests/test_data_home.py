@@ -1,16 +1,12 @@
 """Where a wheel install keeps its data: one home, $SATURN_HOME or ~/.saturn — the same folder
-as the global SATURN.md and hooks.yaml. (The $SATURDAY_HOME / ~/.saturday fallbacks were cut
-2026-09-30.)
-config.py, diag.py and env_keys.py each carry the rule (leaf modules, no project imports);
-these tests pin the three together."""
+as the global SATURN.md and hooks.yaml. The $SATURDAY_HOME / ~/.saturday spellings are not read."""
 
 import pytest
 
 import config
 import diag
-import env_keys
 
-_RULES = (config.wheel_data_home, diag._wheel_data_home, env_keys._wheel_data_home)
+_RULES = (config.saturn_home, diag.saturn_home)
 
 
 @pytest.fixture
@@ -27,7 +23,6 @@ def _all(expected):
 
 def test_a_new_install_lives_in_dot_saturn(home):
     _all(home / ".saturn")
-    assert config.saturn_home() == home / ".saturn"  # one folder with SATURN.md and hooks.yaml
 
 
 def test_an_old_saturday_install_is_no_longer_read(home):

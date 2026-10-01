@@ -2,11 +2,8 @@
 Structured run trace -> SQLite (database/db.sqlite).
 
 Every turn becomes a row in `runs`; every node update streamed during that turn becomes a row
-in `events`. This is the transparency/observability layer: it makes
-every run inspectable after the fact and is the data source the frontend will render later.
-
-It supersedes the scattered `print(perf_counter)` lines — those now go to `diag.log()` (the file
-diagnostic log), while the durable, queryable per-turn record lives here.
+in `events`; every model call a row in `llm_calls`. This is the transparency/observability layer:
+it makes every run inspectable after the fact. Timing diagnostics go to `diag.log()` instead.
 """
 
 import json
@@ -45,8 +42,7 @@ _RESPONSE_TRUNCATION_MARKER = "… [recorded answer truncated at "
 def response_truncated(text) -> bool:
     """True when a recorded `runs.response` carries end_run's write-time truncation marker.
     Readers treat a marked row as INCOMPLETE (show_run says "truncated", the export
-    reconstruction passes complete=False). Historical rows cut at the old 2000-char cap carry no
-    marker and read False here — absent-as-unknown (the gotcha #7 convention): never try to
+    reconstruction passes complete=False). Legacy rows cut without a marker read False here — absent-as-unknown (the gotcha #7 convention): never try to
     infer truncation for legacy rows."""
     return _RESPONSE_TRUNCATION_MARKER in str(text or "")
 
@@ -92,9 +88,8 @@ CREATE INDEX IF NOT EXISTS ix_events_run ON events(run_id);
 CREATE INDEX IF NOT EXISTS ix_llm_calls_run ON llm_calls(run_id);
 """
 
-# `/trace search` (CUT 2026-09-30) kept an FTS5 index over runs.query/response, maintained by
-# three SQL triggers that live IN the DB file. The tracer no longer creates or maintains it, but a
-# DB written by an earlier build still carries the triggers — and an INSERT on `runs` compiles
+# A DB written by an earlier build carries three SQL triggers feeding an FTS5 index over
+# runs.query/response (the cut `/trace search`) — and an INSERT on `runs` compiles
 # them, so on a SQLite build without fts5 every start_run would fail "no such module: fts5", and
 # on one with it every run would keep feeding an index nothing reads. Tracer.__init__ drops them
 # (plain DDL, no module needed). The orphaned `runs_fts` table itself is left alone: dropping a
@@ -125,8 +120,7 @@ def current_run_id():
 
 # How much of each message / delta the trace retains. These bound the durable execution log the
 # /trace replay reads, so they're generous: the replay is the full-fidelity record (reasoning +
-# tool decisions), not the abbreviated live rail. Bumped from 300/4000 — at the old caps a turn's
-# reasoning was clipped to a sentence and a busy delta lost its tail.
+# tool decisions), not the abbreviated live rail.
 _CONTENT_CAP = 1500
 _DATA_CAP = 16000
 
@@ -150,12 +144,6 @@ def _json_default(o):
 # Per-string-leaf cap when a delta overruns _DATA_CAP (see _summarize).
 _LEAF_CAP = 2000
 
-# Entries kept from an oversized list of NON-string leaves (a long list of small numeric dicts,
-# which map_strings cannot shrink by a byte): without this rung the halving string ladder below
-# spins to its floor without progress and per-key salvage drops the whole key. A shortened list
-# with the loss NAMED beats losing the key entirely.
-_LIST_CAP = 400
-
 
 def _summarize(delta: dict) -> tuple[str, str]:
     parts = []
@@ -175,94 +163,40 @@ def _summarize(delta: dict) -> tuple[str, str]:
     return summary, data
 
 
-def _thin_lists(obj, cap: int, dropped: list, path: str = ""):
-    """Truncate every list longer than `cap`, naming each loss in `dropped`. Entries are dropped
-    from the TAIL and nothing is substituted in their place — a marker entry inside the list would
-    reach consumers that read `.get("start")` off every element. The loss is recorded once, at the
-    top level, in the same `truncated` record the rest of this ladder uses."""
-    if isinstance(obj, dict):
-        return {k: _thin_lists(v, cap, dropped, f"{path}.{k}" if path else str(k))
-                for k, v in obj.items()}
-    if isinstance(obj, list):
-        items = [_thin_lists(v, cap, dropped, f"{path}[]") for v in obj]
-        if len(items) > cap:
-            dropped.append(f"{path or 'root'}[{len(items) - cap} of {len(items)} entries]")
-            return items[:cap]
-        return items
-    return obj
-
-
 def _bound_delta(data: str, original: int) -> str:
-    """Bring an oversized delta under _DATA_CAP while keeping it PARSEABLE (transplanted from
-    the visibility isolate). Clip long string LEAVES (head+tail, marker inside the text) with a
-    cap that halves until the JSON fits; a delta that still overflows (a plan with hundreds of
-    steps, a thousand tiny messages) keeps every key that fits on its own and replaces the rest
-    with an explicit `truncated` record naming what was dropped and the original size. Never a
-    slice of the JSON text: a mid-token cut stores an undecodable blob — decode_json -> default,
-    the whole delta (tool events, the plan update) silently gone from /trace replay, `data: null`
-    in an export — INCOMPLETE for the wrong reason."""
+    """Bring an oversized delta under _DATA_CAP while keeping it PARSEABLE. Clip long string
+    LEAVES (head+tail, marker inside the text) with a cap that halves until the JSON fits; a
+    delta that still overflows (a plan with hundreds of steps) keeps every key that fits on its
+    own and replaces the rest with an explicit `truncated` record naming what was dropped and the
+    original size. Never a slice of the JSON text: a mid-token cut stores an undecodable blob —
+    the whole delta silently gone from /trace replay, `data: null` in an export."""
     note = f"delta exceeded the {_DATA_CAP}-char record cap at write time"
     try:
         obj = json.loads(data)
-    except Exception:
-        # json.dumps produced `data`, so this is belt and braces.
-        return json.dumps({"truncated": {"original_chars": original, "dropped": ["*"],
-                                         "note": "delta could not be re-encoded"}})
-    def _string_ladder(o):
-        """Halve the per-string-leaf cap until the encoding fits; None if it never does."""
         cap = _LEAF_CAP
         while cap >= 50:
-            try:
-                clipped = json.dumps(map_strings(o, lambda s, c=cap: head_tail(s, c)))
-            except Exception:
-                return None
+            clipped = json.dumps(map_strings(obj, lambda s, c=cap: head_tail(s, c)))
             if len(clipped) <= _DATA_CAP:
                 return clipped
             cap //= 2
-        return None
-
-    fitted = _string_ladder(obj)
-    if fitted is not None:
-        return fitted
-    # Clipping strings could not do it, so the bulk is in NON-string leaves. Thin the long
-    # lists before falling back to dropping whole keys, and re-run the string ladder at each
-    # rung, so text is only clipped as hard as that rung actually needs.
-    if isinstance(obj, dict):
-        list_cap = _LIST_CAP
-        while list_cap >= 25:
-            thinned_drops: list = []
-            try:
-                thinned = _thin_lists(obj, list_cap, thinned_drops)
-                if thinned_drops:
-                    thinned = {**thinned, "truncated": {"original_chars": original,
-                                                        "dropped": thinned_drops, "note": note}}
-            except Exception:
-                break
-            fitted = _string_ladder(thinned)
-            if fitted is not None:
-                return fitted
-            list_cap //= 2
-    # Per-key salvage: keep the keys that fit, drop the rest with a marker.
-    if isinstance(obj, dict):
-        kept: dict = {}
-        dropped = []
-        budget = _DATA_CAP - 200  # room for the marker itself
-        for k, v in obj.items():
-            try:
+        if isinstance(obj, dict):
+            kept: dict = {}
+            dropped = []
+            budget = _DATA_CAP - 200  # room for the marker itself
+            for k, v in obj.items():
                 small = map_strings(v, lambda s: head_tail(s, 100))
                 piece = json.dumps({k: small})
-            except Exception:
-                dropped.append(str(k))
-                continue
-            if len(piece) <= budget:
-                kept[k] = small
-                budget -= len(piece)
-            else:
-                dropped.append(str(k))
-        kept["truncated"] = {"original_chars": original, "dropped": dropped, "note": note}
-        out = json.dumps(kept)
-        if len(out) <= _DATA_CAP + 400:
-            return out
+                if len(piece) <= budget:
+                    kept[k] = small
+                    budget -= len(piece)
+                else:
+                    dropped.append(str(k))
+            kept["truncated"] = {"original_chars": original, "dropped": dropped, "note": note}
+            out = json.dumps(kept)
+            if len(out) <= _DATA_CAP + 400:
+                return out
+    except Exception:
+        pass
     return json.dumps({"truncated": {"original_chars": original, "dropped": ["*"], "note": note}})
 
 
@@ -379,7 +313,7 @@ class Tracer:
         # When it still overflows, the cut gets an explicit write-time marker so the stored row
         # is self-describing: readers render "truncated" / complete=False instead of presenting
         # a mid-sentence cut as the whole answer, and the export's digest commits the marker
-        # honestly. (The old silent [:2000] cut even lost the Sources: footer.)
+        # honestly.
         if len(text) > _DATA_CAP:
             text = text[:_DATA_CAP] + f"\n{_RESPONSE_TRUNCATION_MARKER}{_DATA_CAP} chars]"
         # Deliberately EXEMPT from the circuit breaker: end_run is ONE write at turn end (not
@@ -402,8 +336,8 @@ class Tracer:
 # A LangChain callback handler that records the raw input messages + output of every model call in
 # a turn. Attached run-scoped in the graph stream config (agent.run_turn); it rides LangChain's
 # contextvar callback propagation down into each node's model.invoke()/stream(), so it sees the
-# agent and background calls without any node having to thread it through. Read
-# back by `/trace invoke`.
+# agent and background calls without any node having to thread it through. Read back by
+# `/trace invoke`.
 
 _LLM_MSG_CAP = 8000  # per-message content cap stored to the DB (the display truncates further)
 

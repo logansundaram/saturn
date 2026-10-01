@@ -92,8 +92,7 @@ def _ensure_batch() -> "Path | None":
 
 
 def _key(entry: dict) -> str:
-    """An entry's identity: its absolute path (since 2026-09-29), else the legacy
-    workspace-relative path."""
+    """An entry's identity: its absolute path, else the legacy workspace-relative path."""
     return entry.get("abs") or entry["path"]
 
 

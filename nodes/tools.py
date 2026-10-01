@@ -1,5 +1,5 @@
 """
-Tool-execution node for the v2 loop (agent → approval → tools → agent).
+Tool-execution node for the loop (agent → approval → tools → agent).
 
 tool_node executes the tool calls on the last AI message, appends the results as ToolMessages
 back into `messages` (so the model sees them next pass), and mirrors each completed gathering
@@ -27,10 +27,10 @@ _MAX_RESULT_PREVIEW = 160
 # Hard cap on the observation length we feed BACK INTO the model (the ToolMessage + the paired
 # tool_results record). Unbounded tool output — a big read_file, a full web_extract page, a fat
 # web_search payload — silently overflows the Ollama context window: it truncates from the front,
-# dropping the system prompt and plan, and the agent starts misbehaving with no error. We keep the
+# dropping the system prompt, and the agent starts misbehaving with no error. We keep the
 # head and tail (the start usually has the answer; the tail often has a summary/conclusion) and
 # mark the elision so the model knows it isn't seeing everything. ~12k chars ≈ 3-4k tokens, which
-# leaves room for the system prompts, plan, and conversation inside an 8k+ window.
+# leaves room for the system prompt and conversation inside an 8k+ window.
 _MAX_OBSERVATION = 12000
 
 
@@ -150,7 +150,7 @@ def tool_node(state: AgentState):
         # result can't overflow the context window; the UI preview is derived from the same
         # clamped text. The _preview cap above is just for the one-line tool-I/O tree.
         clamped = _clamp_observation(observation)
-        # Prompt-injection quarantine: an UNTRUSTED observation (web, http, MCP, ingested docs)
+        # Prompt-injection quarantine: an UNTRUSTED observation (web, MCP, ingested docs)
         # that carries instruction-shaped content is flagged (rail warning + gate context — and,
         # in `gate` mode, one fresh approval prompt for the next batch) and fenced between
         # explicit data-not-instructions markers before the model sees it. Clean content passes
@@ -159,8 +159,6 @@ def tool_node(state: AgentState):
         # quarantine.py.
         q_kinds: list[str] = []
         if quarantine.active() and quarantine.is_untrusted(name):
-            # Scan an untrusted result (web/http/MCP/corpus) for instruction-shaped content (the
-            # data-as-instructions check) and fence it before the model sees it.
             findings = quarantine.scan(clamped)
             if findings:
                 quarantine.flag(name, findings)

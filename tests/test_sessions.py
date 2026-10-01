@@ -1,6 +1,6 @@
 """commands/_session.py + the /resume surface — name sanitization (the autosave slot must be
-unreachable from user input), payload round-trips, and the 2026-07-16 delete/rename cut (the
-files are the interface now)."""
+unreachable from user input), payload round-trips, and the delete/rename cut (the files are the
+interface)."""
 
 from types import SimpleNamespace
 

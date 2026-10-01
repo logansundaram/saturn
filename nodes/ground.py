@@ -1,3 +1,25 @@
+"""
+Grounding node: loads what is NOT already available to the model —
+  - the standing instructions (~/.saturn/SATURN.md, then the workspace's SATURN.md),
+  - the knowledge-base manifest (so the agent knows what documents it can search), and
+  - persistent memory (stores/memory_registry): the user layer + open commitments + the recent
+    memo digest always, agent/entities/negative facts by match against the request, all under
+    one cap.
+
+It deliberately does NOT include the tool inventory (the native tool bind carries the catalog;
+duplicating it hurts small models) or the chat history (`messages` goes to the model directly).
+Built once per turn; tool results flow through `messages`, never this grounding string.
+
+The block is built in TWO halves: `context_stable` — instructions, the manifest, the
+query-independent memory layers — is byte-identical across turns while nothing on disk changed,
+and `context_dynamic` — the date, memory's by-match selection, attachments — changes every turn.
+The prompt sends the stable half as its own message right after the system prompt and the
+dynamic half with the request, and the idle prime (core/prime.py) re-sends exactly
+`stable_grounding()` between turns so the daemon holds a checkpoint at that message boundary: the
+next turn's agent call then prefills only what is new (docs/OPTIMIZATIONS.md, "the prefix
+cache"). `context` stays the joined block for every reader that wants the whole thing.
+"""
+
 import time
 from datetime import datetime
 from pathlib import Path
@@ -5,51 +27,16 @@ from pathlib import Path
 import diag
 
 from core.state import AgentState
-from textutil import clip
 from stores.memory_registry import memory_context_split, mark_used
 from stores.document_registry import read_documents_manifest
 
-"""
-Grounding node (re-scoped from the old context_builder).
-
-Its ONLY job is to load the things that are NOT already available to the model:
-  - the knowledge-base manifest (so the agent knows what documents it can search),
-  - the standing instructions (~/.saturn/SATURN.md, then the workspace's SATURN.md), and
-  - persistent memory (stores/memory_registry): the user layer + open commitments + the recent
-    memo digest always, agent/entities/negative facts by match against the request, all under
-    one cap. (The old user_profile.md / agent_profile.md files were folded into the user and
-    agent layers 2026-09-02 — nothing ever wrote them.)
-
-It deliberately does NOT include:
-  - the tool inventory  -> the agent's native tool bind carries the catalog; duplicating it
-                           here hurts small models.
-  - the chat history    -> `messages` is already passed to the model directly (the v2 loop
-                           sees the real conversation, so the old recap section is gone).
-
-Built once per turn (the manifest and memory are static within a turn). Dynamic information —
-tool results — flows through `messages`, never this frozen grounding string.
-
-The block is built in TWO halves (2026-09-04): `context_stable` — instructions, the manifest, the
-query-independent memory layers — is byte-identical across turns while nothing on disk
-changed, and `context_dynamic` — memory's by-match selection, attachments — changes every
-turn. Every node's prompt sends the stable half as its own message
-right after the system prompt and the dynamic half after it, and the idle prime (core/prime.py)
-re-sends exactly `stable_grounding()` between turns so the daemon holds a checkpoint at that
-message boundary: the next turn's agent call then prefills only what is new
-(docs/OPTIMIZATIONS.md, "the prefix cache"). `context` stays the joined block for every reader that
-wants the whole thing (/trace context, older checkpoints).
-"""
-
-# Standing instructions (the CLAUDE.md equivalent), loaded into context EVERY turn so the user
-# can durably steer the agent without re-typing it. Two files (2026-09-28):
-#   ~/.saturn/SATURN.md            global — tone, standing rules, "always metric", "never draft
-#                                  to my boss without asking"; hand-written, follows the user
-#                                  everywhere ($SATURN_HOME overrides the directory);
-#   <workspace>/SATURN.md          per-workspace — conventions, goals, what matters here; drafted
-#                                  by /init. Where the two conflict the
-#                                  workspace file wins, and the prompt says so.
+# Standing instructions (the CLAUDE.md equivalent), loaded into context EVERY turn:
+#   ~/.saturn/SATURN.md       global — tone, standing rules; hand-written, follows the user
+#                             everywhere ($SATURN_HOME overrides the directory);
+#   <workspace>/SATURN.md     per-workspace — conventions, goals; drafted by /init. Where the two
+#                             conflict the workspace file wins, and the prompt says so.
 # Each is capped so a runaway file can't eat the context window.
-_INSTRUCTIONS_FILES = ("SATURN.md",)  # (the old SATURDAY.md stopped loading 2026-09-30)
+INSTRUCTIONS_FILE = "SATURN.md"
 _INSTRUCTIONS_CAP = 6000
 
 
@@ -58,7 +45,7 @@ def global_instructions_path() -> Path:
     `~/.saturn/SATURN.md` (config.saturn_home)."""
     from config import saturn_home
 
-    return saturn_home() / _INSTRUCTIONS_FILES[0]
+    return saturn_home() / INSTRUCTIONS_FILE
 
 
 def _read_capped(path: Path) -> str:
@@ -72,16 +59,11 @@ def _read_capped(path: Path) -> str:
     return text
 
 
-def _read_instructions() -> "tuple[str, str]":
-    """The workspace instructions as (file name, text); ("", "") when there are none."""
+def _read_instructions() -> str:
+    """The workspace instructions; "" when there are none."""
     from core import workspace as _ws
 
-    workspace = _ws.root()
-    for name in _INSTRUCTIONS_FILES:
-        text = _read_capped(workspace / name)
-        if text:
-            return name, text
-    return "", ""
+    return _read_capped(_ws.root() / INSTRUCTIONS_FILE)
 
 
 def _read_global_instructions() -> str:
@@ -90,6 +72,7 @@ def _read_global_instructions() -> str:
     except Exception as exc:  # an unreadable home must not fail the first node of every turn
         diag.log(f"grounding_node : global SATURN.md unreadable: {exc}")
         return ""
+
 
 def _working_folder_section() -> str:
     """Where Saturn is working (core/workspace): the launch folder and the session's /add-dir
@@ -107,7 +90,7 @@ def _working_folder_section() -> str:
 
 
 def now_section(now: "datetime | None" = None) -> str:
-    """Today's date, weekday and the time (pivot loop #4, 2026-09-29). In the DYNAMIC half — it
+    """Today's date, weekday and the time. In the DYNAMIC half — it
     changes every turn, and the dynamic half rides only the current request, never the history,
     so the cached prefix is untouched. With it, "Thursday" and "what's the date" resolve on the
     first pass instead of a current_time round trip."""
@@ -122,7 +105,7 @@ def stable_grounding(memory_always: "str | None" = None) -> str:
     """The query-independent half of the grounding block — what the idle prime re-sends between
     turns. Byte-identical to the `context_stable` the next turn's grounding_node builds unless
     the knowledge base, the instructions files or the always-loaded memory layers changed
-    in between (in which case the prime simply misses and the turn prefills it, as before).
+    in between (in which case the prime simply misses and the turn prefills it).
     `memory_always` is the always-loaded memory block when the caller already selected it
     (grounding_node, which needs the by-match half of the same selection); None reads it here."""
     sections = ["## Grounding context", _working_folder_section()]
@@ -133,10 +116,10 @@ def stable_grounding(memory_always: "str | None" = None) -> str:
             "### Standing instructions (~/.saturn/SATURN.md — the user's standing guidance "
             "everywhere; follow it)\n" + global_instructions
         )
-    name, instructions = _read_instructions()
+    instructions = _read_instructions()
     if instructions:
         sections.append(
-            f"### Workspace instructions ({name} — the user's standing guidance for this "
+            f"### Workspace instructions ({INSTRUCTIONS_FILE} — the user's standing guidance for this "
             "workspace; follow it, and where it conflicts with the standing instructions above "
             "it wins)\n" + instructions
         )

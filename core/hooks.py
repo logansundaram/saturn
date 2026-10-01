@@ -1,4 +1,4 @@
-"""Hooks — the user's own shell commands on four moments of a turn (pivot #10, 2026-09-29).
+"""Hooks — the user's own shell commands on four moments of a turn.
 
 `~/.saturn/hooks.yaml` ($SATURN_HOME overrides the folder), hand-written:
 

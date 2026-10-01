@@ -679,7 +679,6 @@ def test_response_stream_discard_forgets_the_preamble(monkeypatch):
     import importlib
 
     r = importlib.import_module("tui.ui.response")  # the package re-exports a same-named function
-    monkeypatch.setattr(r, "_RICH", False, raising=False)
     s = r.ResponseStream()
     s.feed("let me")
     assert s.started
@@ -720,8 +719,6 @@ def _plain_rail(monkeypatch):
 
     base = importlib.import_module("tui.ui._base")
     trace = importlib.import_module("tui.ui.trace")
-    monkeypatch.setattr(base, "_RICH", False, raising=False)
-    monkeypatch.setattr(trace, "_RICH", False, raising=False)
     base._trace_started = False
     base._t_last = None
     base._status = dict(base._status, node="", iteration=0, tools=0, tok_per_sec=0.0)

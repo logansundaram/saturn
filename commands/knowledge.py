@@ -1,6 +1,6 @@
 """
-Knowledge & workspace commands — what the agent knows and where it works, in one module (the
-/help "knowledge & workspace" theme; consolidated from one-file-per-command 2026-06-11):
+Knowledge & workspace commands — what the agent knows and where it works (the /help
+"knowledge & workspace" theme):
 
   /docs    the RAG corpus (list/add/remove/rebuild)
   /memory  the durable remember/recall facts
@@ -59,7 +59,6 @@ def _docs(ctx, args):
     elif sub == "rebuild":
         _sync(force=True)
     elif sub == "sync":
-        # Cut 2026-09-30: every launch syncs; `sync --force` became `rebuild`.
         _print("  /docs sync is gone — launch syncs the corpus on its own; /docs rebuild "
                "re-embeds everything.")
     else:
@@ -142,8 +141,8 @@ def _add(rest: list) -> None:
     s = ingest_file(str(path))
     failed = dict(s.get("failed") or [])
     # Compare BASENAMES, never an unanchored suffix: "my-notes.md".endswith("notes.md") is True,
-    # so a pre-existing corrupt file in the corpus reported its loader error against the file
-    # just added — and suppressed the success line for a document that embedded fine.
+    # so a pre-existing corrupt file in the corpus would report its loader error against the
+    # file just added — and suppress the success line for a document that embedded fine.
     err = next((e for src, e in failed.items() if Path(str(src)).name == path.name), None)
     if err is not None:
         _print(f"  could not load {path.name}: {err}")
@@ -537,13 +536,13 @@ under the workspace file, which wins where the two conflict.
 )
 def _init(ctx, args):
     from core import workspace as _ws
-    from nodes.ground import _INSTRUCTIONS_FILES
+    from nodes.ground import INSTRUCTIONS_FILE
 
     force = any(a in ("--force", "-f") for a in args)
     workspace = _ws.root()
     workspace.mkdir(parents=True, exist_ok=True)
-    target = workspace / "SATURN.md"
-    existing = next((workspace / n for n in _INSTRUCTIONS_FILES if (workspace / n).exists()), None)
+    target = workspace / INSTRUCTIONS_FILE
+    existing = target if target.exists() else None
     if existing is not None and not force:
         _print(f"  {existing.name} already exists at {existing} — edit it directly, or re-draft "
                "with /init --force.")
@@ -553,7 +552,7 @@ def _init(ctx, args):
     content = None
     # Only worth an LLM call when there is something to look at; an empty workspace gets the
     # template, which explains itself better than a model guessing at nothing.
-    if [e for e in listing if e not in _INSTRUCTIONS_FILES]:
+    if [e for e in listing if e != INSTRUCTIONS_FILE]:
         try:
             from langchain.messages import HumanMessage
             from core.llms import generate, get_model, invoke_kwargs, model_tag

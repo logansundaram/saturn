@@ -1,11 +1,11 @@
 # System messages — one ground truth for every prompt (keep prompts here, not inline in node
-# files). Since the v2 loop (2026-09-27) the agent sends ONE prompt (`agent_sys_msg`); the
-# background prompts below serve the out-of-loop calls (compaction, the memory review, /init).
+# files). The agent sends ONE prompt (`agent_sys_msg`); the background prompts below serve the
+# out-of-loop calls (compaction, the memory review, /init).
 
 from langchain.messages import SystemMessage
 
 
-# --- the agent node (2026-09-27, the v2 loop) ------------------------------------------------
+# --- the agent node -------------------------------------------------------------------------
 # The ONE prompt the loop sends. No tool catalog here: the tools ride the native bind, and the
 # chat template renders their schemas into the system section — a stable prefix the idle prime
 # caches (core/prime.py). Byte-stable across calls: it is a primed lineage.
@@ -105,10 +105,6 @@ MEMORY_REVIEW_SHAPE = (
     'Respond with ONLY this JSON: {"facts":[{"layer":"<user|entities|commitments|negative|'
     'agent|memo>","text":"<one durable fact>"}]} — an empty list when nothing qualifies.'
 )
-
-# (DOC_SUMMARY_PROMPT left 2026-07-16 with the manifest-summary cut: document_registry's
-# manifest carries a mechanical first-line description now, so nothing summarizes untrusted
-# document text through a model at ingest.)
 
 # commands/knowledge /init — drafts SATURN.md from the workspace survey.
 INIT_DRAFT_PROMPT = """You are initializing SATURN.md — a standing-instructions file that a local

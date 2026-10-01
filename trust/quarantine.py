@@ -23,14 +23,10 @@ This module is the boundary:
                         something (a tier above read_only) — faces the approval gate regardless
                         of risk tier: a call whose arguments may derive from injected text gets
                         one fresh human look. A batch of local read-only calls (a plan update, a
-                        re-read) passes and leaves it armed. The approval node PEEKS (gate_pending) to decide gating and consumes
-                        only after its interrupt resolves — LangGraph re-runs an interrupted node
-                        from the top, so consuming up front would spend the escalation before the
-                        human ever answered — and only when the batch was not fully REJECTED (a
-                        rejected escalation stays armed, so a re-issued copy of the declined call
-                        faces the human again instead of auto-approving past their 'no'). Consumed
-                        once per let-through flag so it costs one extra prompt, not a prompt per
-                        call forever.
+                        re-read) passes and leaves it armed. The approval node PEEKS to decide
+                        gating and consumes only after its interrupt resolves, and only when the
+                        batch was not fully rejected (see consume_gate). One extra prompt per
+                        let-through flag, not a prompt per call forever.
 
   url_hold(...)         the exfiltration hold (mode `gate`), independent of the scanner: a
                         read_only fetch still SENDS its URL. A web_extract address that the
@@ -43,7 +39,7 @@ This module is the boundary:
   warn  scan + fence + show flags in the rail/gate, but never escalate gating.
   gate  warn, plus the gate escalation and the URL hold above.
 
-Per-turn state is reset by `reset_turn()` (called from agent._fresh_turn). Imports only config,
+Per-turn state is reset by `reset_turn()` (called from app.session._fresh_turn). Imports only config,
 textutil and trust.egress (leaves), so tool_node, the approval node, and the TUI can all import
 it freely.
 """
@@ -60,15 +56,15 @@ from trust import egress
 _MODES = ("off", "warn", "gate")
 
 # Tools whose observations cross the trust boundary: the web, remote servers, the ingested corpus,
-# and — since 2026-09-29 — the file tools that return file CONTENTS (read_file, search_files). The
-# workspace is the launch folder (all of home when launched from ~), which holds downloaded and
-# third-party files, so what they return is data, not the user's own words. list_directory and
-# find_files return names only and stay trusted. run_shell joined 2026-10-01: `cat` of that same
-# downloaded file, or `curl`, prints exactly what read_file / web_extract would have returned.
+# and the file tools that return file CONTENTS (read_file, search_files). The workspace is the
+# launch folder (all of home when launched from ~), which holds downloaded and third-party files,
+# so what they return is data, not the user's own words. list_directory and find_files return
+# names only and stay trusted. run_shell is untrusted too: `cat` of that same downloaded file, or
+# `curl`, prints exactly what read_file / web_extract would have returned.
 #
 # The classification is DECLARED AT REGISTRATION (@register_tool(untrusted=True) /
 # register_tool_object(untrusted=True)) and PUSHED here by tools/registry at startup and by
-# /mcp reload — quarantine stays a leaf (imports config + textutil only), so the registry pushes
+# /mcp reload — quarantine stays a leaf (imports only leaves), so the registry pushes
 # instead of being imported. The hard-coded set below is only the fallback for code paths that
 # never load the registry (unit tests, partial imports); with a push in effect it is unused.
 UNTRUSTED_TOOLS = {"web_search", "web_extract", "search_knowledge_base", "read_file", "search_files",
@@ -132,8 +128,8 @@ _PATTERNS: list[tuple[str, "re.Pattern[str]"]] = [
 # Fetched content naming Saturn's own GATED tools as calls is a coercion attempt, not data.
 # The alternation is rebuilt from the live registry (every non-read_only tool, MCP included)
 # via set_gated_tools — pushed by tools/registry at startup and /mcp reload, so the pattern
-# tracks the actual gated surface instead of a frozen snapshot of four built-in names. The
-# default below is only the no-registry fallback (unit tests, partial imports).
+# tracks the actual gated surface. The default below is only the no-registry fallback (unit
+# tests, partial imports).
 _GATED_DEFAULT = ("run_shell", "write_file", "edit_file")
 
 
@@ -250,7 +246,7 @@ def url_hold(url: str, user_text: str, seen_text: str, after_untrusted: bool) ->
     return None
 
 
-# --- per-turn flag state (reset by agent._fresh_turn) ---------------------------------------
+# --- per-turn flag state (reset by app.session._fresh_turn) ---------------------------------
 
 _TURN_FLAGS: list[dict] = []  # [{"tool": name, "kinds": [...]}] in flag order
 _GATE_PENDING = False

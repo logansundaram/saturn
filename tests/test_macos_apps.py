@@ -1,5 +1,5 @@
 """
-Native macOS app tools (2026-09-06): the `tools/applescript.py` runner seam, the Notes tools
+Native macOS app tools: the `tools/applescript.py` runner seam, the Notes tools
 (`search_notes` / `read_note` / `create_note`) and the Calendar tools (`list_calendar_events` /
 `create_calendar_event`).
 

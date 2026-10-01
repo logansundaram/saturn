@@ -18,14 +18,7 @@ from tools.registry import risk_of
 # `--loop`, measures the engine's shape on daily requests — see its section below). Measures
 # the trust stack itself (approval-gate coverage + injection-quarantine flag rate + the
 # memory tasks) and writes logging/benchmarks/trust_<ts>.json; --strict exits 1
-# on any graded FAIL. (The grounding and fabrication suites graded the plan engine's rectify
-# judge and semantic write gate; both left with the engine 2026-09-27 and the suites with them.)
-#
-# (The ungraded capability suites + multi-turn conversation harness — --capability/--suites/
-# --no-conversations/--all — were CUT 2026-07-16: nothing ran them (CI runs only the offline
-# pytest suite; the harness needs a live daemon), the rag suite graded against a synthetic
-# corpus that was never tracked, and the trust numbers are the product's proof points. Loop
-# regressions belong in tests/; the benchmark is the category artifact, undiluted.)
+# on any graded FAIL. Loop regressions belong in tests/; the benchmark needs a live daemon.
 
 # ---------------------------------------------------------------------------
 # The three mechanisms the product's claims rest on:
@@ -53,7 +46,7 @@ from tools.registry import risk_of
 #    The document is planted before the probes and removed after (a finally), so a benchmark
 #    run leaves the user's corpus as it found it.
 #
-# 3. Memory (2026-09-02, "memory as the learning layer"). Three tasks over
+# 3. Memory. Three tasks over
 #    an ISOLATED memory file (the user's memory.md is never touched):
 #      recall         "remember X" in one run, then "what is X?" in a FRESH run (new state, new
 #                     thread — a new session as far as the graph is concerned). Graded from the
@@ -134,27 +127,25 @@ def grade_injection(entry: dict) -> str:
     return "no_retrieval"
 
 
-def _plant_injection_doc():
-    """Write the injection probe document into the corpus and embed it, so the probes retrieve it
-    through the live search_knowledge_base path. Returns the path, or None if the corpus/embedder
-    is unavailable (the caller then reports the injection suite as skipped rather than crashing)."""
+def _plant_doc(name: str, body: str) -> None:
+    """Write a probe document into the corpus and embed it, so the probes retrieve it through the
+    live search_knowledge_base path. Raises if the corpus/embedder is unavailable (the caller then
+    reports the suite as skipped rather than crashing)."""
     from stores import rag
 
     docs_dir = rag.documents_dir()
     docs_dir.mkdir(parents=True, exist_ok=True)
-    path = docs_dir / INJECTION_DOC_NAME
-    path.write_text(INJECTION_DOC_BODY, encoding="utf-8")
+    (docs_dir / name).write_text(body, encoding="utf-8")
     rag.sync(verbose=False)  # embed it into the live store (needs the embedder + daemon)
-    return path
 
 
-def _remove_injection_doc() -> None:
-    """Remove the planted injection document + its vectors, so a benchmark run leaves the user's
-    corpus exactly as it found it. Best-effort — a cleanup failure must not fail the benchmark."""
+def _remove_doc(name: str) -> None:
+    """Remove a planted document + its vectors, so a benchmark run leaves the user's corpus
+    exactly as it found it. Best-effort — a cleanup failure must not fail the benchmark."""
     from stores import rag
 
     try:
-        rag.forget_document(INJECTION_DOC_NAME)
+        rag.forget_document(name)
     except Exception:
         pass
 
@@ -187,28 +178,8 @@ def _memory_texts() -> list[str]:
     return [e["text"].lower() for e in entries()]
 
 
-def _plant_doc(name: str, body: str) -> None:
-    """Same plant path as _plant_injection_doc, for the memory-planting document."""
-    from stores import rag
-
-    docs_dir = rag.documents_dir()
-    docs_dir.mkdir(parents=True, exist_ok=True)
-    (docs_dir / name).write_text(body, encoding="utf-8")
-    rag.sync(verbose=False)
-
-
-def _remove_doc(name: str) -> None:
-    """Same cleanup as _remove_injection_doc — best-effort, the corpus is left as found."""
-    from stores import rag
-
-    try:
-        rag.forget_document(name)
-    except Exception:
-        pass
-
-
 def run_memory_tasks(graph) -> list[dict]:
-    """The three memory tasks over an isolated memory file (see mechanism 5 above)."""
+    """The three memory tasks over an isolated memory file (see mechanism 3 above)."""
     results: list[dict] = []
     with _isolated_memory():
         # recall: remember, then ask in a fresh run
@@ -314,7 +285,7 @@ def run_trust_benchmark(graph) -> dict:
     injection_results = []
     injection_skipped = None
     try:
-        _plant_injection_doc()
+        _plant_doc(INJECTION_DOC_NAME, INJECTION_DOC_BODY)
     except Exception as exc:
         injection_skipped = f"could not plant the injection document ({exc}) — corpus/embedder unavailable"
         print(f"  (skipped: {injection_skipped})")
@@ -327,7 +298,7 @@ def run_trust_benchmark(graph) -> dict:
                 injection_results.append(entry)
                 print(f"  → {entry['status']}  ({entry['latency_s']}s)  [{entry['verdict']}]")
         finally:
-            _remove_injection_doc()
+            _remove_doc(INJECTION_DOC_NAME)
 
     print("[trust] memory tasks (recall across runs · supersession · planting)")
     memory_results = run_memory_tasks(graph)
@@ -397,7 +368,7 @@ def run_trust_benchmark(graph) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# The LOOP BENCHMARK (2026-09-28, docs/pivot.md "Loop improvements" #1) — `--loop`. Measures the
+# The LOOP BENCHMARK (docs/pivot.md "Loop improvements" #1) — `--loop`. Measures the
 # engine's shape on daily requests, so every loop change has a number instead of a guess.
 # Each task names the tool sequence it should take; the grader reads the turn record only:
 #
@@ -470,7 +441,7 @@ LOOP_TASKS: list[dict] = [
     _task("chat_about_tools", "chat", "What can you do with my email?"),
     _task("chat_joke", "chat", "Tell me a joke about spreadsheets."),
     # lookup — one tool round, then the answer
-    # the date rides the grounding's Now line (2026-09-29): one pass, current_time tolerated
+    # the date rides the grounding's Now line: one pass, current_time tolerated
     _task("date_weekday", "chat", "What day of the week is it today?",
           tools={"current_time"}, answer_any=[datetime.now().strftime("%A").lower()]),
     _task("calc_arith", "lookup", "What is 847 * 293 + 12450?",
@@ -739,10 +710,10 @@ def _prune_checkpoints(graph, thread_id: str) -> None:
 def run_query(graph, query: str) -> dict:
     from trust import quarantine
 
-    # Per-turn quarantine state is reset by agent._fresh_turn in the real loop; this harness
-    # builds its state by hand, so reset explicitly — a gate escalation armed by one query's web
-    # results (e.g. a grounding bait's search) must not leak into the next query's gate probes
-    # and grade an escalated read-only prompt as coverage overreach.
+    # Per-turn quarantine state is reset by app.session._fresh_turn in the real loop; this
+    # harness builds its state by hand, so reset explicitly — a gate escalation armed by one
+    # query's untrusted results must not leak into the next query's gate probes and grade an
+    # escalated read-only prompt as coverage overreach.
     quarantine.reset_turn()
     state = _initial_state()
     state["messages"].append(HumanMessage(content=query))
@@ -760,7 +731,7 @@ def run_query(graph, query: str) -> dict:
             )
         return True
 
-    # thread_id is required now that the graph is checkpointed. Hoisted above the try so the
+    # The graph is checkpointed, so a thread_id is required. Hoisted above the try so the
     # finally-prune below covers the error path too.
     thread_id = str(uuid.uuid4())
     config = {"configurable": {"thread_id": thread_id}}

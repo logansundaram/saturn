@@ -359,6 +359,9 @@ def _seed_run_db(tmp_path) -> str:
                            ended_at TEXT, status TEXT, response TEXT);
         CREATE TABLE events (id INTEGER PRIMARY KEY, run_id INTEGER, seq INTEGER, ts TEXT,
                              node TEXT, summary TEXT, data TEXT);
+        CREATE TABLE llm_calls (id INTEGER PRIMARY KEY, run_id INTEGER, seq INTEGER, ts TEXT,
+                                node TEXT, model TEXT, dur REAL, prompt_tokens INTEGER,
+                                output_tokens INTEGER, input TEXT, output TEXT, status TEXT);
         INSERT INTO runs VALUES (1, 'hello', '2026-06-11T00:00:00', '2026-06-11T00:00:01',
                                  'ok', 'hi there');
         INSERT INTO events VALUES (1, 1, 1, '2026-06-11T00:00:00', 'plan', 'planned', NULL);
@@ -445,11 +448,11 @@ def _skip_injection_plant(monkeypatch):
     / embedder — no offline test may plant + embed a document."""
     import benchmark
 
-    def _boom():
+    def _boom(_name, _body):
         raise RuntimeError("no embedder in tests")
 
-    monkeypatch.setattr(benchmark, "_plant_injection_doc", _boom)
-    monkeypatch.setattr(benchmark, "_remove_injection_doc", lambda: None)
+    monkeypatch.setattr(benchmark, "_plant_doc", _boom)
+    monkeypatch.setattr(benchmark, "_remove_doc", lambda _name: None)
 
 
 def test_trust_benchmark_skipped_injection_is_reported_not_failed(monkeypatch):
@@ -540,15 +543,16 @@ def test_benchmark_run_query_prunes_on_error(monkeypatch):
     assert len(graph.checkpointer.deleted) == 1
 
 
-def test_benchmark_is_trust_only():
-    """The capability suites/conversations were CUT 2026-07-16 — benchmark.py is the trust
-    benchmark, full stop. A resurrected harness symbol here means the cut regressed."""
+def test_benchmark_is_the_trust_and_loop_benchmarks_only():
+    """benchmark.py runs the trust benchmark and (`--loop`) the loop benchmark — nothing else. A
+    resurrected capability-suite / engine-suite symbol here means the cut regressed."""
     import benchmark
 
     for gone in ("SUITES", "CONVERSATIONS", "run_suites", "run_conversation",
-                 "GROUNDING_BAIT", "FABRICATION_PROBES"):  # the engine suites left 2026-09-27
+                 "GROUNDING_BAIT", "FABRICATION_PROBES"):
         assert not hasattr(benchmark, gone), gone
-    assert benchmark.GATE_PROBES and benchmark.INJECTION_PROBES  # the graded probes remain
+    assert benchmark.GATE_PROBES and benchmark.INJECTION_PROBES  # the graded trust probes
+    assert benchmark.LOOP_TASKS
 
 
 # --- loop-benchmark grading (2026-09-28, pivot "Loop improvements" #1) ---------------------

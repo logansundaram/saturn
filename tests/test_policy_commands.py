@@ -1,9 +1,8 @@
 """
 The /policy command namespace (commands/policy.py) — the one trust front door: the gate's levers
-(`risk`, `allow`, `open`) and the network boundary (`egress`, `airgap` — merged from /privacy
-2026-09-30, whose old spelling is a pointer that runs nothing). The legacy top-level spellings (/risk, /allow, /autoapprove, /yolo) were CUT in the
-2026-07-06 surface trim and land on _RENAMED pointers that mutate NOTHING, bare /policy open is
-a pure readout (the gate-flip footgun is gone), `/policy allow add` is the unambiguous add verb
+(`risk`, `allow`, `open`) and the network boundary (`egress`, `airgap`; the /privacy spelling is
+a pointer that runs nothing). Retired spellings mutate NOTHING, bare /policy open is a pure
+readout, `/policy allow add` is the unambiguous add verb
 (removal verbs route to removal only when the target resolves), the shared --save grammar is
 case-insensitive any-position, and `--save` with no value persists the CURRENT value (mutating
 nothing live). Offline: no LLM, no network — registry imports with mcp.servers empty.
@@ -13,15 +12,7 @@ import pytest
 
 from trust import policy
 
-# Importing each module registers its command; the full `commands` package (every module) is
-# deliberately NOT imported — these tests need only the policy-family commands.
-import commands.policy  # noqa: F401
-from commands._framework import CommandContext, dispatch
-
-
-@pytest.fixture
-def ctx():
-    return CommandContext(state={}, make_initial_state=dict, db_path="")
+from commands._framework import dispatch
 
 
 @pytest.fixture
@@ -473,16 +464,17 @@ def test_bare_policy_readout_names_the_grant_lifetime(gate, ctx, capsys):
     assert "always-allow" in out and "this turn" in out and "grant_scope: task" in out
 
 
-def test_airgap_offmachine_warning_names_the_remote_roles(gate, ctx, capsys, monkeypatch):
-    """Sealing the boundary while a role runs behind a remote OLLAMA_HOST says which roles will
+def test_airgap_offmachine_warning_names_the_remote_models(gate, ctx, capsys, monkeypatch):
+    """Sealing the boundary while a model runs behind a remote OLLAMA_HOST says which models will
     fail and how to run local."""
     import config as config_mod
     from commands import policy as policy_cmd
 
     monkeypatch.setattr(config_mod, "persist", lambda key: key)
-    monkeypatch.setattr(policy_cmd, "_offmachine_roles",
-                        lambda cfg: [("tool_caller", "ollama @ http://10.0.0.5:11434", "qwen3.5:9b")])
+    monkeypatch.setattr(policy_cmd, "_offmachine_models",
+                        lambda: [("chat", "ollama @ http://10.0.0.5:11434", "qwen3.5:9b")])
     dispatch("/policy airgap on", ctx)
     out = capsys.readouterr().out
 
-    assert "will now FAIL" in out and "tool_caller" in out and "OLLAMA_HOST" in out
+    assert "will now FAIL" in out and "chat qwen3.5:9b (ollama @ http://10.0.0.5:11434)" in out
+    assert "OLLAMA_HOST" in out

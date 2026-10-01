@@ -8,6 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from app import __version__
 from commands._framework import command, _print
 from stores.trace import decode_json
 from textutil import clip as _clip, fmt_args, split_sources_footer
@@ -23,14 +24,6 @@ def _connect(db_path):
         conn.close()
 
 
-# (The `calls`, `cost`, and `state` subviews were CUT 2026-07-16 — `calls` duplicated the
-# per-run drill-down's tool I/O, `cost` was the readout half of the already-cut cloud-era token
-# budget (local users read tok/s + context fill live in the status bar),
-# and `state` was a developer debugging dump wearing a user command. /trace is why · source ·
-# invoke · context · export · replay now; `answer` left with the Glass Box, and `search` —
-# the FTS5 index over past runs — was CUT 2026-09-30.)
-
-
 def _to_int(s) -> Optional[int]:
     """Parse a run selector token to an int, tolerating a leading '#'. None if not a number."""
     try:
@@ -40,9 +33,7 @@ def _to_int(s) -> Optional[int]:
 
 
 def _parse_run_selector(args, *, consume=None):
-    """THE run-selector grammar, shared by every /trace subview (was five hand-kept copies that
-    had already drifted: _why/_answer didn't take -r, and invoke reused run_id as the list
-    count). Recognized everywhere:
+    """THE run-selector grammar, shared by every /trace subview. Recognized everywhere:
 
         -r/--run <id> · #<id> · bare integer   -> run_id  (bare digits are RUN IDS — except in
                                                   list mode, where a bare digit is the COUNT)
@@ -83,47 +74,39 @@ def _load_run(conn, run_id, *,
               columns="run_id, query, started_at, ended_at, status, response",
               latest_from="runs",
               empty_msg="  (no runs recorded yet)",
-              hint="/trace -l"):
-    """THE latest-run fallback + row loader (was five hand-kept copies of MAX(run_id) + the
-    per-id SELECT + the two error prints). `latest_from` lets /trace invoke default to the
-    newest run that HAS llm_calls. Returns (run_id, row); row is None (after printing why)
+              hint="/trace -l",
+              report=_print):
+    """THE latest-run fallback + row loader. `latest_from` lets /trace invoke default to the
+    newest run that HAS llm_calls. Returns (run_id, row); row is None (after `report`ing why)
     when there is nothing to show. `columns`/`latest_from` are code-controlled literals, never
     user input."""
     if run_id is None:
         row = conn.execute(f"SELECT MAX(run_id) FROM {latest_from}").fetchone()
         run_id = row[0] if row else None
         if run_id is None:
-            _print(empty_msg)
+            report(empty_msg)
             return None, None
     run = conn.execute(
         f"SELECT {columns} FROM runs WHERE run_id = ?", (run_id,)
     ).fetchone()
     if not run:
-        _print(f"  no run #{run_id} — try {hint} to list recorded runs.")
+        report(f"  no run #{run_id} — try {hint} to list recorded runs.")
         return run_id, None
     return run_id, run
 
 
+def _raise_lookup(msg: str):
+    """A `_load_run` reporter for callers that render the miss themselves (export_run)."""
+    raise LookupError(msg.strip())
+
+
 # --- /trace export ------------------------------------------------------------------------------
 # One run's complete record (run + events + LLM calls) written to a self-contained JSON file —
-# the record format /trace replay renders offline. (The --md report format was CUT 2026-07-16.
-# The sha256 integrity digest + the verify flows — /trace verify, saturn verify — were CUT
-# 2026-07-03: a digest stored inside the file it protects verifies after any edit that recomputes
-# it, so it only ever caught accidental corruption; real verification would return with
-# signing. Legacy exports still carry `integrity`/`signature` blocks — replay ignores them.)
+# the record format /trace replay renders offline. Older exports may carry `integrity`/`signature`
+# blocks — replay ignores them.
 
 # The versioned artifact-format marker embedded in every export (layout versioning).
 ARTIFACT_FORMAT = "saturn-artifact/1"
-
-
-def _saturn_version() -> str:
-    """The running Saturn version for stamping exports — read off the already-loaded agent module
-    (importing agent.py here would be heavy and double-imports under `python agent.py`)."""
-    for name in ("__main__", "agent"):
-        v = getattr(sys.modules.get(name), "__version__", None)
-        if v:
-            return str(v)
-    return "unknown"
 
 
 def _export_payload(run, events, calls) -> dict:
@@ -131,7 +114,7 @@ def _export_payload(run, events, calls) -> dict:
     payload = {
         "saturn_trace_export": 1,
         "format": ARTIFACT_FORMAT,
-        "saturn_version": _saturn_version(),
+        "saturn_version": __version__,
         "exported_at": datetime.now().astimezone().isoformat(timespec="seconds"),
         "run": {
             "run_id": run_id,
@@ -181,32 +164,18 @@ def export_run(
     different payloads. `run_id=None` exports the latest run; `dest=None` writes the default
     logging/exports/run_<id>.json. Returns (path written, payload as written). Raises
     LookupError (no such run) / OSError (write failed) — each caller renders those its own
-    way (REPL note vs. stderr + exit code). (The `--md` second format was CUT 2026-07-16 —
-    the JSON record is the one artifact, replayable via /trace replay.)"""
+    way (REPL note vs. stderr + exit code)."""
     with _connect(db_path) as conn:
-        if run_id is None:
-            row = conn.execute("SELECT MAX(run_id) FROM runs").fetchone()
-            run_id = row[0] if row else None
-            if run_id is None:
-                raise LookupError("(no runs recorded yet)")
-        run = conn.execute(
-            "SELECT run_id, query, started_at, ended_at, status, response FROM runs WHERE run_id = ?",
-            (run_id,),
-        ).fetchone()
-        if not run:
-            raise LookupError(f"no run #{run_id} — try /trace -l to list recorded runs.")
+        run_id, run = _load_run(conn, run_id, report=_raise_lookup)
         events = conn.execute(
             "SELECT seq, ts, node, summary, data FROM events WHERE run_id = ? ORDER BY seq, id",
             (run_id,),
         ).fetchall()
-        has_calls = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='llm_calls'"
-        ).fetchone()
         calls = conn.execute(
             "SELECT seq, ts, node, model, dur, prompt_tokens, output_tokens, input, output, status "
             "FROM llm_calls WHERE run_id = ? ORDER BY seq, id",
             (run_id,),
-        ).fetchall() if has_calls else []
+        ).fetchall()
 
     payload = _export_payload(run, events, calls)
 
@@ -272,9 +241,8 @@ def export_rows(payload: dict):
     (event `data` re-encoded to JSON — the export stores it decoded). Pure, for tests."""
     # Every shape is CHECKED, not assumed. An export is the attach-it-to-a-bug-report path, so
     # the payload is untrusted by design: a "run" that decodes to a list, or an event whose
-    # "data" is a list, used to raise AttributeError straight out of render_export — past its
-    # documented "returns False on a file that can't be rendered" and, via saturn --replay,
-    # out of main() as a traceback. A malformed record renders as much as it can.
+    # "data" is a list, must not raise out of render_export (and, via saturn --replay, out of
+    # main() as a traceback). A malformed record renders as much as it can.
     run = payload.get("run")
     run = run if isinstance(run, dict) else {}
     run_tuple = (
@@ -366,7 +334,7 @@ def _verbosity(ctx, args):
 # --- /trace why — decision provenance ----------------------------------------------------------
 # /trace shows WHAT happened; this subview reconstructs WHY: the causal chain from the model's
 # checklist (if it wrote one), each agent pass's thought + chosen tool calls, the evidence relied
-# on, and the cited sources. (Folded in from the old standalone /why, June 2026.)
+# on, and the cited sources.
 
 def _why(ctx, args):
     from tui import ui
@@ -383,13 +351,10 @@ def _why(ctx, args):
             "SELECT seq, node, summary, data FROM events WHERE run_id = ? ORDER BY seq, id",
             (run_id,),
         ).fetchall()
-        has_calls = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='llm_calls'"
-        ).fetchone()
         calls = conn.execute(
             "SELECT seq, node, output FROM llm_calls WHERE run_id = ? ORDER BY seq, id",
             (run_id,),
-        ).fetchall() if has_calls else []
+        ).fetchall()
 
     _render_why(ui, run, events, calls)
 
@@ -478,10 +443,9 @@ def _render_why(ui, run, events, calls):
         _print("    (nothing gathered — answered from the model's own knowledge + context)")
         _print("")
 
-    # Provenance footer of the answer, if the agent attached one (the [n] → source map).
-    # THE one parser of the footer nodes/agent.py builds. The hand-rolled split this replaced took the
-    # FIRST "Sources:" anywhere in the answer, so an answer whose prose used the word rendered the
-    # rest of its own text as if it were the citation map.
+    # Provenance footer of the answer, if the agent attached one (the [n] → source map), through
+    # THE one parser of the footer nodes/agent.py builds — never a split on the first "Sources:",
+    # which an answer's own prose can contain.
     _, entries = split_sources_footer(response)
     if entries:
         _print("  cited sources (from the answer)")
@@ -557,16 +521,14 @@ def _trace(ctx, args):
     if args and args[0].lower() in ("invoke", "--invoke", "llm", "--llm", "model", "models"):
         return _show_llm_calls(ctx, args[1:])
     if args and args[0].lower() in ("context", "--context", "ctx", "prompt", "prompts"):
-        # The context inspector folded into invoke (2026-09-30): the same calls, whole.
+        # The context view is invoke, whole.
         return _show_llm_calls(ctx, ["--full", *args[1:]])
     if args and args[0].lower() in ("export", "--export"):
         return _export(ctx, args[1:])
     if args and args[0].lower() in ("replay", "--replay"):
         return _replay(ctx, args[1:])
-    # ("calls"/"cost"/"state" were CUT 2026-07-16 and "search" 2026-09-30 — the run selector
-    # prints its "ignoring unrecognized argument" note for the old spellings.)
     # NOTE: no "0"/"1" verbosity aliases here — a bare digit is a RUN ID (`/trace 1` drills into
-    # run #1, same as `/trace #1`); the digit aliases used to eat it and toggle verbosity instead.
+    # run #1, same as `/trace #1`).
     if args and args[0].lower() in ("on", "off", "full", "normal", "quiet", "verbose",
                                      "detailed", "all", "debug", "compact",
                                      "true", "false", "yes", "no"):
@@ -619,15 +581,9 @@ def _show_llm_calls(ctx, args):
 
     run_id, count, list_mode = _parse_run_selector(args, consume=consume)
 
+    # The llm_calls table always exists: the Tracer (constructed before any command runs) creates
+    # it, IF NOT EXISTS, on every DB it opens.
     with _connect(ctx.db_path) as conn:
-        # The llm_calls table is created by the Tracer at startup; guard anyway for a stale DB.
-        has_table = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='llm_calls'"
-        ).fetchone()
-        if not has_table:
-            _print("  (no LLM calls recorded yet — run a query first)")
-            return
-
         if list_mode:
             rows = conn.execute(
                 "SELECT c.run_id, COUNT(*) AS n, COALESCE(SUM(c.dur), 0), r.query "
@@ -666,19 +622,6 @@ def _show_llm_calls(ctx, args):
 # the [3] under the answer. Closes the provenance loop in one keystroke instead of a /trace drill-down.
 
 
-def lookup_source(state: dict, n: int) -> "tuple[str, str] | None":
-    """(label, full_text) for citation number `n` of the last turn, or None when out of range.
-    Pure over the state accumulators so it's testable without a turn."""
-    from core.sources import build_sources
-
-    state = state or {}
-    sources = build_sources(state.get("tool_results"), state.get("documents_retrieved"))
-    if not (1 <= n <= len(sources)):
-        return None
-    _n, label, text = sources[n - 1]
-    return label, text
-
-
 def _source(ctx, args):
     """`/trace source [n]` — the FULL text behind a citation [n] of the last answer."""
     from core.sources import build_sources
@@ -702,11 +645,10 @@ def _source(ctx, args):
         _print(f"  usage: /trace source [n]   (n is a citation number, 1–{len(sources)})")
         return
 
-    found = lookup_source(state, n)
-    if found is None:
+    if not 1 <= n <= len(sources):
         _print(f"  no source [{n}] — the last answer has {len(sources)} source(s); /trace source lists them.")
         return
-    label, text = found
+    _n, label, text = sources[n - 1]
     _print(f"  [{n}] {label}")
     _print("")
     for line in text.splitlines() or [""]:

@@ -106,9 +106,8 @@ class TestConfigResolution:
         assert cfg.embedder_model == "qwen3-embedding:8b"
 
     def test_a_config_without_an_active_tier_falls_back_to_the_default_class(self):
-        """The fallback used to be "workstation", a preset that stopped shipping with the size
-        ladder — so a config missing the key named a tier that does not exist and hard-failed on
-        every model resolution."""
+        """A config missing the key must resolve to a tier that exists, not hard-fail on every
+        model resolution."""
         from config import Config
         from core import model_family as mf
 
@@ -117,24 +116,7 @@ class TestConfigResolution:
         assert cfg.active_tier == mf.DEFAULT_CLASS
         assert cfg.chat_model == mf.tag_for(mf.DEFAULT_CLASS)
 
-    def test_capability_max_context_window_defaults_to_the_runtime_window(self):
-        from config import Config
-
-        cfg = Config({"capabilities": {"m": {"context_window": 32768}}})
-        cap = cfg.capability_of("m")
-        assert cap.context_window == 32768
-        assert cap.max_context_window == 32768
-
-    def test_capability_max_context_window_is_read_when_present(self):
-        from config import Config
-
-        cfg = Config({"capabilities": {"m": {"context_window": 32768,
-                                             "max_context_window": 262144}}})
-        cap = cfg.capability_of("m")
-        assert cap.context_window == 32768        # what num_ctx_for returns — unchanged
-        assert cap.max_context_window == 262144   # display only
-
-    def test_num_ctx_for_still_returns_the_runtime_window_not_the_max(self):
+    def test_num_ctx_for_returns_the_runtime_window_not_the_max(self):
         from config import Config
 
         cfg = Config({"runtime": {"num_ctx": None},
@@ -176,8 +158,8 @@ class TestShippedConfigMatchesTheLadder:
             assert tag in caps, tag
 
     def test_capabilities_keep_the_runtime_window_off_the_architectural_max(self):
-        # Collapsing these is a latent OOM: 262144 num_ctx exhausts consumer VRAM. The runtime
-        # windows step up the ladder (2026-09-01) but every one stays far below the ceiling.
+        # A 262144 num_ctx (every tag's architectural max) exhausts consumer VRAM: the runtime
+        # windows step up the ladder but every one stays far below that ceiling.
         from core import model_family as mf
 
         caps = self._template()["capabilities"]
@@ -185,7 +167,6 @@ class TestShippedConfigMatchesTheLadder:
                     "9b": 65536, "27b": 65536, "35b": 131072}
         for key, tag in mf.SIZE_LADDER:
             assert caps[tag]["context_window"] == expected[key], tag
-            assert caps[tag]["max_context_window"] == 262144, tag
 
     def test_runtime_windows_fit_each_tier_on_its_home_hardware(self):
         """The window is a memory decision: at the template's window every class must fit the

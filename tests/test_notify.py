@@ -1,5 +1,5 @@
 """
-Native scheduled notifications (2026-09-05): the `notify/` backend seam, the macOS LaunchAgent
+Native scheduled notifications: the `notify/` backend seam, the macOS LaunchAgent
 backend, the `schedule_notification` tool, and the `/notify` command.
 
 Fully offline and platform-independent: `launchctl` / `osascript` never run (the backend's
@@ -353,13 +353,6 @@ def test_tool_reports_unsupported_platform_honestly(monkeypatch):
 
 
 # ── /notify ──────────────────────────────────────────────────────────────────────────────────
-
-@pytest.fixture
-def ctx():
-    import commands.notify  # noqa: F401  — registers the command
-    from commands._framework import CommandContext
-    return CommandContext(state={}, make_initial_state=dict, db_path="")
-
 
 def test_notify_lists_pending(mac_backend, ctx, capsys):
     from commands._framework import dispatch

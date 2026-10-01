@@ -1,6 +1,6 @@
 """
-Runtime-inventory commands — what the agent is running on and with, in one module (the /help
-"observability" readouts; consolidated from one-file-per-command 2026-06-11):
+Runtime-inventory commands — what the agent is running on and with (the /help "observability"
+readouts):
 
   /tools    the registered tools + risk tiers
   /models   the model page: the hardware, the qwen ladders priced against it, pick a tier /
@@ -55,46 +55,47 @@ def _tools(ctx, args):
 
 
 # ── /models ──────────────────────────────────────────────────────────────────────────────────
-def _persist_bindings(cfg, keys: list[str]) -> None:
-    """Persist session-set binding keys to config.yaml through the one persist seam (the same
-    machinery as /config <key> --save)."""
+def _finish_switch(cfg, what: str, keys: list[str], *, session: bool,
+                   unpersisted: str = "") -> None:
+    """The shared tail of every /models switch: rebuild models on next use, say what moved,
+    persist `keys` unless session-only (through /config's persist seam), re-embed if the embedder
+    moved. `unpersisted` is a note printed after a persist that could not cover every key."""
     from commands.config import _persist_key
+    from core.llms import reset_models
 
-    for key in keys:
-        _persist_key(cfg, key)
+    reset_models()
+    _print(f"  {what}{' (session only)' if session else ''}.")
+    if session:
+        _print("  omit --session to save to config.yaml.")
+    else:
+        for key in keys:
+            _persist_key(cfg, key)
+        if unpersisted:
+            _print(unpersisted)
+    _resync_rag_after_model_change()
 
 
 def _bind(cfg, target: str, model: str, *, session: bool = False) -> None:
     """Bind the chat model ("model") or the embedder to a local Ollama model id (a bare scalar in
     config.yaml). The change PERSISTS to config.yaml by default (a model switch should stick);
     session=True applies it live only."""
-    from core.llms import reset_models
-
-    tag = " (session only)" if session else ""
-
     if target == "embedder":
         # Machine-wide, like the page's pick: one embedder switch, one set of semantics.
         _switch_embedder(cfg, model, session=session)
         return
 
-    keys = [f"tiers.{cfg.active_tier}.model"]
-    cfg.set(keys[0], model)
-    reset_models()
-    _print(f"  model -> {model} on tier '{cfg.active_tier}'{tag}.")
-    if session:
-        _print("  omit --session to save to config.yaml.")
-    else:
-        _persist_bindings(cfg, keys)
-    _resync_rag_after_model_change()
+    key = f"tiers.{cfg.active_tier}.model"
+    cfg.set(key, model)
+    _finish_switch(cfg, f"model -> {model} on tier '{cfg.active_tier}'", [key], session=session)
 
 
 # ── the /models page ─────────────────────────────────────────────────────────────────────────
 # One page: the machine, its memory budget, and the two ladders —
 # the six chat tiers and the three qwen3-embedding sizes — each priced against the budget at the
 # window this config gives it (core/hardware.py), marked pulled / recommended / too big, and
-# numbered so one keystroke picks a tier or an embedder. The old verbatim `ollama list` view is
-# gone: the ladder is one recommended tag per size, priced against this machine — a model off
-# the ladder still binds (`/models use <id>`) and is priced by the size in its tag.
+# numbered so one keystroke picks a tier or an embedder. The ladder is one recommended tag per
+# size, priced against this machine — a model off the ladder still binds (`/models use <id>`)
+# and is priced by the size in its tag.
 # Bare /models prompts; `list` renders only; the probe itself is cached at startup (hardware
 # doesn't change mid-session).
 
@@ -131,13 +132,6 @@ def _tier_binding(cfg, key: str) -> "tuple[str, str]":
     return declared, declared
 
 
-def _tier_running_models(cfg, key: str) -> list[str]:
-    """The chat model selecting a tier would RUN, as a one-item list (the embedder is a separate,
-    machine-wide pick): its declared id, or the ladder tag for a tier declared without one. Dict
-    access, never the dotted path — a tier key may contain a dot."""
-    return [_tier_model(cfg, key) or model_family.tag_for(key)]
-
-
 def _class_windows(cfg) -> dict:
     """The context window each size class would actually run at under THIS config: the tier's
     bound model (its `capabilities.<model>.context_window`, or the `runtime.num_ctx` override
@@ -155,17 +149,9 @@ def _cost_classes(cfg) -> dict:
 def _switch_tier(cfg, key: str, *, session: bool) -> None:
     """The tier switch a page pick performs: set live, rebuild models on next use, persist
     unless session-only, re-embed if the embedder moved."""
-    from core.llms import reset_models
-
     cfg.set("active_tier", key)
-    reset_models()
-    tag = " (session only)" if session else ""
-    _print(f"  active tier -> {key}; models will rebuild on next use{tag}.")
-    if session:
-        _print("  omit --session to save to config.yaml.")
-    else:
-        _persist_bindings(cfg, ["active_tier"])
-    _resync_rag_after_model_change()
+    _finish_switch(cfg, f"active tier -> {key}; models will rebuild on next use", ["active_tier"],
+                   session=session)
 
 
 def _switch_embedder(cfg, model: str, *, session: bool) -> None:
@@ -176,8 +162,6 @@ def _switch_embedder(cfg, model: str, *, session: bool) -> None:
     Config.set splits a dotted path, so a tier key with a dot in it (a pre-rename `0.8b`, a
     user's own name) would land in a phantom nested tier. persist() walks the same dotted path,
     so such a tier is set live and named as not persisted."""
-    from core.llms import reset_models
-
     tiers = cfg.get("tiers", {}) or {}
     keys, unpersistable = [], []
     for key, tier in tiers.items():
@@ -185,17 +169,10 @@ def _switch_embedder(cfg, model: str, *, session: bool) -> None:
             continue
         tier["embedder"] = model
         (unpersistable if "." in key else keys).append(key)
-    reset_models()
-    tag = " (session only)" if session else ""
-    _print(f"  embedder -> {model} on every tier{tag}.")
-    if session:
-        _print("  omit --session to save to config.yaml.")
-    else:
-        _persist_bindings(cfg, [f"tiers.{key}.embedder" for key in keys])
-        if unpersistable:
-            _print(f"  set for this session, but not persisted for tier(s) {', '.join(unpersistable)}: "
-                   "the name contains a dot — edit config.yaml by hand")
-    _resync_rag_after_model_change()
+    note = (f"  set for this session, but not persisted for tier(s) {', '.join(unpersistable)}: "
+            "the name contains a dot — edit config.yaml by hand") if unpersistable else ""
+    _finish_switch(cfg, f"embedder -> {model} on every tier",
+                   [f"tiers.{key}.embedder" for key in keys], session=session, unpersisted=note)
 
 
 def _pulled_cell(models: list, up: bool, have: set) -> tuple:
@@ -404,7 +381,7 @@ def _apply_pick(cfg, kind: str, key: str, rec, *, have: set, session: bool) -> N
         if not rec.fits.get(key, True):
             ui.warn(f"by the numbers tier '{key}' wants {rec.needs[key]:.1f} GB against a "
                     f"{rec.budget_gb:g} GB budget — it may fail to load, or run slowly, on this machine")
-        models = _tier_running_models(cfg, key)
+        models = [_tier_binding(cfg, key)[1]]
         current = key == cfg.active_tier
         what = f"tier {key}"
     else:
@@ -462,10 +439,9 @@ def _models_page(cfg, *, prompt: bool, session: bool = False) -> None:
         # the first /docs add).
         from core.llms import _model_present
 
-        missing = [m for m in _tier_running_models(cfg, cfg.active_tier)
-                   if not _model_present(m, have)]
-        if missing:
-            _offer_pull(missing, f"tier {cfg.active_tier}")
+        running = _tier_binding(cfg, cfg.active_tier)[1]
+        if not _model_present(running, have):
+            _offer_pull([running], f"tier {cfg.active_tier}")
         return
     active_emb = model_family.embedder_class_of(_active_embedder(cfg))
     if picks == [("tier", rec.size_class)] and _confirm_embedder(rec, active_emb):
@@ -484,6 +460,7 @@ def _tier_model(cfg, key: str) -> str:
     return tier_chat_model((cfg.get("tiers", {}) or {}).get(key) or {})
 
 
+# Per-model target spellings a tier no longer takes: it runs one model.
 _RETIRED_TARGETS = ("all", "tool_caller", "utility")
 
 
@@ -542,9 +519,7 @@ def _models(ctx, args):
         _models_page(cfg, prompt=False)
         return
 
-    if sub in ("rescan", "tier"):
-        # Cut 2026-09-30: the hardware doesn't change mid-session, and the page's numbered
-        # pick switches tiers.
+    if sub == "tier":
         _print(f"  /models {sub} is gone — /models shows the page; pick a tier by its number.")
         return
 
@@ -556,7 +531,6 @@ def _models(ctx, args):
         return
 
     if sub in _RETIRED_TARGETS:
-        # The per-role spellings left with the utility role (2026-09-30): one model per tier.
         _print(f"  /models {sub} is now /models use <model_id> — a tier runs one model.")
         return
 

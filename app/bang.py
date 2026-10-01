@@ -1,5 +1,5 @@
 """
-`!<command>` at the prompt (2026-09-28): the user runs a shell command THEMSELVES, sees its
+`!<command>` at the prompt: the user runs a shell command THEMSELVES, sees its
 output, and the output rides into their next message as an attachment — so `!git diff` then
 "summarize that" works the way `git diff | saturn -q "summarize"` does headless.
 

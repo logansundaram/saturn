@@ -1,13 +1,10 @@
 """
 Type-ahead input queue — the "keep typing while the agent works" surface (à la Claude Code).
 
-While a turn is executing the REPL is blocked driving the graph, so historically every keystroke
-was thrown away (the old `interrupts.KeyWatcher` consumed them purely to keep them out of the next
-prompt) and the only way to line up a follow-up was to wait for the answer. This module lets the
-user type ahead: a daemon thread reads the console *during* execution, echoes the in-progress line
-into the status bar, and on Enter pushes the completed line onto a thread-safe FIFO the REPL drains
-the moment the turn finishes — so follow-up queries AND slash commands can be queued without
-waiting.
+While a turn is executing the REPL is blocked driving the graph. This module lets the user type
+ahead: a daemon thread reads the console *during* execution, echoes the in-progress line into the
+status bar, and on Enter pushes the completed line onto a thread-safe FIFO the REPL drains the
+moment the turn finishes — so follow-up queries AND slash commands can be queued without waiting.
 
 It subsumes the pause trigger, too: a single console can't be read by two threads, so `InputQueue`
 is the *one* reader live during a turn. The keys, by what they do to the line you're typing:
@@ -22,7 +19,7 @@ is the *one* reader live during a turn. The keys, by what they do to the line yo
 Steering vs. queuing is thus the same key story as Enter vs. Esc: Enter defers, Esc acts now.
 
 Degrades to a no-op when the console can't be polled (not a TTY, or POSIX termios is
-unavailable): the queue simply stays empty and the REPL blocks on the prompt exactly as before.
+unavailable): the queue simply stays empty and the REPL blocks on the prompt.
 The reader puts the TTY in cbreak mode and restores it on stop.
 """
 
@@ -126,10 +123,6 @@ class InputQueue:
         if line is not None:
             self._notify()  # keep the displayed queue depth honest as we drain
         return line
-
-    def pending(self) -> bool:
-        with self._lock:
-            return bool(self._queue)
 
     # ── internals ────────────────────────────────────────────────────────────────
     def _notify(self) -> None:

@@ -133,7 +133,7 @@ model binds.
 and the turn ends in an answer (one pass later at most).
 
 `config.yaml` is **gitignored user data**, seeded on first run from the tracked template
-`config.default.yaml` (or `~/.saturn/config.yaml` for wheel installs — `config.wheel_data_home`). Change defaults in the
+`config.default.yaml` (or `~/.saturn/config.yaml` for wheel installs — `config.saturn_home`). Change defaults in the
 template. `config.persist()` does a surgical single-line YAML edit to preserve comments — don't replace
 it with a full dump. `config.py`, `diag.py`, `textutil.py` import nothing project-side and are safe
 leaves; `diag.log()` replaces `print()` in nodes/tools (stdout collides with the rich Live TUI).

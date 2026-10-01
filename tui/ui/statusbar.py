@@ -2,17 +2,17 @@
 The bottom-pinned live status bar, plus `reset_turn` (per-turn state seeding). One
 high-signal `rich.live.Live` line — posture · progress · session — re-evaluated on every
 refresh so the elapsed clock ticks even between node updates. The `Live` handle and the
-type-ahead preview stay private here; only the per-turn timing/plan state (in `_base`) is shared with the trace/plan/
-response renderers.
+type-ahead preview stay private here; only the per-turn timing/plan state (in `_base`) is shared
+with the trace/plan/response renderers.
 """
 
 import time
 
 from . import _base
 from ._base import (
-    Live, Text, _console, _RICH,
-    _ACCENT, _DIM, _NODE_STARTING, _RAIL, _RISK,
-    _active_ctx_window, _fmt_dur, _meter_color, _mini_bar,
+    Live, Text, _console,
+    _ACCENT, _DIM, _NODE_STARTING, _POSTURE_STYLE, _RAIL,
+    _active_ctx_window, _fmt_dur, _meter_color, _mini_bar, _posture_flags,
 )
 
 
@@ -37,11 +37,10 @@ def set_input_preview(buffer: str, queued: int) -> None:
 
 class _StatusBar:
     """Renderable for the pinned bar. `__rich__` is re-evaluated on every Live refresh, so the
-    elapsed clock and the sampled system gauges tick even when no node update has fired. Five
-    quiet zones — posture · [type-ahead] · progress · session · hardware — plus the trailing key
-    legend; each zone is short and most appear only when they have something to say. Set no-wrap
-    + ellipsis so a narrow terminal trims the right edge instead of wrapping to two rows (the bar
-    must stay exactly one line for the Live region)."""
+    elapsed clock ticks even when no node update has fired. Quiet zones — posture · [type-ahead]
+    · progress · session — plus the trailing key legend; most appear only when they have
+    something to say. No-wrap + ellipsis so a narrow terminal trims the right edge instead of
+    wrapping to two rows (the bar must stay exactly one line for the Live region)."""
 
     def __rich__(self) -> "Text":
         elapsed = time.perf_counter() - _base._turn_start if _base._turn_start else 0.0
@@ -60,37 +59,21 @@ class _StatusBar:
                 bar.append("  │  ", style=_RAIL)
             started = True
 
-        # ── posture ── deviation-only (2026-07-06 declutter, like receipt.posture_spans): the
-        # calm read_only/no-airgap default renders NOTHING — the zone speaks when the gate is
-        # loosened or OPEN (`destructive` isn't "a tier", and the /policy open banner scrolls
-        # away; this indicator doesn't) or the air-gap seal holds. Leftmost on purpose: the bar
-        # trims from the right edge, and "the gate is open" must be the last thing a narrow
-        # terminal sacrifices. An UNREADABLE posture still marks itself: under
+        # ── posture ── deviation-only: the calm default renders nothing. Leftmost on purpose:
+        # the bar trims from the right edge, and "the gate is open" must be the last thing a
+        # narrow terminal sacrifices. An UNREADABLE posture still marks itself: under
         # silence-means-default, omitting it would show a SAFER posture than reality on exactly
         # the surface that exists to shout ⚠ GATE OFF.
         bar.append("  ", style=_DIM)
-        try:
-            from config import get_config
-            _cfg = get_config()
-            _perm = _cfg.auto_approve
-            _airgap = bool(_cfg.get("runtime.airgap", False))
-        except Exception:
-            _perm, _airgap = None, False
-        posture = []
-        if _perm == "destructive":
-            posture.append(("⚠ GATE OFF", f"bold {_RISK.get('destructive', 'red')}"))
-        elif _perm is None:
-            posture.append(("posture ?", _DIM))
-        elif _perm != "read_only":
-            posture.append((_perm, _RISK.get(_perm, _DIM)))
-        if _airgap:
-            posture.append(("⛓ AIRGAP", f"bold {_ACCENT}"))
+        posture = _posture_flags()
+        if posture is None:
+            posture = [("posture ?", "dim")]
         if posture:
             zone()
-            for i, (label, style) in enumerate(posture):
+            for i, (label, kind) in enumerate(posture):
                 if i:
                     dot()
-                bar.append(label, style=style)
+                bar.append(label, style=_POSTURE_STYLE[kind])
 
         # ── type-ahead ── only present while the user is queuing input mid-turn. Ahead of
         # progress so the line being typed is never the part trimmed by the bar's ellipsis
@@ -108,10 +91,7 @@ class _StatusBar:
         # ── progress ── how far the turn has got, then counts · time · rate. The node is named in
         # the PAST tense: show_node is fed from a node's *update* event, which LangGraph emits
         # when the node COMPLETES (app/turn.py), so this is the last node that FINISHED — not the
-        # one running now. Rendering it as `▸ plan` in active styling claimed the opposite, and
-        # directly contradicted the `✓ plan` rail line sitting above it while `execute` worked.
-        # There is no active-node signal to render: that would need a graph-level hook, which is
-        # deliberately out of scope here. So it says what it knows, dimly.
+        # one running now. There is no active-node signal to render, so it says what it knows.
         zone()
         if status["node"] == _NODE_STARTING:
             bar.append(_NODE_STARTING, style=_DIM)
@@ -168,11 +148,11 @@ def _append_meter(bar: "Text", label: str, pct: float, cells: int = 0) -> None:
 
 
 def _live_start() -> None:
-    """Pin a fresh status bar at the bottom. No-op without rich or if one is already running.
+    """Pin a fresh status bar at the bottom. No-op if one is already running.
     `transient=True` erases the bar on stop (the scrolling trace stays); rich's default
     stdout/stderr redirect keeps node `print()`s flowing above the live region."""
     global _live
-    if not _RICH or _live is not None:
+    if _live is not None:
         return
     _live = Live(_StatusBar(), console=_console, transient=True,
                  auto_refresh=True, refresh_per_second=4)

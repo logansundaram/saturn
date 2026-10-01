@@ -11,7 +11,7 @@ from core import mentions
 
 # How long a headless turn waits for piped stdin to have something to read. A pipe nobody
 # writes to and nobody closes (a background job, a subprocess that inherits a pipe) never
-# reaches EOF, and a blocking read on it hung `saturn -p` forever (2026-09-29).
+# reaches EOF, and a blocking read on it would hang `saturn -p` forever.
 _STDIN_GRACE_SECONDS = 1.0
 
 

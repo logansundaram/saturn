@@ -1,12 +1,10 @@
 """
 Shared pytest fixtures.
 
-The suite tests the INVARIANT / SECURITY surfaces the docs call load-bearing (the plan/execute
-engine's data-bus invariants — test_engine.py, which replaced the deleted positional
-plan-accounting walkers' tests in the 2026-07-03 transplant — the shell allowlist matcher, the
-observation clamp, the surgical YAML persist, the snapshot/undo layer) plus the pure helpers
-behind newer features (citations, RAG loaders, sessions). Everything runs offline: no test calls
-an LLM, the network, or the embedder.
+The suite tests the INVARIANT / SECURITY surfaces the docs call load-bearing (the agent loop's
+deterministic checks, the shell allowlist matcher, the observation clamp, the surgical YAML
+persist, the snapshot/undo layer) plus the pure helpers behind newer features (citations, RAG
+loaders, sessions). Everything runs offline: no test calls an LLM, the network, or the embedder.
 
 `isolated_paths` points every `paths.*` entry in the live config at a throwaway tmp directory so
 no test can touch the real database/ — config resolves paths against the repo root, but an
@@ -49,6 +47,25 @@ def isolated_paths(tmp_path, monkeypatch):
     return tmp_path
 
 
+@pytest.fixture
+def ctx():
+    """A bare CommandContext for driving slash commands. Importing anything under commands/ runs
+    the package __init__, which registers every command."""
+    from commands._framework import CommandContext
+
+    return CommandContext(state={}, make_initial_state=dict, db_path="")
+
+
+@pytest.fixture
+def recording_persist(monkeypatch):
+    """Capture config.persist calls instead of writing the real config.yaml."""
+    import config
+
+    saved: list[str] = []
+    monkeypatch.setattr(config, "persist", lambda key: saved.append(key) or config._CONFIG_PATH)
+    return saved
+
+
 @pytest.fixture(autouse=True)
 def _reset_grant_lifecycle():
     """The always-allow grant lifecycle (trust/policy: task/session-scoped grants, task-boundary
@@ -73,7 +90,7 @@ def _isolated_saturn_home(_empty_saturn_home, monkeypatch, tmp_path_factory):
     that needs files there points SATURN_HOME at its own tmp_path.
 
     HOME too: core/workspace falls back to the home folder for a launch folder that doesn't
-    exist, so a fixture that forgot to create its folder wrote into the real ~ (2026-09-29).
+    exist, so a fixture that forgot to create its folder would write into the real ~.
     Every test gets a throwaway HOME; a test about home points HOME at its own tmp_path."""
     monkeypatch.setenv("SATURN_HOME", str(_empty_saturn_home))
     monkeypatch.setenv("HOME", str(tmp_path_factory.mktemp("home")))

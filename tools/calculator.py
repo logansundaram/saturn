@@ -5,7 +5,7 @@ Deterministic local-compute tools — facts the model must never make up from me
   current_time — time grounding from the machine's own clock.
 
 Both are read_only and pure-local: the answer is computed, not recalled, and nothing leaves
-the machine. (current_time lived in tools/clock.py until the 2026-06-11 leaf consolidation.)
+the machine.
 """
 
 import ast

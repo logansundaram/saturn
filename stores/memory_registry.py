@@ -6,7 +6,7 @@ Session memory rides in the checkpointed message thread; the knowledge base live
 store; this module is the layer that survives a restart. It is deliberately ONE flat markdown
 file (`paths.memory`), not a database: human-readable, hand-editable, atomic to write, and it
 shows up in the workspace like everything else. The design is the manifest of layers, not the
-file count ("memory as the learning layer", 2026-09-02):
+file count:
 
   layer         holds                                        loaded into context
   ─────────────────────────────────────────────────────────────────────────────────────────

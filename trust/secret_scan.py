@@ -2,10 +2,8 @@
 Secret scan — find credential-shaped values (API keys, bearer tokens, private-key blocks, JWTs,
 emails) in text or a tool call's arguments, as display-safe findings.
 
-One job since 2026-09-29: the approval gate warns when a call the user is about to approve would
-carry a secret out (`tui/ui/approval._render_secret_warnings`). The outbound warn/redact modes
-that rewrote prompts at the remote-Ollama and MCP boundaries were cut with `runtime.redaction`
-(off by default, and the egress ledger already records every byte that leaves).
+Its one job: the approval gate warns when a call the user is about to approve would carry a
+secret out (`tui/ui/approval._render_secret_warnings`).
 
 Patterns are deliberately conservative (high-signal prefixes, length floors) to avoid false
 positives — this spots obvious secrets, it is not a DLP engine.
@@ -26,12 +24,13 @@ class _Pattern:
 
 # Ordered most-specific-first. Each is anchored on a high-signal prefix or structure with a length
 # floor, so ordinary prose doesn't trip it. The credit-card / generic-number space is deliberately
-# omitted — too many false positives to be worth mangling real prompts.
+# omitted — too many false positives to be worth a warning.
 _PATTERNS: list[_Pattern] = [
     _Pattern("anthropic-key", re.compile(r"sk-ant-[A-Za-z0-9_\-]{20,}")),
     # Negative lookahead so an Anthropic key (sk-ant-…) isn't ALSO counted as an OpenAI key —
     # `scan` tests patterns independently, so exclude the overlap explicitly.
     _Pattern("openai-key", re.compile(r"sk-(?!ant-)(?:proj-)?[A-Za-z0-9_\-]{20,}")),
+    # Not a key Saturn uses: the gate warns about whatever secrets a call carries.
     _Pattern("tavily-key", re.compile(r"tvly-[A-Za-z0-9_\-]{16,}")),
     _Pattern("aws-access-key", re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b")),
     _Pattern("github-token", re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}\b")),

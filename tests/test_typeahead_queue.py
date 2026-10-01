@@ -15,11 +15,11 @@ def test_push_pop_fifo():
     q = _queue()
     q.push("first")
     q.push("second")
-    assert q.pending()
+    assert q._queue
     assert q.pop() == "first"
     assert q.pop() == "second"
     assert q.pop() is None
-    assert not q.pending()
+    assert not q._queue
 
 
 def test_push_ignores_blank_lines():

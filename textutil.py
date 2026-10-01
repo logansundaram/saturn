@@ -1,10 +1,7 @@
 """
-Shared text-shaping primitives — the one home for the ellipsis-truncation idiom.
-
-Before this module the `s[: n - 1] + "…"` pattern was hand-rolled in a dozen places (trace
-previews, plan labels, steer notes, arg reprs, recap lines — deferred-review #5). Every layer may
-import it: it is a leaf with no project imports, so there is no circular-import risk from nodes,
-tools, stores, commands, or the TUI.
+Shared text-shaping primitives — the one home for the ellipsis-truncation idiom and the
+mirrored-call / Sources-footer formats. Every layer may import it: it is a leaf with no project
+imports, so there is no circular-import risk from nodes, tools, stores, commands, or the TUI.
 """
 
 from __future__ import annotations
@@ -152,9 +149,8 @@ def parse_doc_sources(text) -> "list[str]":
 
 # The mechanical `Sources:` block the agent appends to a cited answer — one builder
 # (nodes/agent.sources_footer renders through SOURCES_HEADER) and ONE parser, the
-# CALL_RESULT_SEP treatment. The readers (the footer render, /trace why's cited-sources view)
-# each hand-rolled this and already disagreed: some anchored on the trailing block, one matched the first "Sources:" ANYWHERE in the
-# answer, so prose containing the word swallowed the rest of the text.
+# CALL_RESULT_SEP treatment, so every reader (the footer render, /trace why's cited-sources view)
+# anchors on the trailing block — prose containing the word "Sources:" is never swallowed.
 SOURCES_HEADER = "Sources:"
 # Public: the footer entry shape `  [n] label`. The trust-colored renderer reads the
 # number back off each line, so it must be the same pattern the split validates with.
@@ -182,11 +178,8 @@ def split_sources_footer(text) -> "tuple[str, list[str] | None]":
 
 
 def mask_secret(value) -> str:
-    """A display-safe preview of a secret — THE one masking rule (env_keys' key listing and
-    trust/secret_scan's findings each hand-rolled their own, with different exposure envelopes:
-    3+4 vs 6+2 visible characters, and a short secret partially shown on one surface but fully
-    masked on the other; a tightening decision made once must reach both). ≤8 chars shows
-    nothing; longer shows the first 4 + last 2."""
+    """A display-safe preview of a secret — THE one masking rule, so a tightening decision made
+    once reaches every surface. ≤8 chars shows nothing; longer shows the first 4 + last 2."""
     s = " ".join(str(value or "").split())
     if not s:
         return ""

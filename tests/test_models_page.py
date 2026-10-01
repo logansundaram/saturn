@@ -36,7 +36,7 @@ def _profile(**over) -> HardwareProfile:
     """A hand-built Mac. The default is an M2 Max (400 GB/s, 38 GPU cores): fast enough that
     every tier that FITS also clears the speed floor, so the fit tests below read as fit tests.
     Speed fields not given are looked up from the chip the way probe() does."""
-    base = dict(os_name="Darwin", arch="arm64", chip="Apple M2 Max", cores=12, ram_gb=16.0,
+    base = dict(chip="Apple M2 Max", cores=12, ram_gb=16.0,
                 gpu_cores=38)
     base.update(over)
     speed = chip_speed(base["chip"], base["gpu_cores"])
@@ -358,7 +358,7 @@ def _ladder_cfg(active="4b", windows=_W, num_ctx=None, embedder="qwen3-embedding
     for key, tag in model_family.SIZE_LADDER:
         tiers[key] = {"model": tag, "embedder": embedder}
         if windows:
-            caps[tag] = {"context_window": windows[key], "max_context_window": 262144}
+            caps[tag] = {"context_window": windows[key]}
     data = {"active_tier": active, "tiers": tiers, "capabilities": caps, "runtime": {}}
     if num_ctx:
         data["runtime"]["num_ctx"] = num_ctx
@@ -694,7 +694,6 @@ def test_ui_ask_hands_back_the_interrupt_value(monkeypatch):
         raise KeyboardInterrupt
 
     monkeypatch.setattr(prompt_mod, "_live_stop", lambda: None)
-    monkeypatch.setattr(prompt_mod, "_RICH", False)
     monkeypatch.setattr("builtins.input", boom)
     assert prompt_mod.ask("x » ") == ""
     assert prompt_mod.ask("x » ", on_interrupt="n") == "n"
@@ -761,9 +760,8 @@ def test_cramped_machine_warns(env, printed):
     assert "too small" in "\n".join(printed)
 
 
-@pytest.mark.parametrize("sub", ["rescan", "tier 9b"])
-def test_rescan_and_tier_are_gone(env, printed, sub):
-    _run(sub)
+def test_tier_is_gone(env, printed):
+    _run("tier 9b")
     assert env["cfg"].active_tier == "4b" and env["persisted"] == []
     assert "is gone" in "\n".join(printed)
 

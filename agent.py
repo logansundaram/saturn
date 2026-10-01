@@ -12,9 +12,8 @@ routes into the `app/` package, where the application actually lives:
     app/headless.py  the -p/-q path (one query -> stdout; --json / --export / -q receipt)
     app/repl.py      the interactive loop
 
-The re-export block below keeps the historical import surface stable: benchmark.py and the
-tests import these names from `agent` (`from agent import build_agent, run_turn, ...`), and
-that contract survives the split. New code should import from the app/ modules directly.
+The re-export block below is the import surface benchmark.py and the tests use (`from agent
+import build_agent, run_turn, ...`). New code should import from the app/ modules directly.
 """
 
 import sys
@@ -53,7 +52,7 @@ def main():
 
         sys.exit(0 if render_export(args.replay) else 1)
 
-    # The launch folder is the workspace (2026-09-29, core/workspace): the file tools, the shell
+    # The launch folder is the workspace (core/workspace): the file tools, the shell
     # and the folder's SATURN.md follow it in both modes. Set once, before either runs.
     from core import workspace
 

@@ -1,6 +1,5 @@
 """
-Tool-argument recovery for the agent node (transplanted from the agentic_benchmark harness,
-2026-07-03; the loop's hygiene step since 2026-09-27).
+Tool-argument recovery for the agent node's hygiene step.
 
 Small local models emit almost-right tool calls: the right tool with the wrong key ("file"
 instead of "file_path"), or an empty call. Instead of failing the call, this layer maps known
@@ -80,8 +79,8 @@ _EMPTY_OK: dict[str, set[str]] = {
 
 # Optional args passed through when present — never required, never invented. A bare name is
 # accepted under that exact key; a list is the alias order, drawn from keys no REQUIRED arg
-# consumed (schedule_notification's detail under "message" was silently dropped when "message"
-# also aliased the title — an empty body at the gate, review 2026-09-06).
+# consumed (else schedule_notification's detail under "message" would be dropped when "message"
+# also aliases the title — an empty body at the gate).
 _DIRECTORY = ["directory", "dir", "folder", "path"]
 _OPTIONAL: dict[str, list] = {
     "list_directory": [_DIRECTORY],

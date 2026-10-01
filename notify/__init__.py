@@ -2,8 +2,8 @@
 Native scheduled notifications — the platform seam.
 
 A notification is a one-shot desktop alert handed to the OPERATING SYSTEM's own scheduler, so it
-fires whether or not Saturn is still running. Saturn itself never runs in the background
-(PLAN.md, verification pass #4): the OS does the waiting, and Saturn only writes the schedule
+fires whether or not Saturn is still running. Saturn itself never runs in the background:
+the OS does the waiting, and Saturn only writes the schedule
 entry, lists it, and removes it.
 
   Notification  — the plain record: id, when (an aware datetime), title, body.
@@ -17,8 +17,8 @@ entry, lists it, and removes it.
                   only for whole-day callers). Refuses the past.
 
 Nothing here is egress: every byte stays on this machine (tests/test_no_new_egress.py needs no
-allowlist entry). This package imports nothing project-side, so tools/ and commands/ can import
-it freely.
+allowlist entry). This package imports only leaves (diag, config, tools.applescript), so tools/
+and commands/ can import it freely.
 """
 
 from __future__ import annotations

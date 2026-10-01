@@ -1,13 +1,12 @@
 """
 Shell / code-execution tool — `run_shell`.
 
-The agent's escape hatch (roadmap Tier 3 #10): the one tool that can run anything the host shell
-can — scripts, build/test commands, git, package managers, a quick one-off bit of code. That reach
-is exactly why it is registered `destructive`, so it ALWAYS hits the approval
-gate. The gate — the user seeing the exact command + working directory and approving it — is the
-safety boundary here, NOT a path jail. This is the design the roadmap calls "a `destructive`
-run_shell safe-by-default": the risk tier does the guarding, the same way write_file's overwrite
-is made safe by the gate (gotcha #2) rather than by being forbidden.
+The agent's escape hatch: the one tool that can run anything the host shell can — scripts,
+build/test commands, git, package managers, a quick one-off bit of code. That reach is exactly why
+it is registered `destructive`, so it ALWAYS hits the approval gate. The gate — the user seeing
+the exact command + working directory and approving it — is the safety boundary here, NOT a path
+jail: the risk tier does the guarding, the same way write_file's overwrite is made safe by the
+gate rather than by being forbidden.
 
 Working directory — every call runs inside the working folder (core/workspace.root(): the folder Saturn was
 launched from). A shell can of course `cd` out of it; this is a sensible default, not a hard jail.
@@ -19,13 +18,12 @@ Bounded — the call is killed after `shell.timeout` seconds (config.yaml `shell
 interactive command can't wedge the turn, mirroring `runtime.llm_timeout`. stdout and stderr
 are combined and returned with the exit code; a non-zero exit or a timeout RAISES ToolError
 (the same text), so the round is stamped error and the answer discloses it. The
-tool_node clamps the observation before it enters context (gotcha #5), so a runaway command can't
-overflow the window.
+tool_node clamps the observation before it enters context, so a runaway command can't overflow
+the window.
 
 Every run is a bounded FOREGROUND run: the process lives and dies inside the turn the user
-approved. (Detached background jobs — `run_shell(background=true)` + `check_shell_job`/
-`stop_shell_job` — were DELETED 2026-07-03: a detached, timeout-free process is exactly what the
-gate's approve-this-command model covers worst; preserved on `shelf/2026-07-03-runtime-trim`.)
+approved. A detached, timeout-free process is exactly what the gate's approve-this-command model
+covers worst.
 """
 
 import os
@@ -36,15 +34,13 @@ from config import get_config
 from tools.toolspec import ToolError, register_tool
 from trust import egress
 
-# Fallback when config.yaml has no `shell.timeout` (or an invalid one). Mirrors the local-helper
-# style web.py uses for its own knobs — no config.py property needed for a single tool-local value.
+# Fallback when config.yaml has no `shell.timeout` (or an invalid one).
 _DEFAULT_TIMEOUT = 60
 
 
 # Env-name fragments scrubbed from a shell command's environment (config `shell.env_scrub`
 # overrides; substring, case-insensitive). A command can read a secret straight out of its own
-# environment — the workspace cwd does nothing about that (transplanted from the gating
-# isolate's sandbox.scrubbed_env; the sandbox itself stayed behind, this slice is dependency-free).
+# environment — the workspace cwd does nothing about that.
 _DEFAULT_ENV_SCRUB = ("API_KEY", "SECRET", "TOKEN", "PASSWORD", "CREDENTIAL",
                       "ANTHROPIC", "OPENAI", "AWS_", "GITHUB_")
 
@@ -91,8 +87,6 @@ def _kill_tree(proc: "subprocess.Popen") -> None:
             proc.kill()
         except Exception:
             pass
-
-
 
 
 def _format(returncode: int, stdout: str, stderr: str) -> str:

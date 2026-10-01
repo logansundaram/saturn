@@ -3,16 +3,11 @@ Maintains the knowledge-base manifest: `database/documents/.manifest.md`, one en
 metadata and a one-line description per document ingested into the RAG vector store.
 
 The grounding (`ground`) node reads it at the start of each turn so the agent knows what the
-knowledge base holds before deciding whether to search it. (The workspace manifest — the same
-record for the files the tools read and write — was cut 2026-09-27: it wrote a `.manifest.md`
-into the working directory every turn, and `list_directory` answers the same question.)
+knowledge base holds before deciding whether to search it.
 
-The description is MECHANICAL (first heading / first non-empty line) since 2026-07-16 — the
-per-document LLM summary + its content-hash cache (`cache/summaries.json`) were cut: an ingest
-cost a utility-model call for prose that was never cited or graded, only skimmed. What the
-manifests exist for — "these files exist, roughly this is what each is" — the first line
-already answers. A legacy summaries.json is simply orphaned (cache/ is documented safe to
-delete).
+The description is MECHANICAL (first heading / first non-empty line): an ingest costs no model
+call, and the manifest's job — "these files exist, roughly this is what each is" — the first
+line already answers.
 """
 
 import re
@@ -88,9 +83,8 @@ def manifest_entries(text: str) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
-# mtime-validated in-memory memo: ground re-reads the manifest every turn, and syncing N
-# files used to re-read the whole manifest PER FILE. One stat per read validates the memo; the
-# mtime check (not a blind cache) keeps a hand-edited file honest. Keyed by path so isolated
+# mtime-validated in-memory memo: ground re-reads the manifest every turn, and a sync upserts it
+# once per file. One stat per read validates the memo; the mtime check (not a blind cache) keeps a hand-edited file honest. Keyed by path so isolated
 # test configs and a live `/config paths.*` change each get their own slot.
 _manifest_mem: "dict[str, tuple[int, str]]" = {}
 
@@ -125,10 +119,8 @@ _DESC_CAP = 160
 
 def _summarize(content: str, filename: str) -> str:
     """A mechanical one-line description: the first non-empty line (a markdown heading's `#`s
-    stripped), whitespace-collapsed and clipped. Replaced the per-document LLM summary
-    2026-07-16 — an ingest no longer costs a model call, and the manifest's job ("these files
-    exist, roughly what each is") is answered by the file's own first line. Untrusted document
-    text still can't steer more than that one clipped line into the every-turn context."""
+    stripped), whitespace-collapsed and clipped. Untrusted document text can't steer more than
+    that one clipped line into the every-turn context."""
     for line in content.splitlines():
         line = " ".join(line.strip().lstrip("#").split())
         if line:
@@ -137,8 +129,8 @@ def _summarize(content: str, filename: str) -> str:
 
 
 def _upsert(manifest_path: Path, filename: str, content: str, suffix: str) -> None:
-    # The one-line collapse also runs here so a MULTI-LINE summary cached by an older version
-    # can't forge a "\n### " entry boundary on its way into the manifest.
+    # The one-line collapse also runs here so a multi-line summary can't forge a "\n### " entry
+    # boundary on its way into the manifest.
     summary = " ".join(str(_summarize(content, filename)).split())
     size_kb = len(content.encode()) / 1024
 

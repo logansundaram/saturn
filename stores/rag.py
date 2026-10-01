@@ -1,4 +1,6 @@
+import csv
 import hashlib
+import io
 import json
 import re
 import shutil
@@ -233,10 +235,7 @@ def _csv_to_text(raw: str) -> str:
     including ones far from the first row — can be traced back to the schema. The rows themselves
     stay verbatim (the chunker splits long files; values are what retrieval matches on)."""
     try:
-        import csv as _csv
-        import io
-
-        first = next(_csv.reader(io.StringIO(raw)), None)
+        first = next(csv.reader(io.StringIO(raw)), None)
         if first and any(c.strip() for c in first):
             cols = ", ".join(c.strip() for c in first if c.strip())
             return f"[columns: {cols}]\n{raw}"
@@ -440,9 +439,9 @@ def sync(*, force: bool = False, verbose: bool = True, on_file=None) -> dict:
 
     # Manifest orphans: entries for documents no longer on disk that the index walk above cannot
     # see. On a full rebuild `files` was just reset to {} (and a wiped cache/ dir — documented
-    # "safe to delete" — has no index at all), so a deleted document's manifest block + cached
-    # summary would otherwise survive forever: the fresh index only records on-disk files, so no
-    # FUTURE sync would notice the orphan either. Reconcile the manifest against disk directly.
+    # "safe to delete" — has no index at all), so a deleted document's manifest block would
+    # otherwise survive forever: the fresh index only records on-disk files, so no FUTURE sync
+    # would notice the orphan either. Reconcile the manifest against disk directly.
     # Vectors need no cleanup here — a rebuilt store starts empty, and the loop above already
     # deleted every indexed source's chunks. An orphan is, by definition, absent from `files`,
     # so this pass never touches the store or the index.
@@ -460,19 +459,17 @@ def sync(*, force: bool = False, verbose: bool = True, on_file=None) -> dict:
         entry = files.get(source)
         stat = _stat_key(path)
         if _unchanged(entry, stat):
-            # Size and mtime both match what was recorded — skip reading the file at all. This is
-            # the whole-corpus common case on every launch; hashing it meant a full read of every
-            # document under the splash.
+            # Size and mtime both match what was recorded — skip reading the file at all (the
+            # whole-corpus common case on every launch).
             stats["unchanged"] += 1
             continue
         h = _file_hash(path)
         if entry and entry.get("hash") == h:
             # Same bytes after all: a touched file, an entry written before stat keys were
             # recorded, or one still inside the racy window. Backfill the stat so the NEXT sync
-            # can skip the read — but only when there IS a stat to record (a None stat merged
-            # nothing, yet used to flag `backfilled` and rewrite the index on every launch) AND
-            # the racy window has passed (a backfill inside it would be untrusted by _unchanged
-            # anyway, so writing it only rewrote the index on every sync until it aged).
+            # can skip the read — but only when there IS a stat to record AND the racy window has
+            # passed (a backfill inside it would be untrusted by _unchanged anyway); otherwise
+            # the index would be rewritten on every launch for nothing.
             if stat and stat["mtime_ns"] + _RACY_WINDOW_NS <= time.time_ns():
                 files[source] = {**entry, **stat, "indexed_at_ns": time.time_ns()}
                 backfilled = True
@@ -486,7 +483,7 @@ def sync(*, force: bool = False, verbose: bool = True, on_file=None) -> dict:
         # Load BEFORE deleting the old vectors: if the loader fails (corrupt file, missing
         # optional package), the previously-embedded version stays searchable and the failure is
         # reported per-file instead of aborting the sync for the whole corpus. An EMBEDDING
-        # failure (daemon down) still raises out as before — nothing can proceed without it.
+        # failure (daemon down) still raises — nothing can proceed without it.
         try:
             screened = _SCREENED.pop(h, None)
             if screened is not None:
@@ -519,8 +516,7 @@ def sync(*, force: bool = False, verbose: bool = True, on_file=None) -> dict:
     # a startup whose corpus hasn't changed — must not rewrite a multi-MB vectors.json on every
     # launch: besides the waste, each rewrite widens the crash window in which a kill mid-write
     # leaves a truncated dump that _load_store() treats as corrupt, silently forcing a full
-    # re-embed of the whole corpus next run. Behavior-preserving: an unchanged store/index
-    # round-trips to identical content anyway. Manifest-orphan cleanup above deliberately does
+    # re-embed of the whole corpus next run. Manifest-orphan cleanup above deliberately does
     # not trigger a rewrite (it changes neither the store nor `files`).
     if full_rebuild or to_embed or removed_sources:
         store.dump(str(_store_path()))
@@ -592,10 +588,9 @@ def forget_document(name: str) -> bool:
     vectors + manifest entry. Returns False if no matching file exists."""
     root = documents_dir().resolve()
     target = (root / name).resolve()
-    # The corpus is the jail. This is the only file-DELETING path in the repo that did not route
-    # through a sandbox resolver: `root / "../secret.txt"` resolved outside and was unlinked.
-    # Not reachable from /docs remove (the handler basenames its input first), but the guard
-    # belongs in the primitive, not in the one caller that happens to be careful.
+    # The corpus is the jail: `root / "../secret.txt"` must never resolve outside and be
+    # unlinked. /docs remove basenames its input first, but the guard belongs in the primitive,
+    # not in the one caller that happens to be careful.
     if not target.is_relative_to(root) or not target.exists():
         matches = [p for p in iter_documents() if p.name == Path(str(name)).name]
         if not matches:

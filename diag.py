@@ -3,12 +3,12 @@ Lightweight diagnostic log.
 
 Node/tool timing lines and soft, non-fatal warnings (a malformed model output retried, an
 empty thinking pass rerun) are diagnostics — useful when debugging, noise during normal use.
-They used to `print()` straight to stdout, where they collided with the rich.Live status bar and
-the styled trace rail in the TUI. They now go here instead: appended to a file under `logging/`
-(gitignored) and silent on the console by default. Set the env var `SATURN_DEBUG=1` to also echo
-them to stderr during development.
+`print()` would collide with the rich.Live status bar and the trace rail in the TUI, so they are
+appended to a file under `logging/` (gitignored) and silent on the console by default. Set the
+env var `SATURN_DEBUG=1` to also echo them to stderr.
 
-No project imports, so this is safe to import from any node/tool/store without circular-import risk.
+No project imports, so this is safe to import from anywhere — which is why the data-home rule
+(`saturn_home`, `data_root`) lives here: config.py and env_keys.py read it from this leaf.
 The `logging/` directory at the repo root does NOT shadow the stdlib `logging` module here: it has
 no `__init__.py`, and a regular package (stdlib) always wins over a namespace-package directory.
 """
@@ -19,22 +19,24 @@ import logging
 import os
 from pathlib import Path
 
-def _resolve_log_dir() -> Path:
-    # Clone mode: logging/ at the repo root (config.yaml — or, before the first-run seed, the
-    # tracked template config.default.yaml — sits next to this file). Wheel installs (pipx/uv)
-    # must not write into site-packages — use the wheel data home, config.wheel_data_home's
-    # rule repeated (kept in step by hand: this module imports nothing project-side).
-    root = Path(__file__).parent
-    if (root / "config.yaml").exists() or (root / "config.default.yaml").exists():
-        return root / "logging"
-    return _wheel_data_home() / "logging"
 
-
-def _wheel_data_home() -> Path:
+def saturn_home() -> Path:
+    """The user's own Saturn folder: `$SATURN_HOME`, else `~/.saturn` — hand-written files that
+    follow the user everywhere (the global SATURN.md, hooks.yaml), and a wheel install's data."""
     return Path(os.environ.get("SATURN_HOME") or Path.home() / ".saturn").expanduser()
 
 
-_LOG_DIR = _resolve_log_dir()
+def data_root() -> Path:
+    """Where user data lives: the repo root in clone mode (config.yaml — or, before the first-run
+    seed, the template config.default.yaml — sits next to this file), else `saturn_home()`: a
+    wheel (pipx/uv) install must not write into site-packages."""
+    root = Path(__file__).parent
+    if (root / "config.yaml").exists() or (root / "config.default.yaml").exists():
+        return root
+    return saturn_home()
+
+
+_LOG_DIR = data_root() / "logging"
 _logger: logging.Logger | None = None
 
 
@@ -69,5 +71,5 @@ def _get() -> logging.Logger:
 
 
 def log(msg: object) -> None:
-    """Record one diagnostic line. Drop-in replacement for the old `print(...)` timing calls."""
+    """Record one diagnostic line."""
     _get().debug(str(msg))

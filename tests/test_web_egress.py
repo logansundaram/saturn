@@ -1,11 +1,10 @@
 """
 web.py egress attribution — the ledger must name the host ACTUALLY contacted.
 
-API-less since 2026-07-06: web_search is keyless DuckDuckGo (one send, one event naming
+web_search is keyless DuckDuckGo (one send, one event naming
 duckduckgo.com), web_extract fetches one page itself (one event naming ITS host, plus one per
 further host a redirect reaches). The air-gap check is up-front; recording is
-fail-toward-recording, before the send. (The Tavily backend and its fallback double-record
-contract left with the API-less pivot.)
+fail-toward-recording, before the send.
 
 Everything runs offline: DDGS and the local extractor are stubbed.
 """
@@ -84,8 +83,7 @@ def test_extract_local_records_target_host(monkeypatch):
 
 
 def test_extract_empty_url_records_nothing():
-    # No URL → nothing sent → nothing recorded (the old top-of-function record logged a phantom
-    # event for an empty call).
+    # No URL → nothing sent → nothing recorded.
     with pytest.raises(ToolError, match="No URL"):
         web.web_extract.invoke({"url": "  "})
     assert egress.count() == 0
@@ -168,7 +166,7 @@ def test_extract_fetches_only_through_the_recorded_path():
     assert "fetch_url" not in inspect.getsource(web) and "fetch_response" not in inspect.getsource(web)
 
 
-# ── http_request: CUT 2026-07-16 ───────────────────────────────────────────────────────────────
+# ── no generic HTTP tool ───────────────────────────────────────────────────────────────────────
 
 
 def test_http_request_is_cut():

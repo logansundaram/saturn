@@ -1,9 +1,8 @@
 # Saturn runtime configuration.
 #
-# This file externalizes everything that used to be hard-coded across llms.py, rag.py,
-# document_registry.py, and agent.py: the model bindings, the filesystem paths, and the
-# loop/safety knobs. Graph code never names a concrete model id — so
-# swapping hardware is a one-line `active_tier` change here and never touches graph logic.
+# The model bindings, the filesystem paths, and the loop/safety knobs. Graph code never names a
+# concrete model id — so swapping hardware is a one-line `active_tier` change here and never
+# touches graph logic.
 
 # Which hardware-tier preset (under `tiers:` below) is live. Change this one line to
 # re-point Saturn at a different model.
@@ -16,7 +15,7 @@ paths:
   database: database
   documents: database/documents
   workspace: database/workspace         # fallback only: the working folder is where you launch saturn
-  cache: database/cache                # persisted RAG vector store + corpus/summary caches
+  cache: database/cache                # persisted RAG vector store + corpus index
   memory: database/memory/memory.md   # persistent durable-facts store (remember/recall)
   db_sqlite: database/db.sqlite        # SqliteSaver checkpoints + trace
   sessions: database/sessions          # saved conversations (/resume save <name>, /resume <name>)
@@ -25,11 +24,10 @@ paths:
   exports: logging/exports             # /trace export run records (audit artifacts)
 
 # ---------------------------------------------------------------------------
-# Loop / safety runtime knobs (were the MAX_ITERATIONS constant + the gate policy).
+# Loop / safety runtime knobs.
 # ---------------------------------------------------------------------------
 runtime:
-  # Agent passes per turn (2026-09-27: one pass = one model call, which may issue several tool
-  # calls). From this pass on no tool call runs: a call is refused and the model answers from
+  # Agent passes per turn (one pass = one model call, which may issue several tool calls). From this pass on no tool call runs: a call is refused and the model answers from
   # what it has, saying what is undone.
   max_iterations: 16
   # Adaptive thinking, on evidence. A pass thinks, with a bounded budget, only when the tool
@@ -50,18 +48,18 @@ runtime:
   # /config runtime.num_ctx command sets this live). Without it Ollama silently caps the window at 2048.
   num_ctx: null
   # Read timeout (seconds) for a single local-model call. Guards against a WEDGED Ollama daemon
-  # (accepts the connection but never responds) hanging a turn forever — a turn that times out now
+  # (accepts the connection but never responds) hanging a turn forever — a turn that times out
   # fails cleanly and returns to the prompt. Set generously: it must exceed your slowest single
   # generation so a healthy-but-slow model is never false-tripped (connect is capped separately at
   # ~10s, so a daemon that is simply DOWN still fails fast). null disables the timeout.
   llm_timeout: 120
   # How long Ollama keeps the model loaded after each request (an Ollama duration: "30m", "2h";
   # -1 = never unload; null = the daemon's own 5-minute default). The daemon's default drops the
-  # weights after five idle minutes, and the next turn then pays the whole load again (measured
-  # 2026-09-02: 37-50 s for a cold "hello" against 15 s warm). Sent on every request, so the
+  # weights after five idle minutes, and the next turn then pays the whole load again (measured:
+  # 37-50 s for a cold "hello" against 15 s warm). Sent on every request, so the
   # timer restarts each call; it is not a load option, so changing it never reloads the model.
   keep_alive: 30m
-  # Idle prefix priming (2026-09-04): between turns (and once after the weights load) the agent
+  # Idle prefix priming: between turns (and once after the weights load) the agent
   # re-sends the agent's stable prompt prefix — its system prompt plus the workspace grounding —
   # with one predicted token, so the daemon holds a prompt-cache checkpoint at the point the
   # next turn's call extends and it prefills only what is new (measured on the 9b: prefill
@@ -110,15 +108,12 @@ runtime:
   grant_scope: task
 
 # ---------------------------------------------------------------------------
-# Web tools (tools/web.py). API-less by design (2026-07-06): web_search is keyless DuckDuckGo,
-# web_extract is a local fetch + trafilatura extraction — no provider key, no account, ever.
-# (The old `provider:` knob and the Tavily backend are gone; a config.yaml still carrying
-# `provider:` loads fine — unknown keys are ignored.)
+# Web tools (tools/web.py). API-less by design: web_search is keyless DuckDuckGo, web_extract
+# is a local fetch + trafilatura extraction — no provider key, no account, ever. Unknown keys
+# here are ignored.
 # ---------------------------------------------------------------------------
 web:
   max_results: 5            # results returned per web_search
-  # (request_timeout left with the http_request cut, 2026-07-16 — an old config.yaml still
-  # carrying it loads fine; unknown keys are ignored.)
 
 # ---------------------------------------------------------------------------
 # RAG pipeline (stores/rag.py + the search_knowledge_base tool). Escape-hatch tuning knobs —
@@ -148,7 +143,7 @@ memory:
   stale_days: 90
   # Whether /memory review (and /quit, when candidates are pending) asks the model to
   # propose facts from the session transcript on top of the mechanical candidates (steer
-  # notes, plan vetoes, gate denials, unfinished steps, the compaction summary). Every
+  # notes, gate denials, failed tool calls, the compaction summary). Every
   # candidate still faces the review screen — nothing is written without your accept.
   review_llm: true
 
@@ -168,7 +163,7 @@ memory:
 #           OMITTED or invalid -> destructive (always prompts). This is YOUR trust declaration —
 #           the server's own annotations never drive the gate. Per-tool: /policy risk <tool> <tier> --save.
 #     enabled: false                    (keep the entry, skip the connection)
-#   ${VAR} in url/args/env/headers expands from the environment / .env (/config key), so secrets
+#   ${VAR} in url/args/env/headers expands from the environment / .env, so secrets
 #   never sit in this file. Tools register as `mcp_<server>_<tool>`.
 #
 # servers:
@@ -245,19 +240,16 @@ tiers:
     embedder: qwen3-embedding:8b
 
 # ---------------------------------------------------------------------------
-# Capability descriptors, keyed by model id. The engine REQUIRES native tool-calling +
-# structured output; check_models() warns if the bound model
-# lacks it. Unknown models fall back to the conservative
-# defaults in config.py (tools + structured output assumed true, vision false).
-# (The claude-sonnet / gpt-4o entries left with the cloud-model shelve, 2026-07-03.)
+# Capability descriptors, keyed by model id. The engine REQUIRES native tool-calling;
+# check_models() warns if the bound model lacks it. Unknown models fall back to the
+# conservative defaults in config.py (tools assumed, an 8192 window).
 # ---------------------------------------------------------------------------
 capabilities:
   # context_window is the RUNTIME window handed to ChatOllama (config.num_ctx_for). It is
   # deliberately NOT the architectural maximum: every qwen3.5-3.8 tag reports 262144, and
-  # requesting that per call exhausts VRAM on any consumer card. max_context_window carries the
-  # real ceiling for DISPLAY only (the /models metrics columns). Never collapse the two.
+  # requesting that per call exhausts VRAM on any consumer card.
   #
-  # The windows step up the ladder with the hardware each tier lands on (2026-09-01). Every tag
+  # The windows step up the ladder with the hardware each tier lands on. Every tag
   # is a hybrid (3 linear-attention layers per full-attention layer), so the KV cache is cheap:
   # 32 KB/token for 4b-9b, 64 KB/token for 27b, 20 KB/token for the 35b MoE. Priced so each tier
   # fits its home machine with ~1.5 GB headroom (/models shows the arithmetic):
@@ -270,16 +262,12 @@ capabilities:
   "qwen3.5:4b":
     supports_tools: true
     context_window: 32768
-    max_context_window: 262144
   "qwen3.5:9b":
     supports_tools: true
     context_window: 65536
-    max_context_window: 262144
   "qwen3.8:27b":
     supports_tools: true
     context_window: 65536
-    max_context_window: 262144
   "qwen3.6:35b":
     supports_tools: true
     context_window: 131072
-    max_context_window: 262144

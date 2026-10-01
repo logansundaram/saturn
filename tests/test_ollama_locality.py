@@ -239,25 +239,15 @@ class _FakeInner:
         return _FakeResp()
 
 
-def test_network_boundary_batch_routes_through_the_boundary():
-    """batch() must cross the boundary one input at a time (each recorded) — the
-    inner model's batch would take the whole list past it in one unobserved call."""
-    from core.llms import _NetworkBoundaryModel
-
-    inner = _FakeInner()
-    wrapped = _NetworkBoundaryModel(inner, "m", host="remote:11434")
-    out = wrapped.batch([[], []])
-    assert len(out) == 2 and len(inner.invoked) == 2
-
-
 def test_network_boundary_refuses_unguarded_send_paths():
-    """__getattr__ used to hand generate/transform/… back bound to the INNER model — an
-    unrecorded send. They fail closed now; benign attributes still delegate."""
+    """Send paths the proxy does not wrap must not delegate to the INNER model (an unrecorded
+    send) — they fail closed; benign attributes still delegate."""
     from core.llms import _NetworkBoundaryModel
 
     inner = _FakeInner()
     wrapped = _NetworkBoundaryModel(inner, "m", host="remote:11434")
-    for name in ("generate", "agenerate", "transform", "abatch_as_completed"):
+    for name in ("generate", "agenerate", "transform", "abatch_as_completed",
+                 "ainvoke", "astream", "batch", "abatch", "with_structured_output"):
         with pytest.raises(AttributeError):
             getattr(wrapped, name)
     assert wrapped.invoked == []  # non-network attributes still delegate to the inner model

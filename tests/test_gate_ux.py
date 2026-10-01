@@ -1,12 +1,10 @@
 """
-Gate-UX pure logic (tui/ui/approval.py + plan.py): the first-gate preamble (receipt.take_hint —
-once per install, failing safe to once per session), the full-width-argument branch selection +
-per-value head/tail clamp (textutil.head_tail — its unit tests live here too, no textutil suite
-exists), the byte-faithful hard wrap (`_wrap_exact` — no whitespace mutation in the very
-arguments the human approves), the scoped run_shell always-allow (full-command proposal + grant
-validated through the one policy matcher — never a second mechanism), and the plan-review
-editor's fail-closed Ctrl-C/EOF handling. Presentation (rich frames, prompt strings) is not
-asserted — only the decisions underneath.
+Gate UX (tui/ui/approval.py): the first-gate preamble (receipt.take_hint — once per install,
+failing safe to once per session), the full-width-argument branch selection + per-value
+head/tail clamp (textutil.head_tail — its unit tests live here too, no textutil suite exists),
+the byte-faithful hard wrap (`_wrap_exact` — no whitespace mutation in the very arguments the
+human approves), the scoped run_shell always-allow (full-command proposal + grant validated
+through the one policy matcher — never a second mechanism), and the frame's rendered rows.
 """
 
 import types
@@ -16,21 +14,25 @@ from trust import receipt
 from textutil import head_tail
 from nodes.approval import _apply_always_grants
 from tui.ui import approval
-from tui.ui import plan as plan_ui
-from tui.ui._base import _RAIL_GLYPH
 
 
 # ── first-gate teaching preamble: once per install via receipt.take_hint ─────────────────────
 
 
-def test_preamble_once_per_install(isolated_paths, monkeypatch):
+def _preamble_shown(capsys) -> bool:
+    capsys.readouterr()
+    approval._show_preamble_if_due()
+    return approval._GATE_PREAMBLE[0] in capsys.readouterr().out
+
+
+def test_preamble_once_per_install(isolated_paths, monkeypatch, capsys):
     monkeypatch.setattr(receipt, "_HINTS_SHOWN", set())
-    assert approval._preamble_due() is True
+    assert _preamble_shown(capsys)
     # Marked for the session…
-    assert approval._preamble_due() is False
+    assert not _preamble_shown(capsys)
     # …and for the install: a "new session" (hint set reset) still finds the sentinel.
     monkeypatch.setattr(receipt, "_HINTS_SHOWN", set())
-    assert approval._preamble_due() is False
+    assert not _preamble_shown(capsys)
 
     from config import get_config
 
@@ -39,7 +41,7 @@ def test_preamble_once_per_install(isolated_paths, monkeypatch):
     assert not (get_config().path("database") / ".gate_seen").exists()
 
 
-def test_preamble_fails_safe_when_sentinel_unwritable(isolated_paths, monkeypatch):
+def test_preamble_fails_safe_when_sentinel_unwritable(isolated_paths, monkeypatch, capsys):
     # Make the database path a FILE so the sentinel write must fail — the preamble still shows,
     # but at most once per session (take_hint's in-memory guard), and again next "session".
     from config import get_config
@@ -49,10 +51,10 @@ def test_preamble_fails_safe_when_sentinel_unwritable(isolated_paths, monkeypatc
     db_dir.write_text("not a directory", encoding="utf-8")
 
     monkeypatch.setattr(receipt, "_HINTS_SHOWN", set())
-    assert approval._preamble_due() is True
-    assert approval._preamble_due() is False  # same session: never twice
+    assert _preamble_shown(capsys)
+    assert not _preamble_shown(capsys)  # same session: never twice
     monkeypatch.setattr(receipt, "_HINTS_SHOWN", set())
-    assert approval._preamble_due() is True  # install-level mark could not persist
+    assert _preamble_shown(capsys)  # install-level mark could not persist
 
 
 # ── full-width argument rendering: branch selection + per-value clamp ─────────────────────────
@@ -88,8 +90,7 @@ def test_quarantine_escalation_forces_the_full_argument_view():
 def test_quarantined_read_only_call_renders_its_arguments_in_full(monkeypatch, capsys):
     # End to end through ask_approval: the escalated batch's long argument reaches the human
     # instead of being cut at the 80-char repr.
-    monkeypatch.setattr(approval, "_RICH", False)
-    monkeypatch.setattr(approval, "_preamble_due", lambda: False)
+    monkeypatch.setattr(approval, "_show_preamble_if_due", lambda: None)
     monkeypatch.setattr("builtins.input", lambda _p="": "n")
     payload = {
         "tool_calls": [{"id": "1", "name": "web_search", "risk": "read_only",
@@ -105,7 +106,6 @@ def test_quarantined_read_only_call_renders_its_arguments_in_full(monkeypatch, c
 def test_quarantine_banner_counts_the_flags_it_does_not_name(monkeypatch, capsys):
     """"3 sources flagged" and "3 of 9 flagged" are different facts, and the smaller one
     understates the exposure — flags past the display cap are counted, never silently dropped."""
-    monkeypatch.setattr(approval, "_RICH", False)
     flags = [{"tool": f"t{i}", "kinds": ["instruction"]} for i in range(9)]
     approval._render_quarantine_banner({"quarantine": {"flags": flags}})
     out = capsys.readouterr().out
@@ -125,16 +125,19 @@ def test_quarantine_flags_is_the_one_reader(monkeypatch):
         assert approval._quarantine_flags(junk) == []
 
 
-def test_clamp_value_head_and_tail():
+def test_full_width_values_are_clamped_head_and_tail(monkeypatch):
+    seen = []
+    monkeypatch.setattr(approval, "_frame_wrapped",
+                        lambda lines, prefix, width=None: seen.append("\n".join(lines)))
     short = "x" * approval._MAX_ARG_VALUE
-    assert approval._clamp_value(short) == short
-
     long = "H" * 1500 + "M" * 1500 + "T" * 1500
-    out = approval._clamp_value(long)  # cap 2000 → 2500 dropped
+    approval._render_full_args({"short": short, "long": long})  # cap 2000 → 2500 dropped
+    assert seen[0] == short
+    out = seen[1]
     assert out.startswith("H")  # head kept
     assert out.endswith("T")  # tail kept — where a long payload hides the part that matters
     assert "truncated 2500 characters" in out
-    # Delegation, not a third hand-rolled copy: byte-identical to the textutil primitive.
+    # Delegation, not a hand-rolled copy: byte-identical to the textutil primitive.
     assert out == head_tail(long, approval._MAX_ARG_VALUE)
 
 
@@ -440,7 +443,7 @@ def test_gate_key_vocabulary_single_source():
         assert f"{key} {long_label}" in approval._KEY_LEGEND_FULL
         for s in spellings:
             assert s in approval._KNOWN_ANSWERS
-    assert approval._KEY_CHOICES == "y / N / s / a / e"
+    assert approval._KEY_CHOICES == "y / [bold]N[/] / s / a / e"
 
 
 def test_unrecognized_answer_notes_but_never_alters_the_decision():
@@ -461,22 +464,11 @@ def test_unrecognized_answer_notes_but_never_alters_the_decision():
 
 
 def test_bespoke_table_is_single_source():
-    # _BESPOKE_RENDERED (the _full_width_args membership test) derives from the one table that
-    # also carries the compact-view skip keys and the renderer — three facts, one place.
-    assert approval._BESPOKE_RENDERED == tuple(approval._BESPOKE)
+    # One table carries the _full_width_args membership, the compact-view skip keys, and the
+    # renderer — three facts, one place.
     for name, (skip_keys, renderer) in approval._BESPOKE.items():
         assert isinstance(skip_keys, tuple) and skip_keys, name
         assert callable(renderer), name
-
-
-def test_frame_wrapped_plain_is_unwrapped_and_prefixed(monkeypatch, capsys):
-    # The plain fallback prints each logical line whole (the terminal wraps) — byte-faithfulness
-    # still holds because nothing is rewritten, only prefixed.
-    monkeypatch.setattr(approval, "_RICH", False)
-    approval._frame_wrapped(["x" * 500, ""], "$ ")
-    lines = capsys.readouterr().out.splitlines()
-    assert lines[0] == "  ┃       $ " + "x" * 500
-    assert lines[1] == "  ┃       $ "  # an empty line is still a row
 
 
 def test_frame_wrapped_prefixes_only_the_first_chunk_of_a_logical_line(monkeypatch, capsys):
@@ -484,8 +476,6 @@ def test_frame_wrapped_prefixes_only_the_first_chunk_of_a_logical_line(monkeypat
     # logical line, never once per screen row. With the prefix repeated on every wrapped
     # fragment, a 200-char one-liner and a 3-line script rendered identically — and the
     # destructive tail of a wrapped command read as its own separate innocuous `$ ` command.
-    if not approval._RICH:  # pragma: no cover - the plain path has its own test above
-        return
     approval._frame_wrapped(["A" * 100, "B" * 100], "$ ", width=40)
     rows = capsys.readouterr().out.splitlines()
 
@@ -508,11 +498,9 @@ def test_continuation_prefix_matches_prefix_width():
         assert len(approval._continuation_prefix(prefix)) == len(prefix)
 
 
-def test_render_call_plain_skips_bespoke_keys(isolated_paths, monkeypatch, capsys):
+def test_render_call_skips_bespoke_keys(isolated_paths, capsys):
     # The keys a bespoke renderer shows in full must never ALSO render as the 80-char repr —
-    # and the bespoke surface itself (diff / command) must actually appear. Pre-refactor this
-    # invariant lived twice (rich + plain loops) and could drift; now both run _render_call.
-    monkeypatch.setattr(approval, "_RICH", False)
+    # and the bespoke surface itself (diff / command) must actually appear.
     approval._render_call({
         "id": "1", "name": "write_file", "risk": "side_effecting",
         "args": {"file_path": "a.txt", "content": "SECRETBODY", "overwrite": True},
@@ -522,14 +510,14 @@ def test_render_call_plain_skips_bespoke_keys(isolated_paths, monkeypatch, capsy
         "args": {"command": "git status"},
     })
     out = capsys.readouterr().out
-    assert "[side_effecting] write_file" in out
+    assert "side_effecting write_file" in out
     assert "file_path = 'a.txt'" in out  # non-bespoke keys keep the compact repr
     assert "content = " not in out  # shown as the diff below, never the truncated repr
     assert "+ SECRETBODY" in out  # …and the diff really rendered it
-    assert "[destructive] run_shell" in out
+    assert "destructive    run_shell" in out
     assert "command = " not in out
     assert "$ git status" in out  # the full-command view
-    assert "-> irreversible — review carefully" in out  # per-tier hint survived the extraction
+    assert "↳ irreversible — review carefully" in out  # the per-tier hint
 
 
 # ── sub-prompts are markup/emoji-safe: the displayed grant IS the stored grant ───────────────
@@ -553,7 +541,6 @@ def test_gate_subprompts_render_bracketed_command_literally(isolated_paths, monk
     buf = io.StringIO()
     monkeypatch.setattr(approval, "_console",
                         Console(file=buf, force_terminal=False, width=200, highlight=False))
-    monkeypatch.setattr(approval, "_RICH", True)
     monkeypatch.setattr(approval, "_live_stop", lambda: None)
     monkeypatch.setattr(approval, "_live_start", lambda: None)
 
@@ -580,27 +567,7 @@ def test_gate_subprompts_render_bracketed_command_literally(isolated_paths, monk
     assert policy.shell_allow() == [cmd1, cmd2]
 
 
-# ── plan review: bare plan rows inside the frame + fail-closed Ctrl-C/EOF ────────────────────
-
-
-def test_plan_line_bare_drops_the_rail():
-    step = {"step_id": 1, "label": "find sources", "status": "pending",
-            "intended_tool": "web_search"}
-    bare = plan_ui._plan_line_bare(step, show_tool=True)
-    railed = plan_ui._plan_line(step, show_tool=True)
-    bare_s = bare.plain if hasattr(bare, "plain") else str(bare)
-    railed_s = railed.plain if hasattr(railed, "plain") else str(railed)
-    assert _RAIL_GLYPH not in bare_s
-    assert _RAIL_GLYPH in railed_s
-    assert bare_s in railed_s  # the railed form is exactly rail + bare
-
-
-def _quiet_review(monkeypatch):
-    monkeypatch.setattr(plan_ui, "_live_stop", lambda: None)
-    monkeypatch.setattr(plan_ui, "_live_start", lambda: None)
-
-
-# ── the gate prompt ALWAYS renders (transplanted from the visibility isolate) ───────────────
+# ── the gate prompt ALWAYS renders ───────────────────────────────────────────────────────────
 
 
 def _rich_gate(monkeypatch, answers):
@@ -613,7 +580,6 @@ def _rich_gate(monkeypatch, answers):
     buf = io.StringIO()
     monkeypatch.setattr(approval, "_console",
                         Console(file=buf, force_terminal=False, width=200, highlight=False))
-    monkeypatch.setattr(approval, "_RICH", True)
     monkeypatch.setattr(approval, "_live_stop", lambda: None)
     monkeypatch.setattr(approval, "_live_start", lambda: None)
     it = iter(answers)
@@ -749,8 +715,7 @@ def test_write_preview_agrees_with_the_jail(isolated_paths):
     assert approval._workspace_target("../escape.txt")[1] == "refused"
 
 
-def test_write_preview_renders_the_verdict(isolated_paths, monkeypatch, capsys):
-    monkeypatch.setattr(approval, "_RICH", False)
+def test_write_preview_renders_the_verdict(isolated_paths, capsys):
     p = _ws() / "same2.txt"
     with open(p, "w", encoding="utf-8") as fh:
         fh.write("hello\n")
@@ -766,8 +731,6 @@ def test_non_diffable_verdicts_never_claim_no_textual_change(isolated_paths, cap
     BINARY write it is a lie: a change IS pending (or the write will be refused outright), it
     merely isn't renderable. Only a verdict that genuinely produced an empty diff may caption
     its empty row list that way."""
-    if not approval._RICH:  # pragma: no cover - the plain path never emitted the marker
-        return
     (_ws() / "blob.bin").write_bytes(b"\x00\x01\x02PNG\x00garbage")
     with open(_ws() / "same3.txt", "w", encoding="utf-8") as fh:
         fh.write("hello\n")
@@ -796,8 +759,7 @@ def test_non_diffable_verdicts_never_claim_no_textual_change(isolated_paths, cap
 
 def test_always_allow_note_names_the_lifetime(isolated_paths, monkeypatch, capsys):
     """The `a` disclosure says how long the grant lives — the lifetime IS the security property
-    (transplanted from the gating isolate; default task scope = the rest of this turn)."""
-    monkeypatch.setattr(approval, "_RICH", False)
+    (default task scope = the rest of this turn)."""
     monkeypatch.setattr("tools.registry", types.SimpleNamespace(TOOL_RISK={}), raising=False)
     decision = approval._always_allow(
         [{"id": "1", "name": "write_file", "risk": "side_effecting", "args": {}}], lambda p: "n")
@@ -808,8 +770,7 @@ def test_always_allow_note_names_the_lifetime(isolated_paths, monkeypatch, capsy
 def test_gate_notes_say_why_a_normally_silent_call_is_asking(monkeypatch, capsys):
     """A hold the policy tier did not cause (air-gap, a model-composed URL) arrives with its
     reason, and the held call's arguments render in full — they are what the human checks."""
-    monkeypatch.setattr(approval, "_RICH", False)
-    monkeypatch.setattr(approval, "_preamble_due", lambda: False)
+    monkeypatch.setattr(approval, "_show_preamble_if_due", lambda: None)
     monkeypatch.setattr("builtins.input", lambda _p="": "n")
     payload = {
         "tool_calls": [{"id": "1", "name": "web_extract", "risk": "read_only",

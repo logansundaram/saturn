@@ -223,7 +223,7 @@ def test_typeahead_queues_enter_terminated_lines_fifo():
     for ch in "second":
         q._on_char(ch)
     q._on_char("\n")
-    assert q.pending()
+    assert q._queue
     assert q.pop() == "first" and q.pop() == "second", "queue drains FIFO"
     assert q.pop() is None
 
@@ -235,7 +235,7 @@ def test_typeahead_blank_not_queued_and_backspace_edits():
     for ch in "   ":
         q._on_char(ch)
     q._on_char("\r")
-    assert not q.pending(), "a blank line never queues"
+    assert not q._queue, "a blank line never queues"
     for ch in "abx":
         q._on_char(ch)
     q._on_char("\x08")  # backspace removes the x
@@ -264,25 +264,25 @@ def test_escape_with_text_steers_empty_reviews():
 
 
 def test_write_diff_new_file_is_all_additions():
-    from tui import ui
+    from tui.ui.approval import write_verdict
 
-    rows, is_new, _hidden = ui._diff_lines("___does_not_exist___.txt", "alpha\nbeta\n", True)
-    assert is_new
-    assert [k for k, _ in rows] == ["hunk", "add", "add"]
+    v = write_verdict("___does_not_exist___.txt", "alpha\nbeta\n", True)
+    assert v["kind"] == "new file"
+    assert [k for k, _ in v["rows"]] == ["hunk", "add", "add"]
 
 
 def test_write_diff_overwrite_shows_delete_and_add():
     from config import get_config
-    from tui import ui
+    from tui.ui.approval import write_verdict
 
     ws = get_config().path("workspace")
     ws.mkdir(parents=True, exist_ok=True)
     p = ws / "___difftest___.txt"
     p.write_text("one\ntwo\n", encoding="utf-8")
     try:
-        rows, is_new, _hidden = ui._diff_lines("___difftest___.txt", "one\nTWO\n", True)
-        kinds = [k for k, _ in rows]
-        assert not is_new
+        v = write_verdict("___difftest___.txt", "one\nTWO\n", True)
+        kinds = [k for k, _ in v["rows"]]
+        assert v["kind"] != "new file"
         assert "del" in kinds and "add" in kinds, "a changed line shows as a delete + an add"
     finally:
         p.unlink()

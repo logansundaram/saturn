@@ -4,10 +4,6 @@ module (the /help "conversation" theme):
 
   /clear    start over (fresh state + clean screen)
   /resume   session persistence (autosave + named sessions)
-
-(/compact, /rewind, and /retry were CUT 2026-07-07 to trim the "go back / redo" pile-up down to
-/clear + /resume here and /undo for files. Auto-compaction still runs on its own — the engine
-lives in core/compaction.py + app/session._maybe_autocompact, never needing a manual trigger.)
 """
 
 from commands._framework import command, _print
@@ -44,8 +40,7 @@ def _clear(ctx, args):
 
     # An argument must error, never fall through to the destructive default — a typo'd flag
     # must not wipe the conversation (the /mcp precedent: an unrecognized verb stops instead of
-    # degrading into the default action). (--screen and the /cls /reset /new aliases were cut
-    # 2026-09-30; Ctrl-L repaints.)
+    # degrading into the default action).
     if args:
         _print(f"  unknown argument {args[0]!r} — usage: /clear")
         return
@@ -83,7 +78,7 @@ def _reprint_banner(ctx) -> None:
 
         cfg = get_config()
         n_docs = sum(1 for _ in iter_documents())
-        ui.banner(f"{cfg.active_tier}:{model_id()}", len(_tools), n_docs, ctx.db_path)
+        ui.banner(f"{cfg.active_tier}:{model_id()}", len(_tools), n_docs)
     except Exception:
         pass
 
@@ -95,8 +90,7 @@ def _reprint_banner(ctx) -> None:
     aliases=("continue",),
     usage="/resume [<name> | save [name] | list]",
     details="""
-The one front door to session persistence. (The old /save and /load were folded in here —
-one command, not three.)
+The one front door to session persistence.
 
   /resume                   restore the autosave slot — the live conversation is autosaved on
                             /quit and after every turn (per-turn db.sqlite checkpoints are
@@ -109,8 +103,7 @@ one command, not three.)
   /resume list              list the named sessions on disk.
 
 Sessions are plain .json files under database/sessions/ (paths.sessions) — delete or rename
-one there. (The in-app delete/rename verbs were CUT 2026-07-16: crash-safe resume is the
-feature; a session library to manage was surface.)
+one there.
 
 Restoring rebuilds a fresh state seeded with the saved messages — config, model bindings, and
 the RAG corpus are untouched.
@@ -128,8 +121,8 @@ def _resume(ctx, args):
     if verb == "list":
         return _list_saved()
     if verb in ("remove", "rename"):
-        # CUT 2026-07-16 — intercepted (not treated as a session name) so a habit-typed
-        # `/resume rm old` can't misparse; the files are the interface now.
+        # Intercepted (not treated as a session name) so a habit-typed `/resume rm old` can't
+        # misparse; the files are the interface.
         _print("  session delete/rename was cut — sessions are plain files; manage them in:")
         _print(f"    {_sessions_dir()}")
         return
@@ -153,12 +146,11 @@ def _resume(ctx, args):
 
 # The /resume subcommand vocabulary — ONE table drives both the router (`_resume_verb`) and the
 # reserved-stem screen below, so a subcommand cannot be added without its name being refused as
-# a session name at save time (the stranded-session trap this hunk fixed: `/resume save list`
-# used to succeed and the session was then only reachable by list number). Per subcommand:
-# (bare spellings — these are also the reserved stems, flag spellings — safe_stem strips their
-# dashes back to the bare words, so they need no separate reservation). The remove/rename verbs
-# stay ROUTED even though the features were cut 2026-07-16: the router intercepts them with the
-# cut note (never a load-by-name misparse), and their stems stay unreserved-name-proof.
+# a session name at save time (a session saved as `list` would only be reachable by list
+# number). Per subcommand: (bare spellings — these are also the reserved stems, flag spellings —
+# safe_stem strips their dashes back to the bare words, so they need no separate reservation).
+# The remove/rename verbs are routed only so the router can intercept them with the cut note
+# (never a load-by-name misparse).
 _RESUME_VERBS = {
     "save": (("save",), ("--save", "-s")),
     "list": (LIST_VERBS, ("--list", "-l")),
@@ -180,9 +172,8 @@ def _resume_verb(token: str) -> "str | None":
 # could never be loaded by typing its name (`/resume list` would list, not load, list.json). The
 # refusal happens at CREATION (mirroring /policy allow's lone-verb reservation) and compares the
 # SANITIZED stem case-insensitively — the router lowercases args[0], so `/resume save LIST`
-# strands too, and safe_stem turns flag spellings like `--list` into these same words. Load /
-# delete / rename RESOLUTION stays unchanged, so a pre-existing colliding file remains reachable
-# (by /resume list number). Derived from the router's own table — never a second hand-kept copy.
+# strands too, and safe_stem turns flag spellings like `--list` into these same words. Derived
+# from the router's own table — never a second hand-kept copy.
 _RESERVED_SESSION_STEMS = frozenset(
     w for bare, _flags in _RESUME_VERBS.values() for w in bare
 )
@@ -217,8 +208,7 @@ def _save_named(ctx, args):
 
 
 def _named_sessions() -> list:
-    """The named session files, sorted — the one ordering /resume list shows and the numeric
-    arguments of delete resolve against, so the numbers always agree."""
+    """The named session files, sorted — the one ordering /resume list shows."""
     return sorted(f for f in _sessions_dir().glob("*.json") if not f.stem.startswith("_"))
 
 

@@ -1,34 +1,23 @@
 """
-Shared foundation for the `tui.ui` package: the console handle + capability flags, the palette,
-the per-process / per-turn mutable state, and the low-level rendering primitives every other
-submodule builds on. Imported as `from . import _base` (for the mutable state, which must be read
-through the module so a rebind in one submodule is seen by the rest) and via `from ._base import …`
-for the constants + stateless helpers (never rebound, safe to bind by name).
+Shared foundation for the `tui.ui` package: the console handle, the palette, the per-process /
+per-turn mutable state, and the low-level rendering primitives every other submodule builds on.
+Imported as `from . import _base` (for the mutable state, which must be read through the module
+so a rebind in one submodule is seen by the rest) and via `from ._base import …` for the
+constants + stateless helpers (never rebound, safe to bind by name).
 
 This module depends on nothing else in the package — it's the leaf the others import.
 """
 
-import os
-import shutil
+from rich.console import Console
+from rich.constrain import Constrain
+from rich.live import Live
+from rich.markdown import Markdown
+from rich.padding import Padding
+from rich.text import Text
 
-from textutil import fmt_args, truncate as _truncate
+from textutil import truncate as _truncate
 
-try:
-    from rich.console import Console
-    from rich.text import Text
-    from rich.live import Live
-    from rich.markdown import Markdown
-    from rich.padding import Padding
-    from rich.constrain import Constrain
-
-    _console = Console(highlight=False)
-    _RICH = True
-except Exception:  # pragma: no cover - fallback path
-    # Define the names unconditionally so `from ._base import Text` resolves even without rich;
-    # they're only ever *used* under an `if _RICH:` guard, so the None values are never called.
-    Console = Text = Live = Markdown = Padding = Constrain = None
-    _console = None
-    _RICH = False
+_console = Console(highlight=False)
 
 
 # ── palette ──────────────────────────────────────────────────────────────────
@@ -45,9 +34,6 @@ _PLAN = {
     "done": ("✓", "green"),
     "skipped": ("⨯", "grey30 strike"),
 }
-# (The v1 plan/execute engine's incident statuses — blocked, error, cancelled, superseded — left
-# with it, 2026-09-30: the `plan` tool writes only pending/done, and a v1 record's step now
-# renders as an unknown status rather than a guessed one.)
 
 # The air-gap's "nothing was sent" marker (the rail's egress leaf; trust/receipt draws the same).
 _BLOCKED_GLYPH = "⊘"
@@ -63,6 +49,16 @@ _RISK_HINT = {
     "read_only": "no side effects",
     "side_effecting": "writes or calls out — review before allowing",
     "destructive": "irreversible — review carefully",
+}
+
+# posture kind -> style: the one palette every posture surface (the status bar, the prompt's
+# rprompt, the posture line) colors by. Same vocabulary as receipt.posture_spans.
+_POSTURE_STYLE = {
+    "ok": "green",
+    "warn": "yellow",
+    "risk": f"bold {_RISK['destructive']}",
+    "accent": f"bold {_ACCENT}",
+    "dim": _DIM,
 }
 
 _RAIL_GLYPH = "│"
@@ -108,7 +104,7 @@ _trace_started = False  # False until the turn's first node line prints (gates o
 
 # ── live status-bar state (shared with response/_StatusBar) ───────────────────
 # `_status` is the live readout the bar renders; `_turn_start` anchors the elapsed clock. (The
-# Live handle + the metrics sampler stay private to statusbar.py — only these cross submodules.)
+# Live handle stays private to statusbar.py — only these cross submodules.)
 _turn_start = None
 # `node` names the last node that FINISHED, never the one running: show_node is fed from a node's
 # *update* event, which LangGraph emits on completion (app/turn.py). `_NODE_STARTING` is the
@@ -117,7 +113,6 @@ _turn_start = None
 _NODE_STARTING = "starting"
 _status = {"node": "", "iteration": 0, "tools": 0, "tok_per_sec": 0.0,
            "ctx_used": 0, "ctx_window": 0, "gates": 0}
-# (The turn-start egress mark lives in receipt.py — receipt-domain state, not UI state.)
 
 
 # ── metric formatting (shared by the status bar and the readout commands) ─────
@@ -130,11 +125,10 @@ def _human_tokens(n: int) -> str:
 
 
 def _meter_color(pct: float) -> str:
-    """Load -> semantic color. Used for every gauge (context fill, cpu/ram/gpu) so a hot meter
-    reads the same way everywhere: green ok, yellow warm, red hot. Plain red, never BOLD red:
-    bold red is the posture/risk vocabulary (`⚠ GATE OFF` sits on this same bar, and the
-    destructive tier wears it at the gate). A busy CPU is load, not risk — they must not shout
-    with the same voice."""
+    """Load -> semantic color for a gauge: green ok, yellow warm, red hot. Plain red, never BOLD
+    red: bold red is the posture/risk vocabulary (`⚠ GATE OFF` sits on this same bar, and the
+    destructive tier wears it at the gate). Load is not risk — they must not shout with the same
+    voice."""
     if pct < 60:
         return "green"
     if pct < 85:
@@ -159,12 +153,33 @@ def _active_ctx_window() -> int:
         return 0
 
 
+# ── live posture flags ────────────────────────────────────────────────────────
+def _posture_flags() -> "list[tuple[str, str]] | None":
+    """The loud live posture flags as (label, kind) pairs, read live each call: the gate when
+    loosened (`⚠ GATE OFF` when open — `destructive` isn't "a tier") and the air-gap seal. The
+    calm read_only/no-airgap default is []. None when config can't be read: the caller must mark
+    that, never render it as the calm default."""
+    try:
+        from config import get_config
+
+        cfg = get_config()
+        tier = cfg.auto_approve
+        airgap = bool(cfg.get("runtime.airgap", False))
+    except Exception:
+        return None
+    flags = []
+    if tier == "destructive":
+        flags.append(("⚠ GATE OFF", "risk"))
+    elif tier != "read_only":
+        flags.append((tier, "warn"))
+    if airgap:
+        flags.append(("⛓ AIRGAP", "accent"))
+    return flags
+
+
 # ── small rendering helpers ──────────────────────────────────────────────────
 def _emit(text) -> None:
-    if _RICH:
-        _console.print(text)
-    else:
-        print(text if isinstance(text, str) else str(text))
+    _console.print(text)
 
 
 def _rail(style: str = _RAIL) -> "Text":
@@ -185,18 +200,12 @@ def _fmt_dur(seconds: float) -> str:
     return f"{seconds / 60:>5.1f}m"
 
 
-def _fmt_args(args: dict, cap: int = 48) -> str:
-    return fmt_args(args, cap)
-
-
 def _term_width(default: int = 80) -> int:
     """Current console width, for width-responsive truncation/wrapping in the trace. Falls back
     safely so a detached or odd stdout never throws."""
     try:
-        if _RICH:
-            w = _console.width
-            return w if w and w >= 20 else default
-        return shutil.get_terminal_size((default, 24)).columns
+        w = _console.width
+        return w if w and w >= 20 else default
     except Exception:
         return default
 

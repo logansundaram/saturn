@@ -10,7 +10,7 @@ import math
 import os
 import time
 
-from ._base import Console, Text, _console, _RICH
+from ._base import Console, Text, _console
 
 
 # ── geometry / shading constants ─────────────────────────────────────────────
@@ -238,12 +238,6 @@ def _saturn_text(progress: float, final: bool) -> "Text":
     return _grid_text(_saturn_cells(progress, final))
 
 
-def _saturn_plain() -> str:
-    lines = ["  " + "".join(ch for ch, _ in row).rstrip()
-             for row in _saturn_cells(1.0, final=True)]
-    return "\n".join(lines)
-
-
 def _flag(name: str) -> bool:
     """The `SATURN_<name>` env flag."""
     return bool(os.environ.get(f"SATURN_{name}"))
@@ -275,19 +269,16 @@ def splash(work=None):
             raise box["exc"]
         return box["value"]
 
-    quiet = _no_splash() or not _RICH \
+    quiet = _no_splash() \
         or _console.size.width < _ART_C + 2 \
         or not _console.is_terminal or _flag("NO_ANIM")
 
     if quiet:
-        if not _RICH and not _no_splash():
-            print(_saturn_plain())
         _run()                              # no animation: just do the work, then settle
-        # `and _console.is_terminal`: a non-tty reports the fallback width (80), which clears the
-        # _ART_C + 2 bar — so the settled ring was being printed into pipes and redirected logs,
-        # the one place a splash can only be noise. `quiet` already tests is_terminal; this branch
-        # is reached for several other reasons too, so it must test it as well.
-        if _RICH and not _no_splash() \
+        # `_console.is_terminal` again: this branch is reached for several reasons, and a non-tty
+        # reports the fallback width (80), which clears the width bar — the settled ring must
+        # never land in pipes and redirected logs, the one place a splash can only be noise.
+        if not _no_splash() \
                 and _console.is_terminal \
                 and _console.size.width >= _ART_C + 2:
             _console.print(_saturn_text(1.0, final=True))

@@ -1,8 +1,7 @@
-"""The `plan` tool — the model's own checklist (2026-09-27, the v2 loop).
+"""The `plan` tool — the model's own checklist.
 
-Under the old engine the plan was drafted by a planner call and executed step by step. In the
-loop the model works directly and, on a task that needs several tool calls, records what it
-intends to do here so the user can follow along in the rail. It is intent, not record: the
+On a task that needs several tool calls, the model records what it intends to do here so the
+user can follow along in the rail. It is intent, not record: the
 tools node maps a successful call onto state["plan"] in the same step-dict shape every reader
 already renders (the rail, the gate's step context, /trace why, replay, the headless --json
 plan field), and nothing else keys on it — the answer trailers read the tool rounds that

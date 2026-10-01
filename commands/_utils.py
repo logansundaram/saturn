@@ -41,11 +41,10 @@ _SAVE_FLAGS = ("--save", "-s")
 
 
 def split_persist_flags(args: list[str]) -> "tuple[list[str], bool, bool]":
-    """THE persist-vs-session grammar for the settings commands (/config, /models). These PERSIST to config.yaml BY DEFAULT — a setting a user changes should survive
-    the next launch, which is what people expect from "change a setting"; the old session-only
-    default forced a --save on every edit and silently forgot the rest. `--session` (aliases
-    `--session-only`, `--once`) opts a single edit out: apply it live, don't write disk. `--save` /
-    `-s` is still accepted (it's the default now) so old muscle memory and older docs keep working.
+    """THE persist-vs-session grammar for the settings commands (/config, /models). These PERSIST
+    to config.yaml BY DEFAULT — a setting a user changes should survive the next launch.
+    `--session` (aliases `--session-only`, `--once`) opts a single edit out: apply it live, don't
+    write disk. `--save` / `-s` is accepted too.
 
     Returns (remaining args, session_only?, save_seen?): `session_only` is what callers branch on;
     `save_seen` is consulted only for the bare `--save`-with-no-value "persist the current value"

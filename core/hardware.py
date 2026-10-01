@@ -1,44 +1,29 @@
 """
-Hardware probe -> size-class recommendation (2026-09-01; Apple-silicon-only with a speed axis
-since 2026-09-29), behind `/models` and the first launch.
+Hardware probe -> size-class recommendation, behind `/models` and the first launch.
 
-The install default is the 4b tier because the first pull should be light — but the useful
-experience lives at 27b, and getting there meant guessing what your machine can hold and
-editing config.yaml. `/models` does the guess with a rule that is stated, not learned, on
-two axes:
+The rule is stated, not learned, on two axes:
 
-  fit     the memory the model runner can address: macOS lets the GPU address roughly three
-          quarters of unified memory, so budget = 0.75 x RAM. A tier FITS when its Q4_K_M
-          weights + the KV cache its context window costs + a fixed headroom are under that.
-  speed   what the tier will feel like once it fits. Decode on Apple silicon is memory-bandwidth
-          bound (docs/OPTIMIZATIONS.md §3: the 9b reads 6.6 GB per token and lands at ~38 tok/s
-          on an M4 Pro whichever runner serves it), so decode tok/s = bandwidth x efficiency /
-          bytes read per token — the full weights for a dense tier, the ACTIVE share for the 35b
-          MoE. Prefill is compute bound: 2 FLOPs per active parameter per token against the GPU's
-          TFLOPS. The recommendation is the largest tier that fits AND clears DECODE_FLOOR_TOK_S;
-          a tier that fits but streams under it is shown as slow, never picked by default.
+  fit     macOS lets the GPU address roughly three quarters of unified memory, so budget =
+          0.75 x RAM. A tier FITS when its need (`need_gb`: Q4_K_M weights + the KV cache its
+          context window costs + a fixed headroom) is under that.
+  speed   decode on Apple silicon is memory-bandwidth bound (docs/OPTIMIZATIONS.md §3), so
+          decode tok/s = bandwidth x efficiency / bytes read per token — the full weights for a
+          dense tier, the ACTIVE share for the 35b MoE. Prefill is compute bound: 2 FLOPs per
+          active parameter per token against the GPU's TFLOPS.
 
-Bandwidth and compute come from a table of Apple's published numbers per chip family (APPLE_CHIPS),
-keyed by the brand string sysctl reports, with the GPU core count ioreg reports picking the bin
-for the binned Max chips (a 32-core M4 Max has 410 GB/s, the 40-core 546). A chip the table
-does not know — an Intel Mac, a generation newer than this file — falls back to BASELINE, the
+The recommendation is the largest tier that fits AND clears DECODE_FLOOR_TOK_S; a tier that fits
+but streams under it is shown as slow, never picked by default. Bandwidth and compute come from
+APPLE_CHIPS, keyed by the sysctl brand string, with the ioreg GPU core count picking the bin for
+binned Max chips. An unknown chip (Intel, a newer generation) falls back to BASELINE, the
 slowest Apple silicon ever shipped, and the page says so: a real chip is never over-promised.
 
-Two halves, kept apart so the rule is testable without a machine to match it:
+The KV cost comes from the architecture: every qwen3.5-3.8 tag is a hybrid — three linear-
+attention layers per full-attention layer — and only the full-attention layers keep a per-token
+cache (the linear layers' small fixed state lives in the headroom).
 
-  probe()      reads the machine: chip, cores, RAM, GPU cores. Every reader is wrapped — a probe
-               that raised would take the first launch down with it.
-  recommend()  a PURE function of the profile + the context window each class runs at.
-
-The per-class need is COMPUTED, not tabled (see need_gb): Q4_K_M weights + the KV cache the
-configured context window costs + a fixed headroom. The KV cost comes from the architecture:
-every qwen3.5-3.8 tag is a hybrid — three Gated-DeltaNet (linear-attention) layers for every
-one full-attention layer — and only the full-attention layers keep a per-token cache, which is
-why a 27b at 64k context costs 4 GB of cache rather than the 16+ GB a dense 27b would. The
-linear layers hold a small fixed recurrent state (tens of MB) that lives in the headroom.
-
-LEAF: stdlib + core.model_family. Never imports config or the TUI, so commands/ and app/ can
-call it from anywhere.
+`probe()` reads the machine (every reader wrapped — a raising probe would take the first launch
+down); `recommend()` is a PURE function of the profile + the window each class runs at.
+LEAF: stdlib + core.model_family. Never imports config or the TUI.
 """
 
 from __future__ import annotations
@@ -57,7 +42,7 @@ class ClassCost:
     """What a size class costs to hold and to stream, from `ollama list` + the model's
     architecture."""
 
-    weights_gb: float     # Q4_K_M download size of the ladder tag (ollama list, 2026-09-01)
+    weights_gb: float     # Q4_K_M download size of the ladder tag (ollama list)
     full_layers: int      # full-attention layers = block_count // full_attention_interval (4)
     kv_heads: int         # attention.head_count_kv on those layers
     params_b: float       # total parameters (billions, `ollama show`)
@@ -91,7 +76,7 @@ CLASS_COSTS: dict[str, ClassCost] = {
 # the daemon's own allocations. Flat: none of it scales with the window the way the cache does.
 HEADROOM_GB = 1.5
 
-# The embedder ladder's Q4 weights (ollama list, 2026-09-01). An embedder runs short inputs (a
+# The embedder ladder's Q4 weights (ollama list). An embedder runs short inputs (a
 # chunk at a time), so its working memory is a flat allowance, not a window-scaled cache.
 EMBEDDER_WEIGHTS_GB: dict[str, float] = {"0.6b": 0.6, "4b": 2.5, "8b": 4.7}
 EMBEDDER_HEADROOM_GB = 0.5
@@ -156,7 +141,7 @@ def _spec(gbps: float, gpu_cores: int, tflops_per_core: float, *bins: tuple[int,
 # the Wikipedia M1–M4 pages, read 2026-09-29), keyed by the family name after "Apple " in the
 # brand string. TFLOPS per core is the published FP32 peak over the full-bin core count (M1 2.6
 # over 8, M2 3.6 over 10, M4 ~4.6 over 10); M3 was not published and is priced as M2. The M5
-# family is priced AS THE M4 family (2026-09-30): its published bandwidth is higher (153 / 307 /
+# family is priced AS THE M4 family: its published bandwidth is higher (153 / 307 /
 # 460–614 GB/s) and its GPU cores carry neural accelerators, but no runner number has been
 # measured here, so each M5 tier carries its M4 counterpart's decode and prefill — the Ultra,
 # which the M4 never had, is two M4 Max. Re-price once an M5 has been measured. When a count is
@@ -243,8 +228,6 @@ def embedder_need_gb(size_class: str) -> float:
 
 @dataclass
 class HardwareProfile:
-    os_name: str          # platform.system(): Darwin (anything else prices as baseline)
-    arch: str             # platform.machine() — informational only (Rosetta lies; see probe)
     chip: str             # CPU brand string, e.g. "Apple M4 Pro"
     cores: int            # CPU cores
     ram_gb: float         # unified memory
@@ -370,7 +353,7 @@ def probe() -> HardwareProfile:
         cores = 0
     speed = chip_speed(chip, gpu_cores)
     return HardwareProfile(
-        os_name=platform.system(), arch=platform.machine(), chip=chip, cores=cores, ram_gb=ram,
+        chip=chip, cores=cores, ram_gb=ram,
         gpu_cores=gpu_cores, bandwidth_gbps=speed.bandwidth_gbps,
         tflops=speed.tflops, baseline=speed.baseline,
     )

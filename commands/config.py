@@ -8,13 +8,12 @@ from config import TRUST_KEYS
 _MIN_NUM_CTX = 256  # below this Ollama can't fit the system prompts; reject obvious typos
 
 # The trust-posture key set is declared in config.py (a security classification, not a UI
-# detail — see TRUST_KEYS there). Re-exported under the historical private name so the setter
-# below and the tests that pin the classification keep one spelling.
+# detail — see TRUST_KEYS there).
 _TRUST_KEYS = TRUST_KEYS
 
 # Existence sentinel for cfg.get: distinguishes a key that is ABSENT from one present with an
-# explicit null value (cfg.get's None default conflates the two — exactly how a typo'd key used
-# to read back as a success-shaped `= None`).
+# explicit null value (cfg.get's None default conflates the two, so a typo'd key would read back
+# as a success-shaped `= None`).
 _MISSING = object()
 
 
@@ -41,12 +40,7 @@ def _did_you_mean(cfg, key: str) -> str:
     return f" — did you mean {hint[0]}?" if hint else ""
 
 
-# (/config key — the managed API-key front end — was CUT 2026-07-16: env_keys.KNOWN_KEYS had
-# been empty since the API-less web pivot, so the picker/fuzzy-resolve/prefix-detect machinery
-# managed nothing. Secrets for MCP `${VAR}` expansion are plain env vars in .env now — the
-# dispatch below points there instead of dead-ending the habit.)
-
-
+# Retired /config subcommands -> where that job lives now.
 _RETIRED = {
     "setup": "/models checks and pulls the models; startup warns about anything missing.",
     "doctor": "/models checks and pulls the models; startup warns about anything missing.",
@@ -108,8 +102,6 @@ def _config(ctx, args):
         return
 
     if args and args[0].lower() in _RETIRED:
-        # Folded 2026-09-30: the setup check into /models + the startup health check, the
-        # context readout into the status bar and runtime.num_ctx, `persist` into --save.
         _print(f"  /config {args[0].lower()} is gone — {_RETIRED[args[0].lower()]}")
         return
 
@@ -141,11 +133,10 @@ def _config(ctx, args):
         _resync_rag_after_model_change()
         return
 
-    # Settings PERSIST to config.yaml by default now (a changed setting should survive a restart —
-    # what people expect from "change a setting"); --session / --session-only applies an edit for
-    # this session only. --save / -s is still accepted (it's the default) so old habits keep
-    # working. (split_persist_flags: case-insensitive, any position, exact token only — the bare
-    # words save/persist are NOT flags, guarded below.)
+    # Settings PERSIST to config.yaml by default; --session / --session-only applies an edit for
+    # this session only. --save / -s is accepted too (persist the current value, or a trust key).
+    # (split_persist_flags: case-insensitive, any position, exact token only — the bare words
+    # save/persist are NOT flags, guarded below.)
     rest, session, save = split_persist_flags(args)
     if not rest:
         _print("  usage: /config <dotted.key> [value] [--session]")
@@ -167,8 +158,8 @@ def _config(ctx, args):
         _print(f"  {key} = {current!r}")
         return
 
-    # The old grammar took a trailing bare save/persist as the flag; storing it silently as
-    # value text now would corrupt the setting — refuse and point at the one spelling instead.
+    # A trailing bare save/persist is a mistyped flag; storing it silently as value text would
+    # corrupt the setting — refuse and point at the one spelling instead.
     if values[-1].lower() in ("save", "persist", "--persist"):
         _print(f"  did you mean --save? (the bare word {values[-1]!r} is not a persist flag; "
                "use --save / -s) — nothing set")
@@ -183,9 +174,8 @@ def _config(ctx, args):
     # mapping with a scalar (every `web.*`-style read silently degrades to defaults for the rest
     # of the session), and a later persist would rewrite the bare `web:` header line into
     # `web: foo` above its still-indented children: unparseable YAML that kills the next launch
-    # (_set_yaml_scalar now also refuses headers, but the session-side corruption must stop here
-    # too). The guard lives in this handler, NOT in Config.set — /models legitimately replaces a
-    # {provider, model} role-binding dict with a bare scalar model id via cfg.set.
+    # (_set_yaml_scalar also refuses headers, but the session-side corruption must stop here
+    # too). The guard lives in this handler, NOT in Config.set.
     current = cfg.get(key, _MISSING)
     if isinstance(current, dict):
         children = ", ".join(f"{key}.{child}" for child in current)
@@ -195,11 +185,10 @@ def _config(ctx, args):
         _print(f"  {key} is a list, not a scalar setting — edit config.yaml by hand")
         return
 
-    # A key the config has never seen still sets — the default-tolerant knobs and absent
-    # per-tier role leaves must keep working on a config.yaml predating
-    # them — but the success-shaped line is replaced
-    # with a plain warning so a misspelled safety knob can't masquerade as applied. The
-    # suggestion snapshots the leaf list BEFORE the set, so the typo never suggests itself.
+    # A key the config has never seen still sets — the default-tolerant knobs must keep working
+    # on a config.yaml predating them — but the success-shaped line is replaced with a plain
+    # warning so a misspelled safety knob can't masquerade as applied. The suggestion snapshots
+    # the leaf list BEFORE the set, so the typo never suggests itself.
     suggestion = _did_you_mean(cfg, key) if current is _MISSING else ""
     cfg.set(key, value)
     if current is _MISSING:

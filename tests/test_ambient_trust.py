@@ -5,7 +5,7 @@ The ambient-trust wave — the trust stack surfacing in the DEFAULT flow, no com
   - per-call egress attribution riding tool_events (nodes/tools._egress_slice + tool_node) and
     its rail leaf (trace._egress_leaf),
   - the gate-decision echo (trace._render_trust_annotations),
-  - the native Sources footer split (response._split_sources).
+  - the native Sources footer split (textutil.split_sources_footer).
 
 (The taint-warning render and the status bar's session token spend left with the audit-crypto
 shelve / 2026-07-03 runtime trim; their tests went with them.)
@@ -102,8 +102,8 @@ def test_posture_line_silent_on_default_posture(capsys, monkeypatch):
 
 
 def test_posture_line_styles_cover_every_kind():
-    mod = importlib.import_module("tui.ui.prompt")
-    assert {"ok", "warn", "risk", "accent", "dim"} <= set(mod._POSTURE_LINE_STYLE)
+    base = importlib.import_module("tui.ui._base")
+    assert {"ok", "warn", "risk", "accent", "dim"} <= set(base._POSTURE_STYLE)
 
 
 def test_posture_line_swallows_a_broken_posture(capsys, monkeypatch):
@@ -234,9 +234,9 @@ _FOOTER_TEXT = ("The answer body cites [1].\n\n"
 
 
 def test_split_sources_extracts_a_wellformed_footer():
-    resp = importlib.import_module("tui.ui.response")
+    from textutil import split_sources_footer
 
-    prose, entries = resp._split_sources(_FOOTER_TEXT)
+    prose, entries = split_sources_footer(_FOOTER_TEXT)
     assert prose == "The answer body cites [1]."
     assert entries == ["  [1] web_extract(url='https://e.com')", "  [2] knowledge base: a.md"]
 
@@ -247,9 +247,9 @@ def test_split_sources_extracts_a_wellformed_footer():
     "prose\n\nSources:",  # header with no entries
 ])
 def test_split_sources_leaves_anything_else_alone(text):
-    resp = importlib.import_module("tui.ui.response")
+    from textutil import split_sources_footer
 
-    assert resp._split_sources(text) == (text, None)
+    assert split_sources_footer(text) == (text, None)
 
 
 # --- the status bar's posture zone ---------------------------------------------------------------
@@ -260,8 +260,6 @@ def test_statusbar_unreadable_posture_is_unknown_never_calm(monkeypatch):
     # while the gate is open. The facet renders an explicit unknown instead (the posture-line
     # rule: a facet that can't be read is omitted/marked, never guessed).
     sb = importlib.import_module("tui.ui.statusbar")
-    if not sb._RICH:
-        pytest.skip("rich not available")
     import config as config_mod
 
     def boom():

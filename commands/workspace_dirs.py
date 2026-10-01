@@ -1,5 +1,5 @@
 """
-/add-dir and /rm-dir — reaching folders beyond the launch folder (2026-09-29; spec
+/add-dir and /rm-dir — reaching folders beyond the launch folder (spec
 docs/superpowers/specs/2026-09-29-launch-folder-workspace-design.md). Session only: the next
 launch starts from its own folder with nothing added.
 """

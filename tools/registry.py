@@ -1,7 +1,7 @@
 # The active tool registry. Tools register THEMSELVES via @register_tool (see toolspec.py) — their
 # risk tier and retrieval flag live with the tool, not in a parallel table here. This module just
 # imports the grouped tool modules (which triggers their registration) and re-exports the collected
-# views under the names the rest of the codebase already imports: `tool` (the list), `tools_by_name`,
+# views under the names the rest of the codebase imports: `tool` (the list), `tools_by_name`,
 # `TOOL_RISK`, `risk_of`, and `RETRIEVAL_TOOLS`.
 #
 # To add a tool: write the @tool function in the right tools/ module and decorate it with
@@ -25,7 +25,7 @@ import tools.notes  # noqa: E402,F401  (search_notes / read_note / create_note �
 import tools.calendar  # noqa: E402,F401  (list_calendar_events / create_calendar_event — Apple Calendar, macOS)
 import tools.mail  # noqa: E402,F401  (list_mail / search_mail / read_mail / draft_mail — Apple Mail, macOS; drafts only, never sends)
 
-# Remote MCP tools (roadmap #12): connect the servers declared under `mcp.servers` in config.yaml
+# Remote MCP tools: connect the servers declared under `mcp.servers` in config.yaml
 # and register each remote tool through toolspec.register_tool_object, so they land in the same
 # collections as the local tools above — same gate, same /tools, same catalog. Runs HERE,
 # after the local registrations (collisions resolve in the local tools' favour) and BEFORE the

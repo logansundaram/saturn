@@ -5,8 +5,8 @@ A leaf: imports nothing project-side, and the format libraries (pypdf, python-do
 inside the one function that needs them, so importing this costs a plain launch nothing. Excel is
 read with the standard library (an .xlsx is zipped XML), so it needs no extra package.
 
-`extract(path)` is the direct readers' entry point: the document's text for a format listed in
-DOCUMENT_SUFFIXES, else None (the caller reads the file as plain text).
+`extract(path)` is the direct readers' entry point: the document's text for a PDF / .docx /
+.xlsx, else None (the caller reads the file as plain text — HTML and CSV are text already).
 """
 
 import csv
@@ -16,10 +16,6 @@ import zipfile
 from collections import Counter
 from pathlib import Path
 from xml.etree import ElementTree
-
-# The binary document formats the direct readers convert. HTML and CSV are text already —
-# read_file returns them as written (the user may want to edit the markup).
-DOCUMENT_SUFFIXES = (".pdf", ".docx", ".xlsx")
 
 
 def extract(path) -> "str | None":

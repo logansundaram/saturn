@@ -4,31 +4,21 @@ Web tools — everything that reaches the live internet.
   web_search    — a single web search query.
   web_extract   — fetch + extract the readable content behind a URL.
 
-(There is deliberately no monolithic `deep_research` tool: multi-source research is the
-agent loop's job — the agent composes web_search + web_extract calls, each visible in the
-trace rail, gated, and traced. A single opaque research call would hide exactly the steps
-this product exists to show; it was removed June 2026 as a scope cut. `http_request` — the
-one-call-to-any-REST-API "universal integration" — was CUT 2026-07-16: the MCP client is the
-integration surface now, and it arrives with per-server trust declarations, the egress ledger, and
-status/reload that a generic POST-anywhere tool never had. With it gone, the only ways out of
-this machine are a search query, a page fetch, and the MCP servers the user configured.)
+There is deliberately no monolithic research tool: multi-source research is the agent loop's
+job, composed of web_search + web_extract calls that are each visible in the trace, gated and
+recorded. Nor a generic HTTP tool: the MCP client is the integration surface, with per-server
+trust declarations. The only ways out of this machine are a search query, a page fetch, and the
+MCP servers the user configured.
 
-API-less by design (2026-07-06 — the Tavily removal)
-----------------------------------------------------
 No web tool requires an API key or a paid provider account — a product whose pitch is "your
 data stays yours" should not steer its users toward mailing every search query to a keyed
-SaaS backend, and key management was the single piece of first-run friction the web tools
-carried.
+SaaS backend.
 
   web_search    keyless DuckDuckGo (`ddgs`). The query is the only thing sent, recorded in the
                 egress ledger like every exit.
   web_extract   fully local extraction: fetch the page (httpx) + pull readable text with
                 `trafilatura`. Only the page's own host is contacted, plus any host its
                 redirects lead to — each hop followed by hand and recorded before it is sent.
-
-(The Tavily backend — `web.provider`, TAVILY_API_KEY, the session fallback latch — was removed
-2026-07-06. `trust/secret_scan.py` deliberately KEEPS the `tvly-` secret pattern: the gate's
-secret warning covers whatever secrets a call carries, not just ones Saturn uses.)
 
 `web.max_results` lives in `config.yaml`; nothing is hard-coded here.
 """

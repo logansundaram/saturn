@@ -88,31 +88,26 @@ def _print(line: str = "") -> None:
 _HELP_FLAGS = {"--help", "-h"}
 
 # Old command names -> where the behaviour lives now. Typing one prints a pointer instead of a
-# bare "unknown command", so muscle memory lands softly. A pointer lives for one release: the
-# v0.1.0-era spellings (/ingest, /ws, /why, /risk, /source, /context, …) were dropped 2026-09-30.
+# bare "unknown command", so muscle memory lands softly. A pointer lives for one release.
 _RENAMED = {
-    # The plan engine was removed with the v2 loop (2026-09-27): /plan, /draft and /quick point
-    # at the surviving controls (Esc pause/steer + the approval gate).
     "plan": "help",
-    "draft": "help",
-    "quick": "help",
-    # /privacy merged into /policy (2026-09-30): one trust front door. Any `/privacy …` spelling
-    # lands here — args are not forwarded, so the pointer never runs (or flips) anything.
+    # Args are not forwarded, so a `/privacy …` pointer never runs (or flips) anything.
     "privacy": "policy",
 }
 
 # A second, parenthesized line for redirects whose one-line pointer doesn't tell the whole story.
-_ENGINE_NOTE = ("the plan engine was removed in v2 — Esc pauses a running turn (Enter continues, "
-                "typed text steers it, q aborts), and the approval gate shows every gated call "
-                "before it runs")
-_RENAMED_NOTES: dict[str, str] = {k: _ENGINE_NOTE for k in ("plan", "draft", "quick")}
-_RENAMED_NOTES["privacy"] = ("the ledger is /policy egress, the seal /policy airgap; bare /policy "
-                             "shows the whole posture")
+_RENAMED_NOTES: dict[str, str] = {
+    "plan": ("the plan engine was removed in v2 — Esc pauses a running turn (Enter continues, "
+             "typed text steers it, q aborts), and the approval gate shows every gated call "
+             "before it runs"),
+    "privacy": ("the ledger is /policy egress, the seal /policy airgap; bare /policy "
+                "shows the whole posture"),
+}
 
 
 def _print_renamed(key: str) -> bool:
     """Print the moved-pointer for a legacy command name — the SAME line whether it arrives via
-    dispatch (`/why`) or `/help why`, so neither spelling dead-ends. True when `key` was renamed."""
+    dispatch (`/privacy`) or `/help privacy`, so neither spelling dead-ends. True when `key` was renamed."""
     moved = _RENAMED.get(key)
     if not moved:
         return False

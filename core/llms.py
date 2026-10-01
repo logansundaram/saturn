@@ -2,13 +2,11 @@
 Model factory — `get_model()` instead of hard-coded globals.
 
 Each hardware tier in `config.yaml` binds ONE chat model (the agent's pass and the background
-calls — compaction, the memory review, /init — share it; the `utility` role collapsed into it
-2026-09-30). This module resolves it against the active tier and builds the LangChain chat
-model. Swapping hardware is a config edit; graph code never names a model.
+calls — compaction, the memory review, /init — share it). This module resolves it against the
+active tier and builds the LangChain chat model. Swapping hardware is a config edit; graph code
+never names a model.
 
-Ollama is the only backend: nothing leaves the machine to compute the words (cloud providers
-were shelved 2026-07-03 and cut 2026-09-27). The one network boundary that remains is a REMOTE
-`OLLAMA_HOST`: `_NetworkBoundaryModel` wraps that daemon so every call is recorded
+Ollama is the only backend. The one network boundary is a REMOTE `OLLAMA_HOST`: `_NetworkBoundaryModel` wraps that daemon so every call is recorded
 to the egress ledger and refused under air-gap. Built models are cached per model id;
 `reset_models()` clears the cache after a live model change (the `/models` command).
 
@@ -46,10 +44,9 @@ class _NetworkBoundaryModel:
     """Thin proxy around an off-machine chat model — an Ollama daemon behind a remote
     OLLAMA_HOST, via `_wrap_ollama` — that makes the network boundary observable + safe. Every
     call through it records the egress to the ledger (`egress.record`) — what left, where to,
-    how big. Everything else (bind_tools, with_structured_output, attribute access) delegates to the inner
-    model and re-wraps any derived runnable so the boundary survives `.bind_tools(...)` /
-    `.with_structured_output(...)`. LOOPBACK Ollama models are never wrapped — there is no
-    boundary."""
+    how big. `bind_tools` re-wraps so the boundary survives it; other send paths fail closed
+    (`_UNGUARDED`); benign attributes delegate to the inner model. LOOPBACK Ollama models are
+    never wrapped — there is no boundary."""
 
     def __init__(self, inner, model: str, host: str):
         self._inner = inner
@@ -68,36 +65,16 @@ class _NetworkBoundaryModel:
     def stream(self, input, *args, **kwargs):
         return self._inner.stream(self._outgoing(input), *args, **kwargs)
 
-    async def ainvoke(self, input, *args, **kwargs):
-        return await self._inner.ainvoke(self._outgoing(input), *args, **kwargs)
-
-    async def astream(self, input, *args, **kwargs):
-        async for chunk in self._inner.astream(self._outgoing(input), *args, **kwargs):
-            yield chunk
-
-    def batch(self, inputs, *args, **kwargs):
-        # Through invoke one input at a time so EVERY input is recorded — the inner
-        # model's batch would take the whole list past the boundary in one unobserved call.
-        return [self.invoke(i, *args, **kwargs) for i in inputs]
-
-    async def abatch(self, inputs, *args, **kwargs):
-        return [await self.ainvoke(i, *args, **kwargs) for i in inputs]
-
     def bind_tools(self, *args, **kwargs):
         return _NetworkBoundaryModel(
             self._inner.bind_tools(*args, **kwargs), self._model, self._host
         )
 
-    def with_structured_output(self, *args, **kwargs):
-        return _NetworkBoundaryModel(
-            self._inner.with_structured_output(*args, **kwargs), self._model, self._host
-        )
-
-    # Network entry points this proxy does NOT cover fail CLOSED: __getattr__ used to hand them
-    # back bound to the INNER model, so a future caller (or a LangChain runnable composition)
-    # would send unrecorded content — the exact leak the boundary exists to prevent.
-    # Nothing in the repo calls these today; a new caller gets a loud pointer, never a bypass.
+    # Network entry points this proxy does NOT cover fail CLOSED: delegated through __getattr__
+    # they would run on the INNER model and send unrecorded content — the exact leak the
+    # boundary exists to prevent. A new caller gets a loud pointer, never a bypass.
     _UNGUARDED = frozenset({
+        "ainvoke", "astream", "batch", "abatch", "with_structured_output",
         "generate", "agenerate", "generate_prompt", "agenerate_prompt",
         "transform", "atransform", "batch_as_completed", "abatch_as_completed",
     })
@@ -106,7 +83,7 @@ class _NetworkBoundaryModel:
         if name in _NetworkBoundaryModel._UNGUARDED:
             raise AttributeError(
                 f"_NetworkBoundaryModel does not expose {name!r}: it would bypass the "
-                "egress boundary — use invoke/stream/astream/batch instead"
+                "egress boundary — use invoke/stream instead"
             )
         # Anything else we don't override (get_name, config_specs, etc.) defers to the inner model.
         return getattr(self._inner, name)
@@ -116,7 +93,7 @@ def _ollama_client_kwargs() -> dict:
     """client_kwargs for ChatOllama carrying the request timeout (forwarded to the underlying
     httpx client). A short connect timeout fails fast when the daemon is DOWN; a generous read
     timeout (runtime.llm_timeout) bounds a WEDGED daemon without false-tripping slow-but-healthy
-    generation. Empty dict when the timeout is disabled — no behavioural change from before."""
+    generation. Empty dict when the timeout is disabled."""
     t = get_config().llm_timeout
     if not t:
         return {}
@@ -176,8 +153,6 @@ def get_model():
 def model_id() -> str:
     """The active tier's chat model id (for display: banners, /model)."""
     return get_config().chat_model
-
-
 
 
 class _EmbeddingsBoundary:
@@ -244,19 +219,7 @@ def reset_models() -> None:
 class LocalModel:
     """A model pulled into the local Ollama daemon, as surfaced by `ollama list`."""
 
-    name: str            # the tag you bind (e.g. "qwen3.5:4b")
-    size_bytes: int      # on-disk size
-    parameter_size: str  # e.g. "4B", "29.9B" ("" if Ollama didn't report it)
-    quantization: str    # e.g. "Q4_K_M" ("" if absent)
-    family: str          # e.g. "gemma", "glm4moelite" ("" if absent)
-    is_embedding: bool   # heuristic: an embed-only model (can't serve a chat role)
-
-
-def _looks_like_embedder(name: str, family: str, families) -> bool:
-    """Best-effort: Ollama's tag list doesn't flag embed-only models, so sniff the name/family.
-    Used only to group the picker (embedders bind the `embedder` slot, not a chat role)."""
-    hay = " ".join([name, family or "", " ".join(families or [])]).lower()
-    return any(tok in hay for tok in ("embed", "bert", "e5", "bge", "gte"))
+    name: str  # the tag you bind (e.g. "qwen3.5:4b")
 
 
 def _field(obj, *names, default=None):
@@ -290,23 +253,8 @@ def list_local_models() -> list[LocalModel]:
     out: list[LocalModel] = []
     for m in raw or []:
         name = _field(m, "model", "name", default="") or ""
-        if not name:
-            continue
-        details = _field(m, "details", default=None)
-        family = _field(details, "family", default="") or "" if details is not None else ""
-        families = _field(details, "families", default=[]) if details is not None else []
-        out.append(
-            LocalModel(
-                name=name,
-                size_bytes=int(_field(m, "size", default=0) or 0),
-                parameter_size=(_field(details, "parameter_size", default="") or "")
-                if details is not None else "",
-                quantization=(_field(details, "quantization_level", default="") or "")
-                if details is not None else "",
-                family=family,
-                is_embedding=_looks_like_embedder(name, family, families),
-            )
-        )
+        if name:
+            out.append(LocalModel(name=name))
     return sorted(out, key=lambda lm: lm.name.lower())
 
 
@@ -348,7 +296,7 @@ def check_models() -> list[str]:
     try:
         need_ollama.append(cfg.chat_model)
     except KeyError as exc:
-        # A {provider, model} mapping from a pre-cut config, or a tier without a model.
+        # A refused {provider, model} tier, or a tier without a model.
         problems.append(exc.args[0] if exc.args else str(exc))
 
     try:
@@ -378,9 +326,8 @@ def check_models() -> list[str]:
                 if not _model_present(m, have):
                     problems.append(f"model not pulled: `{m}`  →  run `ollama pull {m}`")
 
-    # The capability advisory. It used to print lazily on a model's first use (mid-turn,
-    # colliding with the live TUI); surfacing it here puts it next to the other startup
-    # warnings with the rest of the health report.
+    # The capability advisory is reported here, at startup, so it never prints mid-turn into
+    # the live TUI.
     try:
         model = cfg.chat_model
     except KeyError:
@@ -392,7 +339,7 @@ def check_models() -> list[str]:
     return problems
 
 
-# ── the think-rejection fallback (from the engine isolate, 2026-08-15) ─────────────────────────
+# ── the think-rejection fallback ───────────────────────────────────────────────────────────────
 #
 # Model tags whose daemon rejected a `think` parameter. A model without a thinking template 400s
 # on `think` in EITHER direction, so the engine cannot express "no rationale please" to it — it
@@ -408,7 +355,7 @@ def _is_think_rejection(exc: Exception) -> bool:
     return any(m in text for m in _THINK_REJECTION_MARKERS)
 
 
-# ── the per-call decoding options (moved from core/structured.py, 2026-09-29) ───────────────────
+# ── the per-call decoding options ──────────────────────────────────────────────────────────────
 # The output-token bound per task — a circuit breaker well above a healthy generation, so a
 # repetition loop lands as a truncated draw instead of a full window. `agent` is the loop's one
 # call (nodes/agent.py): prose OR a tool call, so it must fit a write_file payload (4096 tokens
@@ -507,8 +454,8 @@ def stream(runnable, messages, *, tag: str = "", **kwargs):
 
 def extract_tok_per_sec(response) -> float:
     """Return tokens/second from an AIMessage's response_metadata, or 0.0 if unavailable.
-    Ollama populates eval_count (tokens generated) and eval_duration (nanoseconds); other
-    providers leave these absent so we gracefully return 0."""
+    Ollama populates eval_count (tokens generated) and eval_duration (nanoseconds); a response
+    without them returns 0."""
     meta = getattr(response, "response_metadata", None) or {}
     eval_count = meta.get("eval_count", 0) or 0
     eval_duration = meta.get("eval_duration", 0) or 0

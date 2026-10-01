@@ -3,7 +3,7 @@
 # `dependencies` below is the one dependency list: the curl installer (install.sh) clones the
 # repo and installs it editable (`pip install -e`), and /update reinstalls when this file
 # changes. In installed mode there is no repo: config.py seeds config.yaml into
-# ~/.saturn (config.wheel_data_home) from the packaged default (shipped via data-files below), and
+# ~/.saturn (config.saturn_home) from the packaged default (shipped via data-files below), and
 # all user data lives there instead of site-packages, so upgrades can't clobber it.
 
 [build-system]

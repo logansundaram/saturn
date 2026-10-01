@@ -1,37 +1,28 @@
 """
 Egress ledger + air-gap enforcement — the network boundary made visible.
 
-The product's privacy proof point used to be *asserted* (`/policy` lists what CAN leave this
-machine) but never *shown* (what actually left). This module closes that gap. It is the single
-chokepoint every outbound network operation reports through, so "nothing leaves your machine"
-becomes an observable fact rather than a slogan:
+The single chokepoint every outbound network operation reports through, so "nothing leaves
+your machine" is an observable fact rather than a slogan:
 
   - `record(...)`     every successful egress (a web search, a page fetch, a remote MCP call,
                       a remote-Ollama invocation) appends one `EgressEvent` to a process-wide,
-                      append-only ledger. `/policy egress` renders it; the status bar shows a
-                      live count.
+                      append-only ledger. `/policy egress` renders it.
   - `UNTRACKED`       the ledger's honest gap: `run_shell` and stdio MCP servers are processes
                       whose network use Saturn cannot observe, so each run is recorded with
                       this status. Under air-gap they are held for the human instead
                       (`policy.airgap_holds`) — the one boundary a string check cannot enforce.
   - `check(...)`      the air-gap gate. When `runtime.airgap` is on, an outbound op calls this
                       FIRST; it records a `blocked` event and returns a refusal string the caller
-                      hands back instead of touching the network. Air-gap turns the privacy claim
-                      from a promise into something the machine enforces.
+                      hands back instead of touching the network.
 
-Air-gap is read live from `runtime.airgap` (toggled by `/policy airgap`), exactly like the budget
-and auto-approve knobs — so flipping it applies to the very next op. Cloud LLM egress is enforced
-separately in `llms.get_model` (it raises rather than returning a string, since a node can't run
-without its model); the `/policy airgap` command drops the model cache so a cached remote model
-can't sneak a call through.
-
-The ledger is per-process (one Saturn session), like `budget.py` — a live boundary monitor.
+Air-gap is read live from `runtime.airgap` (toggled by `/policy airgap`), so flipping it applies
+to the very next op. Exits that cannot hand a refusal string back (a remote-Ollama model or
+embedder in core/llms.py) use `check_or_raise`. The ledger is per-process (one Saturn session).
 
 This module also owns the inference-locality classifier (`_inference` + its display companions):
-"where do the words come from" is fundamentally an egress question, and this is where the loopback
-test (`ollama_is_local`) already lives. The posture line and `/policy` both read
-the one classifier here. Imports only leaves (config, diag, textutil), so any module (web tools,
-mcp_client, llms, the TUI) can import it without a cycle.
+"where do the words come from" is an egress question, and the loopback test (`ollama_is_local`)
+lives here. Imports only leaves (config, textutil), so any module (web tools, mcp_client, llms,
+the TUI) can import it without a cycle.
 """
 
 from __future__ import annotations
@@ -94,8 +85,8 @@ def ollama_endpoint() -> str:
 
 def ollama_is_local() -> bool:
     """Whether Ollama traffic stays on this machine. The whole "local inference" story keys on
-    this: an `OLLAMA_HOST` pointing off-machine makes the "local" models network egress like any
-    cloud provider — recorded in the ledger, refused under air-gap, and disqualifying for the
+    this: an `OLLAMA_HOST` pointing off-machine makes the "local" models network egress —
+    recorded in the ledger, refused under air-gap, and disqualifying for the
     local-inference claim. Fails toward NOT local (an unparseable endpoint must never earn a
     'local' claim)."""
     endpoint = ollama_endpoint()
@@ -207,7 +198,7 @@ def blocked_message(host: str, channel: str = "") -> str:
 
 def check(channel: str, host: str, detail: str = "", *, provider: str = "") -> "str | None":
     """THE refusal gate for a network op — every rung of "may this leave the machine" lives here
-    (air-gap today; any future rung — an egress budget — lands here and reaches every exit).
+    (air-gap today; any future rung lands here and reaches every exit).
     Returns None when egress is allowed; on refusal, records a `blocked` event and returns the
     refusal string for the caller to hand back (tools return it to the model as their
     observation)."""
@@ -220,10 +211,10 @@ def check(channel: str, host: str, detail: str = "", *, provider: str = "") -> "
 def check_or_raise(channel: str, host: str, detail: str = "", *, subject: str = "",
                    provider: str = "") -> None:
     """The raising twin of `check()`, for the exits that CANNOT hand a refusal string back: an
-    LLM role, an embedder, a raw-mode continuation. Delegates to check() — one gate, one
+    LLM, an embedder. Delegates to check() — one gate, one
     recording site, so a future rung added inside check() refuses these exits too — then raises
     instead of returning. `subject` names what was refused ("the model (qwen3.5:9b)",
-    "embedding", "continuing the answer on <model>") so the message stays specific.
+    "embedding document text") so the message stays specific.
 
     Callers must not re-implement this: an inference exit that hand-rolls the check is one the
     ledger can silently miss (and one a future rung inside check() would never reach)."""
@@ -240,6 +231,12 @@ def check_or_raise(channel: str, host: str, detail: str = "", *, subject: str = 
 def events() -> list[EgressEvent]:
     """The ledger, oldest first (a copy — callers may filter/slice freely)."""
     return list(_LEDGER)
+
+
+def count() -> int:
+    """Boundary events this session — sends and air-gap blocks — for the status bar's egress
+    counter. Untracked runs are not counted: the bar counts what crossed or was refused."""
+    return sum(1 for e in _LEDGER if e.status != UNTRACKED)
 
 
 def next_seq() -> int:
@@ -260,12 +257,6 @@ def events_since(mark: int) -> list[EgressEvent]:
         out.append(e)
     out.reverse()
     return out
-
-
-def count() -> int:
-    """Number of boundary events this session — sends and air-gap blocks — for the status-bar
-    indicator. Untracked runs are not counted: the bar counts what crossed or was refused."""
-    return sum(1 for e in _LEDGER if e.status != UNTRACKED)
 
 
 def summarize_events(events) -> dict:
@@ -341,10 +332,8 @@ def cleared_since(mark: int) -> bool:
 
 # ── inference-locality classifier ────────────────────────────────────────────────────────────────
 # "Where do the words come from" — local (computed on this machine) vs off-machine (an Ollama
-# daemon behind a remote OLLAMA_HOST). THE one classifier: the session
-# posture line (receipt.posture_spans) and `/policy` both read this — never
-# re-rolled. Lives here because locality IS an egress question and the loopback test
-# (ollama_is_local) already lives in this module.
+# daemon behind a remote OLLAMA_HOST). THE one classifier: the session posture line
+# (receipt.posture_spans) and `/policy` both read this — never re-rolled.
 
 
 def _inference() -> dict:

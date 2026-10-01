@@ -1,5 +1,4 @@
-"""No new egress (transplanted from the visibility isolate's no-telemetry guard, allowlisted for
-Saturn's declared boundary).
+"""No new egress (a no-telemetry guard, allowlisted for Saturn's declared boundary).
 
 The only ways anything leaves the machine are the chokepoints CLAUDE.md names: local Ollama
 inference (`core/llms.py`), a web search /

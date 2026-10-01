@@ -27,7 +27,7 @@ class TestBind:
         from commands import runtime
 
         monkeypatch.setattr("core.llms.reset_models", lambda: None)
-        monkeypatch.setattr("commands.runtime._persist_bindings", lambda *a, **k: None)
+        monkeypatch.setattr("commands.config._persist_key", lambda *a, **k: None)
         monkeypatch.setattr("commands.runtime._resync_rag_after_model_change", lambda: None)
         runtime._bind(cfg, "model", "qwen3.5:9b")
 
@@ -38,7 +38,7 @@ class TestBind:
         from commands import runtime
 
         monkeypatch.setattr("core.llms.reset_models", lambda: None)
-        monkeypatch.setattr("commands.runtime._persist_bindings", lambda *a, **k: None)
+        monkeypatch.setattr("commands.config._persist_key", lambda *a, **k: None)
         monkeypatch.setattr("commands.runtime._resync_rag_after_model_change", lambda: None)
         runtime._bind(cfg, "embedder", "qwen3-embedding:4b")
 

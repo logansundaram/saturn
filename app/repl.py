@@ -8,7 +8,6 @@ autosave, and auto-compaction. One call — `run_repl()` — owns the whole sess
 
 import os
 import sys
-import uuid
 
 from datetime import datetime
 from pathlib import Path
@@ -20,7 +19,7 @@ from app.graph import DB_PATH
 from app.session import _fresh_turn, _initial_state, _maybe_autocompact
 from app.startup import startup_load, start_warm_up, _warn_flagged_attachments
 from core import prime
-from app.turn import run_turn, _make_on_update, _trace_warning
+from app.turn import close_run, open_run, run_turn, _make_on_update, _trace_warning
 from config import get_config
 from core import mentions
 from core.pause import get_pause_controller
@@ -79,9 +78,7 @@ def run_repl() -> None:
 
     cfg = get_config()
     n_docs = sum(1 for _ in iter_documents())  # same definition RAG ingests by
-    ui.banner(
-        f"{cfg.active_tier}:{model_id()}", len(_tools), n_docs, DB_PATH
-    )
+    ui.banner(f"{cfg.active_tier}:{model_id()}", len(_tools), n_docs)
     # Launched from "/" or an unreadable folder, core/workspace fell back to home — say so once.
     from core import workspace as _ws
     try:
@@ -274,20 +271,8 @@ def run_repl() -> None:
             if attached:
                 ui.note("attached " + ", ".join(mentions.display(p) for p in attached))
             _warn_flagged_attachments(attach_block, ui.warn)
-        # Fresh thread per turn: gives the interrupts a stable thread to pause/resume on,
-        # while cross-turn memory rides on the manually-carried `messages`.
-        thread_id = str(uuid.uuid4())
-        run_id = tracer.start_run(thread_id, user_input)
-        # Attach the LLM-call tracer as a run-scoped callback: it captures every model call's input
-        # messages + output (across all nodes) into the trace DB, surfaced by `/trace invoke`.
-        # Callbacks in the config propagate into the nested model.invoke()/stream() calls via
-        # LangChain's contextvars — the same propagation the token stream above already relies on.
-        config = {
-            "configurable": {"thread_id": thread_id},
-            "callbacks": [tracer.llm_handler(run_id)],
-        }
+        thread_id, run_id, config = open_run(tracer, user_input)
         ui.reset_turn()  # reset node-timing + plan-diff state for this turn's trace
-        expired_grants = {"prefixes": [], "tools": []}  # filled at the task boundary (finally)
         # Renders the agent's answer token-by-token as it streams (on_token below). It
         # opens the response section on the first token and is finished (or aborted) after the turn.
         answer = ui.ResponseStream()
@@ -327,49 +312,33 @@ def run_repl() -> None:
             # turn (core/prime.py — rebuilt from disk, so this turn's writes are in it).
             prime.set_busy(False)
             prime.start_priming()
-        except KeyboardInterrupt:
-            # Ctrl-C abandons the in-flight turn but not the session — record it and return to
-            # the prompt. (KeyboardInterrupt is not an Exception, so it bypasses the catch below.)
-            prime.set_busy(False)
-            answer.abort()  # tear down the live answer region (never leak it across the prompt)
-            tracer.end_run(run_id, "interrupted", "turn cancelled by user (Ctrl-C)")
-            ui.warn("Turn cancelled.")
-            if (trace_note := _trace_warning(tracer)):
-                ui.warn(trace_note)
-            cmd_ctx.state = state
-            continue
-        except Exception as exc:
-            # A node/tool failure must never kill the REPL — the whole point of an in-memory
-            # conversation is that one bad turn (Ollama timeout, decode error, tool bug) doesn't
-            # lose the session. Record it, tell the user, and drop back to the prompt with the
-            # conversation intact (the unanswered query stays in `messages`; the next turn's
-            # _compact_history tolerates it).
+        except (KeyboardInterrupt, Exception) as exc:
+            # Ctrl-C abandons the in-flight turn but not the session, and a node/tool failure
+            # (Ollama timeout, decode error, tool bug) must never kill the REPL: record it, tell
+            # the user, and drop back to the prompt with the conversation intact (the unanswered
+            # query stays in `messages`; the next turn's _compact_history tolerates it).
             prime.set_busy(False)
             answer.abort()  # tear down the live answer region before the warning prints
-            tracer.end_run(run_id, "error", str(exc))
-            ui.warn(f"Turn failed: {exc}")
+            if isinstance(exc, KeyboardInterrupt):
+                tracer.end_run(run_id, "interrupted", "turn cancelled by user (Ctrl-C)")
+                ui.warn("Turn cancelled.")
+            else:
+                tracer.end_run(run_id, "error", str(exc))
+                ui.warn(f"Turn failed: {exc}")
             if (trace_note := _trace_warning(tracer)):
                 ui.warn(trace_note)
             cmd_ctx.state = state
             continue
         finally:
-            # Discard any pause request still pending at turn end. A keypress that lands AFTER the
-            # agent's last pass (e.g. while the answer streams) is never consumed by the node's
-            # clear(), and would otherwise leak into the next, unrelated turn and pause it.
-            # One exception: a STEER carries the user's typed correction — don't silently drop
-            # their words. Salvage it into the type-ahead queue so it runs as the next message
-            # (echoed when drained); the note explaining why prints after the answer renders,
-            # never here (printing inside finally could interleave with the live answer region).
-            # Close the grant-lifecycle task: every task-scoped always-allow grant made at this
-            # turn's gate expires here (prefix grants + tier drops), so authority never outlives
-            # the turn that motivated it. Disclosed after the answer renders (below) — a grant
-            # that vanishes silently is as confusing as one that lingers. Never raises.
-            try:
-                from trust import policy as _policy
-
-                expired_grants = _policy.end_task()
-            except Exception as exc:
-                diag.log(f"grant lifecycle end_task failed: {exc}")
+            # The turn boundary: prune the checkpoints and expire every task-scoped grant
+            # (disclosed after the answer renders, below).
+            expired_grants = close_run(graph, thread_id)
+            # Discard any pause request still pending at turn end: a keypress that lands AFTER
+            # the agent's last pass is never consumed by the node's clear(), and would leak into
+            # the next, unrelated turn. A STEER carries the user's typed words, so it is salvaged
+            # into the type-ahead queue to run as the next message; the note explaining why
+            # prints after the answer renders, never here (inside finally it could interleave
+            # with the live answer region).
             late_steers = [
                 r.reason for r in pause_controller.take_steers() if r is not None and r.reason
             ]
@@ -382,16 +351,6 @@ def run_repl() -> None:
             for text in late_steers:
                 input_queue.push(text)  # each salvaged correction runs as its own next message
             pause_controller.reset()  # the turn boundary: nothing outstanding survives it
-            # Prune this turn's checkpoints. Each turn runs on a fresh thread_id and cross-turn
-            # memory rides on the manually-carried `messages` (not the checkpointer), so once the
-            # turn returns its checkpoints/writes are dead weight — without this they accumulate in
-            # db.sqlite forever (one thread per turn). delete_thread touches only the checkpointer's
-            # own tables; the trace (runs/events) and the in-memory state we carry forward are
-            # untouched. Best-effort: a prune failure must never end the turn or the session.
-            try:
-                graph.checkpointer.delete_thread(thread_id)
-            except Exception as exc:
-                diag.log(f"checkpoint prune failed for thread {thread_id}: {exc}")
             # Autosave the conversation to the reserved /resume slot. The checkpoints we just pruned
             # can't restore a session, so this slot is what survives a quit/crash/Ctrl-C. Runs for
             # every outcome (ok/error/interrupt) since `state` always carries the latest messages;

@@ -2,9 +2,13 @@
 
 `run_turn` streams the graph (node updates for the trace/plan panel, per-token answer chunks
 for the live response) and resolves each interrupt — the approval gate, the Esc pause, ask_user —
-through the caller-supplied `approver`. `_make_on_update` fans a node delta out to the tracer
-and the TUI; `_trace_warning` surfaces the trace circuit breaker's silent degradation.
+through the caller-supplied `approver`. `open_run` / `close_run` bracket a turn with its
+checkpoint thread and trace run (shared by the REPL and headless). `_make_on_update` fans a node
+delta out to the tracer and the TUI; `_trace_warning` surfaces the trace circuit breaker's silent
+degradation.
 """
+
+import uuid
 
 from langgraph.types import Command
 from langchain.messages import AIMessageChunk
@@ -19,8 +23,8 @@ def run_turn(graph, payload, config, approver, on_update=None, pause=None, on_to
     """Drive one turn to completion, streaming node updates and pausing at an interrupt.
 
     `approver(interrupt_value) -> decision` resolves each interrupt (the approval gate, the pause
-    prompt, an ask_user question) and the result is fed back as the `Command(resume=...)` value. `on_update(node, delta)` is called for every node update (the trace
-    + live plan panel). `on_token(text)`, if given, receives the *agent* node's answer tokens as
+    prompt, an ask_user question) and the result is fed back as the `Command(resume=...)` value.
+    `on_update(node, delta)` is called for every node update (the trace + live plan panel). `on_token(text)`, if given, receives the *agent* node's answer tokens as
     they generate (LangGraph `stream_mode="messages"`, filtered to that node) so the UI can render
     the final answer live. `pause`, if given, is a `typeahead.InputQueue` (any start()/stop() console
     reader): it's started only while the graph is executing and stopped before any blocking input(),
@@ -29,9 +33,9 @@ def run_turn(graph, payload, config, approver, on_update=None, pause=None, on_to
     called when the agent node takes back what it streamed (a malformed attempt about to be
     retried — `nodes.agent.RETRACT` on the custom stream). Returns the final state.
 
-    Streams two modes at once: "updates" drives the trace/plan and carries the interrupt marker
-    (unchanged routing — pause/resume is still decided by get_state below); "messages" carries the
-    per-token answer stream. Each streamed item is a `(mode, data)` pair."""
+    Streams three modes at once: "updates" drives the trace/plan and carries the interrupt marker
+    (pause/resume is decided by get_state below); "messages" carries the per-token answer stream;
+    "custom" carries the retract signal. Each streamed item is a `(mode, data)` pair."""
     # The loop visits three nodes per tool round; LangGraph's default recursion_limit (25) would
     # kill a healthy multi-step turn mid-flight. Generous but finite — the REAL bound is
     # runtime.max_iterations (agent passes), which lands at an honest answer long before this.
@@ -104,10 +108,42 @@ def _turn_end_hooks(query, values: dict) -> None:
     hooks.run("turn-end", query=query, answer=answer)
 
 
+def open_run(tracer, query: str) -> "tuple[str, int, dict]":
+    """Open one turn: a fresh checkpoint thread (the interrupts pause/resume on it; cross-turn
+    memory rides on the carried `messages`, not the checkpointer) and its trace run. Returns
+    `(thread_id, run_id, config)`; the config carries the LLM-call tracer as a run-scoped callback,
+    which LangChain's contextvars propagate into every nested model call (`/trace invoke`)."""
+    thread_id = str(uuid.uuid4())
+    run_id = tracer.start_run(thread_id, query)
+    config = {
+        "configurable": {"thread_id": thread_id},
+        "callbacks": [tracer.llm_handler(run_id)],
+    }
+    return thread_id, run_id, config
+
+
+def close_run(graph, thread_id: str) -> dict:
+    """Close one turn at its boundary, whatever the outcome. Prunes the thread's checkpoints —
+    each turn runs on a fresh thread, so once it returns they are dead weight that would
+    accumulate in db.sqlite forever (delete_thread touches only the checkpointer's own tables) —
+    and ends the grant-lifecycle task, so a task-scoped always-allow grant never outlives the turn
+    that motivated it. Returns the expired grants (policy.end_task). Never raises."""
+    try:
+        graph.checkpointer.delete_thread(thread_id)
+    except Exception as exc:
+        diag.log(f"checkpoint prune failed for thread {thread_id}: {exc}")
+    try:
+        from trust import policy
+
+        return policy.end_task()
+    except Exception as exc:
+        diag.log(f"grant lifecycle end_task failed: {exc}")
+        return {"prefixes": [], "tools": []}
+
+
 def _make_on_update(tracer, run_id, show_ui=True, answer=None):
     """The per-delta subscriber: record first (the tracer self-guards — the watcher never takes
-    down the watched), then render. DISPLAY is fail-soft (transplanted from the visibility
-    isolate): a render bug — a hostile step dict, a width edge case — must never raise out of
+    down the watched), then render. DISPLAY is fail-soft: a render bug — a hostile step dict, a width edge case — must never raise out of
     run_turn, land a healthy turn as `error`, and lose the answer. Each ui call is guarded on
     its own; a failure prints one line and the loop continues.
 

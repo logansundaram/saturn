@@ -205,7 +205,7 @@ models pulled — for the `4b` tier that's `ollama pull qwen3.5:4b` and
 `ollama pull qwen3-embedding:8b` (multi-GB downloads; Ollama prints each one's exact size as the
 pull starts). The quick installer above does both for you, and the first launch's `/models` page offers to
 run any missing pull for you (y/N, default no); later launches warn about anything missing. Installed this way, your data and `config.yaml` live in `~/.saturn` beside your `SATURN.md`
-(override with `SATURN_HOME`; an earlier install's `~/.saturday` keeps being used), and you upgrade with `pipx upgrade saturn-agent` / `uv tool upgrade
+(override with `SATURN_HOME`), and you upgrade with `pipx upgrade saturn-agent` / `uv tool upgrade
 saturn-agent` instead of `/update`.
 
 ### Manual install (from source)
@@ -325,14 +325,12 @@ Type `/help` for the full list, or `/<command> --help` for details on any one. H
 | `/help` | The grouped command list, opening with the trust-stack map (posture · activity · proof); `/help <cmd>` details one. |
 | `/models` | The model page: your hardware, the qwen ladder (six chat sizes + three embedders) priced against it, pick a row to switch — pulling what's missing on consent. |
 | `/config` | View/edit settings (`/config runtime.num_ctx <size|auto>` resizes the context window). |
-| `/plan` | Show the plan; control review mode and the mid-run pause (bare subcommands report status). |
-| `/draft` | Write your OWN plan in the step editor — your next message executes YOUR steps instead of the agent's draft (same per-step reflection and approval gates). |
 | `/docs` | The knowledge base: list documents, `add <path>`, `remove <name>`, `rebuild` (launch syncs on its own). |
 | `/tools` | List the agent's tools and their risk tiers. |
 | `/mcp` | MCP server status + the remote tools they add; `reload` after a config edit. |
 | `/memory` | See, add, edit, and review the layered facts the agent permanently remembers; `review` is the gated learning step (also runs at `/quit`), `why <n>` its provenance. |
 | `/policy` | Your trust settings in one place: bare = what runs without asking and what can leave the machine; `risk`/`allow`/`open` are the gate's levers, `egress` the ledger of what left, `airgap` the seal (bare forms report, changing is always explicit). |
-| `/trace source` | Show the full material behind a citation `[n]` of the last answer (folded in from `/source`). |
+| `/trace source` | Show the full material behind a citation `[n]` of the last answer. |
 | `/undo` | Revert the file changes of the last turn that wrote anything. |
 | `/init` | Survey the workspace and draft `SATURN.md` standing instructions. |
 | `/trace` | Inspect past runs, tool I/O, and LLM calls; `/trace why` explains a run's decisions; `/trace export` writes the run's complete record as JSON; `/trace replay` (or `saturn --replay <file>`) re-renders an exported record anywhere — no database needed. |

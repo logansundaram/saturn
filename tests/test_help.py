@@ -3,7 +3,7 @@ The /help redesign + the dispatcher help grammar (commands/_framework + commands
 
 Covers: the static grouping table exactly matching the live registry (a future command can't
 silently vanish from /help), the dead scaffold legend staying dead, the _RENAMED fallback
-(`/help why` prints the same moved-pointer as `/why`), the cut /commands command landing on a
+(`/help privacy` prints the same moved-pointer as `/privacy`), the cut /commands command landing on a
 pointer, and the standalone --help/-h token showing help ONLY at the first or final argument
 position (mid-position is data — `/memory add prefer -h over --help in docs` must execute).
 """

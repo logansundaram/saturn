@@ -2,8 +2,8 @@
 Trust receipt — the ambient trust surfaces: the per-answer receipt segment, the session-start
 posture line, and the one-time discovery hints.
 
-**Calm by default, loud on deviation (2026-07-06 declutter — owner call):** the ambient
-surfaces speak only when something actually crossed the boundary or was loosened. The receipt's
+**Calm by default, loud on deviation:** the ambient surfaces speak only when something actually
+crossed the boundary or was loosened. The receipt's
 trust segment appears when the turn SENT something, was BLOCKED by air-gap, or faced the gate —
 a fully-local turn adds nothing to the stats line. `posture_spans` is the session-level twin: a
 facet at its safe default (gate read_only, local inference, quarantine gate) says nothing, so a
@@ -14,10 +14,10 @@ flow means the defaults hold.
 Data sources: the egress ledger (`egress.py` — the turn's slice of it, marked at turn start) and
 the gated-call counter the approval UI increments. `trust_spans` is the pure builder (testable
 with synthetic events) — it returns `(text, kind)` spans so the renderer can color each fact
-semantically (the same green/yellow/red vocabulary the posture line uses);
-`turn_spans` the live wrapper the response renderer calls. The live wrappers treat an unusable mark (0, or one a `/policy egress clear`
-wiped events past) as UNKNOWN — silence never makes a claim, but a slice that may be HIDING
-sends still says `egress unknown` rather than blending into the calm.
+semantically (the same green/yellow/red vocabulary the posture line uses); `turn_spans` is the
+live wrapper the response renderer calls. It treats an unusable mark (0, or one a `/policy egress
+clear` wiped events past) as UNKNOWN — silence never makes a claim, but a slice that may be
+HIDING sends still says `egress unknown` rather than blending into the calm.
 
 `runtime.receipt` (read live, default on) switches the segment off for users who want the plain
 stats receipt back. Imports only config + egress + textutil (leaves), so the TUI can import it
@@ -67,14 +67,14 @@ def _gated_span(gated_calls: int) -> "tuple[str, str]":
 
 def trust_spans(events: list, gated_calls: int = 0) -> list[tuple[str, str]]:
     """The receipt's trust segment from one turn's egress events + gated-call count, as
-    `(text, kind)` spans — kind ∈ `sent`|`blocked`|`untracked`|`gated` — so the styled renderer can
-    color each fact semantically while the plain path prints the identical bare text.
+    `(text, kind)` spans — kind ∈ `sent`|`blocked`|`untracked`|`gated` — so the renderer can
+    color each fact semantically.
 
     Deviation-only: EMPTY when nothing was sent, blocked, run untracked, or gated (the calm local turn — the
     receipt is then just the dim run stats); otherwise a compact send summary (count · bytes ·
     first host, `+n` for more), blocked attempts (air-gap), and the gated count. Accounting
-    comes from egress.summarize_events — the same aggregation /policy egress
-    use, so the receipt can never disagree with them."""
+    comes from egress.summarize_events — the same aggregation /policy egress uses, so the
+    receipt can never disagree with it."""
     agg = egress.summarize_events(events)
 
     spans: list[tuple[str, str]] = []
@@ -119,10 +119,8 @@ def turn_spans(since_mark: int, gated_calls: int = 0) -> list[tuple[str, str]]:
 
 # ── session posture line ───────────────────────────────────────────────────────────────────────
 # The startup twin of the per-answer receipt: one line under the banner stating the live trust
-# posture — but DEVIATION-ONLY (2026-07-06 declutter): a stock local install prints nothing at
-# all, and the line speaks only when something is loosened or leaves the machine. Same
-# (text, kind) span shape as trust_spans so the renderer colors semantically and the plain path
-# prints identical words.
+# posture — DEVIATION-ONLY: a stock local install prints nothing at all. Same (text, kind) span
+# shape as trust_spans so the renderer colors semantically.
 
 
 def posture_spans() -> list[tuple[str, str]]:
@@ -130,10 +128,9 @@ def posture_spans() -> list[tuple[str, str]]:
     deviation-only: a facet at its safe default (gate read_only · local inference · quarantine
     gate) says NOTHING, so the default posture renders no line at all; silence means the
     defaults hold. What speaks: a loosened/open gate, the air-gap seal, off-machine inference,
-    a weakened quarantine. The
-    affirmative readout lives behind /policy. Every read is live and best-effort: a facet that
-    can't be derived is OMITTED rather than guessed — this line must never claim a posture it
-    didn't read."""
+    a weakened quarantine. The affirmative readout lives behind /policy. Every read is live and
+    best-effort: a facet that can't be derived is OMITTED rather than guessed — this line must
+    never claim a posture it didn't read."""
     spans: list[tuple[str, str]] = []
     try:
         cfg = get_config()

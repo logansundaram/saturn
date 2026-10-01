@@ -8,12 +8,12 @@ in the app — the difference between "a pile of prints" and a serious terminal 
 
 Cells are plain values or `(text, style)` tuples for a per-cell override (e.g. a risk tier
 colored by value). The LAST column flexes into the remaining terminal width and truncates with
-`…`; the others fit their widest cell. Degrades to plain aligned text without rich.
+`…`; the others fit their widest cell.
 """
 
 from ._base import (
     _PLAN,
-    Text, _console, _RICH,
+    Text, _console,
     _ACCENT, _DIM, _RAIL, _RAIL_GLYPH, _RISK,
     _term_width, _truncate,
 )
@@ -40,21 +40,15 @@ def section(title: str, subtitle: str = "") -> None:
     a short dim rule, the title in the accent, and an optional dim subtitle line (counts, the
     active binding, a hint). No trailing fill: the accent word carries the eye, not a bar of
     dashes — one header vocabulary across every readout, the response, and the trace replays."""
-    if _RICH:
-        _console.print()
-        rule = Text("  ")
-        rule.append("── ", style=_DIM)
-        rule.append(title, style=f"bold {_ACCENT}")
-        _console.print(rule)
-        if subtitle:
-            sub = Text("  ")
-            sub.append(subtitle, style=_DIM)
-            _console.print(sub)
-    else:
-        print()
-        print(f"  ── {title}")
-        if subtitle:
-            print(f"  {subtitle}")
+    _console.print()
+    rule = Text("  ")
+    rule.append("── ", style=_DIM)
+    rule.append(title, style=f"bold {_ACCENT}")
+    _console.print(rule)
+    if subtitle:
+        sub = Text("  ")
+        sub.append(subtitle, style=_DIM)
+        _console.print(sub)
 
 
 def _cell(value, default_style: str) -> "tuple[str, str]":
@@ -90,22 +84,13 @@ def table(rows, styles=None) -> None:
     flex_w = max(8, _term_width() - fixed)
 
     for row in norm:
-        if _RICH:
-            line = Text()
-            # _RAIL, not _DIM: this is the same gutter glyph _base._rail() draws for the trace,
-            # and a listing sitting next to a trace block must not render it a shade off.
-            line.append(f"  {_RAIL_GLYPH} ", style=_RAIL)
-            for i, (text, style) in enumerate(row):
-                if i == ncols - 1:
-                    line.append(_truncate(text, flex_w), style=style)
-                else:
-                    line.append(f"{text:<{widths[i]}}" + " " * gap, style=style)
-            _console.print(line)
-        else:
-            parts = []
-            for i, (text, _style) in enumerate(row):
-                if i == ncols - 1:
-                    parts.append(_truncate(text, flex_w))
-                else:
-                    parts.append(f"{text:<{widths[i]}}")
-            print(f"  {_RAIL_GLYPH} " + (" " * gap).join(parts))
+        line = Text()
+        # _RAIL, not _DIM: this is the same gutter glyph _base._rail() draws for the trace,
+        # and a listing sitting next to a trace block must not render it a shade off.
+        line.append(f"  {_RAIL_GLYPH} ", style=_RAIL)
+        for i, (text, style) in enumerate(row):
+            if i == ncols - 1:
+                line.append(_truncate(text, flex_w), style=style)
+            else:
+                line.append(f"{text:<{widths[i]}}" + " " * gap, style=style)
+        _console.print(line)

@@ -4,12 +4,8 @@ Local-knowledge tools — what the agent already knows, on this machine.
   search_knowledge_base — semantic search over the local RAG store (the ingested corpus).
   remember / recall     — durable facts via `memory_registry` (the layered markdown store).
 
-(`recall_runs`, a model-facing search over the trace DB, was cut 2026-09-29, and `/trace
-search` 2026-09-30: "what did I decide" is memory's job.)
-
 Kept separate from the live-web tools (`web.py`): these search the user's OWN data, not the
-internet. (remember/recall lived in tools/memory.py until the 2026-06-11 leaf consolidation.)
-Remembered facts are also injected into the grounding context each turn, so `recall` is mainly
+internet. Remembered facts are also injected into the grounding context each turn, so `recall` is mainly
 for searching a large memory or confirming a specific detail.
 """
 

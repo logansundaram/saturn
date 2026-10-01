@@ -19,7 +19,7 @@ benchmark.py        the graded trust benchmark; --loop is the loop benchmark (de
 config.py/.yaml     the single source of truth for model bindings, paths, and runtime knobs
 diag.py             diagnostic logging to logging/diag.log (never print() — TUI-safe)
 textutil.py         leaf text helpers (truncation, head+tail clamping, byte formatting)
-env_keys.py         .env-backed secret management (the /config key front end)
+env_keys.py         the .env reader behind MCP's ${VAR} expansion
 
 app/        the application shell: CLI, graph assembly, turn driver, headless + REPL loops
 core/       the engine room: state, model factory, prompts, invoke options, the pause latch
@@ -90,7 +90,7 @@ The whole product is one loop. Reading it end to end explains 80% of the repo:
 |---|---|
 | `cli.py` | The strict argparse surface (`-p`, `--json`, `--export`, `--replay`, `--yolo`) + piped-stdin capture. Unknown flags exit 2, never fall through to the TUI. |
 | `graph.py` | `build_agent()`: wires `nodes/` into the compiled LangGraph with the SqliteSaver checkpointer. The only place graph assembly happens. |
-| `turn.py` | `run_turn()`: streams one turn (node updates + answer tokens + the agent's retract signal), resolves interrupts through the caller's approver, surfaces trace degradation. |
+| `turn.py` | `run_turn()`: streams one turn (node updates + answer tokens + the agent's retract signal), resolves interrupts through the caller's approver, surfaces trace degradation; `open_run` / `close_run` are the run lifecycle the REPL and headless share. |
 | `session.py` | Per-turn state shape + fresh-turn reset + the two history compactions (mechanical every turn; LLM summary past the threshold). |
 | `startup.py` | Shared startup: knowledge-base sync + graph build, one-line ingest warnings, attachment admission warnings. |
 | `headless.py` | The `-p` path: one query → stdout; gated calls denied by default; `--json` / `--export` contracts. |
@@ -99,7 +99,7 @@ The whole product is one loop. Reading it end to end explains 80% of the repo:
 ### `core/` — the engine room
 | File | What it does |
 |---|---|
-| `state.py` | `AgentState` + the step-dict vocabulary of the model's checklist. `current_step` (first item with `result is None`) is the gate's step context; `gate_events` is the one non-recomputable record (human decisions); `is_turn_start` is THE turn-boundary predicate; `grounding_parts` splits the grounding into its stable / per-turn halves. |
+| `state.py` | `AgentState`, the turn-boundary helpers (`is_turn_start`, `turn_start`, `this_turn`) + the step-dict vocabulary of the model's checklist. `current_step` (first item with `result is None`) is the gate's step context; `gate_events` is the one non-recomputable record (human decisions); `is_turn_start` is THE turn-boundary predicate; `grounding_parts` splits the grounding into its stable / per-turn halves. |
 | `llms.py` | `get_model()` — the model factory (one chat model per tier, shared by the agent and the background calls) over Ollama; `invoke_kwargs`, THE builder of the per-task decoding options every call sends (num_ctx, num_predict, think) — the agent, compaction, the memory review and `/init` each pass a task, so thinking is explicitly off and output bounded; locality boundary wrapping for a remote `OLLAMA_HOST`; startup health check. Cloud providers are shelved (refuse actionably). |
 | `messages.py` | Every system prompt, in one place: `agent_sys_msg()` (the loop's one prompt — no tool catalog, the tools ride the native bind) plus the compaction, memory-review and /init prompts. |
 | `doctext.py` | Text out of PDF / .docx / .xlsx (`extract`) for `read_file` and `@file` attachments, and the PDF / Word loaders the knowledge base shares. A leaf; the format libraries load lazily. |

@@ -1,48 +1,31 @@
 """
-MCP client — remote Model Context Protocol tools inside the trust envelope (roadmap #12).
+MCP client — remote Model Context Protocol tools inside the trust envelope.
 
 Servers are declared in config.yaml under `mcp.servers:` (stdio command, or a streamable-HTTP/SSE
-url). At startup, registry.py calls `startup()` here: each enabled server is connected, its tools
-listed, and every remote tool registered through `toolspec.register_tool_object` as a LangChain
-StructuredTool — so the tool catalog, the native tool binding, /tools, /policy risk, the trace, and
-above all the APPROVAL GATE treat a remote tool exactly like a local one. Nothing downstream knows
-or cares that the implementation lives in another process.
+url). registry.py calls `startup()` at import: each enabled server is connected and every tool
+it lists is registered as a StructuredTool named `mcp_<server>_<tool>`, so the catalog, /tools,
+/policy risk, the trace and the APPROVAL GATE treat it exactly like a local tool.
 
-Trust model (the same hard line as the deferred /learn design):
-  - A remote tool NEVER self-declares its risk tier. MCP tool annotations (readOnlyHint etc.) are
-    surfaced as advisory info in /mcp, but they never drive the gate — a malicious or sloppy
-    server claiming "read-only" is exactly the attack the gate exists to stop.
-  - Every MCP tool therefore fails closed to `destructive` (always prompts). The USER may relax
-    that: per server via `risk:` in their own config.yaml, or per tool via the existing
-    `/policy risk <tool> <tier> [--save]` — both are user decisions, like /policy allow.
-  - registry.py runs `startup()` BEFORE applying the persisted /policy risk overrides, so a saved
-    override on an MCP tool name survives restarts like any other.
+Trust model: a remote tool NEVER self-declares its risk tier. MCP annotations (readOnlyHint etc.)
+are advisory text in /mcp and never drive the gate — a server claiming "read-only" is exactly
+the attack the gate exists to stop. Every MCP tool fails closed to `destructive`; only the USER
+relaxes it (`risk:` per server in config.yaml, or `/policy risk`). `startup()` runs BEFORE the
+persisted /policy risk overrides apply, so a saved override on an MCP tool survives restarts.
 
-Sync/async bridge: the whole agent loop is synchronous (tool_node calls `tool.invoke(args)`),
-while the MCP SDK is async. All sessions live on ONE background daemon thread running an asyncio
-event loop; each registered tool's sync function submits `session.call_tool(...)` to that loop via
-`asyncio.run_coroutine_threadsafe` and blocks on the result with a timeout (`mcp.call_timeout`).
-Tool results flow back as plain strings and are clamped by tool_node like every other observation.
+The agent loop is synchronous and the MCP SDK async: every session lives on ONE background
+daemon-thread event loop, and each tool's sync function submits `session.call_tool(...)` to it
+and blocks with a timeout (`mcp.call_timeout`). `${VAR}` in a server's url/args/env/headers
+expands from the environment / .env (env_keys.get) so tokens stay out of config.yaml; an unset
+var expands to "" and is reported as a startup problem. stdio servers' stderr goes to
+`logging/mcp.log`, never the console (it would scribble over the rich.Live TUI).
 
-Secrets: any `${VAR}` in a server's url/args/env/headers expands from the environment / the
-.env file (env_keys.get), so tokens never sit in config.yaml — e.g.
-`Authorization: Bearer ${GITHUB_TOKEN}`. A reference to an unset var is a startup problem, not a
-silent empty string... it expands to "" so the server still gets a well-formed value, but the gap
-is reported (see _expand/_parse_specs).
+Failure posture: best-effort everywhere. A server that fails to connect is reported (in /mcp and
+the startup warnings) and its tools don't exist this session; a failed call raises ToolError;
+nothing here can take the REPL down. `/mcp reload` is the full recovery; a call against a dropped
+connection attempts one lazy reconnect on its own.
 
-stdio server stderr goes to `logging/mcp.log` (gitignored, mirrors diag.py's dir resolution) —
-NEVER the console, where it would scribble over the rich.Live TUI.
-
-Failure posture: best-effort everywhere. A server that fails to connect is reported (startup
-problems surface next to check_models' warnings, and in /mcp) and its tools
-simply don't exist this session; a tool call that fails raises ToolError, which tool_node turns
-into an "Error: ..." observation stamped error; nothing here can take the REPL down. `/mcp reload` is the recovery path
-(full reconnect + re-register); a call against a dropped connection also attempts one lazy
-reconnect on its own.
-
-Imports nothing project-side except leaf modules (config, diag, textutil, toolspec, env_keys), so
-registry.py can import it freely; reload() touches registry/llms/permissions lazily at call time,
-when they are fully initialised.
+Imports only leaf modules project-side, so registry.py can import it freely; reload() imports
+registry/llms/policy lazily.
 """
 
 from __future__ import annotations
@@ -66,14 +49,13 @@ from config import get_config
 from textutil import truncate
 from tools.toolspec import RISK_TIERS, ToolError, register_tool_object
 
-# Fallbacks when config.yaml lacks the knobs (mirrors shell.py's local-helper style).
+# Fallbacks when config.yaml lacks the knobs.
 _DEFAULT_CONNECT_TIMEOUT = 20.0   # seconds to start + handshake a server at startup
 _DEFAULT_CALL_TIMEOUT = 60.0      # seconds per remote tool call
 
 _TRANSPORTS = ("stdio", "http", "sse")
 
-# Tool-name constraint shared by the providers' tool-calling APIs (Ollama/OpenAI-style):
-# [A-Za-z0-9_-], bounded length. Remote names are sanitized into it.
+# Tool-name constraint of the tool-calling APIs: [A-Za-z0-9_-], bounded length. Remote names are sanitized into it.
 _NAME_OK = re.compile(r"[^A-Za-z0-9_-]")
 _MAX_TOOL_NAME = 64
 
@@ -251,9 +233,7 @@ def _ensure_loop() -> asyncio.AbstractEventLoop:
 def _stderr_log():
     """Shared sink for stdio servers' stderr — a file under logging/ (gitignored), NEVER the
     console where it would collide with the rich.Live TUI. Uses diag.log_dir() — THE one dir
-    resolution (a hand-copied version here once tested tools/config.yaml, which never exists,
-    so clone installs silently logged to ~/.saturday instead of the repo's logging/).
-    Best-effort: falls back to os.devnull so a log failure can't block a server."""
+    resolution, never a hand-copied one. Best-effort: falls back to os.devnull so a log failure can't block a server."""
     global _STDERR_LOG
     if _STDERR_LOG is None:
         try:
@@ -365,7 +345,7 @@ def _await_ready(states: list[_ServerState], timeout: float) -> None:
     deadline = time.monotonic() + timeout
     for st in states:
         remaining = max(0.0, deadline - time.monotonic())
-        if not st.ready.wait(remaining) :
+        if not st.ready.wait(remaining):
             if st.future is not None:
                 st.future.cancel()
             st.state = "error"
@@ -512,8 +492,8 @@ def call_tool(server: str, tool: str, args: dict) -> str:
 
 def _result_text(result) -> str:
     """Flatten a CallToolResult into the plain-string observation the loop expects. Text content
-    passes through; binary content is summarized, not dumped (the gotcha-#5 rule — and base64
-    would be clamped into garbage anyway); structured-only results render as JSON."""
+    passes through; binary content is summarized, not dumped (base64 would be clamped into
+    garbage anyway); structured-only results render as JSON."""
     parts: list[str] = []
     for item in getattr(result, "content", None) or []:
         kind = getattr(item, "type", "")

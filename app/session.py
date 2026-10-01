@@ -12,6 +12,7 @@ import diag
 from config import get_config
 from core.state import AgentState
 from tui import ui
+from tui.ui._base import _human_tokens
 
 
 def _compact_history(messages: list, keep_recent_turns: int = 1) -> list:
@@ -19,29 +20,17 @@ def _compact_history(messages: list, keep_recent_turns: int = 1) -> list:
     answers), but keep the ReAct scratchpad — tool-call AIMessages and their ToolMessages — of
     the most recent `keep_recent_turns` turns verbatim.
 
-    Why a window instead of stripping everything: the scratchpad of the turn that just finished
-    is exactly what the user's *next* message refers back to — "open the second result", "what
-    did that file say", "multiply that by two". Dropping it on every boundary (the old
-    behaviour) is what made real multi-turn use brittle: the follow-up's referent had silently
-    vanished, so the model re-ran a search (getting different results) or fabricated. One turn
-    of live scratchpad covers the overwhelming majority of those references.
+    The scratchpad of the turn that just finished is exactly what the user's *next* message
+    refers back to ("open the second result", "what did that file say") — without it the model
+    re-runs a search or fabricates. Older turns are still compacted: many turns of scratchpad
+    make the model treat a long-finished tool call as "already done", bloat context with heavy
+    tool outputs, and desync `messages` from the per-turn trace accumulators
+    (`tools_called`/`tool_results`/`documents_retrieved`, reset each turn).
 
-    The original concerns still hold for OLD turns, which is why they're still compacted:
-    carrying many turns of scratchpad makes the model treat a long-finished tool call as "already
-    done" (reusing stale results instead of re-running a planned gather), bloats context with
-    heavy tool outputs, and desyncs the model's view (`messages`) from the per-turn trace
-    accumulators (`tools_called`/`tool_results`/`documents_retrieved`, reset each turn — their
-    live consumers are the benchmark's grounding/gate-coverage grading, headless `--json`'s
-    `tools` field, `/trace state`, and the Sources receipt's per-turn numbering).
-
-    A turn starts at a REAL user HumanMessage — not a standalone mid-turn steer note (that
-    belongs to the turn it corrected; treating it as a boundary would compact away the very
-    scratchpad this function promises to keep) and not a compaction summary (carried history).
-    Everything from the boundary onward is kept as-is (the scratchpad is intact, so no orphaned
-    tool calls); everything before it is reduced to Human + non-empty final-AI messages (also
-    orphan-free). Run only at the turn boundary.
-
-    `keep_recent_turns=0` reproduces the old strip-everything behaviour."""
+    A turn starts at a REAL user HumanMessage (core.state.is_turn_start) — not a mid-turn steer
+    note and not a compaction summary. Everything from the boundary onward is kept as-is (no
+    orphaned tool calls); everything before it is reduced to Human + non-empty final-AI messages
+    (also orphan-free). Run only at the turn boundary. `keep_recent_turns=0` strips every turn."""
     from core.state import is_turn_start
 
     human_idxs = [i for i, m in enumerate(messages) if is_turn_start(m)]
@@ -113,20 +102,17 @@ def _maybe_autocompact(state: AgentState, run_id=None) -> AgentState:
         kept, trimmed = trim_observations(kept)
     if folded or trimmed:
         state["messages"] = kept
+    fill = (f"{used / window * 100:.0f}% full "
+            f"({_human_tokens(used)}/{_human_tokens(window)} tok).")
     if trimmed:
-        ui.note(
-            f"auto-compacted: trimmed {trimmed} tool result(s) from the last turn — context "
-            f"was {used / window * 100:.0f}% full ({_human_int(used)}/{_human_int(window)} tok)."
-        )
+        ui.note(f"auto-compacted: trimmed {trimmed} tool result(s) from the last turn — context "
+                f"was {fill}")
     if folded:
-        ui.note(
-            f"auto-compacted {stats['summarized_turns']} earlier turn(s) "
-            f"({stats['before']}→{stats['after']} messages) — context was "
-            f"{used / window * 100:.0f}% full ({_human_int(used)}/{_human_int(window)} tok)."
-        )
-        # The summary used to die with the session. Persist it beside the memory file (the
-        # last session's brief) and queue its bullets as memory candidates — proposals for
-        # /memory review, never facts written on their own (core/memory_review).
+        ui.note(f"auto-compacted {stats['summarized_turns']} earlier turn(s) "
+                f"({stats['before']}→{stats['after']} messages) — context was {fill}")
+        # Persist the summary beside the memory file (the last session's brief) and queue its
+        # bullets as memory candidates — proposals for /memory review, never facts written on
+        # their own (core/memory_review).
         try:
             from core.compaction import is_summary
             from core.memory_review import note_compaction
@@ -140,15 +126,6 @@ def _maybe_autocompact(state: AgentState, run_id=None) -> AgentState:
         except Exception as exc:
             diag.log(f"compaction: memory candidate queue failed: {exc}")
     return state
-
-
-def _human_int(n: int) -> str:
-    """Compact integer for the auto-compaction notice (1800 -> 1.8k)."""
-    if n < 1000:
-        return str(int(n))
-    if n < 1_000_000:
-        return f"{n / 1000:.1f}k"
-    return f"{n / 1_000_000:.2f}M"
 
 
 # The only fields that survive a turn boundary: the conversation itself (compacted, appended

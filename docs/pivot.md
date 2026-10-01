@@ -230,7 +230,7 @@ shape without adding a call to the chat turn. Pivot #1 and #2 above stay the top
 - `/trace` usage still lists `answer`, cut with the Glass Box.
 - Two names: done 2026-09-29 (`SATURN_*` with `SATURDAY_*` fallbacks; `/init` writes
   `SATURN.md`); 2026-09-29 also: one home — a new wheel install keeps its data in ~/.saturn
-  (`config.wheel_data_home`; an existing ~/.saturday install stays put), the installer's clone
+  (`config.saturn_home`; an existing ~/.saturday install stays put), the installer's clone
   folder is `SATURN_INSTALL_DIR`. Pick `SATURN_*`, read the old spellings as fallbacks for one release.
 
 ### Improve

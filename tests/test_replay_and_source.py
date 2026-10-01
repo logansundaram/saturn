@@ -1,7 +1,7 @@
 """
-Trace replay (commands.trace.export_rows / render_export) and the /source citation drill-down
-(commands.trace.lookup_source) — the pure halves of both features. Plus the stdout-honesty
-guard: `/trace export -o` refuses a missing/flag-shaped path.
+Trace replay (commands.trace.export_rows / render_export) and the /trace source citation
+drill-down (commands.trace._source). Plus the stdout-honesty guard: `/trace export -o` refuses
+a missing/flag-shaped path.
 """
 
 import json
@@ -10,8 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from commands.trace import lookup_source
-from commands.trace import _export, export_rows, render_export
+from commands.trace import _export, _source, export_rows, render_export
 
 
 # --- replay ----------------------------------------------------------------------------------
@@ -195,19 +194,24 @@ _STATE = {
 }
 
 
-def test_lookup_source_numbers_match_build_sources():
-    label, text = lookup_source(_STATE, 1)
-    assert label.startswith("web_search(")
-    assert text == "web_search(query='x') -> first full result text"
-    label2, text2 = lookup_source(_STATE, 2)
-    assert "notes.md" in label2
-    assert text2 == "[source: notes.md] full passage text"
+def _source_out(capsys, state, *args) -> str:
+    _source(SimpleNamespace(state=state), list(args))
+    return capsys.readouterr().out
 
 
-def test_lookup_source_out_of_range():
-    assert lookup_source(_STATE, 0) is None
-    assert lookup_source(_STATE, 3) is None
-    assert lookup_source({}, 1) is None
+def test_source_numbers_match_build_sources(capsys):
+    out = _source_out(capsys, _STATE, "1")
+    assert "[1] web_search(" in out
+    assert "web_search(query='x') -> first full result text" in out
+    out = _source_out(capsys, _STATE, "[2]")
+    assert "[2]" in out and "notes.md" in out
+    assert "[source: notes.md] full passage text" in out
+
+
+def test_source_out_of_range(capsys):
+    assert "no source [0]" in _source_out(capsys, _STATE, "0")
+    assert "no source [3]" in _source_out(capsys, _STATE, "3")
+    assert "nothing to cite" in _source_out(capsys, {}, "1")
 
 
 # --- /trace run-selector grammar (one parser for every subview) ------------------------------

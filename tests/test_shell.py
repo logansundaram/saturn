@@ -1,6 +1,5 @@
 """tools/shell.py — foreground run_shell, exercised against real subprocesses kept
-deliberately tiny. (The background-job lifecycle and its opt-in knob were DELETED 2026-07-03 —
-run_shell is a bounded foreground run only; see shelf/2026-07-03-runtime-trim.)"""
+deliberately tiny."""
 
 import sys
 
@@ -56,7 +55,7 @@ def test_no_background_surface():
     assert "run_shell" in toolspec._RISK
 
 
-# ── env scrub (transplanted from the gating isolate's sandbox.scrubbed_env) ─────────────────
+# ── env scrub ─────────────────────────────────────────────────────────────────────────────────
 
 
 def test_scrubbed_env_removes_secret_shaped_variables(monkeypatch):

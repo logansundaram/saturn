@@ -3,26 +3,19 @@ The one-off log lines (notes, warnings, steering/pause acknowledgements, queued-
 rendered in the trace-rail style. None of these touch per-turn state.
 """
 
-from ._base import Text, _console, _RICH, _ACCENT, _DIM, _truncate
+from ._base import Text, _console, _ACCENT, _DIM, _truncate
 
 
 # ── log lines (startup notices, warnings) ────────────────────────────────────────
-# Every line below is the same shape: a glyph, a message, and an optional dim tail — rendered as
-# styled spans under rich and as plain text without it. One helper so the rich/plain fallback
-# contract lives in ONE place (it was hand-copied six times here and once in response.py, so a
-# fix to the fallback had to land seven times). The plain form is always glyph + text + tail,
-# which is exactly what each copy printed.
+# Every line below is the same shape: a glyph, a message, and an optional dim tail.
 def _glyph_line(glyph: str, glyph_style: str, text: str,
                 text_style: str = "default", tail: str = "", tail_style: str = "") -> None:
-    if _RICH:
-        t = Text()
-        t.append(glyph, style=glyph_style)
-        t.append(text, style=text_style)
-        if tail:
-            t.append(tail, style=tail_style or _DIM)
-        _console.print(t)
-    else:
-        print(f"{glyph}{text}{tail}")
+    t = Text()
+    t.append(glyph, style=glyph_style)
+    t.append(text, style=text_style)
+    if tail:
+        t.append(tail, style=tail_style or _DIM)
+    _console.print(t)
 
 
 def note(msg: str) -> None:

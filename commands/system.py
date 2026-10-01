@@ -1,6 +1,5 @@
 """
-System commands — the app itself, in one module (the /help "system" theme; consolidated from
-one-file-per-command 2026-06-11):
+System commands — the app itself (the /help "system" theme):
 
   /help    the themed command list (+ per-command detail)
   /quit    exit (autosaving the session)
@@ -37,10 +36,8 @@ _GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("observability", ("mcp", "models", "tools", "trace")),
     ("system", ("config", "help", "notify", "quit", "update")),
 )
-# The command diet (2026-09-28, pivot #11): bare /help lists only the commands a person needs
-# on a Tuesday; everything else (the auditor's and operator's surfaces) stays registered and
-# listed by `/help --all`. Nothing is removed; the first screen stops looking like an audit
-# console. Order is display order.
+# Bare /help lists only the commands a person needs on a Tuesday; everything else (the auditor's
+# and operator's surfaces) stays registered and listed by `/help --all`. Order is display order.
 _DAILY: tuple[str, ...] = ("memory", "policy", "trace", "help", "quit")
 _ALL_FLAGS = {"--all", "-a", "all"}
 
@@ -71,7 +68,7 @@ with the trust-stack map (posture · activity · record) then lists EVERY comman
 theme — nothing is hidden, only unlisted by default.
 
 With a command name, prints its detailed help — identical to `/<command> --help`. Renamed
-commands answer here too: `/help why` prints the same pointer as typing /why.
+commands answer here too: `/help privacy` prints the same pointer as typing /privacy.
 
 Every command also accepts a standalone --help / -h token as its FIRST or LAST argument; it
 shows this detail view instead of executing (`/trace export --help` explains export, never
@@ -92,8 +89,8 @@ def _help(ctx, args):
         name = key if key in COMMANDS else _ALIASES.get(key)
         cmd = COMMANDS.get(name) if name else None
         if cmd is None:
-            # Same moved-pointer dispatch prints for the bare legacy name — /help why must
-            # land exactly where /why does, not on "unknown command".
+            # Same moved-pointer dispatch prints for the bare legacy name — /help privacy must
+            # land exactly where /privacy does, not on "unknown command".
             if not _print_renamed(key):
                 _print(f"  unknown command: /{key} - try /help")
             return

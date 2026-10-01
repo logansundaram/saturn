@@ -5,16 +5,17 @@ the model-level `/trace invoke` view). Shares the rail/glyph/tree vocabulary acr
 so a turn reads the same whether it's happening now or being inspected later.
 """
 
+import textwrap
 import time
 
-from textutil import clip, fmt_call, human_bytes, split_call_result
+from textutil import clip, fmt_args, fmt_call, human_bytes, split_call_result
 
 from . import _base
 from ._base import (
-    Padding, Text, _console, _RICH,
-    _ACCENT, _BLOCKED_GLYPH, _DIM, _FAINT, _NODE_W, _RAIL, _RAIL_GLYPH,
+    Padding, Text, _console,
+    _ACCENT, _BLOCKED_GLYPH, _DIM, _FAINT, _NODE_W, _RAIL,
     _TREE_END, _TREE_LEAF, _TREE_MID, _TREE_PIPE,
-    _emit, _fmt_args, _fmt_dur, _human_tokens, _rail, _term_width, _truncate,
+    _emit, _fmt_dur, _human_tokens, _rail, _term_width, _truncate,
 )
 from .statusbar import _live_refresh
 from .plan import show_plan
@@ -37,20 +38,17 @@ def _metric_parts(delta: dict) -> list[str]:
     return parts
 
 
-def _node_line(node: str, dur: float, delta: dict) -> "Text | str":
+def _node_line(node: str, dur: float, delta: dict) -> "Text":
     """Build one `│ ✓ node  elapsed  metrics` trace row (metrics dim) — the shared format for the
-    live trace and the /trace replay. Returns a rich Text, or a plain string without rich."""
+    live trace and the /trace replay."""
     extra = " · ".join(_metric_parts(delta))
-    if _RICH:
-        line = _rail()
-        line.append("✓ ", style="green")  # the node has finished by the time its line prints
-        line.append(f"{node:<{_NODE_W}}", style="default")
-        line.append(f"{_fmt_dur(dur):>7}", style=_DIM)
-        if extra:
-            line.append(f"   {extra}", style=_DIM)  # metrics are tertiary — dim, never the accent
-        return line
-    tail = f"   {extra}" if extra else ""
-    return f"  {_RAIL_GLYPH} ✓ {node:<{_NODE_W}}{_fmt_dur(dur):>7}{tail}"
+    line = _rail()
+    line.append("✓ ", style="green")  # the node has finished by the time its line prints
+    line.append(f"{node:<{_NODE_W}}", style="default")
+    line.append(f"{_fmt_dur(dur):>7}", style=_DIM)
+    if extra:
+        line.append(f"   {extra}", style=_DIM)  # metrics are tertiary — dim, never the accent
+    return line
 
 
 def _is_answer(delta: dict) -> bool:
@@ -140,21 +138,22 @@ def show_node(node: str, delta: dict | None = None) -> None:
 _REASONING_CAP = 280
 
 
+def _leaf(first: str, rest: str, text: str, style: str, *, reserve: int = 0) -> None:
+    """One word-wrapped leaf under the rail: `│ <first><text>`, continuation lines hanging at
+    `rest` (the same width as `first`) so a long text stays inside the trace gutter instead of
+    spilling to column 0. THE one wrapped-leaf renderer — every leaf shape below is a prefix pair."""
+    avail = max(20, _term_width() - (4 + len(first) + reserve))  # minus the rail and the prefix
+    for i, ln in enumerate(textwrap.wrap(text, width=avail) or [text]):
+        row = _rail()
+        row.append(first if i == 0 else rest, style=_RAIL)
+        row.append(ln, style=style)
+        _emit(row)
+
+
 def _node_leaf(text: str, style: str) -> None:
     """One wrapped `└ …` annotation leaf directly under a node's rail line — the shared shape for
     the agent's reasoning preview and the gate-decision echo."""
-    import textwrap
-
-    avail = max(20, _term_width() - 10)
-    for i, ln in enumerate(textwrap.wrap(text, width=avail) or [text]):
-        prefix = f"{_TREE_LEAF} " if i == 0 else "  "
-        if _RICH:
-            row = _rail()
-            row.append(f"  {prefix}", style=_RAIL)
-            row.append(ln, style=style)
-            _emit(row)
-        else:
-            _emit(f"  {_RAIL_GLYPH}   {prefix}{ln}")
+    _leaf(f"  {_TREE_LEAF} ", "    ", text, style, reserve=2)
 
 
 def _render_agent_thought(messages: list) -> None:
@@ -173,7 +172,7 @@ def _render_agent_thought(messages: list) -> None:
 
 def _render_trust_annotations(node: str, delta: dict, *, emit=None) -> int:
     """The trust-stack annotations a node's delta carries, rendered identically in the live rail
-    and the /trace replay — the moments that used to be invisible without a command:
+    and the /trace replay:
 
       - under `approval`, the echo of each HUMAN gate decision (state["gate_events"]): the
         interactive prompt scrolls away with the turn, so this leaf is the transcript's
@@ -220,39 +219,22 @@ def _render_trust_annotations(node: str, delta: dict, *, emit=None) -> int:
 
 
 def _emit_result_leaf(cont: str, text: str, style: str) -> None:
-    """Emit a tool result/error leaf under its call branch, word-wrapped to the terminal with a
-    HANGING INDENT: the first line carries the `└` leaf glyph, continuation lines indent to sit
-    under the text (keeping the `cont` rail gutter), so a long output stays inside the trace rail
-    instead of spilling to column 0."""
-    import textwrap
-
-    first = f"{cont}  {_TREE_LEAF} "   # "│  └ " / "   └ " — leaf glyph, under the call text
-    rest = f"{cont}    "               # "│    " / "     " — aligns continuation under the text
-    avail = max(20, _term_width() - (4 + 2 + len(first)))  # minus rail(4) + nest(2) + leaf prefix
-    for i, ln in enumerate(textwrap.wrap(text, width=avail) or [text]):
-        prefix = first if i == 0 else rest
-        if _RICH:
-            row = _rail()
-            row.append("  ", style=_RAIL)
-            row.append(prefix, style=_RAIL)
-            row.append(ln, style=style)
-            _console.print(row)
-        else:
-            print(f"  {_RAIL_GLYPH}   {prefix}{ln}")
+    """A tool result/error leaf under its call branch: the `└` leaf glyph under the call text,
+    the `cont` gutter kept on continuation lines."""
+    _leaf(f"  {cont}  {_TREE_LEAF} ", f"  {cont}    ", text, style)
 
 
 def _render_tool_events(events: list[dict], *, always_show_results: bool = False) -> None:
     """Draw the tool-I/O sub-tree under the `tools` node header: one `├─ name(args)  dur` branch
     per call, the call repr sized to the terminal and durations column-aligned within the round so
-    they read as a column. Each call's result renders as ONE clipped line beneath it (v2: watching
-    it work means seeing what came back, the Claude Code feel); `/trace #id`, `/trace full` and
-    the /trace replay (`always_show_results=True`) show the full output, word-wrapped under the
+    they read as a column. Each call's result renders as ONE clipped line beneath it (watching it
+    work means seeing what came back); `/trace #id`, `/trace full` and the /trace replay (`always_show_results=True`) show the full output, word-wrapped under the
     rail with a hanging indent. A FAILED call's error always shows whole."""
     n = len(events)
     # Width-responsive: size the call repr to the room left after the tree prefix (~9) and the right
     # `   dur` column (~9), then align durations to the widest call in this round.
     call_cap = max(24, _term_width() - 18)
-    calls = [_truncate(f"{ev.get('name', '?')}({_fmt_args(ev.get('args', {}))})", call_cap)
+    calls = [_truncate(f"{ev.get('name', '?')}({fmt_args(ev.get('args', {}), 48)})", call_cap)
              for ev in events]
     col_w = max((len(c) for c in calls), default=0)
     for i, ev in enumerate(events):
@@ -268,15 +250,12 @@ def _render_tool_events(events: list[dict], *, always_show_results: bool = False
         show_result = bool(result)
         full = always_show_results or not ok or _base._VERBOSITY == "verbose"
 
-        if _RICH:
-            line = _rail()
-            line.append("  ", style=_RAIL)            # nest under the node column
-            line.append(f"{branch} ", style=_RAIL)
-            line.append(f"{call:<{col_w}}", style="default" if ok else "red")
-            line.append(f"   {dur}", style=_DIM)
-            _console.print(line)
-        else:
-            print(f"  {_RAIL_GLYPH}   {branch} {call:<{col_w}}   {dur}")
+        line = _rail()
+        line.append("  ", style=_RAIL)            # nest under the node column
+        line.append(f"{branch} ", style=_RAIL)
+        line.append(f"{call:<{col_w}}", style="default" if ok else "red")
+        line.append(f"   {dur}", style=_DIM)
+        _console.print(line)
         # Boundary events this call produced (tool_events[].egress, attached by tool_node): the
         # moment something leaves the machine the rail says so — a send in yellow, an air-gap
         # block in red. Signal, like an error leaf, never folded by verbosity.
@@ -326,63 +305,22 @@ def _egress_leaf(eg: dict) -> tuple[str, str]:
 _MSG_ROLE = {"AIMessage": "ai", "HumanMessage": "in", "SystemMessage": "sys"}
 
 
-def _msg_kind_content(m) -> tuple[str, str]:
-    """Normalize one delta message to `(kind, content)` — handling BOTH forms it can take:
-      - a live LangChain message OBJECT (the live trace: `delta["messages"]` straight off the
-        graph), or
-      - the trace DB's pre-serialized `"AIMessage: <text> [tool_calls: ...]"` STRING (the /trace
-        replay: deltas are JSON, and `stores.trace._json_default` flattened each message to a string).
-    Returning the same `(kind, content)` for both keeps the live and replay rendering identical.
-    The object branch mirrors `_json_default`'s format (content + a `[tool_calls: …]` suffix) so a
-    content-less tool-calling turn still records WHAT the agent decided."""
-    if not isinstance(m, str):
-        kind = type(m).__name__
-        content = str(getattr(m, "content", "") or "")
-        calls = getattr(m, "tool_calls", None)
-        if calls:
-            names = ", ".join(c.get("name", "?") for c in calls)
-            content = (content + " " if content else "") + f"[tool_calls: {names}]"
-        return kind, content
-    kind, _, content = m.partition(": ")
-    return kind.strip(), content
-
-
-def _emit_message_leaf(label: str, text: str) -> None:
-    """One message/reasoning leaf under a node row: `└ <role>  <wrapped text>`, hanging-indented
-    under the rail so a long thought stays inside the trace gutter. Dim — it's narrative, not the
-    accent. Used by the /trace replay to surface the agent's actual thinking between tool calls."""
-    import textwrap
-
-    head = f"  {_TREE_END} {label:<3} "   # nest(2) + leaf glyph + fixed-width role tag
-    rest = " " * len(head)               # continuation lines align under the text
-    avail = max(20, _term_width() - (4 + len(head)))
-    for i, ln in enumerate(textwrap.wrap(text, width=avail) or [text]):
-        if _RICH:
-            row = _rail()
-            row.append(head if i == 0 else rest, style=_RAIL)
-            row.append(ln, style=_DIM)
-            _console.print(row)
-        else:
-            print(f"  {_RAIL_GLYPH} {head if i == 0 else rest}{ln}")
-
-
-def _render_trace_messages(node: str, delta: dict, max_chars: int | None = None) -> None:
-    """Render the messages a node ADDED — chiefly the agent's reasoning text and its tool-call
-    decisions — as dim leaves under its trace row. This is the piece the default tool tree never
-    surfaces, and what turns the /trace replay from a reprint of the answer into a real execution
-    log. ToolMessages are skipped (the tool sub-tree already carries their output). Used by the
-    /trace replay (`max_chars=None`); `_msg_kind_content` normalizes message forms. `max_chars`
-    clips each leaf to a preview (the full text lives in the /trace replay)."""
+def _render_trace_messages(delta: dict) -> None:
+    """Render the messages a recorded node ADDED — chiefly the agent's reasoning text and its
+    tool-call decisions — as dim `└ <role>  <text>` leaves under its /trace replay row: what
+    turns the replay from a reprint of the answer into a real execution log. Messages arrive as
+    the trace DB's `"AIMessage: <text> [tool_calls: ...]"` strings (stores.trace._json_default).
+    ToolMessages are skipped (the tool sub-tree already carries their output)."""
     for m in (delta.get("messages") or []):
-        kind, content = _msg_kind_content(m)
+        kind, _, content = str(m).partition(": ")
+        kind = kind.strip()
         if "ToolMessage" in kind:
             continue
         content = " ".join(content.split())  # collapse to a compact one-block preview
         if not content:
             continue
-        if max_chars:
-            content = _truncate(content, max_chars)
-        _emit_message_leaf(_MSG_ROLE.get(kind, kind.lower() or "msg"), content)
+        head = f"  {_TREE_END} {_MSG_ROLE.get(kind, kind.lower() or 'msg'):<3} "
+        _leaf(head, " " * len(head), content, _DIM)
 
 
 # ── run drill-down (the /trace expanded view) ─────────────────────────────────────
@@ -423,31 +361,20 @@ def show_run(run, events) -> None:
 
     run_id, query, started_at, ended_at, status, response_text = run
 
-    # header: run id, then the query echoed at a `»` (the same glyph it was typed at), then a
-    # dim when · status · total-time meta line — the one header vocabulary (listing.section).
-    section(f"run #{run_id}")
-
-    q = " ".join(str(query or "").split()) or "(empty)"
+    # header: run id, then the query echoed at a `»`, then a dim when · status · total-time line.
+    _run_header(f"run #{run_id}", query)
     start_dt, end_dt = parse_ts(started_at), parse_ts(ended_at)
     when = (started_at or "")[:19].replace("T", " ")
     total = _fmt_dur((end_dt - start_dt).total_seconds()).strip() if (start_dt and end_dt) else ""
     status_style = {"ok": "green", "error": "bold red", "running": "yellow"}.get(str(status), _DIM)
-    if _RICH:
-        qline = Text("  ")
-        qline.append("» ", style=_DIM)
-        qline.append(q, style="default")
-        _console.print(qline)
-        meta = Text("  ")
-        meta.append(when or "—", style=_DIM)
+    meta = Text("  ")
+    meta.append(when or "—", style=_DIM)
+    meta.append(" · ", style=_DIM)
+    meta.append(str(status), style=status_style)
+    if total:
         meta.append(" · ", style=_DIM)
-        meta.append(str(status), style=status_style)
-        if total:
-            meta.append(" · ", style=_DIM)
-            meta.append(total, style=_DIM)
-        _console.print(meta)
-    else:
-        print(f"  » {q}")
-        print(f"  {when} · {status}" + (f" · {total}" if total else ""))
+        meta.append(total, style=_DIM)
+    _console.print(meta)
     _emit("")
 
     # node-by-node replay: every node shows — this IS the full drill-down, plumbing (ground, an
@@ -467,7 +394,7 @@ def show_run(run, events) -> None:
                 show_plan(delta["plan"])
             # the agent's reasoning / tool-call decisions for this step — the execution-log detail
             # the live trace omits; this is the point of the drill-down
-            _render_trace_messages(node, delta)
+            _render_trace_messages(delta)
             tev = delta.get("tool_events") or []
             if tev:
                 _render_tool_events(_enrich_results(tev, delta.get("tool_results") or []),
@@ -484,40 +411,34 @@ def show_run(run, events) -> None:
         _emit("")
         # end_run's write-time truncation marker (stores.trace.response_truncated): the stored row
         # holds a capped answer, so the label says "truncated" up front rather than letting the
-        # reader discover the cut at the tail marker. Legacy rows cut at the old silent 2000-char
-        # cap carry no marker and read False — absent-as-unknown, never an inferred flag.
-        cut = response_truncated(response_text)
-        if _RICH:
-            rule = Text()
-            rule.append("  ╶ ", style=_FAINT)
-            rule.append("final answer", style=_DIM)
-            rule.append(" (recorded)", style=_FAINT)
-            if cut:
-                rule.append(" (truncated)", style=_DIM)
-            _console.print(rule)
-            # Recorded answers are typically long single-line paragraphs: render through the same
-            # Padding idiom as the live answer body (response._print_markdown_body's fallback) so
-            # every soft-wrapped continuation keeps the 2-space indent instead of spilling to
-            # column 0. Rich's wrap preserves intra-line leading whitespace (code blocks / nested
-            # lists keep their shape), and the measure IS the live answer's _BODY_WIDTH — imported,
-            # not copied, so tuning it can never leave the replay wrapping at a stale width.
-            from .response import _BODY_WIDTH
+        # reader discover the cut at the tail marker. Rows without the marker read False —
+        # absent-as-unknown, never an inferred flag.
+        rule = Text()
+        rule.append("  ╶ ", style=_FAINT)
+        rule.append("final answer", style=_DIM)
+        rule.append(" (recorded)", style=_FAINT)
+        if response_truncated(response_text):
+            rule.append(" (truncated)", style=_DIM)
+        _console.print(rule)
+        # Recorded answers are typically long single-line paragraphs: render through the same
+        # Padding idiom as the live answer body (response._print_markdown_body's fallback) so
+        # every soft-wrapped continuation keeps the 2-space indent instead of spilling to
+        # column 0. The measure IS the live answer's _BODY_WIDTH — imported, not copied, so
+        # tuning it can never leave the replay wrapping at a stale width.
+        from .response import _BODY_WIDTH
 
-            body = Text(response_text, style=_DIM)
-            _console.print(Padding(body, (0, 0, 0, 2)),
-                           width=min(_term_width(), _BODY_WIDTH))
-        else:
-            import textwrap
+        body = Text(response_text, style=_DIM)
+        _console.print(Padding(body, (0, 0, 0, 2)), width=min(_term_width(), _BODY_WIDTH))
 
-            print("  ╶ final answer (recorded)" + (" (truncated)" if cut else ""))
-            avail = max(20, _term_width() - 4)
-            for ln in response_text.splitlines() or [""]:
-                # drop/replace_whitespace=False: keep indentation inside the recorded text intact
-                # — only the line break is added, mirroring the byte-faithful wrap contract.
-                pieces = textwrap.wrap(ln, avail, replace_whitespace=False,
-                                       drop_whitespace=False) or [""]
-                for piece in pieces:
-                    print(f"  {piece}")
+
+def _run_header(title: str, query) -> None:
+    """The replay header shared by show_run and show_llm_calls: the section rule, then the query
+    echoed at a `»` (the same glyph it was typed at)."""
+    section(title)
+    qline = Text("  ")
+    qline.append("» ", style=_DIM)
+    qline.append(" ".join(str(query or "").split()) or "(empty)", style="default")
+    _console.print(qline)
 
 
 # ── LLM-call replay (/trace invoke) ──────────────────────────────────────────────
@@ -526,43 +447,20 @@ _LLM_ROLE = {"system": "sys", "human": "usr", "ai": "ai", "tool": "tool", "funct
 
 
 def _llm_leaf(tag: str, text: str, style: str, cap: int | None) -> None:
-    """One input/output message under an LLM-call header: `│ tag  <wrapped text>`,
-    hanging-indented to align continuation lines, in the trace palette. `cap` bounds the preview
-    (None = full).
-
-    Draws the `  │ ` rail like every other renderer in this module (`_node_leaf`,
-    `_emit_result_leaf`, `_emit_message_leaf`): this was the one leaf that opened at a bare
-    4-space indent, so `/trace invoke` fell out of the gutter every other
-    view sits in. The `avail` arithmetic already subtracted 4 for the rail — drawing it makes the
-    existing budget correct rather than changing it."""
-    import textwrap
-
+    """One input/output message under an LLM-call header: `│ tag  <wrapped text>`. `cap` bounds
+    the preview (None = full)."""
     text = " ".join(str(text).split())
     if cap:
         text = _truncate(text, cap)
     head = f"  {tag:<4} "
-    rest = " " * len(head)
-    avail = max(20, _term_width() - (4 + len(head)))
-    for i, ln in enumerate(textwrap.wrap(text, width=avail) or [""]):
-        if _RICH:
-            row = _rail()
-            row.append(head if i == 0 else rest, style=_RAIL)
-            row.append(ln, style=style)
-            _console.print(row)
-        else:
-            print(f"  {_RAIL_GLYPH} {head if i == 0 else rest}{ln}")
+    _leaf(head, " " * len(head), text, style)
 
 
 def _recording_cut(m: dict) -> "str | None":
     """The disclosure for a message the TRACE capped at write time (stores.trace._LLM_MSG_CAP),
-    or None when nothing was dropped.
-
-    Two bugs this replaces. The delta was computed against `_LLM_PREVIEW_CHARS` — the DISPLAY
-    preview constant, a different number entirely — so the figure it reported was simply wrong.
-    And it was appended to the message body, which `_llm_leaf` then clipped to that same preview
-    length: the marker was cut off for exactly the long messages it described, and suppressed
-    outright under `--full`, where a silently capped message matters most. Callers emit it as its
-    own un-clipped leaf."""
+    or None when nothing was dropped. Measured against the recorded content (not the display
+    preview), and emitted by callers as its own un-clipped leaf — appended to the body, a preview
+    clip would cut it off for exactly the long messages it describes."""
     try:
         original = int(m.get("truncated") or 0)
     except (TypeError, ValueError):
@@ -585,15 +483,7 @@ def show_llm_calls(run, calls, full: bool = False) -> None:
     run_id, query, *_rest = run
     cap = None if full else _LLM_PREVIEW_CHARS  # `cap`, not `clip` — textutil.clip is imported here
 
-    section(f"run #{run_id} · llm calls")
-    q = " ".join(str(query or "").split()) or "(empty)"
-    if _RICH:
-        qline = Text("  ")
-        qline.append("» ", style=_DIM)
-        qline.append(q, style="default")
-        _console.print(qline)
-    else:
-        print(f"  » {q}")
+    _run_header(f"run #{run_id} · llm calls", query)
 
     if not calls:
         _emit("  (no LLM calls recorded for this run)")
@@ -606,23 +496,19 @@ def show_llm_calls(run, calls, full: bool = False) -> None:
     total_out = sum((c[6] or 0) for c in calls)
     roll = (f"  {len(calls)} call(s) · {_fmt_dur(total_dur).strip()}"
             f" · {_human_tokens(total_in)}→{_human_tokens(total_out)} tok")
-    _emit(roll if not _RICH else Text(roll, style=_DIM))
+    _emit(Text(roll, style=_DIM))
     _emit("")
 
     for idx, (_seq, _ts, node, model, dur, ptok, otok, inp, outp, status) in enumerate(calls, 1):
         toks = f" · {_human_tokens(ptok or 0)}→{_human_tokens(otok or 0)} tok" if (ptok or otok) else ""
-        if _RICH:
-            h = Text("  ")
-            h.append(f"{idx}. ", style=f"bold {_ACCENT}")
-            h.append(str(node), style="default")
-            h.append(f" · {model}", style=_DIM)
-            h.append(f" · {_fmt_dur(dur or 0).strip()}{toks}", style=_DIM)
-            if status != "ok":
-                h.append(f" · {status}", style="bold red")
-            _console.print(h)
-        else:
-            err = f" · {status}" if status != "ok" else ""
-            print(f"  {idx}. {node} · {model} · {_fmt_dur(dur or 0).strip()}{toks}{err}")
+        h = Text("  ")
+        h.append(f"{idx}. ", style=f"bold {_ACCENT}")
+        h.append(str(node), style="default")
+        h.append(f" · {model}", style=_DIM)
+        h.append(f" · {_fmt_dur(dur or 0).strip()}{toks}", style=_DIM)
+        if status != "ok":
+            h.append(f" · {status}", style="bold red")
+        _console.print(h)
 
         for m in decode_json(inp, []):
             tag = _LLM_ROLE.get(m.get("role", ""), (m.get("role") or "msg")[:4])

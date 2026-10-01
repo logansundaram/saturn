@@ -1,44 +1,21 @@
 """
 Minimal `.env` reader — the environment-variable lookup behind MCP's `${VAR}` expansion.
 
-This used to be the managed API-key store behind `/config key` (ManagedKey registry, fuzzy
-resolve, prefix detect, masked listings, set/unset with on_change hooks). That machinery was
-CUT 2026-07-16: the registry had been EMPTY since the API-less web pivot (2026-07-06) — no
-Saturn feature takes an API key (web search is keyless, inference is local, the Anthropic/
-OpenAI keys left with the cloud shelve 2026-07-03) — so the picker managed nothing. Secrets
-for MCP servers are plain env vars now: put them in `.env` next to the repo (or in the
-wheel data home, ~/.saturn, for wheel installs) or export them in the shell; `mcp.servers` `${VAR}` entries
-read them through `get()` below. When a keyed provider returns, the managed registry returns
-with it (the pre-cut module is in git history).
-
-Imports nothing project-side, so it stays safe to import from anywhere.
+Secrets for MCP servers are plain env vars: put them in `.env` at the data root (the repo, or
+~/.saturn for wheel installs) or export them in the shell; `mcp.servers` `${VAR}` entries read
+them through `get()` below.
 """
 
 from __future__ import annotations
 
 import os
-from pathlib import Path
 from typing import Optional
 
 from dotenv import dotenv_values
 
+from diag import data_root
 
-def _resolve_env_path() -> Path:
-    # Clone mode: .env at the repo root (config.yaml — or, on a first run that hasn't seeded it
-    # yet, the tracked template config.default.yaml — sits next to this file). Wheel installs
-    # (pipx/uv) keep secrets in the wheel data home with the rest of the user's data,
-    # config.wheel_data_home's rule repeated (kept in step by hand: no project imports here).
-    root = Path(__file__).parent
-    if (root / "config.yaml").exists() or (root / "config.default.yaml").exists():
-        return root / ".env"
-    return _wheel_data_home() / ".env"
-
-
-def _wheel_data_home() -> Path:
-    return Path(os.environ.get("SATURN_HOME") or Path.home() / ".saturn").expanduser()
-
-
-_ENV_PATH = _resolve_env_path()
+_ENV_PATH = data_root() / ".env"
 
 
 def _file_values() -> dict[str, str]:
@@ -51,4 +28,3 @@ def _file_values() -> dict[str, str]:
 def get(name: str) -> Optional[str]:
     """The effective value: the live process environment wins over the on-disk `.env`."""
     return os.environ.get(name) or _file_values().get(name)
-

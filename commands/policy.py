@@ -1,8 +1,7 @@
 """
 /policy — the ONE trust front door: what runs without asking, and what can leave this machine.
 
-Two halves, one command (merged 2026-09-30 — /privacy folded in; `_RENAMED` points the old
-spelling here for one release):
+Two halves, one command:
 
 - the gate: trust/policy.py consolidated the gate-relaxation mechanisms into one object, and
   `risk` (a tool's tier), `allow` (the run_shell prefix allowlist) and `open` (the gate-off view)
@@ -217,9 +216,8 @@ def open_handler(ctx, args):
         return
     policy.set_gate_off(new)
     if new:
-        # Loud but compact (2026-07-06 declutter): one ⚠ line + one pointer — the heavy frame
-        # is reserved for the approval gate (the ui design vocabulary), and the
-        # status bar carries ⚠ GATE OFF for as long as the threshold sits open.
+        # Loud but compact: one ⚠ line + one pointer — the heavy frame is reserved for the
+        # approval gate, and the status bar carries ⚠ GATE OFF while the threshold sits open.
         _print("  ⚠ AUTO-APPROVE ON — every tool call, including destructive ones, runs "
                "WITHOUT asking.")
         _print("  (/policy open off restores the previous threshold; the status bar shows "
@@ -512,16 +510,15 @@ def _airgap(ctx, args):
             _print(f"  (could not persist to config.yaml: {exc})")
 
     if new:
-        offmachine = _offmachine_roles(cfg)
-        # Loud but compact (2026-07-06 declutter): one ⛓ line + one pointer — the heavy frame
-        # is reserved for the approval gate; the status bar carries ⛓ AIRGAP
-        # for as long as the seal holds.
-        _print("  ⛓ AIR-GAP ON — web tools, remote MCP calls, and off-machine roles are "
+        offmachine = _offmachine_models()
+        # Loud but compact: one ⛓ line + one pointer — the heavy frame is reserved for the
+        # approval gate; the status bar carries ⛓ AIRGAP while the seal holds.
+        _print("  ⛓ AIR-GAP ON — web tools, remote MCP calls, and off-machine models are "
                "blocked + logged.")
         _print("  (/policy airgap off re-opens · /policy egress lists any blocked attempts)")
         if offmachine:
-            roles = ", ".join(f"{r} ({p}:{m})" for r, p, m in offmachine)
-            _print(f"  ⚠  off-machine role(s) will now FAIL: {roles}")
+            models = ", ".join(f"{kind} {m} ({where})" for kind, where, m in offmachine)
+            _print(f"  ⚠  off-machine model(s) will now FAIL: {models}")
             _print("     point OLLAMA_HOST at this machine (or unset it) and restart to run "
                    "local.")
     else:
@@ -530,10 +527,10 @@ def _airgap(ctx, args):
         _print("  saved runtime.airgap to config.yaml (survives restart).")
 
 
-def _offmachine_roles(cfg):
-    """(role, where, model) for every role whose inference LEAVES this machine — roles behind
-    a remote OLLAMA_HOST (egress._inference, the one locality classifier; the endpoint label via
-    remote_ollama_label, the one spelling)."""
+def _offmachine_models():
+    """(kind, where, model) for every model (chat / embedder) whose inference LEAVES this
+    machine — one behind a remote OLLAMA_HOST (egress._inference, the one locality classifier;
+    the endpoint label via remote_ollama_label, the one spelling)."""
     from trust.egress import _inference, remote_ollama_label
 
     inf = _inference()
@@ -549,11 +546,11 @@ def _show_airgap(ctx, cfg, ui, egress):
     inf = _inference()
     offmachine = not inf["all_local"]
     if on:
-        verdict = "SEALED — web, remote MCP, and off-machine roles are blocked"
+        verdict = "SEALED — web, remote MCP, and off-machine models are blocked"
     elif offmachine:
-        verdict = "open — and off-machine role(s) are sending prompts off this machine right now"
+        verdict = "open — and off-machine model(s) are sending prompts off this machine right now"
     else:
-        verdict = "open — but every role is local, so nothing leaves unless a web tool is used"
+        verdict = "open — but every model is local, so nothing leaves unless a web tool is used"
     ui.section("air-gap", verdict)
 
     sealed = lambda: ("sealed", ui.risk_style("read_only")) if on else ("open", ui.risk_style("destructive"))
@@ -566,7 +563,7 @@ def _show_airgap(ctx, cfg, ui, egress):
             where = f"remote — {remote_ollama_label(inf)}"
             label = f"BLOCKED — {where}" if on else where
             rows.append((b["role"], b["model"], (label, ui.risk_style("destructive"))))
-    _print("  inference (off-machine roles refuse to run under air-gap)")
+    _print("  inference (off-machine models refuse to run under air-gap)")
     ui.table(rows)
 
     _print("  egress paths")
@@ -666,13 +663,3 @@ def _policy_cmd(ctx, args):
 
     _print(f"  unknown /policy subcommand: {sub!r} — try: risk, allow, open, egress, airgap "
            "(or /policy --help)")
-
-
-# (The top-level muscle-memory spellings — /risk, /allow, /autoapprove(/yolo) — were CUT in the
-# 2026-07-06 surface trim: three registered commands whose only job was to delegate to the
-# subcommands above. /dryrun was CUT 2026-07-03: redundant (the gate shows every call before it
-# runs) and misleading on multi-step turns. /privacy was MERGED here 2026-09-30 — its posture,
-# `egress` and `airgap` live above; `_RENAMED` points the old spelling at /policy for one
-# release. /privacy redact — the secret-stripper front end — was CUT 2026-07-16, and the
-# machinery behind it, runtime.redaction, on 2026-09-29; the gate's secret-argument warning
-# keeps the scanner: trust/secret_scan.py.)

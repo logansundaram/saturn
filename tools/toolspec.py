@@ -3,12 +3,9 @@ Tool registration primitive — `@register_tool`.
 
 A tool declares ALL of its own metadata at definition time: it is wrapped as a LangChain tool and
 registered (added to the active list, given a risk tier for the approval gate, flagged if its
-output is a retrieved document) in ONE place — its own module — instead of being defined here and
-then re-listed in three more (`registry.tool`, `registry.TOOL_RISK`, the retrieval set). Adding a
-tool is now a single edit; nothing in `registry.py` changes.
-
-Registration also wraps the function with per-call timing to `diag.log` — every tool used to
-hand-roll the same start/try/finally block; now it comes with the decorator.
+output is a retrieved document) in ONE place — its own module. Adding a tool is a single edit;
+nothing in `registry.py` changes. Registration also wraps the function with per-call timing to
+`diag.log`.
 
 This lives apart from `registry.py` on purpose: `registry.py` imports the tool modules to trigger
 their registration, so if the decorator lived there the tool modules would import back into a

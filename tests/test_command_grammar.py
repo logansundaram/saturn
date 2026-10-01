@@ -15,7 +15,6 @@ instead of writing the real config.yaml.
 
 import pytest
 
-from commands._framework import CommandContext
 from commands._utils import LIST_VERBS, REMOVE_VERBS
 from commands.config import _config
 from commands.knowledge import _docs
@@ -23,21 +22,6 @@ from commands.knowledge import _memory
 from commands.knowledge import _undo
 from commands.runtime import _mcp, _models
 from commands.conversation import _resume
-
-
-@pytest.fixture
-def ctx():
-    return CommandContext(state={}, make_initial_state=dict, db_path="")
-
-
-@pytest.fixture
-def recording_persist(monkeypatch):
-    """Capture config.persist calls instead of writing the real config.yaml."""
-    import config
-
-    saved: list[str] = []
-    monkeypatch.setattr(config, "persist", lambda key: saved.append(key) or config._CONFIG_PATH)
-    return saved
 
 
 @pytest.fixture
@@ -465,7 +449,7 @@ def test_config_reload_case_insensitive(ctx, capsys, monkeypatch, spelling):
     assert "reloaded" in _out(capsys)
 
 
-# --- the 2026-09-30 command diet ---------------------------------------------------------------
+# --- the trimmed command surface -------------------------------------------------------------
 
 @pytest.mark.parametrize("sub", ["setup", "doctor", "check", "context", "persist"])
 def test_retired_config_subcommands_point_somewhere_and_change_nothing(ctx, capsys, sub):

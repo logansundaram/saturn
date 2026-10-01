@@ -5,12 +5,11 @@ Whether a call skips the human is ONE question asked of ONE object: `policy.appr
 risk, args)` (the tier threshold + the shell allowlist — see policy.py). Anything it
 doesn't approve pauses via a LangGraph `interrupt` so the user can decide per batch or per
 call. The policy is read live each call, so /config, /policy (risk · allow · open) and Shift+Tab
-all apply to the very next gate. Resuming with the user's decision is handled in agent.run_turn.
+all apply to the very next gate. Resuming with the user's decision is handled in app/turn.run_turn.
 
-Under the v2 loop (2026-09-27) the agent node may emit several calls per pass and answers some
-of them itself (malformed, repeated, declined-before) with ToolMessages before this node runs,
-so the batch is the issuing AIMessage's calls MINUS those already answered — the same walk-back
-nodes/tools.py does. A fully-rejected batch routes back to `agent`: the decline ToolMessages are
+The agent node answers some calls itself (malformed, repeated, declined-before) with
+ToolMessages before this node runs, so the batch is the issuing AIMessage's calls MINUS those
+already answered — the same walk-back nodes/tools.py does. A fully-rejected batch routes back to `agent`: the decline ToolMessages are
 what the model sees, and nodes/agent's declined-repeat guard refuses the same call for the rest
 of the turn (a guarded action is reported, never retried or substituted).
 """
@@ -123,16 +122,14 @@ def _apply_always_grants(decision: dict) -> None:
     live policy — a grant applied while the interrupt was pending would auto-approve the very
     calls the human was prompted about, the re-run would return at the no-gated fast path
     without reaching the gate_event recording site, and the human's decision would vanish from
-    the record (gotcha #7: empty must always mean "never asked"). Failures degrade safely: a
+    the record (an empty gate_events must always mean "never asked"). Failures degrade safely: a
     refused shell grant just means the command faces the gate again next batch — diag-logged,
     since a node cannot print."""
     from tools import registry  # lazy, matching the UI: binds the live TOOL_RISK
 
-    # Every grant carries a LIFETIME (policy.default_grant_scope, default "task" — transplanted
-    # from the gating isolate): a task-scoped tier drop registers its own undo with the policy so
-    # the next turn starts from the declared tier; persist scope reaches permissions.json (or the
-    # scope would be a lie in the narrow direction — the drop looked durable and the next process
-    # started from the declared tier); session scope simply stands until Saturn exits.
+    # Every grant carries a LIFETIME (policy.default_grant_scope, default "task"): a task-scoped
+    # tier drop registers its own undo with the policy so the next turn starts from the declared
+    # tier; persist scope reaches permissions.json; session scope simply stands until Saturn exits.
     scope = policy.default_grant_scope()
     for name in decision.get("tools") or []:
         # run_shell never drops a tier (one keypress must not un-gate every future command —
@@ -149,31 +146,19 @@ def _apply_always_grants(decision: dict) -> None:
         # second restorer would re-drop the tier the first one just restored and leave the grant
         # standing for the rest of the process while end_task() reported it expired (fail-open
         # plus a false disclosure). One `a` per tool per turn owns the undo; the rest are no-ops.
-        # Persist FIRST, then log: the audit record must state the lifetime the grant actually
-        # got. Logging scope="persist" before set_risk_override could still fail (read-only
-        # install, full disk) left grant_log claiming a durable grant while the next process
-        # started from the declared tier — the record downgrades to "session" instead, which is
-        # what the surviving live drop really is.
-        effective_scope = scope
         if scope == "persist":
             try:
                 policy.set_risk_override(name, "read_only")
             except Exception as exc:  # the live drop stands (this session's decision) — but say so
                 diag.log(f"approval_node: tier drop for {name} could not be persisted — {exc}")
-                effective_scope = "session"
-        if prior != "read_only":
-            # One audit record per ACTUAL privilege change, whatever its lifetime (a session-scoped
-            # drop used to leave no record at all). The undo is registered only for task scope —
-            # session and persist grants are meant to outlive the turn.
-            restore = None
-            if scope == "task":
-                def restore(_n=name, _t=prior):
-                    if _t is None:
-                        registry.TOOL_RISK.pop(_n, None)
-                    else:
-                        registry.TOOL_RISK[_n] = _t
-                    return _n
-            policy.grant_tool_tier(name, effective_scope, restore)
+        if scope == "task" and prior != "read_only":
+            def restore(_n=name, _t=prior):
+                if _t is None:
+                    registry.TOOL_RISK.pop(_n, None)
+                else:
+                    registry.TOOL_RISK[_n] = _t
+                return _n
+            policy.on_task_end(restore)
     for grant in decision.get("shell_grants") or []:
         if not isinstance(grant, dict):
             continue
@@ -273,14 +258,14 @@ def approval_node(state: AgentState) -> Command[Literal["tools", "agent"]]:
     else:
         # Fail-closed on the resume value: ONLY the literal True approves a whole batch. Anything
         # else — False, None, a stray string, an int, an unrecognized dict — is a rejection. The
-        # human's approval is never inferred from truthiness (transplanted from the gating isolate).
+        # human's approval is never inferred from truthiness.
         approved_ids = set()
 
     # Past the interrupt: this runs exactly once, with the human's decision in hand. The one-shot
     # escalation is spent only when the human LET SOMETHING THROUGH — a fully-rejected batch
     # leaves it armed, so a re-issued copy of the call the human just declined faces the gate
-    # again instead of auto-approving right past their 'no'. Re-issuing is itself rare now:
-    # nodes/agent.py's declined-repeat guard answers an identical call without running it.
+    # again instead of auto-approving right past their 'no'. (nodes/agent.py's declined-repeat
+    # guard usually answers an identical call before it gets here.)
     if escalated and approved_ids:
         quarantine.consume_gate()
 

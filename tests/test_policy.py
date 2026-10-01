@@ -251,7 +251,7 @@ def test_set_tier_unknown_fails_closed(isolated_paths):
         _restore_tier(prev)
 
 
-# --- the argument-tail screen (transplanted from the gating isolate) -------------------------
+# --- the argument-tail screen ---------------------------------------------------------------
 #
 # A token-prefix grant validated only its HEAD, so `git log --output=<abs>` and
 # `git -c core.pager=!sh -c id` rode in on a benign-looking grant. The screen re-runs at USE
@@ -363,7 +363,7 @@ def test_grant_shell_prefix_refuses_a_prefix_the_tail_screen_would_never_honor(i
 
 
 def test_wrong_typed_policy_fields_fail_closed(isolated_paths, monkeypatch):
-    """Transplanted from the gating isolate: a wrong-TYPED field is a garbled file. A string
+    """A wrong-TYPED field is a garbled file. A string
     `shell_allow` would otherwise iterate as characters into allowlist prefixes (`g` exempting
     every command starting with g) and a list `risk_overrides` would raise in the registry.
     Both degrade LOUDLY to strict defaults (recorded, file moved aside), never iterated as-is."""
@@ -390,7 +390,7 @@ def test_wrong_typed_policy_fields_fail_closed(isolated_paths, monkeypatch):
 
 
 def test_explicit_tier_choice_supersedes_the_gate_off_snapshot(isolated_paths):
-    """Transplanted from the gating isolate: `/policy open on`, then an explicit tier choice
+    """`/policy open on`, then an explicit tier choice
     (Shift+Tab / /config) while open, then `/policy open off` must land on the tier the user
     set LAST — never restore a tier ABOVE it from the pre-open snapshot."""
     prev = policy.tier()

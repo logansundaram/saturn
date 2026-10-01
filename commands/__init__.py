@@ -1,12 +1,11 @@
 """
 Slash-command layer for the interactive CLI loop (app/repl.py).
 
-A package of themed modules (consolidated 2026-06-11 from one-file-per-command): each module
-under commands/ groups the commands of one /help theme and shares the dispatch framework from
+A package of themed modules: each module under commands/ groups the commands of one /help theme and shares the dispatch framework from
 commands._framework. Adding a new command is one @command-decorated handler in the module whose
 theme fits (or a new module added to _COMMAND_MODULES below).
 
-Public API (unchanged from the old commands.py):
+Public API:
   CommandContext, is_command, dispatch, command_completions, write_autosave
 """
 
@@ -26,14 +25,14 @@ from commands._session import write_autosave
 import importlib as _importlib
 
 _COMMAND_MODULES = [
-    "config",        # /config (+ key, setup) — owns the persist seam others import
+    "config",        # /config — owns the persist seam others import
     "conversation",  # /clear, /resume
     "knowledge",     # /docs, /memory, /init, /undo
     "notify",        # /notify — pending OS-scheduled notifications: list, cancel, test
     "policy",        # /policy — the one trust front door (risk · allow · open · egress · airgap)
     "runtime",       # /tools, /models, /mcp
     "system",        # /help, /quit, /update
-    "trace",         # /trace (incl. the answer/source provenance subviews)
+    "trace",         # /trace (incl. the why/source provenance subviews)
     "workspace_dirs",  # /add-dir, /rm-dir — folders beyond the launch folder
 ]
 

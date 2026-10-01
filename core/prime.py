@@ -1,6 +1,6 @@
 """
-The idle prefix primes (2026-09-04): between turns, re-send each node lineage's STABLE prefix —
-its system prompt plus the stable half of the grounding — so the daemon holds a context
+The idle prefix prime: between turns, re-send the agent's STABLE prefix — its system prompt
+plus the stable half of the grounding — so the daemon holds a context
 checkpoint at that message boundary and the next turn's call prefills only what is new.
 
 Why a prime rather than the previous turn's own prompt: llama-server (Ollama 0.33, qwen3.5 —
@@ -9,15 +9,14 @@ checkpoint, and it saves them 1024 tokens before a prompt's end and 4 tokens bef
 at message boundaries. A prompt that differs from its predecessor inside the last 1024 tokens
 therefore reprocesses ~1024 tokens at best; a prompt that EXTENDS a cached prompt at a message
 boundary restores that prompt's N-4 checkpoint and reprocesses only the extension (measured:
-5083 tokens / 12.7 s → 20 tokens / 0.2 s for the plan call). The prime is that cached prompt:
+5083 tokens / 12.7 s → 20 tokens / 0.2 s). The prime is that cached prompt:
 `[system][user: stable grounding]`, one predicted token, think ON (think off appends the empty
 think block after the boundary and pushes N-4 past it — measured, tests pin the flag), the
 same load options as every turn (num_ctx, the runner options) so it never reloads the model.
 
 When: after the weights load at startup and after every turn (~0.2 s once warm, rebuilt from
 disk so a write this turn is already in the manifest the next turn's grounding renders). One
-lineage since the v2 loop (2026-09-27): the agent's, through the bound model, so the tool
-catalog the chat template renders is inside the cached prefix. Never during a turn: the REPL
+lineage: the agent's, through the bound model, so the tool catalog the chat template renders is inside the cached prefix. Never during a turn: the REPL
 marks the turn busy and the sequence stops before its next request. Never in headless mode
 (one turn per process) and never under tests (conftest disables it — no test may reach a
 model). Never raises; a down daemon is logged and counted as zero.
@@ -54,8 +53,7 @@ def set_busy(busy: bool) -> None:
 
 
 def lineages(stable: str) -> list:
-    """`(name, runnable_factory, messages)` per prompt lineage — ONE since the v2 loop
-    (2026-09-27): the agent's `[system][stable grounding]`, sent through the SAME bound model
+    """`(name, runnable_factory, messages)` per prompt lineage — ONE: the agent's `[system][stable grounding]`, sent through the SAME bound model
     nodes/agent.py uses, so the tool schemas the chat template renders into the system section
     are part of the cached prefix. The user message is BYTE-IDENTICAL to the node's own first
     user message (nodes/agent._llm_input) — the tests pin the pairing."""

@@ -1,7 +1,6 @@
 """
 The MCP boundary — a remote (http/sse) tool call is recorded to the egress ledger before it is
-sent; a stdio server is a local child process, not network egress. (The warn/redact arg
-rewriting that lived here was cut with runtime.redaction, 2026-09-29.)
+sent; a stdio server is a local child process, not network egress.
 """
 
 import pytest

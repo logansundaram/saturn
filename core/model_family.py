@@ -1,6 +1,5 @@
 """
-The size ladder — the recommended model per parameter size (2026-08-16; the family GATE that
-shipped with it was cut 2026-09-27).
+The size ladder — the recommended model per parameter size.
 
 One tier per size class, each binding the most advanced qwen3.5 / 3.6 / 3.8 tag at that size,
 so a version bump is a one-line edit here and in config.default.yaml and the tier keys never
@@ -18,10 +17,8 @@ import re
 
 # size class -> the recommended tag at that size. Tags are stored VERBATIM (Ollama tags are
 # case-sensitive). A class KEY never contains a "." — config.get/set/persist parse dotted paths,
-# so a "." inside a tier key would split it into two segments and corrupt a role bind (see
-# tests/test_model_family.py::test_no_size_class_key_contains_a_dot). The 800m and 2b classes
-# left 2026-09-27: unvalidated at native tool-calling, and never what the hardware probe
-# recommends.
+# so a "." inside a tier key would split it into two segments and corrupt a tier bind (see
+# tests/test_model_family.py::test_no_size_class_key_contains_a_dot).
 SIZE_LADDER: tuple[tuple[str, str], ...] = (
     ("4b", "qwen3.5:4b"),
     ("9b", "qwen3.5:9b"),
@@ -29,7 +26,7 @@ SIZE_LADDER: tuple[tuple[str, str], ...] = (
     ("35b", "qwen3.6:35b"),
 )
 
-# The embedder ladder (2026-09-01): the qwen3-embedding family, one tag per size, smallest first.
+# The embedder ladder: the qwen3-embedding family, one tag per size, smallest first.
 # /models offers exactly these — the same "one recommended tag per size" rule as the chat
 # ladder, so the listing never reads as `ollama list`.
 EMBEDDER_LADDER: tuple[tuple[str, str], ...] = (

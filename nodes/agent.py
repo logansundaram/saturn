@@ -1,9 +1,9 @@
 """
-The agent node — the v2 loop (2026-09-27; spec: docs/superpowers/specs/2026-09-27-v2-react-loop-design.md).
+The agent node — the ReAct loop (spec: docs/superpowers/specs/2026-09-27-v2-react-loop-design.md).
 
 One native tool-calling call per pass, streamed. Its message either carries tool calls
-(→ approval → tools → back here) or is the answer (→ END). Everything that used to be a
-judge is a deterministic check here, in this order, and each costs the common case nothing:
+(→ approval → tools → back here) or is the answer (→ END). The checks around the call are
+deterministic, in this order, and each costs the common case nothing:
 
   1. steer      a mid-turn correction (Esc + text) lands as a STEER_PREFIX HumanMessage;
   2. pause      an Esc pause interrupt()s for the pause prompt: continue / steer / abort;
@@ -12,16 +12,17 @@ judge is a deterministic check here, in this order, and each costs the common ca
                 largest prompt), and a call it emits is answered with the budget refusal and
                 routed back for the answer. A model that answers the refusal with more calls
                 is rerun once with tools UNBOUND and a budget note — a real answer, never a
-                stub (measured 2026-10-01: unbinding re-prefills the whole prompt);
+                stub (unbinding re-prefills the whole prompt, so it is the fallback only);
   4. generate   the call (the `_generate` seam the tests replace). Adaptive thinking
-                (`runtime.think`, on evidence since 2026-09-29): a pass thinks, under
+                (`runtime.think`): a pass thinks, under
                 `runtime.think_budget`, only when the tool round just before it had an error —
                 the one place the model needs a new approach. Pass one, a clean round, a
                 declined or blocked call and the capped passes stay think-off. A thinking pass
                 that returns neither text nor a call is rerun once think-off;
   5. hygiene    on each emitted call: unknown tool, missing arguments (core/tool_args),
                 a repeat of a call the user DECLINED this turn, or a third identical call
-                with nothing changed since the first — each answered with an error ToolMessage that routes straight back here;
+                with nothing changed since the first — each answered with an error ToolMessage
+                that routes straight back here;
   6. answer     a message without tool calls gets the mechanical trailers (the Sources
                 receipt, the incidents note) on the RECORDED message — never on the stream.
 
@@ -52,8 +53,9 @@ from core.llms import (extract_prompt_tokens, extract_tok_per_sec, generate, get
 from core.llms import stream as llm_stream
 from core.messages import agent_sys_msg
 from core.pause import get_pause_controller
-from core.state import (STEER_PREFIX, AgentState, grounding_parts, is_steer_message, is_turn_start,
+from core.state import (STEER_PREFIX, AgentState, grounding_parts, is_steer_message,
                         issuing_message)
+from core.state import this_turn as _this_turn, turn_start as _turn_start
 from core.tool_args import coerce_args, schema_hint, tool_for_args
 from core.sources import build_sources
 from textutil import SOURCES_HEADER, clip, fmt_args, split_sources_footer
@@ -86,18 +88,6 @@ _INCIDENT_CAP = 160
 
 
 # ── this turn's record ────────────────────────────────────────────────────────────────────────
-
-
-def _turn_start(messages: list) -> int:
-    """Index of the current turn's request (a steer note is not a boundary); len() when none."""
-    for i in range(len(messages) - 1, -1, -1):
-        if is_turn_start(messages[i]):
-            return i
-    return len(messages)
-
-
-def _this_turn(messages: list) -> list:
-    return list(messages[_turn_start(messages):])
 
 
 def _call_key(name, args) -> str:
@@ -472,7 +462,7 @@ def agent_node(state: AgentState):
     ai = _generate_or_retry(llm_input, tools=True, think=think)
     if think and ai is not None and _is_empty(ai):
         # On a pass whose right move is a short answer, a thinking model can write the answer
-        # inside its reasoning and emit nothing (qwen3.5 4b and 9b, 2026-09-29). The same
+        # inside its reasoning and emit nothing (seen on qwen3.5 4b and 9b). The same
         # pass think-off answers; its prefix is already cached, so the rerun is cheap.
         diag.log("agent_node : thinking pass returned nothing — rerunning think-off")
         think = False

@@ -12,7 +12,6 @@ receipt names a command that actually works.
 """
 
 import sys
-import uuid
 from pathlib import Path
 
 from app import __version__
@@ -20,7 +19,7 @@ from app.cli import _read_piped_stdin
 from app.graph import DB_PATH
 from app.session import _fresh_turn, _initial_state
 from app.startup import startup_load, _warn_flagged_attachments
-from app.turn import run_turn, _make_on_update, _trace_warning
+from app.turn import close_run, open_run, run_turn, _make_on_update, _trace_warning
 from core import mentions
 from textutil import fmt_args
 from stores.trace import Tracer
@@ -155,12 +154,7 @@ def run_headless(args) -> None:
     _warn_flagged_attachments(
         state["attachments"], lambda m: print(f"! {m}", file=sys.stderr)
     )
-    thread_id = str(uuid.uuid4())
-    run_id = tracer.start_run(thread_id, query)
-    config = {
-        "configurable": {"thread_id": thread_id},
-        "callbacks": [tracer.llm_handler(run_id)],
-    }
+    thread_id, run_id, config = open_run(tracer, query)
 
     # --json: one machine-readable result object on stdout (the scripting/pipe contract).
     # Built from the same state/trace the interactive receipts render; `default=str` so an
@@ -251,16 +245,7 @@ def run_headless(args) -> None:
             print(f"error: {exc}", file=sys.stderr)
         sys.exit(1)
     finally:
-        try:
-            graph.checkpointer.delete_thread(thread_id)
-        except Exception:
-            pass
-        try:  # the grant-lifecycle task boundary (headless never grants, but the seam is one)
-            from trust import policy as _policy
-
-            _policy.end_task()
-        except Exception:
-            pass
+        close_run(graph, thread_id)  # headless never grants, but the task boundary is one seam
     # Export: write the run's record only AFTER the answer is out — a failed write must never
     # cost the user the answer the turn already produced (error to stderr, exit 1; stdout stays
     # the answer/JSON contract). -p exports on --export; -q always exports (default dest

@@ -40,8 +40,8 @@ PROJECT_ROOT = Path(notify.__file__).resolve().parent.parent
 # ── config + paths ───────────────────────────────────────────────────────────────────────────
 
 def enabled() -> bool:
-    """`notify.menubar` in config.yaml (default off since 2026-09-29 — a login item is a lot to
-    install for an icon nobody asked for): whether an interactive launch starts the icon.
+    """`notify.menubar` in config.yaml (default off — a login item is a lot to install for an
+    icon nobody asked for): whether an interactive launch starts the icon.
     `/notify icon start` works either way."""
     from config import get_config
     return bool(get_config().get("notify.menubar", False))
@@ -169,7 +169,7 @@ def write_pid(pid: int | None = None) -> None:
 def clear_pid(owner: int | None = None) -> None:
     """Drop the pidfile. With `owner`, only when the file still records that pid: two REPLs
     overwrite each other's entry, and the first to exit must not unlink the live session's
-    (the icon then showed no agent and its Quit could stop nothing — review 2026-09-06)."""
+    (the icon would then show no agent and its Quit could stop nothing)."""
     try:
         if owner is not None:
             try:

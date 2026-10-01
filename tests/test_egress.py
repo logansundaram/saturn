@@ -99,8 +99,8 @@ def test_host_of():
 
 
 # ── check_or_raise is a view of check(), and the refusal reaches the ledger ───────────────────
-# The raising twin used to re-implement check()'s body, so a future rung added inside check()
-# would have silently bypassed every LLM/embedder exit.
+# A raising twin that re-implemented check()'s body would let a future rung added inside check()
+# silently bypass every LLM/embedder exit.
 
 
 def test_check_or_raise_records_blocked_and_raises(isolated_paths, monkeypatch):

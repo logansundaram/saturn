@@ -212,6 +212,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
 
 ### Fixed
 
+- **Contacts search puts the person you named first.** "Ian" came back fifth, behind Brian,
+  Brian Ling and anyone whose name merely contains "ian", so a short list could cut him off.
+  An exact name (first, last, full or nickname) now ranks first, then a first or last name that
+  starts with what you typed, then everything else.
 - **The "could not be completed" note shows the whole error.** It cut errors at 160 characters,
   so "give the terminal app Full Disk Access under System Settings > …" stopped before saying
   where; errors now keep up to 300.

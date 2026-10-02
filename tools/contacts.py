@@ -10,6 +10,13 @@ Measured 2026-10-01 (171 cards): `id of (people whose name contains …)` 0.7s, 
 person fetched by id. A loop over the `whose` result itself is ~0.6s per person, and bulk
 `<property> of (people whose …)` forms are ~5s each on a broad match — so the script resolves
 ids once and fetches at most `limit` people by id. Nothing here is egress.
+
+The ids are ranked before the cut: a card whose name IS the query (whole, first, last or
+nickname), then one whose first or last name starts with it, then any name containing it.
+Contacts' own order put "Ian" fifth behind Brian, Brian Ling, Christiana and "Roommate Asian"
+(2026-10-02) — one more substring match and `limit=5` would have cut the person asked for.
+Measured 2026-10-02 (172 cards): each narrow `whose` ~0.4s, so ranking costs ~1s; a broad
+query ("a", 120 matches) is ~6s in any form.
 """
 
 from __future__ import annotations
@@ -73,7 +80,16 @@ def search_contacts(query: str, limit: int = 10):
     script = f"""
 set out to ""
 tell application "Contacts"
-  set ids to id of (people whose name contains {quote(q)})
+  set exact to id of every person whose name is {quote(q)} or first name is {quote(q)} ¬
+    or last name is {quote(q)} or nickname is {quote(q)}
+  set lead to id of every person whose first name starts with {quote(q)} ¬
+    or last name starts with {quote(q)}
+  set loose to id of every person whose name contains {quote(q)}
+  set ids to {{}}
+  repeat with i in (exact & lead & loose)
+    set i to contents of i
+    if ids does not contain i then set end of ids to i
+  end repeat
   set out to ((count of ids) as string) & {AS_RS}
   set k to 0
   repeat with i in ids

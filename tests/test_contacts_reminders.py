@@ -70,7 +70,7 @@ def test_search_contacts_returns_addresses_numbers_and_birthday(mac):
     ]
     s = mac.script()
     assert mac.calls[0] == ["open", "-gja", "Contacts"]
-    assert 'id of (people whose name contains "a")' in s
+    assert 'id of every person whose name contains "a"' in s
     # Per-person loops over a `whose` result cost ~0.6s a person; by-id fetches ~0.2s (probed).
     assert "person id" in s
 
@@ -82,6 +82,23 @@ def test_search_contacts_caps_the_people_fetched_and_says_so(mac):
     assert "1 of 37" in out["note"]
     assert "if k ≥ 1 then exit repeat" in mac.script()
 
+
+def test_search_contacts_ranks_a_name_match_before_a_substring(mac):
+    """Contacts' own order put "Ian" fifth behind Brian and Christiana (2026-10-02); the cut to
+    `limit` must come AFTER the ranking — exact name, then a first/last name that starts with
+    the query, then any name containing it — and a card in several tiers is fetched once."""
+    mac.reply("0" + RS)
+    _tool("search_contacts").invoke({"query": "ian", "limit": 2})
+    s = mac.script()
+    exact = s.index('whose name is "ian" or first name is "ian"')
+    lead = s.index('whose first name starts with "ian"')
+    loose = s.index('whose name contains "ian"')
+    assert exact < lead < loose
+    assert "repeat with i in (exact & lead & loose)" in s
+    assert "if ids does not contain i then set end of ids to i" in s
+    # the count and the cut read the ranked, de-duplicated list
+    assert s.index("set out to ((count of ids)") > s.index("end repeat")
+    assert s.index("if k ≥ 2 then exit repeat") > s.index("repeat with i in ids")
 
 def test_search_contacts_no_match_and_empty_query(mac):
     mac.reply("0" + RS)

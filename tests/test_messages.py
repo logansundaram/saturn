@@ -195,6 +195,66 @@ def test_the_gate_prompt_says_why_a_send_is_asking(gate, monkeypatch):
         policy._tier_before_gate_off = None
 
 
+def _gate_notes(monkeypatch, msgs):
+    """The notes the approval prompt shows for a gated send at the end of `msgs`."""
+    from nodes import approval as approval_mod
+
+    seen = {}
+    quarantine.reset_turn()
+    policy_tier = policy.tier()
+    try:
+        policy.set_gate_off(True)
+        monkeypatch.setattr(approval_mod, "interrupt", lambda payload: seen.update(payload) or True)
+        approval_mod.approval_node({"messages": msgs, "plan": [], "context": ""})
+    finally:
+        policy.set_tier(policy_tier)
+        policy._tier_before_gate_off = None
+    return seen["notes"]
+
+
+def test_the_gate_prompt_names_who_a_number_belongs_to(gate, monkeypatch):
+    """Run 51 showed a bare +13057108702 at the gate. The card that produced it is in the
+    conversation, so the prompt can say whose number it is."""
+    from langchain.messages import AIMessage, HumanMessage, ToolMessage
+
+    card = ("[{'name': 'Ian Smith', 'organization': 'Acme', "
+            "'phones': [{'label': 'mobile', 'value': '(305) 710-8702'}]}, "
+            "{'name': 'Brian Ianson', 'phones': [{'label': 'home', 'value': '(312) 879-2860'}]}]")
+    send = {"id": "c2", "name": "send_message", "args": {"to": "+13057108702", "text": "hi"}}
+    msgs = [HumanMessage(content="text ian hi"),
+            AIMessage(content="", tool_calls=[{"id": "c1", "name": "search_contacts", "args": {"query": "Ian"}}]),
+            ToolMessage(content=card, tool_call_id="c1", name="search_contacts"),
+            AIMessage(content="", tool_calls=[send])]
+    notes = _gate_notes(monkeypatch, msgs)
+    assert any("+13057108702 is Ian Smith" in n and "mobile" in n for n in notes), notes
+
+
+def test_the_gate_prompt_says_when_the_user_typed_the_number_or_nobody_did(gate, monkeypatch):
+    from langchain.messages import AIMessage, HumanMessage
+
+    send = {"id": "c1", "name": "send_message", "args": {"to": "+14155550199", "text": "hi"}}
+    typed = [HumanMessage(content="text 415-555-0199 hi"), AIMessage(content="", tool_calls=[send])]
+    assert any("+14155550199" in n and "you typed" in n for n in _gate_notes(monkeypatch, typed))
+
+    nowhere = [HumanMessage(content="text ian hi"), AIMessage(content="", tool_calls=[send])]
+    notes = _gate_notes(monkeypatch, nowhere)
+    assert any("+14155550199" in n and quarantine.UNKNOWN_HANDLE_NOTE in n for n in notes), notes
+
+
+def test_owner_of_reads_a_contact_card_however_the_number_is_written():
+    from tools.contacts import owner_of
+
+    card = ("[{'name': \"Sam O'Brien\", 'emails': [{'label': 'home', 'value': 'sam@example.com'}], "
+            "'phones': [{'label': 'mobile', 'value': '+1 555 010 2000'}, {'label': 'work', 'value': '555-0101'}]}, "
+            "{'name': 'Ian Smith', 'phones': [{'label': '', 'value': '(305) 710-8702'}]}]")
+    assert owner_of("+15550102000", card) == ("Sam O'Brien", "mobile")
+    assert owner_of("5550101", card) == ("Sam O'Brien", "work")
+    assert owner_of("SAM@example.com", card) == ("Sam O'Brien", "home")
+    assert owner_of("3057108702", card) == ("Ian Smith", "")
+    assert owner_of("+13128792860", card) is None
+    assert owner_of("+13128792860", "not a card at all") is None
+
+
 # ── read_messages ────────────────────────────────────────────────────────────────────────────
 
 APPLE_EPOCH = datetime(2001, 1, 1, tzinfo=timezone.utc)
@@ -305,8 +365,27 @@ def test_read_messages_says_how_to_grant_access_when_macos_denies_it(history, mo
         raise sqlite3.OperationalError("unable to open database file: authorization denied")
 
     monkeypatch.setattr(messages, "_connect", denied)
+    monkeypatch.setenv("TERM_PROGRAM", "vscode")
     out = _err("read_messages", {})
     assert "Full Disk Access" in out and "Privacy & Security" in out
+    # The grant goes to the app that launched Saturn, named — a 4b told the user to grant it
+    # to Messages when the text said only "the terminal app".
+    assert "Visual Studio Code" in out and "not Messages" in out
+
+
+def test_the_access_remedy_names_the_launching_app_or_says_which_one_it_means(monkeypatch):
+    from tools import messages
+
+    monkeypatch.setenv("TERM_PROGRAM", "iTerm.app")
+    assert messages._terminal_app() == "iTerm"
+    monkeypatch.setenv("TERM_PROGRAM", "Apple_Terminal")
+    assert messages._terminal_app() == "Terminal"
+    monkeypatch.setenv("TERM_PROGRAM", "WarpTerminal")
+    assert messages._terminal_app() == "Warp"
+    monkeypatch.setenv("TERM_PROGRAM", "ghostty")             # unknown: the raw name, not a guess
+    assert messages._terminal_app() == "ghostty"
+    monkeypatch.delenv("TERM_PROGRAM", raising=False)
+    assert messages._terminal_app() == "the app you launched Saturn from"
 
 
 def test_read_messages_opens_the_history_read_only(history):

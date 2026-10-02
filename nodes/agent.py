@@ -58,6 +58,8 @@ from core.state import (STEER_PREFIX, AgentState, grounding_parts, is_steer_mess
 from core.state import this_turn as _this_turn, turn_start as _turn_start
 from core.tool_args import coerce_args, schema_hint, tool_for_args
 from core.sources import build_sources
+from nodes.approval import provenance
+from trust import quarantine
 from textutil import SOURCES_HEADER, clip, fmt_args, split_sources_footer
 
 # The hygiene observations — one producer each; the rail and the tests key on them.
@@ -72,6 +74,10 @@ MALFORMED_NOTE = ("Your previous reply was not a valid tool call (its arguments 
 MALFORMED_TEXT = ("I could not complete this: the model produced a malformed tool call twice. "
                   "Please rephrase the request.")
 UNKNOWN_TOOL_TEXT = "Error: unknown tool {name!r}. Use only the tools you were given."
+UNKNOWN_HANDLE_TEXT = ("Not executed: {handle} appears nowhere in this conversation — not in what "
+                       "the user wrote and not in any tool result — so it cannot be used. Look the "
+                       "person up with search_contacts and use the number or address from their "
+                       "card, or ask the user for it.")
 MALFORMED_CALL_TEXT = ("Error: that tool call was not valid JSON (no tool name could be read). "
                        "Emit one call with a tool name you were given and its arguments as a "
                        "JSON object; otherwise answer in plain text.")
@@ -318,8 +324,11 @@ def _repeats_since_change(key: str, rounds: list) -> int:
     return n
 
 
-def _hygiene(call: dict, rounds: list, malformed: bool = False) -> "tuple[dict, ToolMessage | None]":
-    """The corrected call, or the ToolMessage that answers it instead of running it."""
+def _hygiene(call: dict, rounds: list, malformed: bool = False,
+             provenance: "tuple | None" = None) -> "tuple[dict, ToolMessage | None]":
+    """The corrected call, or the ToolMessage that answers it instead of running it.
+    `provenance` is (what the user typed, what else entered the conversation) for the handle
+    check — a recipient the model composed is refused here, before any gate sees it."""
     from tools.registry import tools_by_name
 
     name = str(call.get("name") or "")
@@ -346,6 +355,11 @@ def _hygiene(call: dict, rounds: list, malformed: bool = False) -> "tuple[dict, 
         problem = ("the arguments were not an object" if not isinstance(raw, dict)
                    else f"required arguments missing from {raw!r}")
         return refuse("Error: " + schema_hint(name, problem))
+    handle_arg = quarantine.HANDLE_ARGS.get(name)
+    if handle_arg and provenance is not None:
+        handle = str(args.get(handle_arg) or "").strip()
+        if quarantine.handle_hold(handle, *provenance[:2]):
+            return refuse(UNKNOWN_HANDLE_TEXT.format(handle=handle))
     key = _call_key(name, args)
     if any(r[3] == "skipped" for r in rounds if r[0] == key):
         return refuse(ALREADY_DECLINED_TEXT, "skipped")
@@ -509,6 +523,7 @@ def agent_node(state: AgentState):
 
     # 5. hygiene
     rounds = _rounds(this_turn)
+    prov = provenance({**state, "messages": messages + new})
     kept, replies = [], []
     for call in calls:
         if capped:  # the budget is spent: nothing runs, whatever the call is
@@ -516,7 +531,7 @@ def agent_node(state: AgentState):
                                              name=str(call.get("name") or ""),
                                              additional_kwargs={"saturn_status": "error"})
         else:
-            fixed, reply = _hygiene(call, rounds, malformed=call["id"] in malformed)
+            fixed, reply = _hygiene(call, rounds, malformed=call["id"] in malformed, provenance=prov)
         kept.append(fixed)
         replies.append(reply)
     # ask_user runs ALONE: its interrupt re-executes the tools node from the top on resume, so

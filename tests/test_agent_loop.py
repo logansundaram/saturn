@@ -1049,3 +1049,52 @@ def test_hygiene_malformed_call_without_a_name_says_so(monkeypatch):
     assert "unknown tool" not in tm.content
     assert "JSON" in tm.content
     assert agent.route_after_agent({"messages": out["messages"]}) == "agent"
+
+
+def test_hygiene_refuses_a_recipient_that_appeared_nowhere_in_the_conversation(monkeypatch):
+    """Run 47 (2026-10-02): "summarize my texts with ian" and the model called read_messages
+    with a number that was in nothing the user typed and nothing a tool returned. The call is
+    answered here — no gate, no model call — and the model is sent to search_contacts."""
+    from nodes import agent
+
+    prior = [HumanMessage(content="summarize my texts with ian")]
+    monkeypatch.setattr(agent, "_generate", lambda i, *, tools, think=False: AIMessage(
+        content="", tool_calls=[_call("read_messages", {"contact": "+13128792860"}, "c1")]))
+    out = agent.agent_node(_state(prior))
+    reply = out["messages"][-1]
+    assert isinstance(reply, ToolMessage) and reply.additional_kwargs["saturn_status"] == "error"
+    assert reply.content == agent.UNKNOWN_HANDLE_TEXT.format(handle="+13128792860")
+    assert "search_contacts" in reply.content
+    assert agent.route_after_agent({"messages": out["messages"]}) == "agent"
+
+
+def test_hygiene_lets_a_recipient_from_a_contact_card_or_the_user_through(monkeypatch):
+    from nodes import agent
+
+    card = "[{'name': 'Ian Smith', 'phones': [{'label': 'mobile', 'value': '(305) 710-8702'}]}]"
+    prior = ([HumanMessage(content="text ian that I'm late")]
+             + _round("search_contacts", {"query": "Ian"}, "c1", card))
+    monkeypatch.setattr(agent, "_generate", lambda i, *, tools, think=False: AIMessage(
+        content="", tool_calls=[_call("send_message", {"to": "+13057108702", "text": "late"}, "c2")]))
+    out = agent.agent_node(_state(prior))
+    assert not isinstance(out["messages"][-1], ToolMessage)          # nothing answered here
+    assert agent.route_after_agent({"messages": out["messages"]}) == "approval"
+
+    typed = [HumanMessage(content="text 415-555-0199 that I'm late")]
+    monkeypatch.setattr(agent, "_generate", lambda i, *, tools, think=False: AIMessage(
+        content="", tool_calls=[_call("send_message", {"to": "+14155550199", "text": "late"}, "c3")]))
+    out = agent.agent_node(_state(typed))
+    assert agent.route_after_agent({"messages": out["messages"]}) == "approval"
+
+
+def test_the_models_own_answer_is_not_provenance_for_a_recipient(monkeypatch):
+    """Run 48: the invented number sat in the previous answer; that must not vouch for it."""
+    from nodes import agent
+
+    prior = [HumanMessage(content="summarize my texts with ian"),
+             AIMessage(content="There are no messages from Ian (+13128792860)."),
+             HumanMessage(content="try again")]
+    monkeypatch.setattr(agent, "_generate", lambda i, *, tools, think=False: AIMessage(
+        content="", tool_calls=[_call("read_messages", {"contact": "+13128792860"}, "c1")]))
+    out = agent.agent_node(_state(prior))
+    assert out["messages"][-1].content == agent.UNKNOWN_HANDLE_TEXT.format(handle="+13128792860")

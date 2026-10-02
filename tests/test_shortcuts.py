@@ -7,6 +7,7 @@ blanket always-allow.
 Offline: the `shortcuts` CLI never runs (`tools.shortcuts._run` is the process seam).
 """
 
+import os
 import subprocess
 
 import pytest
@@ -26,7 +27,9 @@ def cli(monkeypatch):
         calls: list = []
         inputs: list = []
         names = ["Lights Off", "Log Water", "Morning Focus"]
-        output = ""
+        output = ""              # what the run prints
+        file_output = None       # what it writes to --output-path (None: nothing, the file stays absent)
+        output_paths: list = []
         returncode = 0
         stderr = ""
 
@@ -39,6 +42,10 @@ def cli(monkeypatch):
         if "-i" in argv:
             with open(argv[argv.index("-i") + 1], encoding="utf-8") as fh:
                 ctl.inputs.append(fh.read())
+        if "--output-path" in argv and ctl.file_output is not None:
+            ctl.output_paths.append(argv[argv.index("--output-path") + 1])
+            with open(ctl.output_paths[-1], "w", encoding="utf-8") as fh:
+                fh.write(ctl.file_output)
         return subprocess.CompletedProcess(argv, ctl.returncode, ctl.output, ctl.stderr)
 
     monkeypatch.setattr(applescript, "_platform", lambda: "darwin")
@@ -94,7 +101,23 @@ def test_run_shortcut_runs_it_by_its_exact_name_and_returns_the_output(cli):
     cli.output = "Living room: off\n"
     out = _tool("run_shortcut").invoke({"name": "lights off"})       # case-insensitive match
     assert out == {"shortcut": "Lights Off", "output": "Living room: off"}
-    assert cli.calls[-1] == ["shortcuts", "run", "Lights Off"]
+    assert cli.calls[-1][:3] == ["shortcuts", "run", "Lights Off"]
+
+
+def test_run_shortcut_takes_the_result_from_the_output_file_and_removes_it(cli):
+    """`shortcuts run` hands the shortcut's result over through --output-path; stdout is where
+    the CLI's own chatter goes. The file is Saturn's temp file, gone after the call."""
+    cli.file_output = "Living room: off"
+    out = _tool("run_shortcut").invoke({"name": "Lights Off"})
+    assert out == {"shortcut": "Lights Off", "output": "Living room: off"}
+    assert "--output-path" in cli.calls[-1] and "--output-type" in cli.calls[-1]
+    assert cli.output_paths and not os.path.exists(cli.output_paths[0])
+
+
+def test_run_shortcut_falls_back_to_stdout_when_the_output_file_is_empty(cli):
+    cli.file_output, cli.output = "", "printed instead\n"
+    out = _tool("run_shortcut").invoke({"name": "Lights Off"})
+    assert out["output"] == "printed instead"
 
 
 def test_run_shortcut_without_output_says_it_ran(cli):

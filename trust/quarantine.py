@@ -248,6 +248,66 @@ def url_hold(url: str, user_text: str, seen_text: str, after_untrusted: bool) ->
     return None
 
 
+# --- the handle hold -------------------------------------------------------------------------
+#
+# A recipient the model invented. On 2026-10-02 a 4b answered "summarize my texts with ian" by
+# calling read_messages with a number that appeared in nothing the user typed and nothing a
+# tool returned — and the next turn re-used it, because its own answer now carried it. The
+# agent's hygiene asks this of every argument that names a person; the model's own messages
+# are never provenance (nodes.approval.provenance skips them).
+
+HANDLE_ARGS = {"send_message": "to", "read_messages": "contact"}
+UNKNOWN_HANDLE_NOTE = ("this number or address appears in nothing you typed and nothing a tool "
+                       "returned — the model composed it")
+
+_PHONE_RUN = re.compile(r"\+?\d[\d\s().-]{5,}\d")
+_EMAIL_RUN = re.compile(r"[^@\s'\"]+@[^@\s'\"]+\.[^@\s'\",;)\]}]+")
+_MIN_DIGITS = 7
+
+
+def _digits(text: str) -> str:
+    return re.sub(r"\D", "", text or "")
+
+
+def _same_number(a: str, b: str) -> bool:
+    """Two digit strings name one number when the shorter is the tail of the longer — the
+    national form against the international one — and is long enough to be a number."""
+    short, long_ = sorted((a, b), key=len)
+    return len(short) >= _MIN_DIGITS and long_.endswith(short)
+
+
+def _numbers_in(text: str) -> "list[str]":
+    return [d for d in (_digits(m) for m in _PHONE_RUN.findall(text or "")) if len(d) >= _MIN_DIGITS]
+
+
+def same_handle(a: str, b: str) -> bool:
+    """Whether two spellings name one person: emails compare case-insensitively, numbers by
+    their digits with the national form a tail of the international one."""
+    a, b = str(a or "").strip(), str(b or "").strip()
+    if "@" in a or "@" in b:
+        return a.lower() == b.lower()
+    return _same_number(_digits(a), _digits(b))
+
+
+def handle_hold(handle: str, user_text: str, seen_text: str) -> "str | None":
+    """Why a call naming `handle` — a phone number or an email address — must not run, or
+    None. `user_text` is everything the user typed, `seen_text` everything else that entered
+    the conversation (tool results, attachments, the grounding — never the model's words).
+    A number matches however it was written: digits only, with the national form a tail of the
+    international one. Something too short to be a number, or a name, is left to the tool's own
+    argument check."""
+    handle = str(handle or "").strip()
+    text = (user_text or "") + "\n" + (seen_text or "")
+    if "@" in handle:
+        return None if handle.lower() in text.lower() else UNKNOWN_HANDLE_NOTE
+    digits = _digits(handle)
+    if len(digits) < _MIN_DIGITS:
+        return None
+    if any(_same_number(digits, n) for n in _numbers_in(text)):
+        return None
+    return UNKNOWN_HANDLE_NOTE
+
+
 # --- per-turn flag state (reset by app.session._fresh_turn) ---------------------------------
 
 _TURN_FLAGS: list[dict] = []  # [{"tool": name, "kinds": [...]}] in flag order

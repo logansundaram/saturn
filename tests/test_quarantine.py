@@ -473,3 +473,44 @@ def test_the_models_own_words_are_not_provenance_for_a_composed_url(monkeypatch,
             HumanMessage(content="ok go on"), _call("web_extract", {"url": url})]
     cmd, payload = _approval_run(monkeypatch, msgs, decision=False)
     assert payload is not None and any("composed" in n for n in payload["notes"])
+
+
+# --- the handle hold: a recipient the model invented -----------------------------------------
+
+
+@pytest.mark.parametrize("handle, user_text, seen_text", [
+    # the user typed it, however they wrote it
+    ("+13057108702", "text 305-710-8702 that I'm late", ""),
+    ("+13057108702", "text (305) 710 8702", ""),
+    # a contact card returned it, without the country code
+    ("+13057108702", "text ian", "[{'name': 'Ian Smith', 'phones': [{'label': 'mobile', 'value': '(305) 710-8702'}]}]"),
+    # the user typed the national form and the model dialled the international one
+    ("3057108702", "", "+1 305 710 8702"),
+    # an email, case aside
+    ("Ian@Example.com", "mail ian@example.com", ""),
+    ("ian@example.com", "", "{'emails': [{'label': 'home', 'value': 'Ian@Example.com'}]}"),
+])
+def test_a_handle_that_entered_the_conversation_is_not_held(handle, user_text, seen_text):
+    assert quarantine.handle_hold(handle, user_text, seen_text) is None
+
+
+@pytest.mark.parametrize("handle, user_text, seen_text", [
+    # run 47: "summarize my texts with ian" and a number from nowhere
+    ("+13128792860", "summarize my texts with ian", "[{'name': 'Ian Smith', 'phones': [{'label': 'mobile', 'value': '(305) 710-8702'}]}]"),
+    # a near miss is still a miss — the last digits differ
+    ("+13057108703", "", "(305) 710-8702"),
+    ("ian@example.org", "mail ian@example.com", ""),
+])
+def test_a_handle_from_nowhere_is_held(handle, user_text, seen_text):
+    assert quarantine.handle_hold(handle, user_text, seen_text) == quarantine.UNKNOWN_HANDLE_NOTE
+
+
+def test_the_handle_hold_leaves_short_or_empty_handles_to_the_tool():
+    # Too short to be a number: the tool's own argument check says so; the hold has no opinion.
+    assert quarantine.handle_hold("+1305", "", "") is None
+    assert quarantine.handle_hold("", "", "") is None
+    assert quarantine.handle_hold("Ian", "", "") is None
+
+
+def test_the_handle_hold_knows_which_argument_names_a_person():
+    assert quarantine.HANDLE_ARGS == {"send_message": "to", "read_messages": "contact"}

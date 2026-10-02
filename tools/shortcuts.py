@@ -56,6 +56,21 @@ def list_shortcuts():
     return found or "No shortcuts on this Mac."
 
 
+def _read_and_remove(path: str) -> str:
+    """The text a shortcut wrote to its output file, stripped; '' when it wrote nothing or the
+    file is not text. The file is removed either way."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            return fh.read().strip()
+    except OSError:
+        return ""
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+
 @register_tool("destructive", untrusted=True)
 def run_shortcut(name: str, input: str = ""):
     """Run one of the user's Shortcuts by name and return what it outputs. `name` must be a
@@ -68,7 +83,11 @@ def run_shortcut(name: str, input: str = ""):
     if match is None:
         raise ToolError(f"no shortcut named {wanted!r}; the shortcuts on this Mac: "
                         + (", ".join(have) or "none"))
-    argv = ["shortcuts", "run", match]
+    # The result comes back through --output-path as plain text: stdout is the CLI's own
+    # channel, and a shortcut's output does not reliably land there.
+    fd, result_path = tempfile.mkstemp(prefix="saturn-shortcut-", suffix=".out")
+    os.close(fd)
+    argv = ["shortcuts", "run", match, "--output-path", result_path, "--output-type", "public.plain-text"]
     tmp = None
     text = str(input or "")
     if text:
@@ -88,6 +107,7 @@ def run_shortcut(name: str, input: str = ""):
     except OSError as exc:
         raise ToolError(f"the shortcuts command could not start: {exc}") from exc
     finally:
+        written = _read_and_remove(result_path)
         if tmp:
             try:
                 os.unlink(tmp)
@@ -95,5 +115,5 @@ def run_shortcut(name: str, input: str = ""):
                 pass
     if proc.returncode != 0:
         raise ToolError((proc.stderr or proc.stdout or "").strip() or f"the shortcut {match!r} failed")
-    out = (proc.stdout or "").strip()
+    out = written or (proc.stdout or "").strip()
     return {"shortcut": match, "output": out or "(the shortcut ran and returned nothing)"}

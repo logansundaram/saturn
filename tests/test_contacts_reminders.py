@@ -89,7 +89,7 @@ def test_search_contacts_ranks_a_name_match_before_a_substring(mac):
     the query, then any name containing it — and a card in several tiers is fetched once."""
     mac.reply("0" + RS)
     _tool("search_contacts").invoke({"query": "ian", "limit": 2})
-    s = mac.script()
+    s = _osascripts(mac)[0]                       # the ranked query; a names fetch follows the miss
     exact = s.index('whose name is "ian" or first name is "ian"')
     lead = s.index('whose first name starts with "ian"')
     loose = s.index('whose name contains "ian"')
@@ -100,9 +100,47 @@ def test_search_contacts_ranks_a_name_match_before_a_substring(mac):
     assert s.index("set out to ((count of ids)") > s.index("end repeat")
     assert s.index("if k ≥ 2 then exit repeat") > s.index("repeat with i in ids")
 
-def test_search_contacts_no_match_and_empty_query(mac):
-    mac.reply("0" + RS)
+def _scripted(monkeypatch, mac, *outputs):
+    """osascript answers each call with the next canned output, in order."""
+    import subprocess
+
+    from tools import applescript
+
+    queue = list(outputs)
+
+    def fake_run(argv, timeout):
+        mac.calls.append(list(argv))
+        out = queue.pop(0) if argv[0] == "osascript" else ""
+        return subprocess.CompletedProcess(argv, 0, out, "")
+
+    monkeypatch.setattr(applescript, "_run", fake_run)
+
+
+def _osascripts(mac):
+    """The scripts run so far, in order (the hidden app-open commands between them skipped)."""
+    return [argv[argv.index("-e") + 1] for argv in mac.calls if argv[0] == "osascript"]
+
+
+def test_search_contacts_falls_back_to_the_closest_names_on_a_typo(mac, monkeypatch):
+    """"stanly" (run 45, 2026-10-02) matched nothing: no card has that substring. The fallback
+    reads every name once, picks the closest, and fetches those cards — saying it did."""
+    _scripted(monkeypatch, mac,
+              "0" + RS,                                                      # the ranked query: nothing
+              GS.join(["Brian Ling", "Stanley Kim", "Ian Smith", "Christiana Lee"]),
+              "1" + RS + _rows(("Stanley Kim", "", "", f"mobile{FS}+1 650 309 3315{GS}", "")))
+    out = _tool("search_contacts").invoke({"query": "stanly"})
+    assert out["contacts"] == [{"name": "Stanley Kim", "phones": [{"label": "mobile", "value": "+1 650 309 3315"}]}]
+    assert "no contact is named 'stanly'" in out["note"] and "closest" in out["note"]
+    s = _osascripts(mac)[2]
+    assert 'name is "Stanley Kim"' in s and "Brian" not in s                 # only the close names
+
+
+def test_search_contacts_no_match_and_empty_query(mac, monkeypatch):
+    # nothing matches, and no name is close either: the names are fetched once, then the honest no
+    _scripted(monkeypatch, mac, "0" + RS, GS.join(["Petra Novak", "Sam Roth"]))
     assert _tool("search_contacts").invoke({"query": "zzz"}) == "No contacts match 'zzz'."
+    scripts = _osascripts(mac)
+    assert len(scripts) == 2 and "name of every person" in scripts[1]
     n = len(mac.calls)
     assert "name" in _err("search_contacts", {"query": "  "})
     assert len(mac.calls) == n
@@ -111,7 +149,7 @@ def test_search_contacts_no_match_and_empty_query(mac):
 def test_search_contacts_quotes_the_query(mac):
     mac.reply("0" + RS)
     _tool("search_contacts").invoke({"query": 'O"Brien'})
-    assert 'contains "O\\"Brien"' in mac.script()
+    assert 'contains "O\\"Brien"' in _osascripts(mac)[0]
 
 
 def test_contacts_report_non_mac_honestly(monkeypatch):

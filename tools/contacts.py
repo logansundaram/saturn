@@ -67,6 +67,41 @@ def _birthday(iso: str) -> str:
     return day[5:] if day.startswith("1604-") else day
 
 
+def owner_of(handle: str, observation: str) -> "tuple[str, str] | None":
+    """(name, label) of the card in a search_contacts observation that carries `handle` — a
+    phone number or email address, however either is written — or None. The observation is
+    the tool result as the model saw it (the repr of the list above, possibly clamped), so a
+    whole result is read back as data and a truncated one card by card."""
+    import ast
+    import re
+
+    from trust.quarantine import same_handle
+
+    text = str(observation or "")
+    try:
+        people = ast.literal_eval(text)
+    except (ValueError, SyntaxError):
+        people = []
+        for chunk in re.split(r"(?=\{'name': )", text):
+            m = re.match(r"\{'name': ('((?:[^'\\]|\\.)*)'|\"((?:[^\"\\]|\\.)*)\")", chunk)
+            if m:
+                values = re.findall(r"\{'label': ('[^']*'|\"[^\"]*\"), 'value': ('[^']*'|\"[^\"]*\")\}", chunk)
+                people.append({"name": m.group(2) if m.group(2) is not None else m.group(3),
+                               "phones": [{"label": lb[1:-1], "value": v[1:-1]} for lb, v in values]})
+    if isinstance(people, dict):
+        people = people.get("contacts") or []
+    if not isinstance(people, list):
+        return None
+    for person in people:
+        if not isinstance(person, dict) or not person.get("name"):
+            continue
+        for field in ("phones", "emails"):
+            for entry in person.get(field) or []:
+                if isinstance(entry, dict) and same_handle(handle, entry.get("value", "")):
+                    return str(person["name"]), str(entry.get("label") or "")
+    return None
+
+
 @register_tool("read_only", untrusted=True)
 def search_contacts(query: str, limit: int = 10):
     """Look up people in Apple Contacts by name (or part of one). Returns each match's name,
@@ -77,9 +112,7 @@ def search_contacts(query: str, limit: int = 10):
     if not q:
         raise ToolError("search_contacts needs a name to look for")
     limit = max(1, min(int(limit or 10), _MAX))
-    script = f"""
-set out to ""
-tell application "Contacts"
+    ranked = f"""
   set exact to id of every person whose name is {quote(q)} or first name is {quote(q)} ¬
     or last name is {quote(q)} or nickname is {quote(q)}
   set lead to id of every person whose first name starts with {quote(q)} ¬
@@ -89,7 +122,33 @@ tell application "Contacts"
   repeat with i in (exact & lead & loose)
     set i to contents of i
     if ids does not contain i then set end of ids to i
-  end repeat
+  end repeat"""
+    people, total = _cards(_card_script(ranked, limit), q)
+    if not people:
+        # Nothing contains the query: a typo ("stanly"). The closest names, fetched by exact
+        # name, with the result saying so — the user decides whether that is who they meant.
+        close = _closest_names(q, _all_names(), limit)
+        if not close:
+            return f"No contacts match {q!r}."
+        picker = "\n  set ids to id of every person whose " + " or ".join(f"name is {quote(n)}" for n in close)
+        people, total = _cards(_card_script(picker, limit), q)
+        if not people:
+            return f"No contacts match {q!r}."
+        return {"contacts": people,
+                "note": f"no contact is named {q!r}; these are the closest names — check with the "
+                        "user before using one"}
+    if total > len(people):
+        return {"contacts": people,
+                "note": f"showing {len(people)} of {total} matches — use a fuller name to narrow it"}
+    return people
+
+
+def _card_script(picker: str, limit: int) -> str:
+    """The script that resolves ids with `picker` (AppleScript lines that set `ids`) and fetches
+    at most `limit` cards by id."""
+    return f"""
+set out to ""
+tell application "Contacts"{picker}
   set out to ((count of ids) as string) & {AS_RS}
   set k to 0
   repeat with i in ids
@@ -112,6 +171,10 @@ tell application "Contacts"
 end tell
 return out
 {_HANDLERS}"""
+
+
+def _cards(script: str, q: str) -> "tuple[list[dict], int]":
+    """(the cards a card script returned, how many matched before the cut)."""
     try:
         out = applescript.run(script, timeout=60.0, app="Contacts")
     except AppleScriptError as exc:
@@ -132,9 +195,42 @@ return out
         if r[4]:
             person["birthday"] = _birthday(r[4])
         people.append(person)
-    if not people:
-        return f"No contacts match {q!r}."
-    if total > len(people):
-        return {"contacts": people,
-                "note": f"showing {len(people)} of {total} matches — use a fuller name to narrow it"}
-    return people
+    return people, total
+
+
+def _all_names() -> list[str]:
+    """Every card's name, one bulk fetch (no `whose`: the filter is what costs; a plain property
+    of `every person` is one Apple event: 166 names in 0.4s, measured 2026-10-02)."""
+    script = f"""
+tell application "Contacts"
+  set AppleScript's text item delimiters to {AS_GS}
+  return (name of every person) as text
+end tell"""
+    try:
+        out = applescript.run(script, timeout=60.0, app="Contacts")
+    except AppleScriptError as exc:
+        raise ToolError(str(exc)) from exc
+    return [n.strip() for n in out.split(GS) if n.strip()]
+
+
+_CLOSE_CUTOFF = 0.75
+
+
+def _closest_names(q: str, names: list[str], limit: int) -> list[str]:
+    """The names closest to `q` — by the whole name or by any one word of it (a typo of a
+    first name should find the card) — best first, at most `limit`, nothing below the cutoff."""
+    import difflib
+
+    needle = q.lower()
+    scored = []
+    for name in names:
+        parts = [name.lower()] + name.lower().split()
+        score = max(difflib.SequenceMatcher(None, needle, p).ratio() for p in parts)
+        if score >= _CLOSE_CUTOFF:
+            scored.append((-score, name))
+    seen, out = set(), []
+    for _s, name in sorted(scored):
+        if name not in seen:
+            seen.add(name)
+            out.append(name)
+    return out[:limit]

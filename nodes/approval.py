@@ -46,9 +46,10 @@ def _can_act(name: str) -> bool:
             or DECLARED_RISK.get(name, "destructive") != "read_only")
 
 
-def _provenance(state) -> "tuple[str, str, bool]":
+def provenance(state) -> "tuple[str, str, bool]":
     """(what the user typed, everything else that ENTERED the conversation, whether any of that
-    came from an untrusted tool or an attachment) — the three facts quarantine.url_hold reads.
+    came from an untrusted tool or an attachment) — the three facts quarantine.url_hold reads (the first
+    two are what quarantine.handle_hold reads, from the agent's hygiene).
     The model's own messages are skipped: they are what the hold checks, so a URL the model
     wrote in a preamble (the issuing message is already in state) or an earlier answer must not
     vouch for itself. Only the user, a tool result, an attachment or the grounding can."""
@@ -67,12 +68,39 @@ def _provenance(state) -> "tuple[str, str, bool]":
     return "\n".join(user), "\n".join(seen), untrusted
 
 
+def _handle_note(tc: dict, state) -> "str | None":
+    """Whose number or address a gated call names, for the prompt: the contact card that
+    produced it, the user's own typing, or — past the agent's hygiene this should not happen —
+    nowhere. A bare +13057108702 at the gate (run 51, 2026-10-02) is not something a person
+    can check."""
+    from tools.contacts import owner_of
+
+    arg = quarantine.HANDLE_ARGS.get(tc.get("name"))
+    args = tc.get("args") if isinstance(tc.get("args"), dict) else {}
+    handle = str((args or {}).get(arg) or "").strip() if arg else ""
+    if not handle:
+        return None
+    kind = "address" if "@" in handle else "number"
+    for m in reversed(state.get("messages") or []):
+        if isinstance(m, ToolMessage) and m.name == "search_contacts":
+            found = owner_of(handle, str(m.content or ""))
+            if found:
+                name, label = found
+                return f"{tc['name']}: {handle} is {name}'s {label + ' ' if label else ''}{kind} (from search_contacts)"
+    user_text, seen_text, _ = provenance(state)
+    if quarantine.handle_hold(handle, user_text, "") is None:
+        return f"{tc['name']}: {handle} — you typed it"
+    if quarantine.handle_hold(handle, user_text, seen_text) is None:
+        return None                              # from a tool result that is not a card: nothing to add
+    return f"{tc['name']}: {handle} — {quarantine.UNKNOWN_HANDLE_NOTE}"
+
+
 def _url_holds(tool_calls: list, state) -> dict:
     """{call id: reason} for the web_extract calls whose URL must face the human."""
     fetches = [tc for tc in tool_calls if tc.get("name") == "web_extract"]
     if not fetches:
         return {}
-    prov = _provenance(state)
+    prov = provenance(state)
     out = {}
     for tc in fetches:
         args = tc.get("args")
@@ -231,6 +259,7 @@ def approval_node(state: AgentState) -> Command[Literal["tools", "agent"]]:
     if any(policy.airgap_holds(tc["name"]) for tc in gated):
         notes.append(AIRGAP_NOTE)
     notes += [f"{tc['name']}: {SEND_NOTE}" for tc in gated if policy.always_asks(tc["name"])]
+    notes += [n for n in (_handle_note(tc, state) for tc in gated) if n]
     decision = interrupt(
         {
             "type": "approval_request",

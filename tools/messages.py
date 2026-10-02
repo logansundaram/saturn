@@ -31,6 +31,7 @@ egress.
 
 from __future__ import annotations
 
+import os
 import re
 import sqlite3
 from datetime import datetime, timedelta, timezone
@@ -42,6 +43,22 @@ from tools.toolspec import ToolError, register_tool
 from trust import egress
 
 _SEND_TIMEOUT = 60.0
+
+# The app a Full Disk Access grant must go to is the one that launched Saturn — macOS charges
+# the request to that process, not to Messages and not to Python. TERM_PROGRAM is how the
+# terminals announce themselves; a name not listed is shown as written rather than guessed.
+_TERMINALS = {"apple_terminal": "Terminal", "iterm.app": "iTerm", "vscode": "Visual Studio Code",
+              "warpterminal": "Warp", "hyper": "Hyper", "tmux": "tmux"}
+
+
+def _terminal_app() -> str:
+    """The launching app by name, for the remedy text. A 4b told the user to grant Messages
+    the access when the text said only "the terminal app" — the app has to be named, and the
+    wrong candidate ruled out."""
+    raw = (os.environ.get("TERM_PROGRAM") or "").strip()
+    if not raw:
+        return "the app you launched Saturn from"
+    return _TERMINALS.get(raw.lower(), raw)
 _EMAIL = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
 _PHONE = re.compile(r"\+?[\d\s().-]{7,}")
 
@@ -217,10 +234,11 @@ def read_messages(contact: str = "", query: str = "", limit: int = 20):
             db.close()
     except sqlite3.Error as exc:
         if "authorization denied" in str(exc) or "unable to open" in str(exc):
+            app = _terminal_app()
             raise ToolError(
-                "macOS did not let this terminal read the Messages history. Give the terminal "
-                "app Full Disk Access under System Settings > Privacy & Security > Full Disk "
-                "Access, restart it, and ask again") from exc
+                f"macOS did not let {app} read the Messages history. Give {app} — not Messages "
+                "— Full Disk Access under System Settings > Privacy & Security > Full Disk "
+                f"Access, then restart {app} and ask again") from exc
         raise ToolError(f"the Messages history could not be read: {exc}") from exc
     out = []
     for text, blob, date, mine, handle, chat_id, chat_name in rows:

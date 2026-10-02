@@ -9,6 +9,17 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
 
 ### Added
 
+- **A number from nowhere is refused.** A text or a Messages lookup names a person by phone
+  number or email address; if that handle appears in nothing you typed and nothing a tool
+  returned, the call is refused before it runs and Saturn is sent to look the person up in
+  Contacts instead. The model's own earlier words never vouch for one. (Seen 2026-10-02: a
+  model answered "summarize my texts with ian" with a number it made up.)
+- **The approval prompt says whose number it is.** A send now reads
+  `+1305… is Ian Smith's mobile number (from search_contacts)`, or `you typed it`, instead of a
+  bare number.
+- **Contacts forgives a typo.** When no card contains what you typed ("stanly"), Saturn fetches
+  the closest names and says so, rather than "no contacts match".
+
 - **Delete files you can get back.** `delete_file` moves a file or folder to the Trash instead
   of erasing it: `/undo` puts it back, and so can Finder long after. Saturn used to delete with
   `rm` through the shell, which nothing could reverse. It asks first, never deletes the working
@@ -95,6 +106,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
   command; the denial says why on stderr.
 
 ### Fixed
+
+- **The Full Disk Access remedy names the right app.** It now says which app to grant it to
+  (Terminal, iTerm, Visual Studio Code…) and that it is not Messages; a model had told the user
+  to grant it to Messages.
+- **Shortcuts return their result.** `run_shortcut` reads the shortcut's output through the
+  `shortcuts` CLI's output file instead of its stdout, where a shortcut's result does not
+  reliably land.
 
 - **`/policy open off` on a closed gate changes nothing.** Typed to confirm the posture, it
   used to drop a configured `side_effecting` threshold to `read_only` and report it as

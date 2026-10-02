@@ -5,8 +5,9 @@ Every path is resolved per call through `core/workspace.resolve` — the launch 
 `/add-dir` folders — so a tool call can never reach anything else. `write_file`,
 `edit_file`, `move_file` and `delete_file` are the mutating tools here (gated via
 registry.TOOL_RISK), and each records the turn-start state first (stores/snapshots.py) so `/undo`
-can reverse it. A delete is a move to the user's Trash: undoable, and recoverable from Finder
-after the undo history has moved on.
+can reverse it. A delete is a move to the user's Trash: `/undo` puts it back, and after the
+undo history has moved on the item still sits in the Trash to be dragged out (Finder's Put Back
+only knows items Finder itself trashed).
 
 `search_files` (content regex) and `find_files` (name glob) are the navigation primitives:
 without them the agent's only way to locate something is list_directory + reading whole files,

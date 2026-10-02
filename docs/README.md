@@ -12,8 +12,9 @@ Claude Code). Everything else is here.
 | `dogfood.md` | The prompts a real user would try, written against the direction, not what is built. | Dogfooding; turning failures into pivot items. |
 | `advantages.md` | Why the pivot items matter: what a local, terminal-native agent can promise that a cloud one cannot. | Deciding whether an item is worth its day. |
 | `OPTIMIZATIONS.md` | Latency techniques for the one loop — the prefix cache and the prime, thinking, warm-up — shipped, next and closed, with the numbers. | Anything touching prompt order, the prefix cache or the model call. |
+| `research.md` | Everything still open in `pivot.md` / `engine.md` / `advantages.md`, ranked, with the plan written for each of the top items; then an outside survey (the agent literature, what the vendors and open-source agents ship) turned into further ideas, with sources. | Picking the next item, or checking whether an idea has already been weighed. |
 | `superpowers/specs/` | Design specs from past feature work, one per feature, dated. | Understanding why a mechanism is shaped the way it is. |
-| `superpowers/plans/` | The implementation plans those specs were built from. | Rarely — history. |
+| `superpowers/plans/` | Implementation plans. The ones dated 2026-10-01 are not built yet (`research.md` ranks them; each carries its own design section); the older ones are the plans their specs were built from. | Building one of the open items; otherwise history. |
 
 Conventions: a new document goes here, dated in its first line; a document that describes a
 deleted mechanism is deleted with it (the 2026-09-27 cut removed five); user-visible changes go

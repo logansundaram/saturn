@@ -229,8 +229,8 @@ Layers:  user (identity, preferences, constraints) · commitments (open items, w
                              at a review), the run it came from (→ /trace why #run), last use,
                              confirmations
   /memory review             the learning step: candidates this session queued — your mid-task
-                             corrections, gate denials, failed tool calls, the compaction
-                             summary — plus the model's own proposals from the transcript,
+                             corrections, gate denials, the compaction summary —
+                             plus the model's own proposals from the transcript,
                              each shown as a diff line and kept only on your y.
                              Also runs at /quit. --no-llm skips the model's proposals.
   /memory stale              by-match facts that have not matched a request in

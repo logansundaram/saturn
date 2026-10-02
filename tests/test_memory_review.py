@@ -2,7 +2,7 @@
 
 The invariant: nothing reaches the memory file without a y at the review screen. Candidates are
 collected mechanically from a turn's state (steer notes → agent, vetoes + gate denials →
-negative, unfinished steps → commitments, failed steps → agent) and from a compaction summary
+negative; a failed tool call is never one) and from a compaction summary
 (memo / user / commitments by shape), queued in a pending file that survives a crash, and
 accepted one at a time — with the run id stamped as provenance on every accepted fact. All
 offline: the model-proposal seam is monkeypatched wherever a test reaches it.
@@ -44,17 +44,13 @@ def test_collect_turn_maps_each_signal_to_its_layer():
                       "decision": "rejected", "quarantine": False, "step": "run the rename"},
                      {"calls": [{"id": "2", "name": "write_file", "approved": True}],
                       "decision": "approved", "quarantine": False, "step": None}],
-        tool_events=[{"name": "read_file", "args": {"file_path": "/x"}, "ok": False,
-                      "result": "Error: permission denied on /x", "dur": 0.0}],
     )
     cands = rv.collect_turn(state, run_id=9)
     by_source = {c["source"]: c for c in cands}
-    assert set(by_source) == {"steer", "gate", "failed"}
+    assert set(by_source) == {"steer", "gate"}
     assert by_source["steer"]["layer"] == "agent" and "prefix" in by_source["steer"]["text"]
     assert by_source["gate"]["layer"] == "negative" and "run_shell" in by_source["gate"]["text"]
     assert "run the rename" in by_source["gate"]["text"]
-    assert by_source["failed"]["layer"] == "agent" and "permission denied" in by_source["failed"]["text"]
-    assert "read_file" in by_source["failed"]["text"]
     assert all(c["run"] == 9 for c in cands)
     # A steer note from an OLDER turn is not this turn's signal.
     assert sum(1 for c in cands if c["source"] == "steer") == 1
@@ -65,6 +61,25 @@ def test_collect_turn_is_quiet_on_a_clean_turn():
     # Approved gates and successful calls are not incidents to learn from.
     ok_call = {"name": "read_file", "args": {}, "ok": True, "result": "hello", "dur": 0.0}
     assert rv.collect_turn(_state(tool_events=[ok_call])) == []
+
+
+def test_a_failed_tool_call_is_not_a_memory_candidate(isolated_paths):
+    """A failed call says what went wrong once — a missing permission, a malformed argument
+    (the 2026-10-02 session queued four such lines and the user dropped all four). The trace
+    and the answer's incidents note carry it; the memory review never does, and a queue
+    written before this change sheds them on load."""
+    failed = [{"name": "read_messages", "args": {"contact": "stanly"}, "ok": False,
+               "result": "Error: `contact` must be a phone number or email address", "dur": 0.0},
+              {"name": "read_messages", "args": {"contact": "+16505550100"}, "ok": False,
+               "result": "Error: macOS did not let this terminal read the Messages history",
+               "dur": 0.0}]
+    assert rv.collect_turn(_state(tool_events=failed), run_id=44) == []
+    legacy = [{"layer": "agent", "text": "Tool call failed: read_messages(contact='stanly')",
+               "source": "failed", "run": 44},
+              {"layer": "user", "text": "prefers tea", "source": "model", "run": 45}]
+    rv.pending_path().parent.mkdir(parents=True, exist_ok=True)
+    rv.pending_path().write_text(json.dumps({"candidates": legacy}), encoding="utf-8")
+    assert [c["text"] for c in rv.load_pending()] == ["prefers tea"]
 
 
 def test_summary_candidates_sort_bullets_by_shape():
@@ -118,7 +133,7 @@ def _scripted(answers):
 
 def test_review_writes_only_on_yes_with_provenance(isolated_paths):
     cands = [
-        rv._candidate("agent", "PDFs need /docs add first", "failed", 7),
+        rv._candidate("agent", "PDFs need /docs add first", "steer", 7),
         rv._candidate("negative", "do not suggest Postgres", "veto", 7),
         rv._candidate("commitments", "send the summary", "unfinished", 8),
         rv._candidate("memo", "decided X", "compaction", 8),

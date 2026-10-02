@@ -2,13 +2,15 @@
 Learn at session end, gated — the review pass that turns the memory notepad into something that
 grows.
 
-Learnable signal lives in the compaction summary, the steer notes / gate denials / failed tool
-calls inside a turn's state, and the trace. This module collects it as CANDIDATES — typed, provenance-stamped proposals for the
+Learnable signal lives in the compaction summary, the steer notes / gate denials inside a
+turn's state, and the trace. A failed tool call is not one: it says what went wrong once (a
+missing permission, a malformed argument), not what holds about the user — the trace and the
+answer's incidents note already carry it. This module collects it as CANDIDATES — typed, provenance-stamped proposals for the
 memory file — and puts every one in front of the user before anything is written:
 
   collect_turn(state, run_id)     after each interactive turn: mechanical candidates from the
-                                  turn's steer notes (agent), gate denials (negative),
-                                  failed tool calls (agent). Appended to the PENDING file, never to memory.
+                                  turn's steer notes (agent) and gate denials (negative).
+                                  Appended to the PENDING file, never to memory.
   note_compaction(summary, run)   when auto-compaction fires: the summary's bullets as memo
                                   candidates (the summary itself is persisted beside the
                                   memory file as last_summary.md — the record, not a fact).
@@ -39,11 +41,10 @@ from stores.memory_registry import _atomic_write, normalize_layer
 from textutil import clip
 
 # Candidate sources, in the order the review lists them.
-SOURCES = ("steer", "gate", "failed", "compaction", "model")
+SOURCES = ("steer", "gate", "compaction", "model")
 _SOURCE_LABEL = {
     "steer": "you corrected the agent mid-task",
     "gate": "you declined a tool at the gate",
-    "failed": "a tool call failed",
     "compaction": "from the compacted conversation",
     "model": "proposed by the model from this session",
 }
@@ -81,7 +82,6 @@ def collect_turn(state: dict, run_id=None) -> list[dict]:
 
       steer notes      → agent      "when asked …, the user corrected: …"
       gate denials     → negative   "the user declined <tool> for: <step>"
-      failed calls     → agent      "<tool>(<args>) failed: <error>"
     """
     out: list[dict] = []
     query = clip(" ".join(str(state.get("current_query") or "").split()), 90)
@@ -108,16 +108,6 @@ def collect_turn(state: dict, run_id=None) -> list[dict]:
                 out.append(_candidate("negative",
                                       f"The user declined {call['name']} at the gate{what}",
                                       "gate", run_id))
-
-    for ev in state.get("tool_events") or []:
-        if not isinstance(ev, dict) or ev.get("ok", True) or not ev.get("name"):
-            continue
-        from textutil import fmt_args
-
-        call = f"{ev['name']}({fmt_args(ev.get('args') or {}, 60)})"
-        why = clip(" ".join(str(ev.get("result") or "").split()), 120)
-        out.append(_candidate("agent", f"Tool call failed: {call} — {why}" if why
-                              else f"Tool call failed: {call}", "failed", run_id))
 
     return [c for c in out if c][:_MAX_PER_TURN]
 
@@ -168,7 +158,9 @@ def load_pending() -> list[dict]:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
         items = data.get("candidates") if isinstance(data, dict) else data
-        return [c for c in (items or []) if isinstance(c, dict) and c.get("text")]
+        # A queue written before failed tool calls stopped being candidates still holds them.
+        return [c for c in (items or []) if isinstance(c, dict) and c.get("text")
+                and c.get("source") != "failed"]
     except Exception as exc:
         diag.log(f"memory review: pending queue unreadable ({exc}) — starting empty")
         return []

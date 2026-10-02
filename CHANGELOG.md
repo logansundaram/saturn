@@ -114,6 +114,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
 
 ### Changed
 
+- **A failed tool call is no longer a memory candidate.** The review at `/quit` used to offer
+  one line per failed call ("Tool call failed: read_messages(…) — Error: …"): a missing
+  permission or a malformed argument, never a fact about you. The run's trace and the answer's
+  "could not be completed" note still show the failure; candidates already queued are dropped.
 - **`/privacy` is part of `/policy`.** One command for your trust settings: bare `/policy` shows
   what runs without asking and what can leave the machine (the model's and embedder's
   locality, web tools, MCP servers, air-gap, quarantine, where your data lives) — quiet when the

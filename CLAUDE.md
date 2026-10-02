@@ -197,7 +197,8 @@ File tools, `run_shell`'s working directory, the workspace `SATURN.md` and `/ini
 with `/add-dir`. `workspace.resolve` is the ONE containment check (`tools/files._resolve` wraps
 it); unset, the root falls back to `paths.workspace`, which is what tests and the benchmark use.
 Snapshots record absolute paths, so `/undo` restores the right file from any folder; `move_file`
-records the move itself (no byte copy) and `/undo` moves the file back. `search_files` asks
+records the move itself (no byte copy) and `/undo` moves the file back; `delete_file` is the
+same move into the user's Trash (`files._trash_dir`), never an unlink. `search_files` asks
 Spotlight (`mdfind`) for a plain phrase on macOS — candidates only, re-matched by the regex and
 filtered by the same containment and pruning as the walk; `tests/conftest.py` turns that seam
 off for every test.

@@ -4,7 +4,8 @@ Workspace snapshots — the undo layer behind the mutating file tools (`/undo`).
 Before `write_file` / `edit_file` changes a file, the file's current bytes are copied
 into a per-turn snapshot batch under `config.path("snapshots")` (a file that does not exist yet is
 recorded too, so undoing a creation deletes it). `move_file` records the move itself
-(`record_move` — no byte copy; undo moves the file back). `/undo` restores the most recent batch and removes
+(`record_move` — no byte copy; undo moves the file back), and so does `delete_file`, whose move
+is into the user's Trash. `/undo` restores the most recent batch and removes
 it — unless a restore FAILED, in which case the batch survives (shrunk to the failed entries) so
 the saved bytes stay available for a retry; batches are pruned to the last `_KEEP_BATCHES` turns
 so the directory can't grow unbounded.

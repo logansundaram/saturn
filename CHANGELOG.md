@@ -9,6 +9,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
 
 ### Added
 
+- **Delete files you can get back.** `delete_file` moves a file or folder to the Trash instead
+  of erasing it: `/undo` puts it back, and so can Finder long after. Saturn used to delete with
+  `rm` through the shell, which nothing could reverse. It asks first, never deletes the working
+  folder itself, and never touches Saturn's own control files.
 - **Text someone.** "Text Sam I'm 15 minutes late" now works: Saturn looks Sam up in Contacts
   and sends an iMessage through the Messages app. A send is the one action that **always**
   asks — you see the number and the exact text every time; no setting, no "always allow" and no

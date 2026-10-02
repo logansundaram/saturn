@@ -3,8 +3,10 @@ File tools — read, write, edit, list, and search files inside the folders Satu
 
 Every path is resolved per call through `core/workspace.resolve` — the launch folder plus any
 `/add-dir` folders — so a tool call can never reach anything else. `write_file`,
-`edit_file` and `move_file` are the mutating tools here (gated via registry.TOOL_RISK), and each
-records the turn-start state first (stores/snapshots.py) so `/undo` can reverse it.
+`edit_file`, `move_file` and `delete_file` are the mutating tools here (gated via
+registry.TOOL_RISK), and each records the turn-start state first (stores/snapshots.py) so `/undo`
+can reverse it. A delete is a move to the user's Trash: undoable, and recoverable from Finder
+after the undo history has moved on.
 
 `search_files` (content regex) and `find_files` (name glob) are the navigation primitives:
 without them the agent's only way to locate something is list_directory + reading whole files,
@@ -297,6 +299,69 @@ def move_file(source: str, destination: str, overwrite: bool = False):
     record_move(src, dst)
     hooks.run("after-write", file=str(dst), tool="move_file")
     return f"Moved {was} to {_ws.relative(dst)}"
+
+
+def _trash_dir() -> Path:
+    """Where `delete_file` puts things: the user's own Trash — ~/.Trash on macOS, the
+    freedesktop Trash's `files` folder elsewhere."""
+    if sys.platform == "darwin":
+        return Path.home() / ".Trash"
+    data = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")
+    return Path(data) / "Trash" / "files"
+
+
+def _trash_slot(trash: Path, name: str) -> Path:
+    """A free name in the Trash: `todo.md`, then `todo 2.md`, `todo 3.md`, … — never over
+    something already deleted."""
+    slot = trash / name
+    stem, suffix = (Path(name).stem, Path(name).suffix) if not name.startswith(".") else (name, "")
+    n = 2
+    while os.path.lexists(slot):
+        slot = trash / f"{stem} {n}{suffix}"
+        n += 1
+    return slot
+
+
+def _trash_info(slot: Path, origin: Path) -> None:
+    """The freedesktop Trash's record of where an item came from (`info/<name>.trashinfo`);
+    without it a file manager treats the item as an orphan. macOS needs none."""
+    if sys.platform == "darwin":
+        return
+    from datetime import datetime
+    from urllib.parse import quote
+
+    info = slot.parent.parent / "info" / f"{slot.name}.trashinfo"
+    info.parent.mkdir(parents=True, exist_ok=True)
+    info.write_text(f"[Trash Info]\nPath={quote(str(origin))}\n"
+                    f"DeletionDate={datetime.now().strftime('%Y-%m-%dT%H:%M:%S')}\n",
+                    encoding="utf-8")
+
+
+@register_tool("side_effecting")
+def delete_file(file_path: str):
+    """Deletes a file or folder by moving it to the Trash, where the user can still restore it; /undo puts it back. file_path is relative to the working folder (an absolute or ~ path inside a reachable folder also works). Always delete with this tool, never with rm in run_shell, which cannot be undone. One item per call: to delete several, call it once for each."""
+    # The directory ENTRY, like move_file: a symlink is deleted as a link, never what it names.
+    _, target, error = _resolve(file_path, follow=False)
+    if error:
+        raise ToolError(error)
+    if not os.path.lexists(target):
+        raise ToolError(f"File not found in the workspace: {file_path}.")
+    if any(_ws.same(target, r) for r in _ws.roots()):
+        raise ToolError(f"{_ws.relative(target)} is a working folder Saturn was given; it never "
+                        "deletes one. Delete the items inside it instead.")
+    _check_write_allowed(target, "delete_file")   # a control file, or a folder holding one
+    was = _ws.relative(target)
+    trash = _trash_dir()
+    try:
+        trash.mkdir(parents=True, exist_ok=True)
+        slot = _trash_slot(trash, target.name)
+        shutil.move(str(target), str(slot))
+    except OSError as exc:
+        raise ToolError(f"could not delete {was}: {exc}; nothing was changed.") from exc
+    record_move(target, slot)
+    _trash_info(slot, target)
+    hooks.run("after-write", file=str(target), tool="delete_file")
+    return f"Deleted {was} (moved to the Trash; /undo puts it back)."
 
 
 # search_files caps — small at the source so a huge workspace can't flood one observation.

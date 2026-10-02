@@ -965,6 +965,20 @@ def test_incidents_note_omits_a_call_that_later_succeeded():
     assert agent.incidents(turn) == ["web_search(query='z') — failed: Error: timeout"]
 
 
+
+def test_incidents_note_keeps_a_whole_remedy():
+    """An error that tells the user what to do reaches them whole — the answer's paraphrase
+    can be wrong (run 45 said 'the Messages app'), so the note is where the real step lives."""
+    from nodes import agent
+
+    fda = ("Error: macOS did not let this terminal read the Messages history. Give the terminal "
+           "app Full Disk Access under System Settings > Privacy & Security > Full Disk Access, "
+           "restart it, and ask again")
+    turn = [HumanMessage(content="q")] + _round("read_messages", {"contact": "+16505550100"},
+                                                "c1", fda, "error")
+    assert agent.incidents(turn) == [f"read_messages(contact='+16505550100') — failed: {fda}"]
+
+
 def test_cap_lands_on_the_max_iterations_pass(monkeypatch):
     from config import get_config
     from nodes import agent

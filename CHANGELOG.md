@@ -212,6 +212,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
 
 ### Fixed
 
+- **The "could not be completed" note shows the whole error.** It cut errors at 160 characters,
+  so "give the terminal app Full Disk Access under System Settings > …" stopped before saying
+  where; errors now keep up to 300.
 - **A turn that fills the context window is trimmed before the next one.** Auto-compaction
   only folded older turns, so a single long research turn left the window full and the next
   request pushed the system prompt off the front. The finished turn's tool results are now cut

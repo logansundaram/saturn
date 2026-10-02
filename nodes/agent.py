@@ -84,7 +84,9 @@ INCIDENTS_NOTE_HEADER = "Note — the following could not be completed:"
 # changed in between is a loop.
 STALL_REPEATS = 2
 _INCIDENT_STATUSES = ("skipped", "blocked", "error")
-_INCIDENT_CAP = 160
+# Long enough for a whole remedy: an error that says what to do (grant Full Disk Access …, 186
+# characters) is the user's next step, and 160 cut it at "Full Disk…" (2026-10-02, run 45).
+_INCIDENT_CAP = 300
 
 
 # ── this turn's record ────────────────────────────────────────────────────────────────────────

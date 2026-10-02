@@ -55,13 +55,24 @@ DECLARED_RISK = dict(_RISK)
 # Apply the user's persisted /policy risk overrides (policy.py — the gate-policy object) over the
 # declared tiers, so a `/policy risk … --save` decision survives a restart. Stale names (a removed tool)
 # and invalid tiers are ignored — the declared tier, which fails closed, stays in effect.
-from tools.toolspec import RISK_TIERS as _RISK_TIERS  # noqa: E402
-from trust import policy as _policy  # noqa: E402
 
-for _name, _tier in _policy.risk_overrides().items():
-    if _name in tools_by_name and _tier in _RISK_TIERS:
-        TOOL_RISK[_name] = _tier
-del _policy, _RISK_TIERS
+
+def apply_risk_overrides() -> None:
+    """Lay the persisted overrides over the declared tiers. A NO_BLANKET_GRANT tool (run_shell,
+    run_shortcut, a send) keeps its declared tier whatever the file says: an override there
+    would un-gate every shell command with no allowlist (policy.set_risk_override refuses to
+    write one; a hand-edited file is ignored here)."""
+    from trust import policy as _policy
+    from tools.toolspec import RISK_TIERS as _RISK_TIERS
+
+    for _name, _tier in _policy.risk_overrides().items():
+        if _name in _policy.NO_BLANKET_GRANT:
+            TOOL_RISK[_name] = DECLARED_RISK.get(_name, "destructive")
+        elif _name in tools_by_name and _tier in _RISK_TIERS:
+            TOOL_RISK[_name] = _tier
+
+
+apply_risk_overrides()
 
 
 def refresh_trust_classifications() -> None:

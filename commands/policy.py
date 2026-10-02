@@ -73,6 +73,15 @@ def risk_handler(ctx, args):
 
     tier = args[1].lower()
 
+    if name in policy.NO_BLANKET_GRANT and tier != "reset":
+        _print(f"  {name} always keeps its declared tier ({registry.DECLARED_RISK.get(name, 'destructive')}): "
+               "lowering it would un-gate every call with no allowlist. "
+               + ("Grant one prefix at a time with /policy allow instead."
+                  if name == "run_shell" else
+                  "Grant one shortcut by name with /policy shortcut instead."
+                  if name == "run_shortcut" else "A send always asks."))
+        return
+
     if tier == "reset":
         declared = registry.DECLARED_RISK.get(name, "destructive")
         old = risk_of(name)
@@ -281,6 +290,9 @@ def open_handler(ctx, args):
         return
     if new == "invalid":
         _print(f"  usage: /policy open on|off   ({_gate_status()})")
+        return
+    if not new and not policy.gate_off():
+        _print(f"  {_gate_status()}")  # nothing to restore — the gate was not open
         return
     policy.set_gate_off(new)
     if new:

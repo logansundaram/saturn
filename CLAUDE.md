@@ -213,8 +213,9 @@ menu bar icon: a login LaunchAgent the REPL starts when `notify.menubar` is on (
 `core/hooks.py` runs the user's `~/.saturn/hooks.yaml` (`$SATURN_HOME`) commands on turn-start /
 turn-end (`app/turn.run_turn`) and before- / after-write (`tools/files.py`). They are the user's
 commands: no gate, not egress — which is why the file tools refuse to write the hooks file, and
-likewise the live `config.yaml` and `permissions.json` (`tools/files._control_files`) — or to move a
-folder that holds one of them.
+likewise the live `config.yaml`, `permissions.json`, the memory file and its pending-review queue,
+and the two `SATURN.md` instruction files (`tools/files._control_files`) — or to move a folder
+that holds one of them.
 `tests/conftest.py` gives every test an empty `SATURN_HOME` and a throwaway `HOME`.
 
 Native macOS app tools (`tools/notes.py`, `tools/calendar.py`, `tools/mail.py`, `tools/contacts.py`,

@@ -230,8 +230,9 @@ def _mentions(text: str, url: str) -> bool:
 
 def url_hold(url: str, user_text: str, seen_text: str, after_untrusted: bool) -> "str | None":
     """Why a fetch of `url` must face the human, or None. `user_text` is everything the user
-    typed; `seen_text` everything else in the conversation (tool results, earlier answers,
-    attachments); `after_untrusted` whether any of that came from outside the trust boundary.
+    typed; `seen_text` everything else that entered the conversation (tool results,
+    attachments, the grounding — never the model's own messages); `after_untrusted` whether
+    any of that came from outside the trust boundary.
 
     A URL the user typed is theirs. Otherwise a private address is held always (a local service
     trusts localhost), and a URL found nowhere in the conversation is held once external content

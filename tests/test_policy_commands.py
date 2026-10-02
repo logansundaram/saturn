@@ -478,3 +478,35 @@ def test_airgap_offmachine_warning_names_the_remote_models(gate, ctx, capsys, mo
 
     assert "will now FAIL" in out and "chat qwen3.5:9b (ollama @ http://10.0.0.5:11434)" in out
     assert "OLLAMA_HOST" in out
+
+
+def test_risk_never_lowers_a_no_blanket_grant_tool(gate, ctx, capsys):
+    """`/policy risk run_shell read_only --save` would un-gate every shell command with no
+    allowlist — the one thing CLAUDE.md says never happens (run_shell is always destructive).
+    Refused at the front door, nothing persisted; `reset` still works."""
+    from tools import registry
+
+    for name in ("run_shell", "run_shortcut", "send_message"):
+        declared = registry.risk_of(name)
+        dispatch(f"/policy risk {name} read_only --save", ctx)
+        out = capsys.readouterr().out
+        assert registry.risk_of(name) == declared
+        assert policy.risk_overrides() == {}
+        assert "always" in out and "->" not in out
+    dispatch("/policy risk run_shell reset", ctx)
+    assert registry.risk_of("run_shell") == "destructive"
+
+
+def test_policy_open_off_on_a_closed_gate_changes_nothing(gate, ctx, capsys):
+    """`/policy open off` typed to CONFIRM the gate is closed must not drop a configured
+    side_effecting threshold to read_only (and must not claim it "restored" anything)."""
+    prev = policy.tier()
+    try:
+        policy.set_tier("side_effecting")
+        dispatch("/policy open off", ctx)
+        out = capsys.readouterr().out
+        assert policy.tier() == "side_effecting"
+        assert "restored" not in out and "side_effecting" in out
+    finally:
+        policy.set_tier(prev)
+        policy._tier_before_gate_off = None

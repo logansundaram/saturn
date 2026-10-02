@@ -72,6 +72,9 @@ MALFORMED_NOTE = ("Your previous reply was not a valid tool call (its arguments 
 MALFORMED_TEXT = ("I could not complete this: the model produced a malformed tool call twice. "
                   "Please rephrase the request.")
 UNKNOWN_TOOL_TEXT = "Error: unknown tool {name!r}. Use only the tools you were given."
+MALFORMED_CALL_TEXT = ("Error: that tool call was not valid JSON (no tool name could be read). "
+                       "Emit one call with a tool name you were given and its arguments as a "
+                       "JSON object; otherwise answer in plain text.")
 BUDGET_TEXT = ("Not executed: the action budget for this turn is spent, so no further tool call "
                "will run. Answer now from what you have, and state plainly what was not done.")
 BUDGET_NOTE = ("The action budget for this turn is spent. Answer now from what you have, and "
@@ -169,7 +172,9 @@ def _calls_of(ai) -> "tuple[list, set]":
     malformed: set = set()
     for tc in getattr(ai, "invalid_tool_calls", None) or []:
         cid = tc.get("id") or f"call_{uuid.uuid4().hex[:12]}"
-        calls.append({"name": tc.get("name"), "args": {}, "id": cid, "type": "tool_call"})
+        # `or ""`: broken JSON can leave the name unreadable, and the AIMessage the node
+        # rebuilds from these dicts refuses a None name — hygiene then says "malformed".
+        calls.append({"name": tc.get("name") or "", "args": {}, "id": cid, "type": "tool_call"})
         malformed.add(cid)
     return calls, malformed
 
@@ -323,10 +328,14 @@ def _hygiene(call: dict, rounds: list, malformed: bool = False) -> "tuple[dict, 
         return call, ToolMessage(content=text, tool_call_id=call["id"], name=name,
                                  additional_kwargs={"saturn_status": status})
 
+    if malformed:
+        # Before the unknown-tool check: broken JSON can leave the name unreadable too, and
+        # "unknown tool ''" is a corrective the model cannot act on.
+        if name not in tools_by_name:
+            return refuse(MALFORMED_CALL_TEXT)
+        return refuse("Error: " + schema_hint(name, "the arguments were not valid JSON"))
     if name not in tools_by_name:
         return refuse(UNKNOWN_TOOL_TEXT.format(name=name))
-    if malformed:
-        return refuse("Error: " + schema_hint(name, "the arguments were not valid JSON"))
     raw = call.get("args")
     other = tool_for_args(name, raw)
     if other:

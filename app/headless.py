@@ -69,7 +69,10 @@ def headless_approver(value):
     '--yolo to allow them' a lie. Two things --yolo does not pre-approve: the
     air-gap — a call it holds (policy.airgap_holds — a shell command, a shortcut, an MCP
     server) needs a human to judge whether it touches the network, and there is none here —
-    and a send to another person (policy.always_asks), which a human reads first, always.
+    a send to another person (policy.always_asks), which a human reads first, always — and
+    a web_extract whose URL the approval node held (`held_ids`: an address the model composed
+    after external content, or a private one the user did not type), the exfiltration shape
+    a human must read.
     The decline path is already honest — the agent tells
     the user the action was not performed. Any other interrupt type (the Esc pause never
     arms headless) resumes unchanged via a bare True, which the agent node reads as
@@ -78,10 +81,12 @@ def headless_approver(value):
         from trust import policy
 
         calls = value.get("tool_calls", [])
+        held_ids = set(value.get("held_ids") or [])
         if policy.gate_off():
             sends = [tc for tc in calls if policy.always_asks(str(tc.get("name") or ""))]
             held = [tc for tc in calls if policy.airgap_holds(str(tc.get("name") or ""))]
-            if not held and not sends:
+            urls = [tc for tc in calls if tc.get("id") in held_ids]
+            if not held and not sends and not urls:
                 return True
             if sends:
                 print(
@@ -97,8 +102,16 @@ def headless_approver(value):
                     "headless mode has no human to check it; turn the air-gap off to allow them.",
                     file=sys.stderr,
                 )
+            if urls:
+                print(
+                    "denied: " + ", ".join(tc.get("name", "?") for tc in urls)
+                    + " — its address was not typed by you and may carry what the model read "
+                    "(or points at a private service); a human must read it first, and headless "
+                    "mode has none (--yolo does not cover it).",
+                    file=sys.stderr,
+                )
             return {"approved_ids": [tc.get("id") for tc in calls
-                                     if tc not in held and tc not in sends]}
+                                     if tc not in held and tc not in sends and tc not in urls]}
         names = ", ".join(tc.get("name", "?") for tc in calls)
         why = (
             " (escalated by the injection quarantine — a prior result looked "
@@ -112,7 +125,8 @@ def headless_approver(value):
         # the air-gap holds (the branch above refuses those with the gate open too).
         never = [str(tc.get("name") or "?") for tc in calls
                  if policy.always_asks(str(tc.get("name") or ""))
-                 or policy.airgap_holds(str(tc.get("name") or ""))]
+                 or policy.airgap_holds(str(tc.get("name") or ""))
+                 or tc.get("id") in held_ids]
         hint = ("re-run with --yolo to allow them." if not never
                 else "--yolo would not allow " + ", ".join(dict.fromkeys(never))
                 + (" either." if len(never) == len(calls) else "; it allows the rest."))

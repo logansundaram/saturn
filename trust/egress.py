@@ -99,16 +99,55 @@ def ollama_is_local() -> bool:
     return is_loopback_host(name)
 
 
+def _inet_aton(name: str):
+    """inet_aton's grammar, without the socket module (trust/ imports no network client): one
+    to four dot-separated parts, each decimal, `0x` hex or leading-zero octal, the last part
+    filling the remaining bytes. The IPv4Address it names, else None."""
+    parts = name.split(".")
+    if not 1 <= len(parts) <= 4:
+        return None
+    vals = []
+    for p in parts:
+        if not p or not p.isascii() or not p.isalnum():
+            return None
+        try:
+            v = (int(p, 16) if p[:2] in ("0x", "0X")
+                 else int(p, 8) if len(p) > 1 and p[0] == "0"
+                 else int(p, 10))
+        except ValueError:
+            return None
+        vals.append(v)
+    tail_bytes = 5 - len(vals)
+    if any(v > 255 for v in vals[:-1]) or vals[-1] >= 256 ** tail_bytes:
+        return None
+    n = 0
+    for v in vals[:-1]:
+        n = (n << 8) | v
+    return ipaddress.IPv4Address((n << (8 * tail_bytes)) | vals[-1])
+
+
+def _parse_address(name: str):
+    """The IP address `name` is a literal of, else None. `ipaddress` reads the canonical forms;
+    the resolver also accepts inet_aton shorthand — `127.1`, hex or octal octets
+    (`0x7f.0.0.1`, `0177.0.0.1`), a bare decimal — and connects to the same loopback, so those
+    must parse here too or a string the checks below read as a public NAME reaches a local
+    service. A name with letters other than a hex octet is left to DNS (None)."""
+    try:
+        return ipaddress.ip_address(name)
+    except ValueError:
+        return _inet_aton(name)
+
+
 def is_loopback_host(name: str) -> bool:
     """Whether a hostname is THIS machine: `localhost`, or a literal address in the loopback
     range (127.0.0.0/8, ::1) or the unspecified address a local daemon binds. Parsed as an
-    address, never matched as a string prefix — `127.evil.example.com` is a remote name."""
+    address (`_parse_address`), never matched as a string prefix — `127.evil.example.com` is a
+    remote name."""
     name = (name or "").strip().lower()
     if name == "localhost":
         return True
-    try:
-        addr = ipaddress.ip_address(name)
-    except ValueError:
+    addr = _parse_address(name)
+    if addr is None:
         return False
     return addr.is_loopback or addr.is_unspecified
 
@@ -127,9 +166,8 @@ def is_private_host(name: str) -> bool:
     name = (name or "").strip().lower().rstrip(".")
     if is_loopback_host(name):
         return True
-    try:
-        addr = ipaddress.ip_address(name)
-    except ValueError:
+    addr = _parse_address(name)
+    if addr is None:
         return "." not in name or name.endswith(_PRIVATE_SUFFIXES)
     return addr.is_private or addr.is_link_local or addr.is_reserved or addr.is_multicast
 

@@ -153,3 +153,13 @@ def test_untracked_run_is_neither_sent_nor_silent():
 ])
 def test_is_private_host(host, private):
     assert egress.is_private_host(host) is private
+
+
+@pytest.mark.parametrize("host", ["127.1", "0x7f.0.0.1", "0177.0.0.1", "127.0.1", "2130706433"])
+def test_is_private_host_sees_through_inet_aton_shorthand(host):
+    """`127.1`, hex and octal octets and a bare decimal are all 127.0.0.1 to the resolver
+    (inet_aton); `ipaddress` refuses them, and "has a dot, no private suffix" must not then
+    read them as public — that was a straight path from a composed URL to a local service."""
+    assert egress.is_private_host(host) is True
+    assert egress.is_loopback_host(host) is True
+    assert egress.is_private_host(f"{host}.example.com") is False

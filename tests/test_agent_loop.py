@@ -1033,3 +1033,19 @@ def test_coercion_maps_optional_argument_aliases():
     assert coerce_args("recall", {"text": "coffee"}) == {"query": "coffee"}
     assert coerce_args("find_files", {"pattern": "*.md", "dir": "notes"}) == {"pattern": "*.md", "directory": "notes"}
     assert coerce_args("search_files", {"pattern": "x", "path": "src"}) == {"pattern": "x", "directory": "src"}
+
+
+def test_hygiene_malformed_call_without_a_name_says_so(monkeypatch):
+    """Broken JSON can leave LangChain's invalid_tool_call with no name at all. The model is told
+    its call was malformed — not that '' is an unknown tool, which it cannot act on."""
+    from nodes import agent
+
+    bad = {"name": None, "args": None, "id": "c1", "error": "not json"}
+    monkeypatch.setattr(agent, "_generate", lambda i, *, tools, think=False: AIMessage(
+        content="", invalid_tool_calls=[bad]))
+    out = agent.agent_node(_state([HumanMessage(content="q")]))
+    tm = out["messages"][-1]
+    assert isinstance(tm, ToolMessage) and tm.tool_call_id == "c1"
+    assert "unknown tool" not in tm.content
+    assert "JSON" in tm.content
+    assert agent.route_after_agent({"messages": out["messages"]}) == "agent"

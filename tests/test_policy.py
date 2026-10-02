@@ -111,10 +111,10 @@ def test_shell_allowed_routes_through_the_one_screen(isolated_paths, monkeypatch
 
 def test_risk_override_roundtrip(isolated_paths):
     assert policy.risk_overrides() == {}
-    policy.set_risk_override("run_shell", "side_effecting")
-    assert policy.risk_overrides() == {"run_shell": "side_effecting"}
-    assert policy.clear_risk_override("run_shell")
-    assert not policy.clear_risk_override("run_shell")  # already gone
+    policy.set_risk_override("web_search", "side_effecting")
+    assert policy.risk_overrides() == {"web_search": "side_effecting"}
+    assert policy.clear_risk_override("web_search")
+    assert not policy.clear_risk_override("web_search")  # already gone
     assert policy.risk_overrides() == {}
 
 
@@ -235,9 +235,9 @@ def test_set_gate_off_round_trip_restores_threshold(isolated_paths):
         policy.set_gate_off(False)
         assert not policy.gate_off()
         assert policy.tier() == "side_effecting"
-        # Turning it off twice (or with nothing recorded) fails closed to read_only.
+        # Turning it off again is a no-op: the gate is not open, so there is nothing to restore.
         policy.set_gate_off(False)
-        assert policy.tier() == "read_only"
+        assert policy.tier() == "side_effecting"
     finally:
         _restore_tier(prev)
 
@@ -411,3 +411,48 @@ def test_explicit_tier_choice_supersedes_the_gate_off_snapshot(isolated_paths):
         assert policy.tier() == "side_effecting"
     finally:
         _restore_tier(prev)
+
+
+def test_set_gate_off_false_on_a_closed_gate_is_a_no_op(isolated_paths):
+    """Closing a gate that is not open restores nothing — the configured threshold stands.
+    Only a gate that IS open with no snapshot (a tier set to destructive by hand) fails closed."""
+    prev = policy.tier()
+    try:
+        policy.set_tier("side_effecting")
+        policy.set_gate_off(False)
+        assert policy.tier() == "side_effecting"
+        policy.set_tier("destructive")  # open by hand: no snapshot to restore
+        policy.set_gate_off(False)
+        assert policy.tier() == "read_only"
+    finally:
+        _restore_tier(prev)
+
+
+def test_risk_override_refuses_a_no_blanket_grant_tool(isolated_paths):
+    """The mechanism refuses what the front door refuses, and a persisted override that slipped
+    in by hand is ignored when the registry applies the file."""
+    from tools import registry
+
+    for name in policy.NO_BLANKET_GRANT:
+        with pytest.raises(ValueError, match="always"):
+            policy.set_risk_override(name, "read_only")
+    assert policy.risk_overrides() == {}
+    data = policy._load()
+    data["risk_overrides"]["run_shell"] = "read_only"
+    policy._save(data)
+    registry.apply_risk_overrides()
+    assert registry.risk_of("run_shell") == "destructive"
+    assert not policy.approves("run_shell", registry.risk_of("run_shell"), {"command": "rm -rf ~"})
+
+
+def test_grant_shell_prefix_outlives_a_shorter_lived_cover(isolated_paths):
+    """A task-scoped grant already covers the command, but the user asked for a persisted one:
+    'already covered' would drop the longer lifetime they were promised. Stored; and a cover of
+    the same or longer life still short-circuits."""
+    assert policy.add_shell_allow("git status", scope="task")
+    ok, why = policy.grant_shell_prefix("git status", "git status --short", scope="persist")
+    assert ok and "persisted" in why
+    assert "git status" in policy.shell_allow_by_scope()["persist"]
+    ok, why = policy.grant_shell_prefix("git status --short", "git status --short", scope="task")
+    assert ok and "already covered" in why
+    assert "git status --short" not in policy.shell_allow()

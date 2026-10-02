@@ -16,7 +16,7 @@ of the turn (a guarded action is reported, never retried or substituted).
 
 from typing import Literal
 
-from langchain.messages import ToolMessage
+from langchain.messages import AIMessage, ToolMessage
 from langgraph.types import interrupt, Command
 
 import diag
@@ -47,14 +47,19 @@ def _can_act(name: str) -> bool:
 
 
 def _provenance(state) -> "tuple[str, str, bool]":
-    """(what the user typed, everything else in the conversation, whether any of that came from
-    an untrusted tool or an attachment) — the three facts quarantine.url_hold reads."""
+    """(what the user typed, everything else that ENTERED the conversation, whether any of that
+    came from an untrusted tool or an attachment) — the three facts quarantine.url_hold reads.
+    The model's own messages are skipped: they are what the hold checks, so a URL the model
+    wrote in a preamble (the issuing message is already in state) or an earlier answer must not
+    vouch for itself. Only the user, a tool result, an attachment or the grounding can."""
     user, seen = [], [str(state.get("attachments") or ""), str(state.get("context") or "")]
     untrusted = bool(state.get("attachments"))
     for m in state.get("messages") or []:
         text = str(getattr(m, "content", "") or "")
         if is_turn_start(m) or is_steer_message(m):
             user.append(text)
+            continue
+        if isinstance(m, AIMessage):
             continue
         seen.append(text)
         if isinstance(m, ToolMessage) and quarantine.is_untrusted(str(m.name or "")):
@@ -242,6 +247,8 @@ def approval_node(state: AgentState) -> Command[Literal["tools", "agent"]]:
             "reasoning": reasoning if isinstance(reasoning, str) else str(reasoning),
             "quarantine": {"flags": flags} if flags else None,
             "notes": notes or None,
+            # The URL-held calls by id: the headless approver denies exactly these under --yolo.
+            "held_ids": [tc["id"] for tc in gated if tc["id"] in holds],
         }
     )
 

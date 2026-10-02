@@ -67,6 +67,47 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
   first prompt ~7 s cold, then cached`). A chip the table does not know — an Intel Mac, a
   newer generation — is priced at the M1 baseline and the page says so.
 
+### Security
+
+- **A shorthand loopback address no longer reads as public.** `127.1`, `0x7f.0.0.1`,
+  `0177.0.0.1` and a bare decimal all reach 127.0.0.1, but only the spelled-out form was
+  recognised as private: a page that steered the model to `web_extract("http://127.1:11434/…")`,
+  or a redirect to one, slipped past both the URL hold at the gate and the fetch's
+  redirect-to-private refusal. The address parser now reads the same shorthand the resolver does.
+- **The model's own words no longer vouch for a URL.** The composed-URL hold asks whether a
+  `web_extract` address appeared anywhere in the conversation before the model wrote it. The
+  model's own messages counted — including the preamble of the very message issuing the call —
+  so "Next I will fetch https://…?d=<your data>" cleared its own hold. Only what you typed, what a
+  tool returned, an attachment and the grounding count now.
+- **The memory file and the standing instructions are control files.** `write_file`,
+  `edit_file`, `move_file` and `delete_file` now refuse the memory file and its pending-review
+  queue (a planted bullet stamped `by=user` would load as a fact you stated, past the review
+  gate) and both `SATURN.md` files (an instruction planted there loads into every later turn).
+  Edit them by hand, through `/memory`, or with `/init`.
+- **`/policy risk` never lowers `run_shell`, `run_shortcut` or `send_message`.**
+  `/policy risk run_shell read_only --save` used to un-gate every shell command with no
+  allowlist; it is refused now, nothing is persisted, and a hand-edited override in
+  `permissions.json` is ignored on load. `/policy allow` and `/policy shortcut` remain the
+  one-at-a-time grants.
+- **`--yolo` does not fetch a held URL.** Headless mode under `--yolo` auto-approved a
+  `web_extract` whose address the gate had held (composed by the model after external content,
+  or a private address you did not type). It is denied now, like a send and an air-gapped shell
+  command; the denial says why on stderr.
+
+### Fixed
+
+- **`/policy open off` on a closed gate changes nothing.** Typed to confirm the posture, it
+  used to drop a configured `side_effecting` threshold to `read_only` and report it as
+  "restored". It now prints the status and leaves the threshold alone; a gate opened by hand
+  (threshold set to `destructive`) still closes to `read_only`.
+- **A persisted shell grant is not dropped as "already covered".** Pressing `a` for a persisted
+  `git status` while a task-scoped grant from earlier in the turn already covered the command
+  reported success and stored nothing, so the next turn prompted again. A grant is only "already
+  covered" by a prefix that lives at least as long.
+- **A malformed tool call with no readable name gets a useful error.** It was answered with
+  "unknown tool ''" (and, with the name missing entirely, crashed the turn); the model is now
+  told the call was not valid JSON and how to retry.
+
 ### Removed
 
 - **The NVIDIA and CPU-only branches of the hardware probe.** Saturn's platform is macOS on

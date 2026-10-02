@@ -58,15 +58,25 @@ def _resolve_dir(path: str):
 
 def _control_files() -> "dict[Path, str]":
     """The files that control Saturn itself — never the agent's to write, even through the gate:
-    a write to one could loosen the gate (config.yaml's auto_approve, a saved always-allow) or
-    plant a command that runs ungated (hooks.yaml). Launched from ~ they sit inside the
-    workspace, so the containment check alone does not keep them out."""
+    a write to one could loosen the gate (config.yaml's auto_approve, a saved always-allow),
+    plant a command that runs ungated (hooks.yaml), plant a standing instruction that loads into
+    every later turn's prompt (the two SATURN.md files), or plant a "fact" past the memory
+    review gate (the memory file and its pending queue — a bullet stamped `by=user` would read
+    as something the user said). Launched from ~ they sit inside the workspace, so the
+    containment check alone does not keep them out. The user edits these by hand; the memory
+    file changes only through `remember` and /memory; the workspace SATURN.md through /init."""
     from config import config_path, get_config
+    from core.memory_review import pending_path
+    from nodes.ground import INSTRUCTIONS_FILE, global_instructions_path
 
     return {
         hooks.hooks_path(): "holds the user's hook commands",
         config_path(): "holds Saturn's settings, the approval gate's included",
         get_config().path("permissions"): "holds the approval gate's saved permissions",
+        get_config().path("memory"): "holds Saturn's memory, written only through the review gate",
+        pending_path(): "holds the memory review's pending queue",
+        global_instructions_path(): "holds the user's standing instructions, loaded every turn",
+        _ws.root() / INSTRUCTIONS_FILE: "holds the workspace's standing instructions, loaded every turn",
     }
 
 

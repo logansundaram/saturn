@@ -32,7 +32,8 @@ def schedule_notification(when: str, title: str, body: str = ""):
     the assistant has been closed by then. `when` is a future time: ISO 8601 like
     '2026-09-06T09:00', a relative offset like 'in 20 minutes' / 'in 2 hours', or
     'tomorrow at 09:00' / '16:00'. `title` is the short headline; `body` the optional detail.
-    Use for "remind me", "notify me", "ping me at …" — the reminder is delivered by the OS."""
+    Use for a one-off alert on THIS Mac — "ping me in 20 minutes", "notify me at 4". For a
+    to-do the user will tick off ("remind me to call the dentist"), use create_reminder."""
     title = str(title or "").strip()
     if not title:
         raise ToolError("a notification needs a non-empty title")

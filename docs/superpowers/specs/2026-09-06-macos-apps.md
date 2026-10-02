@@ -1,7 +1,9 @@
 # Native macOS app tools — what shipped, what was deferred, and why
 
-Date: 2026-09-06. Status: Notes, Calendar and Mail (read + draft) shipped; sending and
-Messages deferred by decision.
+Date: 2026-09-06. Status: Notes, Calendar and Mail (read + draft) shipped 2026-09-06.
+Extended 2026-10-01 (the section at the end): the write side of all three, Contacts,
+Reminders, Shortcuts, the browser tab and Finder selection, `send_message` and the Messages
+history reader. `send_mail` is still deferred.
 
 ## Shipped
 
@@ -51,6 +53,9 @@ egress: `draft_mail` composes a visible, unsent draft and the human presses Send
 
 ## Deferred — and what it would take
 
+_2026-10-01: `send_message` and the history reader below shipped, wired as this section says;
+`send_mail` remains deferred. The text is kept as the reasoning of record._
+
 ### `send_mail` / `send_message` (sending)
 
 Sending IS egress in this project's definition (bytes leave the machine), but
@@ -88,3 +93,78 @@ decoder, both behind a `read_messages` tool marked `untrusted=True`.
 
 Every tool registers everywhere and answers "only available on macOS (this is linux)" — the
 notify precedent, so the planner catalog is stable across platforms.
+
+## 2026-10-01 — the write side, five more apps, and sending
+
+| Module | Tools added | Tier / trust |
+|---|---|---|
+| `tools/notes.py` | `append_note` | side_effecting |
+| `tools/calendar.py` | `update_calendar_event` · `delete_calendar_event` | side_effecting · destructive |
+| `tools/mail.py` | `reply_mail` · `update_mail` | side_effecting, **not egress** |
+| `tools/contacts.py` | `search_contacts` | read_only + untrusted |
+| `tools/reminders.py` | `list_reminders` · `create_reminder`, `complete_reminder` | read_only + untrusted · side_effecting |
+| `tools/shortcuts.py` | `list_shortcuts` · `run_shortcut` | read_only · destructive + untrusted, `UNTRACKED` on the ledger, held by air-gap |
+| `tools/desktop.py` | `read_browser_tab` · `finder_selection` | read_only + untrusted · read_only |
+| `tools/messages.py` | `send_message` · `read_messages` | destructive + **egress** + always asks · read_only + untrusted |
+| `tools/files.py` | `move_file`; Spotlight behind `search_files` | side_effecting |
+| `core/mentions.py`, `/copy` | `@clipboard` | the user's own act; no tool |
+
+### Probe findings (this Mac, 2026-10-01)
+
+- **Every Apple event has a price, and it differs by app.** Reminders: about a second per
+  event, so a per-reminder loop was 8.6s for six reminders; `properties of (reminders of
+  <list> whose completed is false)` is one event per list (~2s) and the records format without
+  further events. Contacts: a loop over `people whose name contains …` is ~0.6s a person and
+  a bulk `<property> of (people whose …)` is ~5s per property on a broad match (119 of 171
+  cards); `id of (people whose …)` once (0.7s) then `person id …` is ~0.2s a person.
+- **Reminders has no default list here** (`default list` and `default account` are -1728; the
+  only list is a shared one). `create_reminder` names the lists when it cannot pick one. The
+  scripting dictionary has no recurrence and no location: "every Sunday" and "when I get
+  home" cannot be set.
+- **Calendar refuses a save where start is not before end**, so moving an event writes the two
+  dates in an order that depends on the direction of the move. A uid lookup in one named
+  calendar is 0.5s. A script reaches a recurring event only as the series, hence
+  `whole_series`.
+- **Notes append works by rewriting `body`** (`body & "<div>…</div>"`): title and existing
+  lines survive. Not verified: what a rewrite does to a checklist or an attachment — a note
+  with attachments is refused; a checklist cannot be detected from a script.
+- **A Mail reply takes its text only if the script never reads the reply's content first.**
+  `reply m opening window yes`, wait one second, `set content` — worked five times out of
+  five; the same script with one read of `content of r` before the set left the reply empty
+  every time. Setting the content replaces Mail's own quote, so the tool builds the quoted
+  original itself (capped at 150 lines). `reply … opening window no` leaves an autosaved,
+  empty draft behind; the tool always opens the window.
+- **Mail has no archive verb**, and on this Gmail account `inbox` is "[Gmail]/All Mail" —
+  `update_mail` offers `move` with a named mailbox instead of an `archive` action.
+- **Safari gives the page text as a property** (`text of current tab`) with no setting to
+  turn on; verified on a live page. Chrome returns URL and title; its text needs *Allow
+  JavaScript from Apple Events* (off here — the tool degraded as designed).
+- **Spotlight is a candidate source, not a judge.** For one phrase in this repo it returned
+  28 files where a line-wise grep finds 17: it matches across line breaks, and it missed two
+  files grep finds. So every candidate is re-matched by the regex, and a folder small enough
+  to walk in two seconds is still walked whole. From `~`: a phrase with no match answers in
+  2.0s (the old walk: 10s cap, 80s uncapped), "tax return" in ~5s with hits inside PDFs.
+  Opening fifteen PDFs took 11s, hence the three-second document budget.
+- **`pbpaste` reads the clipboard with no prompt** on this macOS. The clipboard is still not
+  a tool: it is attached only when the user types `@clipboard`.
+- **`chat.db` is `authorization denied` without Full Disk Access** (still true). The reader
+  and the typedstream decoder are tested against a synthetic database only.
+
+### Not executed
+
+- `send_message` was compiled (`osacompile`) and unit-tested, never run: sending a real
+  message needs the user. First real use should be to yourself.
+- `run_shortcut` was never run against a real shortcut (each does something real). Whether
+  `shortcuts run` prints a shortcut's output on a pipe, as the tool assumes, is unverified.
+- `read_messages` against the real history (no Full Disk Access).
+- `update_mail` `move` / `trash` (flag and unflag were run and reverted on one message).
+- `update_calendar_event` / `delete_calendar_event` on a recurring event or one with
+  attendees; `append_note` on a shared note, a checklist or a note with attachments.
+  A checklist is the likely casualty: Notes hands a script a checklist as a plain list, so the
+  body rewrite may drop the checkboxes and their ticks. A script cannot create a checklist to
+  try it on — check by hand before relying on `append_note` for a checklist note.
+- `update_calendar_event` with a bare clock time (`atclock`, 2026-10-01 review): the scripts
+  compile and the handler was run on its own; no real event was moved with it.
+- `append_note`'s exact-title lookup: the no-such-title path was run read-only against Notes
+  (returns `none`); the two-notes-one-title path was not.
+

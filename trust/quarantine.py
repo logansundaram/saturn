@@ -81,9 +81,10 @@ def set_untrusted_tools(names) -> None:
     _UNTRUSTED_OVERRIDE = set(names)
 
 
-# Tools that SEND model-chosen text off this machine (the web tools; every MCP tool, by the same
-# reserved prefix as above). They mirror the egress chokepoints tests/test_no_new_egress.py pins.
-OUTBOUND_TOOLS = {"web_search", "web_extract"}
+# Tools that SEND model-chosen text off this machine (the web tools, a text message; every MCP
+# tool, by the same reserved prefix as above). They mirror the egress chokepoints
+# tests/test_no_new_egress.py pins.
+OUTBOUND_TOOLS = {"web_search", "web_extract", "send_message"}
 
 
 def is_outbound(tool_name: str) -> bool:

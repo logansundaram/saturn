@@ -23,7 +23,12 @@ import tools.planning  # noqa: E402,F401  (plan — the model's own checklist, m
 import tools.notify  # noqa: E402,F401  (schedule_notification — a one-shot OS-scheduled reminder)
 import tools.notes  # noqa: E402,F401  (search_notes / read_note / create_note — Apple Notes, macOS)
 import tools.calendar  # noqa: E402,F401  (list_calendar_events / create_calendar_event — Apple Calendar, macOS)
-import tools.mail  # noqa: E402,F401  (list_mail / search_mail / read_mail / draft_mail — Apple Mail, macOS; drafts only, never sends)
+import tools.mail  # noqa: E402,F401  (list_mail / search_mail / read_mail / draft_mail / reply_mail / update_mail — Apple Mail, macOS; drafts only, never sends)
+import tools.contacts  # noqa: E402,F401  (search_contacts — Apple Contacts, macOS)
+import tools.reminders  # noqa: E402,F401  (list_reminders / create_reminder / complete_reminder — Apple Reminders, macOS)
+import tools.shortcuts  # noqa: E402,F401  (list_shortcuts / run_shortcut — the user's Shortcuts, macOS; runs recorded UNTRACKED)
+import tools.desktop  # noqa: E402,F401  (read_browser_tab / finder_selection — what the user is pointing at, macOS)
+import tools.messages  # noqa: E402,F401  (send_message — an egress chokepoint that always asks; read_messages — chat.db, needs Full Disk Access)
 
 # Remote MCP tools: connect the servers declared under `mcp.servers` in config.yaml
 # and register each remote tool through toolspec.register_tool_object, so they land in the same

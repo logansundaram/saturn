@@ -301,7 +301,7 @@ experimenting without restarting.
 
 ### macOS / Linux notes
 
-Saturn runs on macOS (the native Notes / Calendar / Mail tools and notifications need it)
+Saturn runs on macOS (the native Notes / Calendar / Mail / Contacts / Reminders / Messages / Shortcuts tools and notifications need it)
 and Linux (file, shell, web and knowledge-base tools). The `run_shell` tool hands commands to
 `/bin/sh`, so write Unix shell syntax (`ls`, `&&`, `|`, etc.). Windows support was dropped
 2026-09-27.

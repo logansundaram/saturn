@@ -30,7 +30,7 @@ from commands._session import write_autosave
 # once — tests/test_help.py cross-checks this against the live registry, so a future command
 # can't silently vanish from /help.
 _GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("conversation", ("clear", "resume")),
+    ("conversation", ("clear", "copy", "resume")),
     ("knowledge & workspace", ("add-dir", "docs", "init", "memory", "rm-dir", "undo")),
     ("trust & control", ("policy",)),
     ("observability", ("mcp", "models", "tools", "trace")),

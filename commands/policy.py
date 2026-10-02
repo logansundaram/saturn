@@ -192,6 +192,74 @@ def _allow_add(policy, prefix: str) -> None:
 # ── /policy open — the gate-off view ─────────────────────────────────────────────────────────
 
 
+# ── /policy shortcut — the run_shortcut name allowlist ───────────────────────────────────────
+
+
+def shortcut_handler(ctx, args):
+    """`/policy shortcut` — the shortcuts that run without the approval gate, by exact name.
+    Bare (or `list`) shows them; `<name>` adds one; `remove <name>` revokes it. A name is taken
+    whole, so a shortcut called "Remove Background" is added with `add Remove Background`."""
+    from trust import policy
+
+    if not args or (len(args) == 1 and is_list_verb(args[0])):
+        names = policy.shortcut_allow()
+        if not names:
+            _print("  no allowlisted shortcuts — every run_shortcut call asks first.")
+            _print("  allow one with /policy shortcut <name>   (e.g. /policy shortcut Lights Off)")
+            return
+        _print("  these shortcuts run WITHOUT the approval gate:")
+        for n in names:
+            _print(f"    {n}")
+        _print("  remove: /policy shortcut remove <name>")
+        return
+    verb = args[0].lower()
+    if len(args) == 1 and (is_remove_verb(verb) or verb == "add"):
+        # A verb with no name is a slip, never a request to allowlist a shortcut called "remove".
+        _print(f"  /policy shortcut {verb} needs the shortcut's name — e.g. /policy shortcut "
+               f"{verb} Lights Off   (a shortcut really named `{args[0]}`: /policy shortcut "
+               f"add {args[0]})")
+        return
+    if is_remove_verb(verb) and len(args) > 1:
+        target = " ".join(args[1:])
+        removed = policy.remove_shortcut_allow(target)
+        if removed is None:
+            _print(f"  no such allowlisted shortcut: {target!r} — /policy shortcut lists them "
+                   f"(to allow a shortcut whose name starts with `{verb}`: /policy shortcut add …)")
+        else:
+            _print(f"  removed: the shortcut `{removed}` faces the gate again.")
+        return
+    name = " ".join(args[1:] if verb == "add" and len(args) > 1 else args)
+    # The entry lets that name run ungated from now on, so it must be a shortcut that exists,
+    # stored as the Shortcuts app spells it — not a typo waiting for a shortcut to match it.
+    from tools import shortcuts
+    from tools.toolspec import ToolError
+
+    try:
+        have = shortcuts.names()
+    except ToolError as exc:
+        _print(f"  cannot check that name against this Mac's shortcuts: {exc}. Nothing was allowlisted.")
+        return
+    match = next((n for n in have if n.lower() == name.lower()), None)
+    if match is None:
+        import difflib
+
+        near = difflib.get_close_matches(name, have, n=3, cutoff=0.5)
+        _print(f"  no shortcut named {name!r} on this Mac — nothing was allowlisted."
+               + (f" Did you mean: {', '.join(near)}?" if near else "  (`shortcuts list` prints the names)"))
+        return
+    name = match
+    try:
+        added = policy.add_shortcut_allow(name)
+    except ValueError as exc:
+        _print(f"  cannot allowlist that shortcut: {exc}.")
+        return
+    if added:
+        _print(f"  allowed: the shortcut `{name}` now runs without the gate (persisted; undo "
+               "with /policy shortcut remove). Under air-gap it still asks.")
+    else:
+        _print(f"  `{name}` is already allowlisted.")
+
+
 def _gate_status() -> str:
     """The one gate status line for bare `/policy open` — a pure readout, never a flip."""
     from trust import policy
@@ -368,8 +436,10 @@ def _posture(ctx) -> None:
     rows = [
         ("models", _models_cell(ui, inf, airgap)),
         ("web tools", web),
+        ("messages", ("sealed by air-gap", "dim") if airgap
+         else ("send_message asks every time; nothing sends without your yes", "dim")),
         *_mcp_rows(ui, airgap),
-        ("air-gap", ("ON — web, remote MCP, and remote models are blocked", "accent") if airgap
+        ("air-gap", ("ON — web, messages, remote MCP, and remote models are blocked", "accent") if airgap
          else ("off — /policy airgap on seals the boundary", "dim")),
         ("quarantine", (f"{q} — untrusted tool output is screened", "dim") if q == "gate"
          else (f"{q} — untrusted tool output is {'not screened' if q == 'off' else 'only flagged'}",
@@ -424,7 +494,7 @@ def _egress(ctx, args):
             _print("  shown here.")
         else:
             ui.section("egress", "nothing has left this machine this session" + airgap)
-            _print("  the boundary has stayed closed — no web, http, MCP, or remote-model egress.")
+            _print("  the boundary has stayed closed — no web, http, message, MCP, or remote-model egress.")
         return
 
     hosts = s["hosts"]
@@ -439,7 +509,7 @@ def _egress(ctx, args):
     if cleared:
         _print("  (ledger cleared this session — counts are since the clear)")
     if s["untracked"]:
-        _print("  untracked = a shell command or stdio MCP server ran; Saturn cannot see whether")
+        _print("  untracked = a shell command, a shortcut or a stdio MCP server ran; Saturn cannot see whether")
         _print("  it used the network (air-gap holds these for your approval).")
 
     shown = evs[-limit:] if limit else evs
@@ -570,6 +640,7 @@ def _show_airgap(ctx, cfg, ui, egress):
     ui.table(
         [
             ("web tools", "web_search / web_extract", sealed()),
+            ("messages", "send_message (iMessage)", sealed()),
             ("remote MCP", "http/sse server calls (stdio = local process)", sealed()),
             ("off-machine models", "prompts + context to a remote Ollama",
              ("sealed", ui.risk_style("read_only")) if (on or not offmachine)
@@ -592,6 +663,7 @@ def _show_airgap(ctx, cfg, ui, egress):
     "Your trust settings in one place: what runs without asking, and what can leave this machine.",
     usage="/policy [risk <tool> [<tier>|reset] [--save] | "
           "allow [list | <prefix> | add <prefix> | remove <n|prefix>] | "
+          "shortcut [list | <name> | remove <name>] | "
           "open [on|off] | egress [clear|n] | airgap [on|off] [--save]]",
     details="""
 One front door for the whole trust posture. Bare /policy answers "what runs without asking me,
@@ -619,20 +691,26 @@ The gate — what runs without asking:
                               too, but only when the target is a stored number/prefix — anything
                               else is reported, never guessed). Allow narrow, read-only prefixes
                               (`git status`, `ls`) — not broad ones (`git`, `python`).
+  /policy shortcut [<name>]   allowlist one of your Shortcuts, by exact name, to run without
+                              the gate (persisted); bare (or `shortcut list`) shows them;
+                              `shortcut remove <name>` revokes. Every other shortcut keeps
+                              asking, and under air-gap they all do. A send to another person
+                              (send_message) has no allowlist: it always asks.
   /policy open [on|off]       the gate-off view: bare = STATUS only; `on` raises the threshold to
                               `destructive` (nothing prompts — the loud banner), `off` restores
                               the prior threshold. Opening is always an explicit verb.
 
 The boundary — what can leave this machine:
   /policy egress              the ledger: what ACTUALLY left this session — every web search, page
-                              fetch, remote MCP call, and remote-Ollama invocation, with
+                              fetch, sent message, remote MCP call, and remote-Ollama invocation, with
                               channel/host/bytes, plus every attempt BLOCKED by air-gap. Pair it
                               with a network monitor and the two agree.
     /policy egress 20           just the last 20 events
     /policy egress clear        reset the in-memory ledger for this session
   /policy airgap              seal the boundary. With no argument, prints the enforcement posture
                               (what is open vs sealed right now). When ON: web tools refuse,
-                              remote MCP calls refuse, and a remote Ollama refuses to run.
+                              send_message refuses, remote MCP calls refuse, a remote Ollama
+                              refuses to run, and shell commands and shortcuts always ask.
     /policy airgap on|off [--save]
                                 set; --save persists to config.yaml (`--save` with no value
                                 persists the CURRENT setting without changing it)
@@ -656,10 +734,12 @@ def _policy_cmd(ctx, args):
         return allow_handler(ctx, rest)
     if sub == "open":
         return open_handler(ctx, rest)
+    if sub in ("shortcut", "shortcuts"):
+        return shortcut_handler(ctx, rest)
     if sub in ("egress", "ledger"):
         return _egress(ctx, rest)
     if sub in ("airgap", "air-gap", "seal"):
         return _airgap(ctx, rest)
 
-    _print(f"  unknown /policy subcommand: {sub!r} — try: risk, allow, open, egress, airgap "
+    _print(f"  unknown /policy subcommand: {sub!r} — try: risk, allow, shortcut, open, egress, airgap "
            "(or /policy --help)")

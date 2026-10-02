@@ -7,7 +7,7 @@ your machine" is an observable fact rather than a slogan:
   - `record(...)`     every successful egress (a web search, a page fetch, a remote MCP call,
                       a remote-Ollama invocation) appends one `EgressEvent` to a process-wide,
                       append-only ledger. `/policy egress` renders it.
-  - `UNTRACKED`       the ledger's honest gap: `run_shell` and stdio MCP servers are processes
+  - `UNTRACKED`       the ledger's honest gap: `run_shell`, `run_shortcut` and stdio MCP servers are processes
                       whose network use Saturn cannot observe, so each run is recorded with
                       this status. Under air-gap they are held for the human instead
                       (`policy.airgap_holds`) — the one boundary a string check cannot enforce.

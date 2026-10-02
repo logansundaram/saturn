@@ -523,8 +523,14 @@ def _always_allow(tool_calls: list, ask) -> dict:
     from trust import policy
 
     names = sorted({tc.get("name", "") for tc in tool_calls if tc.get("name")})
-    granted = [n for n in names if n != "run_shell"]
+    granted = [n for n in names if n not in policy.NO_BLANKET_GRANT]
     decision: dict = {"approved": True, "tools": granted, "shell_grants": []}
+    if "run_shortcut" in names:
+        _grant_note("run_shortcut: it keeps prompting — allow one shortcut by name with "
+                    "/policy shortcut <name>")
+    for n in names:
+        if policy.always_asks(n):
+            _grant_note(f"{n}: a send always asks — there is no always-allow for it")
     if granted:
         listing = ", ".join(granted)
         _grant_note(f"always-allowing {_grant_lifetime()}: {listing}  "

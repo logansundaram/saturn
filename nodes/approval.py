@@ -33,8 +33,9 @@ DECLINE_TEXT = (
 )
 
 
-AIRGAP_NOTE = ("air-gap is on: Saturn cannot see inside a shell command or an MCP server — "
-               "approve only if this will not use the network")
+AIRGAP_NOTE = ("air-gap is on: Saturn cannot see inside a shell command, a shortcut or an MCP "
+               "server — approve only if this will not use the network")
+SEND_NOTE = "this sends your words to another person; a send always asks, whatever the policy"
 
 
 def _can_act(name: str) -> bool:
@@ -133,11 +134,12 @@ def _apply_always_grants(decision: dict) -> None:
     scope = policy.default_grant_scope()
     for name in decision.get("tools") or []:
         # run_shell never drops a tier (one keypress must not un-gate every future command —
-        # it gets the scoped prefix grants below instead). The UI never sends it here, but the
-        # resume value is still external input: fail closed.
-        if not name or name == "run_shell":
+        # it gets the scoped prefix grants below instead), and neither does a shortcut run or a
+        # send (policy.NO_BLANKET_GRANT). The UI never sends them here, but the resume value is
+        # still external input: fail closed.
+        name = str(name or "")       # before the set lookup: an unhashable entry must not raise
+        if not name or name in policy.NO_BLANKET_GRANT:
             continue
-        name = str(name)
         prior = registry.TOOL_RISK.get(name)
         registry.TOOL_RISK[name] = "read_only"
         # Only a tier that actually DROPPED registers an undo. A tool already at read_only is
@@ -223,6 +225,7 @@ def approval_node(state: AgentState) -> Command[Literal["tools", "agent"]]:
     notes = [f"{tc['name']}: {holds[tc['id']]}" for tc in gated if tc["id"] in holds]
     if any(policy.airgap_holds(tc["name"]) for tc in gated):
         notes.append(AIRGAP_NOTE)
+    notes += [f"{tc['name']}: {SEND_NOTE}" for tc in gated if policy.always_asks(tc["name"])]
     decision = interrupt(
         {
             "type": "approval_request",

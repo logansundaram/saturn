@@ -413,10 +413,12 @@ LOOP_FIXTURES = {
     "bench_expenses.txt": ("Expenses this week:\ncoffee 12.50\ngroceries 48.00\n"
                            "parking 7.25\nutilities 130.00\n"),
     "bench_edit.txt": "Status: draft\nOwner: me\n",
+    "bench_draft.txt": "Draft agenda: budget, hiring, offsite.\n",
     "bench_long.txt": _LONG_TEXT,
 }
 # Files the write tasks produce; removed with the fixtures.
-LOOP_OUTPUTS = ("bench_out.txt", "bench_plan.txt", "bench_index.txt", "bench_ref.txt")
+LOOP_OUTPUTS = ("bench_out.txt", "bench_plan.txt", "bench_index.txt", "bench_ref.txt",
+                "bench_agenda.txt")
 
 _FILE_LOOKUP = {"list_directory", "find_files", "search_files", "read_file"}
 _CANT = ["can't", "cannot", "can not", "unable", "not able", "no way", "don't have",
@@ -467,6 +469,10 @@ LOOP_TASKS: list[dict] = [
     _task("file_write", "lookup", "Create a file called bench_out.txt containing just the word ready.",
           tools={"write_file"}, required=[{"write_file"}], max_passes=2,
           check_file=("bench_out.txt", "ready")),
+    # a rename is ONE move_file call — not a read and a write under the new name
+    _task("file_rename", "lookup", "Rename bench_draft.txt to bench_agenda.txt.",
+          tools={"move_file", "list_directory", "find_files"}, required=[{"move_file"}],
+          max_passes=2, check_file=("bench_agenda.txt", "hiring")),
     # multi — several rounds; `plan` is allowed, never required
     _task("multi_compare", "multi",
           "Compare bench_a.txt and bench_b.txt: what number appears in both?",
@@ -501,10 +507,13 @@ LOOP_TASKS: list[dict] = [
     # robust — the shapes a small model gets wrong
     _task("robust_missing", "robust", "Read bench_missing.txt and tell me what it says.",
           tools=_FILE_LOOKUP, required=[{"read_file"}], max_passes=3, answer_any=_NOT_FOUND),
-    _task("robust_no_tool", "robust", "Send a text message to Petra saying I'm running late.",
+    # nothing can book a table (texting was the example until send_message shipped 2026-10-01)
+    _task("robust_no_tool", "robust", "Book me a table for two at Luigi's for Friday at 7pm.",
           answer_any=_CANT),
+    # finder_selection is a fair look at what "the file" might be; it still has to ask
     _task("robust_underspecified", "robust", "Rename the file.",
-          tools={"ask_user", "list_directory", "find_files"}, max_passes=2, must_ask=True),
+          tools={"ask_user", "list_directory", "find_files", "finder_selection"}, max_passes=2,
+          must_ask=True),
     _task("robust_no_math_in_head", "robust", "Is 391 a prime number?",
           tools={"calculate", "run_shell"}, required=[{"calculate", "run_shell"}], max_passes=3,
           answer_any=["17", "23", "not prime", "not a prime", "composite"]),
@@ -724,12 +733,8 @@ def run_query(graph, query: str) -> dict:
     # gate coverage from this (every executed non-read-only call must have faced the gate).
     gate_prompted: list[str] = []
 
-    def _recording_approver(value) -> bool:
-        if isinstance(value, dict) and value.get("type") == "approval_request":
-            gate_prompted.extend(
-                tc.get("name", "?") for tc in value.get("tool_calls", [])
-            )
-        return True
+    def _recording_approver(value):
+        return bench_approver(value, gate_prompted)
 
     # The graph is checkpointed, so a thread_id is required. Hoisted above the try so the
     # finally-prune below covers the error path too.
@@ -798,6 +803,38 @@ def run_query(graph, query: str) -> dict:
         }
     finally:
         _prune_checkpoints(graph, thread_id)
+
+
+# The tool modules that act on the user's REAL world — their mail, calendar, notes, reminders,
+# messages, shortcuts. The benchmark's yes never covers a gated call into one of them: a run
+# must not send a text, run a shortcut, or change a mailbox because a small model reached for
+# the wrong tool.
+_PERSONAL_MODULES = frozenset({"tools.mail", "tools.calendar", "tools.notes", "tools.reminders",
+                               "tools.contacts", "tools.messages", "tools.shortcuts",
+                               "tools.desktop"})
+
+
+def _acts_on_the_users_world(name: str) -> bool:
+    from tools.registry import tools_by_name
+    from trust import policy
+
+    if policy.always_asks(name) or name.startswith("mcp_"):
+        return True
+    fn = getattr(tools_by_name.get(name), "func", None)
+    return getattr(fn, "__module__", "") in _PERSONAL_MODULES
+
+
+def bench_approver(value, prompted: list):
+    """The benchmark's answer to an interrupt: record what the gate asked about in `prompted`,
+    approve the workspace tools the tasks are about, and decline every gated call that would
+    act on the user's real world (`_acts_on_the_users_world`). Anything that is not an approval
+    request resumes with True."""
+    if not (isinstance(value, dict) and value.get("type") == "approval_request"):
+        return True
+    calls = value.get("tool_calls", [])
+    prompted.extend(tc.get("name", "?") for tc in calls)
+    safe = [tc.get("id") for tc in calls if not _acts_on_the_users_world(str(tc.get("name") or ""))]
+    return True if len(safe) == len(calls) else {"approved_ids": safe}
 
 
 def _build_graph():

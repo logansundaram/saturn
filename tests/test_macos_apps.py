@@ -22,33 +22,7 @@ from tools.applescript import RS, US, AppleScriptError
 NOW = datetime(2026, 9, 6, 10, 0, 0).astimezone()
 
 
-@pytest.fixture
-def mac(monkeypatch):
-    """Pin the platform to macOS and capture osascript invocations. Yields a controller whose
-    `.calls` lists every argv and whose `.reply(stdout)` sets the next canned output."""
-
-    class Ctl:
-        calls: list[list[str]] = []
-        stdout = ""
-        returncode = 0
-        stderr = ""
-
-        def reply(self, stdout, returncode=0, stderr=""):
-            self.stdout, self.returncode, self.stderr = stdout, returncode, stderr
-
-        def script(self, i=-1):
-            argv = self.calls[i]
-            return argv[argv.index("-e") + 1] if "-e" in argv else argv[-1]
-
-    ctl = Ctl()
-
-    def fake_run(argv, timeout):
-        ctl.calls.append(list(argv))
-        return subprocess.CompletedProcess(argv, ctl.returncode, ctl.stdout, ctl.stderr)
-
-    monkeypatch.setattr(applescript, "_platform", lambda: "darwin")
-    monkeypatch.setattr(applescript, "_run", fake_run)
-    return ctl
+# `mac` (the captured-osascript controller) lives in conftest.py — every app-tool test file uses it.
 
 
 # ── the runner ───────────────────────────────────────────────────────────────────────────────
@@ -265,15 +239,15 @@ def _event_rows(*rows):
 
 def test_list_events_parses_and_sorts_by_start(mac, clock):
     mac.reply(_event_rows(
-        ("Work", "uid-2", "Standup", "2026-09-08T09:30", "2026-09-08T09:45", "false", "Zoom"),
-        ("Home", "uid-1", "Labor Day", "2026-09-07T00:00", "2026-09-08T00:00", "true", ""),
+        ("Work", "uid-2", "Standup", "2026-09-08T09:30", "2026-09-08T09:45", "false", "Zoom", ""),
+        ("Home", "uid-1", "Labor Day", "2026-09-07T00:00", "2026-09-08T00:00", "true", "", ""),
     ))
     out = _tool("list_calendar_events").invoke({"start": "2026-09-07", "end": "2026-09-09"})
     assert out == [
         {"calendar": "Home", "uid": "uid-1", "title": "Labor Day", "start": "2026-09-07T00:00",
-         "end": "2026-09-08T00:00", "all_day": True, "location": ""},
+         "end": "2026-09-08T00:00", "all_day": True, "location": "", "recurring": False},
         {"calendar": "Work", "uid": "uid-2", "title": "Standup", "start": "2026-09-08T09:30",
-         "end": "2026-09-08T09:45", "all_day": False, "location": "Zoom"},
+         "end": "2026-09-08T09:45", "all_day": False, "location": "Zoom", "recurring": False},
     ]
     s = mac.script()
     assert "my mkdate(2026, 9, 7, 0)" in s and "my mkdate(2026, 9, 9, 0)" in s
@@ -397,15 +371,15 @@ def test_mail_tools_are_registered_with_the_right_trust():
 
 def test_list_mail_parses_records_newest_first(mac):
     mac.reply(_event_rows(
-        ("101", "Costco <c@costco.com>", "Deals", "2026-09-06T10:45", "false"),
-        ("99", "A Friend <f@x.org>", "Re: dinner", "2026-09-05T19:00", "true"),
+        ("101", "Costco <c@costco.com>", "Deals", "2026-09-06T10:45", "false", "false"),
+        ("99", "A Friend <f@x.org>", "Re: dinner", "2026-09-05T19:00", "true", "false"),
     ))
     out = _tool("list_mail").invoke({})
     assert out == [
         {"id": "101", "mailbox": "inbox", "from": "Costco <c@costco.com>", "subject": "Deals",
-         "date": "2026-09-06T10:45", "unread": True},
+         "date": "2026-09-06T10:45", "unread": True, "replied": False},
         {"id": "99", "mailbox": "inbox", "from": "A Friend <f@x.org>", "subject": "Re: dinner",
-         "date": "2026-09-05T19:00", "unread": False},
+         "date": "2026-09-05T19:00", "unread": False, "replied": False},
     ]
     s = mac.script()
     assert mac.calls[0] == ["open", "-gja", "Mail"]
@@ -414,9 +388,9 @@ def test_list_mail_parses_records_newest_first(mac):
 
 def test_list_mail_unread_only_filters_in_python_over_the_newest(mac):
     mac.reply(_event_rows(
-        ("3", "a", "read one", "2026-09-06T10:00", "true"),
-        ("2", "b", "unread one", "2026-09-06T09:00", "false"),
-        ("1", "c", "unread two", "2026-09-06T08:00", "false"),
+        ("3", "a", "read one", "2026-09-06T10:00", "true", "false"),
+        ("2", "b", "unread one", "2026-09-06T09:00", "false", "false"),
+        ("1", "c", "unread two", "2026-09-06T08:00", "false", "false"),
     ))
     out = _tool("list_mail").invoke({"unread_only": True, "limit": 1})
     assert [m["id"] for m in out] == ["2"]
@@ -426,7 +400,7 @@ def test_list_mail_unread_only_filters_in_python_over_the_newest(mac):
 
 
 def test_list_mail_unread_only_says_so_when_none_in_the_window(mac):
-    mac.reply(_event_rows(("3", "a", "read one", "2026-09-06T10:00", "true")))
+    mac.reply(_event_rows(("3", "a", "read one", "2026-09-06T10:00", "true", "false")))
     out = _tool("list_mail").invoke({"unread_only": True})
     assert out == "No unread messages among the newest 25 in inbox."
 
@@ -446,7 +420,7 @@ def test_list_mail_unknown_mailbox_is_a_plain_error(mac):
 
 
 def test_search_mail_matches_subject_or_sender(mac):
-    mac.reply(_event_rows(("7", "bmw@x.com", "Your BMW order", "2026-09-05T19:00", "true")))
+    mac.reply(_event_rows(("7", "bmw@x.com", "Your BMW order", "2026-09-05T19:00", "true", "false")))
     out = _tool("search_mail").invoke({"query": "BMW"})
     assert out[0]["subject"] == "Your BMW order"
     s = mac.script()

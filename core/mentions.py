@@ -1,5 +1,7 @@
 """`@file` mentions — pull a local file's contents into a turn inline.
 
+(`@clipboard` attaches the clipboard's text the same way — see `_CLIPBOARD_RE`.)
+
 A user message can reference local files as `@path/to/file` (Tab-completed at the `»` prompt; see
 `tui.ui`'s completer) or `@"path with spaces"` — the quoted form is what dragging a file onto the
 terminal after typing `@` produces. `dropped_path` recognizes the other drag shape: a line that IS
@@ -38,6 +40,28 @@ _MAX_FILE_CHARS = 12_000
 # Trailing punctuation to try stripping so `@notes.md.` / `@file)` / `@a.py,` resolve to the file
 # (path extensions keep their dots — we only strip from the END, and only if the full token misses).
 _TRAILING_PUNCT = ".,;:!?)]}>\"'`"
+
+# `@clipboard` attaches what is on the clipboard, the way `@file` attaches a file. It is read
+# ONLY when the user types the token: a clipboard routinely holds a password, and a tool the
+# model could call on its own would copy that into the trace. The token is the whole word —
+# `@clipboard.` ends a sentence, `@clipboard.txt` and `@clipboard-notes.md` are files.
+_CLIPBOARD_RE = re.compile(
+    rf"(?<!\S)@clipboard(?=[{re.escape(_TRAILING_PUNCT)}]*(?:\s|$))", re.IGNORECASE)
+CLIPBOARD = "clipboard"   # the label an attached clipboard gets in `expand`'s path list
+
+
+def _clipboard() -> "str | None":
+    """The clipboard's text (macOS `pbpaste`), or None when it cannot be read."""
+    import subprocess
+    import sys
+
+    if sys.platform != "darwin":
+        return None
+    try:
+        proc = subprocess.run(["pbpaste"], capture_output=True, timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return proc.stdout.decode("utf-8", errors="replace") if proc.returncode == 0 else None
 
 
 def _resolve(token: str) -> str | None:
@@ -134,10 +158,19 @@ def expand(text: str, extra_paths: tuple[str, ...] | list[str] = ()) -> tuple[st
         if os.path.isfile(p) and _canonical(p) not in attached:
             paths.append(p)
             attached.add(_canonical(p))
-    if not paths:
+    # `@clipboard` — unless a file by that name is what the mention resolved to.
+    clip = None
+    if _CLIPBOARD_RE.search(text or "") and not os.path.isfile(CLIPBOARD):
+        clip = (_clipboard() or "").strip("\n") or None
+    if not paths and clip is None:
         return "", []
     parts = ["### Files attached to this message (referenced inline with @)"]
     for path in paths:
         label = display(path)
         parts.append(f"\n#### {label}\n```\n{_read_clamped(path)}\n```")
+    if clip is not None:
+        if len(clip) > _MAX_FILE_CHARS:
+            clip = clip[:_MAX_FILE_CHARS] + f"\n… [truncated — the clipboard exceeds {_MAX_FILE_CHARS} chars]"
+        parts.append(f"\n#### {CLIPBOARD}\n```\n{clip}\n```")
+        paths.append(CLIPBOARD)
     return "\n".join(parts), paths

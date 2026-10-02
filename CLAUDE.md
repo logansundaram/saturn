@@ -30,7 +30,7 @@ saturn -q "query"                    # pipe-friendly one-shot (answer only on st
 saturn -p "query" --json --export run.json
 saturn --replay logging/exports/run_1.json   # render an exported record, no DB/models needed
 
-# tests — fully offline (no Ollama, no network, no embedder); ~4s for ~1150 tests
+# tests — fully offline (no Ollama, no network, no embedder); ~5s for ~1270 tests
 python -m pytest tests/ -q
 python -m pytest tests/test_engine.py -q                 # one file
 python -m pytest tests/test_policy.py -q -k prefix       # one test by name
@@ -155,19 +155,24 @@ accept). The benchmark's memory tasks and `tests/test_memory_*.py` pin this.
 
 ### Trust stack (`trust/`)
 
-- `policy.py` — one object behind `/policy risk|allow|open`, `runtime.auto_approve`, and `--yolo`.
+- `policy.py` — one object behind `/policy risk|allow|shortcut|open`, `runtime.auto_approve`, and `--yolo`.
   `/policy` (`commands/policy.py`) is the ONE trust front door: its bare readout, the gate's levers,
   and `egress` / `airgap` over `egress.py` (`/privacy` merged in 2026-09-30).
   Shell prefix matching is token-based and refuses metacharacters; the tail past a granted prefix
   is screened too (`arg_tail_rejects`: interpreters, capability flags, globs and `{}`, paths
-  outside the workspace — bare or as a flag's value). Persisted in `database/permissions.json`.
+  outside the workspace — bare or as a flag's value). `run_shortcut` has its own allowlist, one
+  shortcut by exact name (`/policy shortcut`). `ALWAYS_ASKS` (`send_message`) sits above every
+  lever: no tier, open gate, risk override or always-allow lets a send through, and headless
+  refuses it even with `--yolo`; the gate's `a` never drops the tier of a tool in
+  `NO_BLANKET_GRANT`. Persisted in `database/permissions.json`.
 - `egress.py` — every outbound network op calls `check()` (air-gap) then `record()`. The complete list
-  of egress chokepoints is `core/llms.py`, `tools/web.py`, `tools/mcp_client.py`;
-  `tests/test_no_new_egress.py` fails on a network-client import anywhere else. A new chokepoint is a
-  deliberate edit to that test plus check/record wiring. A remote `OLLAMA_HOST` counts as egress
-  (`is_loopback_host` parses the address; never match it as a string). `run_shell` and stdio MCP
-  servers are processes the ledger cannot see inside: each run is recorded `UNTRACKED` (never a
-  send, never absent), and under air-gap `policy.airgap_holds` keeps them from being
+  of egress chokepoints is `core/llms.py`, `tools/web.py`, `tools/mcp_client.py`, `tools/messages.py`
+  (`send_message`); `tests/test_no_new_egress.py` fails on a network-client import anywhere else, and
+  `tests/test_messages.py` pins the one chokepoint that imports none (it sends through `osascript`).
+  A new chokepoint is a deliberate edit to that test plus check/record wiring. A remote `OLLAMA_HOST` counts as egress
+  (`is_loopback_host` parses the address; never match it as a string). `run_shell`, `run_shortcut` and
+  stdio MCP servers are processes the ledger cannot see inside: each run is recorded `UNTRACKED`
+  (never a send, never absent), and under air-gap `policy.airgap_holds` keeps them from being
   auto-approved — headless refuses them even with `--yolo`.
 - `quarantine.py` — untrusted output (web, MCP, files, shell, corpus — a FAILED call's text too) is
   scanned, fenced as data, and the next batch that can act is escalated to the gate; `url_hold`
@@ -191,7 +196,11 @@ File tools, `run_shell`'s working directory, the workspace `SATURN.md` and `/ini
 `core/workspace.py`: the launch folder (`agent.main` sets it from the cwd) plus folders added
 with `/add-dir`. `workspace.resolve` is the ONE containment check (`tools/files._resolve` wraps
 it); unset, the root falls back to `paths.workspace`, which is what tests and the benchmark use.
-Snapshots record absolute paths, so `/undo` restores the right file from any folder.
+Snapshots record absolute paths, so `/undo` restores the right file from any folder; `move_file`
+records the move itself (no byte copy) and `/undo` moves the file back. `search_files` asks
+Spotlight (`mdfind`) for a plain phrase on macOS — candidates only, re-matched by the regex and
+filtered by the same containment and pruning as the walk; `tests/conftest.py` turns that seam
+off for every test.
 
 `notify/` is the scheduled-notification seam behind `schedule_notification` and `/notify`: `backend()` picks
 by `sys.platform` (macOS = one launchd LaunchAgent per one-shot, shown by `osascript`; anything else is the
@@ -203,15 +212,23 @@ menu bar icon: a login LaunchAgent the REPL starts when `notify.menubar` is on (
 `core/hooks.py` runs the user's `~/.saturn/hooks.yaml` (`$SATURN_HOME`) commands on turn-start /
 turn-end (`app/turn.run_turn`) and before- / after-write (`tools/files.py`). They are the user's
 commands: no gate, not egress — which is why the file tools refuse to write the hooks file, and
-likewise the live `config.yaml` and `permissions.json` (`tools/files._control_files`).
+likewise the live `config.yaml` and `permissions.json` (`tools/files._control_files`) — or to move a
+folder that holds one of them.
 `tests/conftest.py` gives every test an empty `SATURN_HOME` and a throwaway `HOME`.
 
-Native macOS app tools (`tools/notes.py`, `tools/calendar.py`, `tools/mail.py`) go through `tools/applescript.py` — `run(script,
+Native macOS app tools (`tools/notes.py`, `tools/calendar.py`, `tools/mail.py`, `tools/contacts.py`,
+`tools/reminders.py`, `tools/messages.py`, `tools/desktop.py`) go through `tools/applescript.py` — `run(script,
 app=)` opens the app hidden then runs `osascript` (osascript alone gets -600 on a closed Calendar); output is
-RS/US-delimited via `records()`. AppleScript, not EventKit: EventKit access from a terminal Python depends on the
+RS/US-delimited via `records()`. Each Apple event costs real time (Reminders ~1s, a Contacts person ~0.2s):
+fetch in bulk, never per item, and never issue two `messages of <mailbox>` references in one Mail script. AppleScript, not EventKit: EventKit access from a terminal Python depends on the
 terminal app's Info.plist. Readers are `untrusted=True` (shared notes, invitations, email); tests capture `applescript._run`.
-`draft_mail` opens an unsent draft and is NOT egress; a `send_mail`/`send_message` would be a new egress chokepoint
-(deferred, with the Messages-history findings, in `docs/superpowers/specs/2026-09-06-macos-apps.md`).
+`draft_mail` and `reply_mail` open an unsent draft and are NOT egress. `send_message` (iMessage) IS — the
+chokepoint wiring above; `send_mail` is still deferred. `read_messages` reads `chat.db` and needs Full Disk
+Access. `tools/shortcuts.py` runs the user's Shortcuts through the `shortcuts` CLI (two tools, not one per
+shortcut: the bound schemas are the cached prefix). There is no clipboard tool on purpose — the user types
+`@clipboard` (`core/mentions.py`) or `/copy`. Probe findings and what is still unverified:
+`docs/superpowers/specs/2026-09-06-macos-apps.md`. `benchmark.py`'s approver (`bench_approver`) declines
+every gated call into these modules: a benchmark run must never act on the user's real world.
 
 ### Slash commands
 

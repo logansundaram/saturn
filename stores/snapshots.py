@@ -3,7 +3,8 @@ Workspace snapshots — the undo layer behind the mutating file tools (`/undo`).
 
 Before `write_file` / `edit_file` changes a file, the file's current bytes are copied
 into a per-turn snapshot batch under `config.path("snapshots")` (a file that does not exist yet is
-recorded too, so undoing a creation deletes it). `/undo` restores the most recent batch and removes
+recorded too, so undoing a creation deletes it). `move_file` records the move itself
+(`record_move` — no byte copy; undo moves the file back). `/undo` restores the most recent batch and removes
 it — unless a restore FAILED, in which case the batch survives (shrunk to the failed entries) so
 the saved bytes stay available for a retry; batches are pruned to the last `_KEEP_BATCHES` turns
 so the directory can't grow unbounded.
@@ -21,6 +22,7 @@ read-only turns leave nothing behind.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 from datetime import datetime
 from pathlib import Path
@@ -92,8 +94,10 @@ def _ensure_batch() -> "Path | None":
 
 
 def _key(entry: dict) -> str:
-    """An entry's identity: its absolute path, else the legacy workspace-relative path."""
-    return entry.get("abs") or entry["path"]
+    """An entry's identity: its absolute path, else the legacy workspace-relative path. A move
+    record is its own entry, apart from a byte snapshot of the same destination."""
+    key = entry.get("abs") or entry["path"]
+    return f"move:{key}" if entry.get("moved_from") else key
 
 
 def _saved(batch_dir: Path, entry: dict) -> Path:
@@ -143,6 +147,26 @@ def snapshot_file(target: Path) -> None:
         _save_manifest(batch_dir, manifest)
     except Exception as exc:
         diag.log(f"snapshot_file failed for {target}: {exc}")
+
+
+def record_move(source: Path, destination: Path) -> None:
+    """Record that `source` is about to be moved to `destination` (`move_file`). A move is its
+    own undo record — no bytes are copied, so renaming a folder of photos costs nothing here;
+    /undo moves the file back. Best-effort like `snapshot_file`."""
+    from core import workspace
+
+    try:
+        batch_dir = _ensure_batch()
+        if batch_dir is None:
+            return
+        destination = Path(destination)
+        manifest = _load_manifest(batch_dir)
+        manifest["files"].append({"path": workspace.relative(destination),
+                                  "abs": destination.as_posix(),
+                                  "moved_from": Path(source).as_posix()})
+        _save_manifest(batch_dir, manifest)
+    except Exception as exc:
+        diag.log(f"record_move failed for {source}: {exc}")
 
 
 def _batch_dirs() -> list[Path]:
@@ -215,6 +239,9 @@ def undo_last() -> "tuple[str, list[str]]":
     # or a legacy path fell outside the configured workspace). Their saved bytes are the only
     # copy of the turn-start state, so they decide below whether the batch may be deleted.
     unresolved: list[dict] = []
+    # Destinations whose move back did not happen this pass: the moved file is still there, so
+    # the bytes it replaced must not be restored over it (they wait in the batch for the retry).
+    held: set[str] = set()
     for entry in reversed(manifest.get("files", [])):
         rel = _label(entry)
         target, problem = _target(entry)
@@ -222,8 +249,29 @@ def undo_last() -> "tuple[str, list[str]]":
             actions.append(f"skipped {rel} ({problem})")
             unresolved.append(entry)
             continue
+        if entry.get("abs") in held and not entry.get("moved_from"):
+            actions.append(f"left {rel} as it is (the file moved there was not moved back)")
+            unresolved.append(entry)
+            continue
         try:
-            if entry.get("existed"):
+            if entry.get("moved_from"):
+                from core import workspace
+
+                origin = Path(entry["moved_from"])
+                back = _label({"abs": entry["moved_from"]})
+                # lexists: a moved symlink is there even when what it points to is not.
+                if not os.path.lexists(target):
+                    actions.append(f"skipped {rel} (no longer there to move back)")
+                elif os.path.lexists(origin) and not workspace.case_only(origin, target):
+                    # Never clobber what now sits at the old place; the record stays for a retry.
+                    actions.append(f"FAILED to move {rel} back: {back} is in the way")
+                    unresolved.append(entry)
+                    held.add(entry["abs"])
+                else:
+                    origin.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.move(str(target), str(origin))
+                    actions.append(f"moved {rel} back to {back}")
+            elif entry.get("existed"):
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(_saved(batch_dir, entry), target)
                 actions.append(f"restored {rel}")
@@ -234,6 +282,8 @@ def undo_last() -> "tuple[str, list[str]]":
         except Exception as exc:
             actions.append(f"FAILED to restore {rel}: {exc}")
             unresolved.append(entry)
+            if entry.get("moved_from"):
+                held.add(entry["abs"])
             continue
 
     label = manifest.get("created", "") or manifest.get("id", batch_dir.name)

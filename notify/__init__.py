@@ -119,6 +119,29 @@ def _day_offset(day: "str | None", now: datetime) -> int:
     return (_WEEKDAYS.index(day.split()[-1]) - now.weekday() - 1) % 7 + 1
 
 
+def _hour_minute(m: "re.Match", raw: str) -> "tuple[int, int]":
+    """The 24-hour (hour, minute) of a `_CLOCK` match."""
+    hh, mm, ampm = int(m.group(2)), int(m.group(3) or 0), m.group(4)
+    if ampm == "pm" and hh < 12:
+        hh += 12
+    elif ampm == "am" and hh == 12:
+        hh = 0
+    if hh > 23 or mm > 59:
+        raise NotifyError(f"could not understand the time {raw!r}")
+    return hh, mm
+
+
+def clock_only(text: str) -> "tuple[int, int] | None":
+    """(hour, minute) when `text` is a bare clock time (`16:00`, `3pm`) and names no day, else
+    None. `parse_when` reads such a time as its next occurrence from now — right for an alert,
+    wrong for moving something that already has a day, so that caller asks here first."""
+    raw = (text or "").strip()
+    m = _CLOCK.match(raw.lower())
+    if not m or m.group(1) or not (m.group(3) or m.group(4)):
+        return None
+    return _hour_minute(m, raw)
+
+
 def parse_when(text: str, now: datetime | None = None, *, allow_past: bool = False,
                whole_day: bool = False) -> datetime:
     """Resolve a `when` string to an aware local datetime strictly after `now` (or any time at
@@ -148,13 +171,8 @@ def parse_when(text: str, now: datetime | None = None, *, allow_past: bool = Fal
     elif (m := _RELATIVE.match(s)) and m.group(2) in _UNITS:
         when = now + timedelta(**{_UNITS[m.group(2)]: int(m.group(1))})
     elif (m := _CLOCK.match(s)) and (m.group(3) or m.group(4) or m.group(1)):
-        day, hh, mm, ampm = m.group(1), int(m.group(2)), int(m.group(3) or 0), m.group(4)
-        if ampm == "pm" and hh < 12:
-            hh += 12
-        elif ampm == "am" and hh == 12:
-            hh = 0
-        if hh > 23 or mm > 59:
-            raise NotifyError(f"could not understand the time {raw!r}")
+        day = m.group(1)
+        hh, mm = _hour_minute(m, raw)
         when = (now.replace(hour=hh, minute=mm, second=0, microsecond=0)
                 + timedelta(days=_day_offset(day, now)))
         if day is None and when <= now:

@@ -2,9 +2,9 @@
 File tools — read, write, edit, list, and search files inside the folders Saturn can reach.
 
 Every path is resolved per call through `core/workspace.resolve` — the launch folder plus any
-`/add-dir` folders — so a tool call can never reach anything else. `write_file` and
-`edit_file` are the mutating tools here (gated via registry.TOOL_RISK), and both snapshot the
-target's turn-start state first (stores/snapshots.py) so `/undo` can reverse them.
+`/add-dir` folders — so a tool call can never reach anything else. `write_file`,
+`edit_file` and `move_file` are the mutating tools here (gated via registry.TOOL_RISK), and each
+records the turn-start state first (stores/snapshots.py) so `/undo` can reverse it.
 
 `search_files` (content regex) and `find_files` (name glob) are the navigation primitives:
 without them the agent's only way to locate something is list_directory + reading whole files,
@@ -16,6 +16,9 @@ source keeps the useful part of the result intact).
 import fnmatch
 import os
 import re
+import shutil
+import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -24,7 +27,7 @@ from tools.toolspec import ToolError, register_tool
 
 from core import doctext, hooks
 from core import workspace as _ws
-from stores.snapshots import snapshot_file
+from stores.snapshots import record_move, snapshot_file
 
 
 # The write tools' success lines (tests and the loop benchmark match on them).
@@ -34,12 +37,12 @@ MSG_APPENDED = "Content appended to file successfully"
 EDIT_PREFIX = "Edited "  # edit_file's success line: f"{EDIT_PREFIX}{path}: replaced …"
 
 
-def _resolve(path: str):
+def _resolve(path: str, *, follow: bool = True):
     """Resolve a path the model gave against the folders Saturn can reach
     (core/workspace.resolve — the ONE containment check). Returns (root, target, error): `error`
     is the refusal string when the path is outside every reachable folder (then `target` must
     not be used), else None. Every tool below starts here, and so does the approval preview."""
-    target, refusal = _ws.resolve(path)
+    target, refusal = _ws.resolve(path, follow=follow)
     return _ws.root(), target, refusal
 
 
@@ -65,22 +68,41 @@ def _control_files() -> "dict[Path, str]":
     }
 
 
-def _check_write_allowed(target_path, tool: str) -> None:
-    """Raise when a write must not happen: a control file (`_control_files`) is never the
-    agent's to write, and the user's before-write hooks may say no. RAISED, like read_file's
-    not-found, so the round is a failed step the answer's incidents note discloses. Asked only
-    once the write is otherwise certain, so a hook never fires for a call refused for another
-    reason."""
+def _touches(target: Path, control: Path) -> bool:
+    """Whether writing or moving `target` reaches `control`: it IS the file, or it is a folder
+    the file lives in (moving that folder away and another into its place replaces the file
+    without ever naming it). File identity where the paths exist — on macOS's case-insensitive
+    disk CONFIG.YAML is config.yaml — and case-folded spelling where they do not exist yet."""
+    if _ws._inside(control, target):
+        return True
+    return Path(str(control).casefold()).is_relative_to(str(target).casefold())
+
+
+def _refuse_control_file(target_path) -> None:
+    """Raise when `target_path` is a control file (`_control_files`) or a folder holding one:
+    never the agent's to write or move."""
     try:
         target = Path(target_path).resolve()
         protected = {Path(p).resolve(): why for p, why in _control_files().items()}
     except OSError:
         protected, target = {}, None
-    # File identity, not spelling: on macOS's case-insensitive disk CONFIG.YAML is config.yaml.
-    hit = next((p for p in protected if target is not None and _ws.same(target, p)), None)
+    hit = next((p for p in protected if target is not None and _touches(target, p)), None)
     if hit is not None:
+        if len(target.parts) < len(hit.parts):
+            raise PermissionError(f"{hit} {protected[hit]}, and {target} is a folder it lives "
+                                  "in; Saturn never moves or replaces that folder. Ask the "
+                                  "user to do it by hand.")
         raise PermissionError(f"{hit} {protected[hit]}; Saturn never writes it. "
                               "Ask the user to edit it by hand.")
+
+
+def _check_write_allowed(target_path, tool: str) -> None:
+    """Raise when a write must not happen: a control file is never the agent's to write or move
+    (`_refuse_control_file`), and the user's before-write hooks may say no. RAISED, like
+    read_file's not-found, so the round is a failed step the answer's incidents note
+    discloses. Asked only once the write is otherwise certain, so a hook never fires for a call
+    refused for another reason."""
+    _refuse_control_file(target_path)
     refusal = hooks.before_write(target_path, tool)
     if refusal:
         raise PermissionError(refusal)
@@ -225,6 +247,58 @@ def edit_file(file_path: str, old_string: str, new_string: str, replace_all: boo
     return f"{EDIT_PREFIX}{file_path}: replaced {n} occurrence(s)."
 
 
+@register_tool("side_effecting")
+def move_file(source: str, destination: str, overwrite: bool = False):
+    """Moves or renames a file or folder. source and destination are relative to the working folder (an absolute or ~ path inside a reachable folder also works). If destination is an existing folder the item is moved INTO it under its own name; missing parent folders are created. An existing file at the destination is replaced only with overwrite=True. Use this to rename, sort or archive files — never read a file and write it back under a new name."""
+    # The source is the directory ENTRY: a symlink is moved as a link, never the file it
+    # points to (the gate showed the link's name).
+    _, src, error = _resolve(source, follow=False)
+    if error:
+        raise ToolError(error)
+    _, dst, error = _resolve(destination)
+    if error:
+        raise ToolError(error)
+    if not (src.exists() or src.is_symlink()):
+        raise ToolError(f"File not found in the workspace: {source}.")
+    # readme.md -> README.md: on a case-insensitive disk the new spelling "exists" and is the
+    # same file, but it is a rename like any other.
+    case_only = _ws.case_only(src, dst)
+    if dst.is_dir() and not _ws.same(src, dst):
+        dst = dst / src.name            # "move it into that folder"
+    if _ws.same(src, dst) and not case_only:
+        raise ToolError("source and destination are the same place — nothing to move.")
+    # By file identity as well as by spelling: `Notes/x` is inside `notes` on a case-insensitive
+    # disk, where the rename fails and shutil.move would copy the folder into itself and then
+    # delete it. (A symlink to a folder is only a link: it may move into the folder it names.)
+    if src.is_dir() and (dst.is_relative_to(src)
+                         or (not src.is_symlink() and _ws._inside(dst.parent, src))):
+        raise ToolError("cannot move a folder inside itself.")
+    if dst.is_dir() and not case_only:
+        raise ToolError(f"{_ws.relative(dst)} is a folder; move_file never replaces a folder.")
+    if dst.exists() and not (overwrite or case_only):
+        raise ToolError(f"{_ws.relative(dst)} already exists. Pick another name, or pass "
+                        "overwrite=true to replace it.")
+    _refuse_control_file(dst)                # before the source's hook: none fires for a refused move
+    _check_write_allowed(src, "move_file")   # a control file is never moved away either
+    _check_write_allowed(dst, "move_file")
+    was = _ws.relative(src)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    replacing = dst.exists() and not case_only
+    if replacing:
+        snapshot_file(dst)               # the file about to be replaced: /undo restores its bytes
+    try:
+        # A rename replaces an existing FILE in one step, so nothing is deleted before the
+        # move is known to work; across disks shutil.move copies, then removes the source.
+        if replacing and src.is_dir():
+            raise OSError("a folder cannot replace a file")
+        shutil.move(str(src), str(dst))
+    except OSError as exc:
+        raise ToolError(f"could not move {was}: {exc}; nothing was changed.") from exc
+    record_move(src, dst)
+    hooks.run("after-write", file=str(dst), tool="move_file")
+    return f"Moved {was} to {_ws.relative(dst)}"
+
+
 # search_files caps — small at the source so a huge workspace can't flood one observation.
 _SEARCH_MAX_MATCHES = 100      # total matching lines returned
 _SEARCH_MAX_PER_FILE = 20      # matching lines per file (one log file can't eat the budget)
@@ -235,6 +309,120 @@ _SEARCH_MAX_FILE_BYTES = 2_000_000  # skip files larger than this
 # the search stops and SAYS it stopped, so "no matches" is never claimed for a partial scan.
 _SEARCH_MAX_SECONDS = 10.0
 _FIND_MAX_RESULTS = 200
+
+# ── Spotlight (macOS) behind search_files ────────────────────────────────────────────────────
+# macOS has already indexed file contents, PDFs included: a phrase query over ~ answers in about
+# a second where the direct walk needs 80 (both measured 2026-10-01). The index is a CANDIDATE
+# source, never the judge — it matches words across line breaks and lags behind edits — so every
+# candidate is read and matched by the same regex, and passes the same containment and pruning
+# rules as the walk. A small folder is still walked whole; Spotlight covers what the walk could
+# not reach in `_SEARCH_WALK_SECONDS`, plus the document types the walk skips as binary.
+_SEARCH_WALK_SECONDS = 2.0     # the direct walk's budget once the index has answered
+_SPOTLIGHT_SECONDS = 5.0       # mdfind's own timeout
+_SPOTLIGHT_MAX_DOCS = 15       # PDFs / .docx / .xlsx reported per search
+# Opening a document is a full parse (fifteen PDFs made one search over ~ take 11 s,
+# 2026-10-01). Past this budget a document is reported as an index match, with its date, and
+# not opened — the answer to "find the tax return I saved last spring" is the file.
+_SPOTLIGHT_DOC_SECONDS = 3.0
+_DOC_SUFFIXES = (".pdf", ".docx", ".xlsx")
+# What Spotlight can be asked: a plain word or phrase. Anything with regex syntax (`+`
+# included: `a+b` matches "aab", never the text "a+b"), or a quote or backslash that would need
+# escaping in the query, stays with the walk.
+_PLAIN_PHRASE = re.compile(r"\w[\w ,'@:/-]{2,}")
+SPOTLIGHT_NOTE = ("… searched the nearest files directly and the rest through Spotlight's index; "
+                  "a file Spotlight has not indexed may be missing — narrow the directory to "
+                  "search it in full.")
+
+
+def _platform() -> str:
+    return sys.platform
+
+
+def _mdfind(argv: list[str], timeout: float) -> subprocess.CompletedProcess:
+    return subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+
+
+def _spotlight_query(literal: str, directory: Path) -> "list[Path] | None":
+    """The files under `directory` whose indexed content holds `literal`, or None when there is
+    no index answer (not macOS, mdfind missing, failed or timed out, or a folder the index
+    does not cover)."""
+    if _platform() != "darwin":
+        return None
+    query = f'kMDItemTextContent == "*{literal}*"cd'
+    try:
+        proc = _mdfind(["mdfind", "-onlyin", str(directory), query], _SPOTLIGHT_SECONDS)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0:
+        return None
+    paths = [Path(line) for line in (proc.stdout or "").splitlines() if line.strip()]
+    if not paths and not _spotlight_knows(directory):
+        return None
+    return paths
+
+
+def _spotlight_knows(directory: Path) -> bool:
+    """Whether the index covers `directory`. mdfind exits 0 with nothing for a folder Spotlight
+    does not index (a Privacy exclusion, a hidden folder, /tmp), so an empty answer means
+    "nothing matches" only when this is true. Asked of the folder's own record: the date-added
+    attribute exists only in the index (probed 2026-10-01: set under ~/Documents, null under
+    /private/tmp and a .venv), and one mdls is instant where counting a home folder's files
+    through mdfind took minutes."""
+    try:
+        proc = _mdfind(["mdls", "-raw", "-name", "kMDItemDateAdded", str(directory)],
+                       _SPOTLIGHT_SECONDS)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return proc.returncode == 0 and (proc.stdout or "").strip() not in ("", "(null)")
+
+
+# The seam search_files calls (tests replace it; conftest turns it off by default).
+_spotlight = _spotlight_query
+
+
+def _index_spelling(top: Path, paths: "list[Path]") -> Path:
+    """`top` as the index spells it. On macOS's case-insensitive disk `documents` is
+    `Documents`, and mdfind answers with the disk's spelling: a candidate is recognized as
+    inside `top`, and as a file the walk already read, only when both are spelled alike."""
+    for path in paths[:1]:
+        for anc in path.parents:
+            if anc == top:
+                break
+            if _ws.same(anc, top):
+                return anc
+    return top
+
+
+def _spotlight_candidates(paths: "list[Path]", top: Path, file_glob: str) -> "list[Path]":
+    """The index's answers that the walk itself would have visited: inside `top` and a reachable
+    folder, no hidden or dependency folder on the way, the name matching `file_glob`."""
+    home_library = Path.home().resolve() / "Library"
+    out = []
+    for path in paths:
+        try:
+            rel = path.relative_to(top)
+        except ValueError:
+            continue
+        if any(part.startswith(".") or part in _ws._HEAVY_DIRS for part in rel.parts):
+            continue
+        if path.is_relative_to(home_library) and not top.is_relative_to(home_library):
+            continue
+        if not fnmatch.fnmatch(path.name, file_glob) or not path.is_file():
+            continue
+        if _ws.resolve(str(path))[1] is not None:
+            continue
+        out.append(path)
+    # Text files first (cheap to check), then documents, newest first.
+    text = sorted(p for p in out if p.suffix.lower() not in _DOC_SUFFIXES)
+    docs = [p for p in out if p.suffix.lower() in _DOC_SUFFIXES]
+    return text + sorted(docs, key=lambda p: (-_mtime(p), p))
+
+
+def _mtime(path: Path) -> float:
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return 0.0
 
 
 def _is_binary(path) -> bool:
@@ -249,7 +437,7 @@ def _is_binary(path) -> bool:
 
 @register_tool("read_only", untrusted=True)
 def search_files(pattern: str, directory: str = ".", file_glob: str = "*"):
-    """Searches the CONTENTS of files for a regular-expression pattern (case-insensitive) and returns matching lines as 'path:line_number: text'. Use this to find where something is mentioned without reading every file. directory is relative to the working folder ('.' = the whole working folder); file_glob filters which files are searched by name (e.g. '*.md'). For finding files by NAME, use find_files instead."""
+    """Searches the CONTENTS of files for a regular-expression pattern (case-insensitive) and returns matching lines as 'path:line_number: text'. Use this to find where something is mentioned without reading every file. directory is relative to the working folder ('.' = the whole working folder); file_glob filters which files are searched by name (e.g. '*.md'). On macOS a plain word or phrase is also found inside PDF / Word / Excel files. For finding files by NAME, use find_files instead."""
     workspace, target_path, error = _resolve_dir(directory)
     if error:
         raise ToolError(error)
@@ -261,22 +449,10 @@ def search_files(pattern: str, directory: str = ".", file_glob: str = "*"):
     matches: list[str] = []
     truncated = timed_out = False
     deadline = time.monotonic() + _SEARCH_MAX_SECONDS
-    walk = _ws.Walk(target_path)
-    for path in walk:
-        if len(matches) >= _SEARCH_MAX_MATCHES:
-            truncated = True
-            break
-        if time.monotonic() > deadline:
-            timed_out = True
-            break
-        if not fnmatch.fnmatch(path.name, file_glob):
-            continue
-        try:
-            if path.stat().st_size > _SEARCH_MAX_FILE_BYTES or _is_binary(path):
-                continue
-            text = path.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            continue
+
+    def scan(path, text) -> None:
+        """Append `path`'s matching lines; sets `truncated` at the total cap."""
+        nonlocal truncated
         rel = _ws.relative(path)
         in_file = 0
         for lineno, line in enumerate(text.splitlines(), 1):
@@ -290,22 +466,101 @@ def search_files(pattern: str, directory: str = ".", file_glob: str = "*"):
             if len(matches) >= _SEARCH_MAX_MATCHES:
                 truncated = True
                 break
+
+    def plain_text(path) -> "str | None":
+        try:
+            if path.stat().st_size > _SEARCH_MAX_FILE_BYTES or _is_binary(path):
+                return None
+            return path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return None
+
+    # Ask the index first (about a second): with its answer in hand the walk only needs to
+    # cover the nearest files, and the rest comes from the candidates below.
+    literal = pattern.strip() if _PLAIN_PHRASE.fullmatch(pattern.strip()) else None
+    indexed = _spotlight(literal, target_path) if literal else None
+    # The walk's budget starts once the index has answered: a slow mdfind must not leave the
+    # nearest files unread, and one that gave no answer (it timed out on a common word) leaves
+    # the walk as the whole search, on its whole budget.
+    if indexed is None:
+        walk_deadline = deadline = time.monotonic() + _SEARCH_MAX_SECONDS
+    else:
+        target_path = _index_spelling(target_path, indexed)
+        walk_deadline = min(deadline, time.monotonic() + _SEARCH_WALK_SECONDS)
+
+    walked: set = set()
+    walk_cut = False
+    walk = _ws.Walk(target_path)
+    for path in walk:
+        if len(matches) >= _SEARCH_MAX_MATCHES:
+            truncated = True
+            break
+        if time.monotonic() > walk_deadline:
+            walk_cut = True
+            break
+        walked.add(path)
+        if not fnmatch.fnmatch(path.name, file_glob):
+            continue
+        text = plain_text(path)
+        if text is not None:
+            scan(path, text)
         if truncated:
             break
 
+    if indexed is not None and not truncated:
+        docs = 0
+        docs_deadline = None
+        for path in _spotlight_candidates(indexed, target_path, file_glob):
+            if time.monotonic() > deadline:
+                timed_out = True
+                break
+            if len(matches) >= _SEARCH_MAX_MATCHES:
+                truncated = True
+                break
+            if path.suffix.lower() in _DOC_SUFFIXES:
+                if docs >= _SPOTLIGHT_MAX_DOCS:
+                    continue
+                docs += 1
+                if docs_deadline is None:
+                    docs_deadline = time.monotonic() + _SPOTLIGHT_DOC_SECONDS
+                if time.monotonic() > docs_deadline:
+                    day = time.strftime("%Y-%m-%d", time.localtime(_mtime(path)))
+                    matches.append(f"{_ws.relative(path)}: in Spotlight's index, not opened "
+                                   f"(modified {day}) — read_file opens it")
+                    continue
+                try:
+                    text = doctext.extract(path)
+                except Exception:        # a corrupt document is skipped, like an unreadable file
+                    text = None
+            elif path in walked:
+                continue                 # the walk already read it
+            else:
+                text = plain_text(path)
+            if text is not None:
+                scan(path, text)
+            if truncated:
+                break
+    elif walk_cut:
+        timed_out = True                 # no index to cover the rest: the old partial-scan case
+
     timeout_note = (f"… stopped after {_SEARCH_MAX_SECONDS:g} s of searching; files not yet "
                     "searched may match — narrow the directory or file_glob.")
+    via_index = indexed is not None and walk_cut
     if not matches:
         if timed_out:
             return (f"No matches for /{pattern}/ in the files searched so far under {directory!r} "
                     f"(files matching {file_glob!r}).\n" + timeout_note)
         out = f"No matches for /{pattern}/ in {directory!r} (files matching {file_glob!r})."
+        if via_index:
+            return out + "\n" + SPOTLIGHT_NOTE
         return out + ("\n" + _ws.walk_note() if walk.capped else "")
     out = "\n".join(matches)
     if truncated:
         out += f"\n… stopped at {_SEARCH_MAX_MATCHES} matches — narrow the pattern, directory, or file_glob."
     elif timed_out:
         out += "\n" + timeout_note
+    elif via_index:
+        out += "\n" + SPOTLIGHT_NOTE
     elif walk.capped:
         out += "\n" + _ws.walk_note()
     return out

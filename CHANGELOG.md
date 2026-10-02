@@ -9,6 +9,47 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
 
 ### Added
 
+- **Text someone.** "Text Sam I'm 15 minutes late" now works: Saturn looks Sam up in Contacts
+  and sends an iMessage through the Messages app. A send is the one action that **always**
+  asks — you see the number and the exact text every time; no setting, no "always allow" and no
+  `--yolo` skips it, and headless mode refuses it outright. Every send is on the egress ledger
+  and air-gap blocks it. Saturn reports the message as handed to Messages, not delivered: a
+  recipient who is not on iMessage fails inside Messages, where Saturn cannot see it.
+- **Contacts and Reminders.** `search_contacts` turns a name into the addresses, numbers and
+  birthday on the card, so replies and texts go to a real address instead of a guessed one.
+  "Remind me to call the dentist tomorrow at 9" now creates a reminder in the Reminders app
+  (it reaches your phone), "what's overdue" lists open reminders, and a reminder can be ticked
+  off. Reminders cannot be made to repeat or to trigger at a place from here — Saturn says so
+  when you ask for either.
+- **Your Shortcuts.** `run_shortcut` runs any shortcut you have built ("lights off", a Focus
+  mode, a HomeKit scene). It always asks first unless you allow that one shortcut by name with
+  `/policy shortcut <name>` (the name must be one of your shortcuts). A shortcut is a program Saturn cannot see inside, so each run is
+  marked untracked on the egress ledger and, under air-gap, always asks.
+- **Reply, triage, move, append.** `reply_mail` opens an unsent reply in the right thread with
+  the original quoted (you press Send). `update_mail` marks read/unread, flags, moves or
+  trashes a whole list of messages in one approval. `update_calendar_event` moves or renames
+  an event (a bare time such as "3pm" keeps it on its own day) and `delete_calendar_event`
+  removes one — a repeating event only with `whole_series`, and you are told when attendees
+  may be notified. `append_note` adds lines to an existing note instead of starting a second
+  one — the note with exactly that title, never a near match (a locked note, or one with
+  attachments, is left alone). Mail listings now say whether you have replied.
+- **Rename and move files.** `move_file` renames or moves a file or folder inside the folders
+  Saturn can reach; `/undo` moves it back. Renaming used to mean a shell command. A symlink is
+  moved as a link, and Saturn's own control files — or a folder holding one — are never moved.
+- **Search that uses Spotlight.** On macOS, searching file contents for a word or phrase now
+  also asks Spotlight's index: a search from your home folder that used to read files for the
+  full ten seconds answers in two to five, and matches inside PDF, Word and Excel files are
+  found. Every hit is still checked against the file itself, and the same folder limits apply.
+- **"This page", "these files", "what's on my clipboard".** `read_browser_tab` reads the page
+  in the front tab of the browser you used last — in Safari the page text itself, with nothing fetched; in Chrome
+  the address and title, unless you turn on *Allow JavaScript from Apple Events*.
+  `finder_selection` gives Saturn the files you have selected in Finder. Type `@clipboard` in a
+  message to attach what is on the clipboard (Saturn never reads it on its own), and `/copy`
+  puts the last answer on it.
+- **Message history** (`read_messages`), if you give your terminal Full Disk Access; without
+  it Saturn tells you where to turn that on. One person's messages are found however far back
+  they are; a text search covers the newest 4,000 messages and says so when that is not all.
+
 - **The model page prices speed, not just fit.** `/models` (and the first launch, which runs
   it) now reads your Apple chip and its GPU core count and looks up the memory bandwidth and
   GPU compute Apple publishes for it (M1 through M4, base / Pro / Max / Ultra, the binned Max

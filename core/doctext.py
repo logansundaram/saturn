@@ -46,8 +46,13 @@ _DIGITS_RE = re.compile(r"\d+")
 def pdf_pages(path) -> list[str]:
     """One cleaned text per page (furniture stripped, hyphenation repaired); a page with no text
     layer is an empty string, so indices stay page numbers − 1."""
+    import logging
+
     import pypdf  # lazy (~56ms): only a PDF read needs it, never a plain launch
 
+    # pypdf warns once per odd object in a real-world PDF; unhandled, those lines print to
+    # stderr on top of the live TUI. A file it cannot read still raises.
+    logging.getLogger("pypdf").setLevel(logging.ERROR)
     reader = pypdf.PdfReader(str(path))
     raw_pages = [page.extract_text() or "" for page in reader.pages]
     return [normalize_pdf_text(t) for t in strip_repeated_furniture(raw_pages)]

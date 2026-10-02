@@ -93,8 +93,13 @@ def test_an_action_is_not_a_source(monkeypatch):
     tool declared side_effecting changes something, it does not inform the answer."""
     for name in ("write_file", "remember", "schedule_notification", "create_note"):
         assert _run(monkeypatch, name, _Returns("done"))["tool_results"] == [], name
-    # a shell command's output is material (test results, a log)
+    # ...and so does a destructive tool that reports what it did: a sent text or a deleted
+    # event is an action, not a source
+    for name in ("send_message", "delete_calendar_event"):
+        assert _run(monkeypatch, name, _Returns("done"))["tool_results"] == [], name
+    # a shell command's or a shortcut's output is material (test results, a log)
     assert _run(monkeypatch, "run_shell", _Returns("3 passed"))["tool_results"]
+    assert _run(monkeypatch, "run_shortcut", _Returns("18 °C"))["tool_results"]
 
 
 def test_trace_replay_pairs_results_with_their_own_call():

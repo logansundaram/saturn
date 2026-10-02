@@ -145,3 +145,18 @@ def test_an_unreadable_attached_document_is_an_inline_note(tmp_path):
     f.write_bytes(b"not a zip")
     block, _ = mentions.expand(f"read @{f}")
     assert "[could not read" in block
+
+
+def test_pdf_parser_warnings_never_reach_the_terminal(tmp_path):
+    """pypdf logs a warning per odd object in a real-world PDF; with no handler configured
+    those print to stderr, on top of the live TUI. Reading a PDF turns them down to errors."""
+    import logging
+
+    from core import doctext
+
+    logging.getLogger("pypdf").setLevel(logging.NOTSET)
+    try:
+        doctext.pdf_pages(tmp_path / "missing.pdf")
+    except Exception:
+        pass
+    assert logging.getLogger("pypdf").level == logging.ERROR

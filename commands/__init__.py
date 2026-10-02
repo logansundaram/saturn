@@ -26,7 +26,7 @@ import importlib as _importlib
 
 _COMMAND_MODULES = [
     "config",        # /config — owns the persist seam others import
-    "conversation",  # /clear, /resume
+    "conversation",  # /clear, /resume, /copy
     "knowledge",     # /docs, /memory, /init, /undo
     "notify",        # /notify — pending OS-scheduled notifications: list, cancel, test
     "policy",        # /policy — the one trust front door (risk · allow · open · egress · airgap)

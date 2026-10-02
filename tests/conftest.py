@@ -11,6 +11,7 @@ no test can touch the real database/ — config resolves paths against the repo 
 absolute path wins the join, which is exactly what tmp_path provides.
 """
 
+import subprocess
 import sys
 from pathlib import Path
 
@@ -115,3 +116,44 @@ def _no_prefix_priming(monkeypatch):
     from core import prime
 
     monkeypatch.setattr(prime, "ENABLED", False)
+
+
+@pytest.fixture(autouse=True)
+def _no_spotlight(monkeypatch):
+    """search_files asks macOS's Spotlight index (`mdfind`) for a plain phrase. No test may run
+    it — the answer would depend on the machine — so the seam gives "no index answer" unless a
+    test replaces it (tests/test_move_and_spotlight.py)."""
+    from tools import files
+
+    monkeypatch.setattr(files, "_spotlight", lambda literal, directory: None)
+
+
+@pytest.fixture
+def mac(monkeypatch):
+    """Pin the platform to macOS and capture osascript invocations. Yields a controller whose
+    `.calls` lists every argv and whose `.reply(stdout)` sets the next canned output."""
+
+    class Ctl:
+        calls: list[list[str]] = []
+        stdout = ""
+        returncode = 0
+        stderr = ""
+
+        def reply(self, stdout, returncode=0, stderr=""):
+            self.stdout, self.returncode, self.stderr = stdout, returncode, stderr
+
+        def script(self, i=-1):
+            argv = self.calls[i]
+            return argv[argv.index("-e") + 1] if "-e" in argv else argv[-1]
+
+    ctl = Ctl()
+
+    def fake_run(argv, timeout):
+        ctl.calls.append(list(argv))
+        return subprocess.CompletedProcess(argv, ctl.returncode, ctl.stdout, ctl.stderr)
+
+    from tools import applescript
+
+    monkeypatch.setattr(applescript, "_platform", lambda: "darwin")
+    monkeypatch.setattr(applescript, "_run", fake_run)
+    return ctl

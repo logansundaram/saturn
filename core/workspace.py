@@ -63,14 +63,19 @@ def roots() -> list[Path]:
     return [root(), *_extra]
 
 
-def normalize(path) -> Path:
+def normalize(path, *, follow: bool = True) -> Path:
     """A user- or model-supplied path as an absolute resolved Path: surrounding quotes stripped
-    (a dragged folder arrives quoted), `~` expanded, a relative path joined onto the root."""
+    (a dragged folder arrives quoted), `~` expanded, a relative path joined onto the root.
+    `follow=False` resolves the folder but keeps the last name as given — the directory ENTRY,
+    so a symlink is itself and not what it points to (the source of a move)."""
     s = str(path).strip()
     if len(s) >= 2 and s[0] == s[-1] and s[0] in "\"'":
         s = s[1:-1]
     raw = Path(s).expanduser()
-    return (raw if raw.is_absolute() else root() / raw).resolve()
+    p = raw if raw.is_absolute() else root() / raw
+    if follow or p.name in ("", ".."):
+        return p.resolve()
+    return p.parent.resolve() / p.name
 
 
 def same(a: Path, b: Path) -> bool:
@@ -80,6 +85,14 @@ def same(a: Path, b: Path) -> bool:
         return a == b or (a.exists() and b.exists() and os.path.samefile(a, b))
     except OSError:
         return False
+
+
+def case_only(a: Path, b: Path) -> bool:
+    """Whether `a` and `b` are ONE directory entry spelled in two cases (`readme.md` and
+    `README.md` on macOS's case-insensitive disk): renaming one to the other is a real rename,
+    not a move onto an existing file."""
+    return (a != b and a.parent == b.parent and a.name.casefold() == b.name.casefold()
+            and same(a, b))
 
 
 def _inside(target: Path, folder: Path) -> bool:
@@ -113,12 +126,13 @@ def relative(target) -> str:
     return display(p)
 
 
-def resolve(path) -> "tuple[Path, str | None]":
+def resolve(path, *, follow: bool = True) -> "tuple[Path, str | None]":
     """The ONE containment check. Returns (target, refusal): `refusal` is None when the target is
     inside the root or an added folder, else the observation the model relays — it names the
-    exact /add-dir command that would allow the path."""
+    exact /add-dir command that would allow the path. `follow=False` checks where the entry
+    itself sits (`normalize`), for a tool that acts on a symlink and not through it."""
     try:
-        target = normalize(path)
+        target = normalize(path, follow=follow)
     except (ValueError, RuntimeError, OSError) as exc:  # NUL byte, symlink loop: a refusal, never a raise
         return Path(str(path)), f"Invalid path: {exc}"
     if any(_inside(target, r) for r in roots()):

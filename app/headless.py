@@ -66,9 +66,10 @@ def headless_approver(value):
     interrupts that still fire are the quarantine ESCALATIONS (they gate
     independently of the policy threshold) — and those are approved here, because
     --yolo is exactly the user pre-approving everything; denying them would make
-    '--yolo to allow them' a lie. The one thing --yolo does not pre-approve is the
-    air-gap: a call it holds (policy.airgap_holds — a shell command, an MCP server)
-    needs a human to judge whether it touches the network, and there is none here.
+    '--yolo to allow them' a lie. Two things --yolo does not pre-approve: the
+    air-gap — a call it holds (policy.airgap_holds — a shell command, a shortcut, an MCP
+    server) needs a human to judge whether it touches the network, and there is none here —
+    and a send to another person (policy.always_asks), which a human reads first, always.
     The decline path is already honest — the agent tells
     the user the action was not performed. Any other interrupt type (the Esc pause never
     arms headless) resumes unchanged via a bare True, which the agent node reads as
@@ -78,16 +79,26 @@ def headless_approver(value):
 
         calls = value.get("tool_calls", [])
         if policy.gate_off():
+            sends = [tc for tc in calls if policy.always_asks(str(tc.get("name") or ""))]
             held = [tc for tc in calls if policy.airgap_holds(str(tc.get("name") or ""))]
-            if not held:
+            if not held and not sends:
                 return True
-            print(
-                "denied under air-gap: " + ", ".join(tc.get("name", "?") for tc in held)
-                + " — a shell command or MCP server may use the network, and headless mode "
-                "has no human to check it; turn the air-gap off to allow them.",
-                file=sys.stderr,
-            )
-            return {"approved_ids": [tc.get("id") for tc in calls if tc not in held]}
+            if sends:
+                print(
+                    "denied: " + ", ".join(tc.get("name", "?") for tc in sends)
+                    + " — sending to another person always needs a human to read it first, "
+                    "and headless mode has none (--yolo does not cover it).",
+                    file=sys.stderr,
+                )
+            if held:
+                print(
+                    "denied under air-gap: " + ", ".join(tc.get("name", "?") for tc in held)
+                    + " — a shell command, shortcut or MCP server may use the network, and "
+                    "headless mode has no human to check it; turn the air-gap off to allow them.",
+                    file=sys.stderr,
+                )
+            return {"approved_ids": [tc.get("id") for tc in calls
+                                     if tc not in held and tc not in sends]}
         names = ", ".join(tc.get("name", "?") for tc in calls)
         why = (
             " (escalated by the injection quarantine — a prior result looked "
@@ -97,9 +108,17 @@ def headless_approver(value):
         )
         if value.get("notes"):
             why += " (" + "; ".join(str(n) for n in value["notes"]) + ")"
+        # --yolo is only offered for what it would let through: never a send, never a call
+        # the air-gap holds (the branch above refuses those with the gate open too).
+        never = [str(tc.get("name") or "?") for tc in calls
+                 if policy.always_asks(str(tc.get("name") or ""))
+                 or policy.airgap_holds(str(tc.get("name") or ""))]
+        hint = ("re-run with --yolo to allow them." if not never
+                else "--yolo would not allow " + ", ".join(dict.fromkeys(never))
+                + (" either." if len(never) == len(calls) else "; it allows the rest."))
         print(
             f"denied gated tool call(s): {names}{why} — headless mode does not "
-            "approve gated actions; re-run with --yolo to allow them.",
+            f"approve gated actions; {hint}",
             file=sys.stderr,
         )
         return False

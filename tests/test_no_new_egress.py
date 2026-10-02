@@ -6,6 +6,10 @@ page fetch (`tools/web.py`), a configured MCP server (`tools/mcp_client.py`) —
 routed through `trust/egress.py`'s check/record. This test pins that list: a network-client
 import anywhere else in the source tree fails, so a new egress path can never land silently. A
 legitimate new chokepoint is a deliberate edit HERE, with its egress.check/record wiring.
+
+One chokepoint imports no network client and so is invisible to this test: `send_message`
+(`tools/messages.py`) sends an iMessage through `osascript`. Its check/record wiring, and the
+rule that a send always faces the human, are pinned by tests/test_messages.py instead.
 """
 
 import re

@@ -10,10 +10,11 @@ mechanism is a view over this module:
   --yolo (headless)      the same view, applied at process start.
   /policy risk           edits a TOOL's tier (live in registry.TOOL_RISK; persisted here).
   /policy allow          edits the run_shell prefix allowlist (persisted here).
+  /policy shortcut       edits the run_shortcut name allowlist (persisted here).
 
 Durable state is one small, versionable JSON file at `config.path("permissions")`
 (database/permissions.json): `risk_overrides` ({tool: tier}, applied over declared tiers at
-startup by registry.py) + `shell_allow` ([prefix, ...]). The tier threshold persists via
+startup by registry.py) + `shell_allow` ([prefix, ...]) + `shortcut_allow` ([name, ...]). The tier threshold persists via
 config.yaml (`/config --save runtime.auto_approve`), not here.
 
 The one gate question is `approves(name, risk, args)` — the approval node asks it for every
@@ -131,27 +132,50 @@ def set_gate_off(off: bool) -> None:
 # --- the one gate question ----------------------------------------------------------------
 
 
+# Processes the egress ledger cannot see inside (each run is recorded UNTRACKED): a shell
+# command, one of the user's Shortcuts — and every MCP server, by its reserved name prefix.
+_OPAQUE_TOOLS = frozenset({"run_shell", "run_shortcut"})
+
+# Tools that send the user's words to another person. They ALWAYS face the human: no tier, no
+# open gate, no `/policy risk` override and no always-allow lets one through, and a headless
+# run — which has no human — refuses them even with --yolo.
+ALWAYS_ASKS = frozenset({"send_message"})
+
+# Tools the gate's `a(lways)` never drops to the auto-approved tier: one keypress must not
+# un-gate every future shell command, every shortcut, or every send. run_shell and run_shortcut
+# have their own narrow allowlists (/policy allow, /policy shortcut); a send has none.
+NO_BLANKET_GRANT = _OPAQUE_TOOLS | ALWAYS_ASKS
+
+
 def airgap_holds(name: str) -> bool:
     """Whether air-gap holds this tool for the human. Air-gap refuses every network op Saturn
-    makes itself (egress.check), but a shell command and an MCP server are other processes:
-    whether `git pull` or a stdio server touches the network cannot be checked from here. So
-    while air-gap is on, neither is ever auto-approved — not by the tier, an allowlisted prefix
-    or an open gate — and a headless run, which has no human, refuses them."""
-    return egress.airgap_on() and (name == "run_shell" or name.startswith("mcp_"))
+    makes itself (egress.check), but a shell command, a shortcut and an MCP server are other
+    processes: whether `git pull`, a shortcut or a stdio server touches the network cannot be
+    checked from here. So while air-gap is on, none is ever auto-approved — not by the tier, an
+    allowlist entry or an open gate — and a headless run, which has no human, refuses them."""
+    return egress.airgap_on() and (name in _OPAQUE_TOOLS or name.startswith("mcp_"))
+
+
+def always_asks(name: str) -> bool:
+    """Whether this tool faces the human on every call, whatever the policy says (ALWAYS_ASKS)."""
+    return name in ALWAYS_ASKS
 
 
 def approves(name: str, risk: str, args: "dict | None" = None) -> bool:
     """Whether a tool call runs WITHOUT facing the human. The approval node asks this for every
-    pending call; the only two ways through are the tier threshold and (for run_shell only) a
-    user-persisted /policy allow prefix on the exact command — and neither applies to a call
-    the air-gap holds (`airgap_holds`)."""
-    if airgap_holds(name):
+    pending call; the ways through are the tier threshold and, for the two tools with a narrow
+    allowlist, a user-persisted entry on the exact thing being run (a /policy allow prefix for
+    run_shell, a /policy shortcut name for run_shortcut) — and none applies to a call the
+    air-gap holds (`airgap_holds`) or to a tool that always asks (`always_asks`)."""
+    if airgap_holds(name) or always_asks(name):
         return False
     if auto_approves(risk):
         return True
     if name == "run_shell":
         command = str((args or {}).get("command", ""))
         return shell_allowed(command) is not None
+    if name == "run_shortcut":
+        return shortcut_allowed(str((args or {}).get("name", "")))
     return False
 
 
@@ -201,6 +225,9 @@ def _load() -> dict:
         allow = data.get("shell_allow", [])
         if not isinstance(allow, list) or not all(isinstance(p, str) for p in allow):
             raise ValueError("shell_allow is not a list of prefix strings")
+        names = data.get("shortcut_allow", [])
+        if not isinstance(names, list) or not all(isinstance(n, str) for n in names):
+            raise ValueError("shortcut_allow is not a list of shortcut names")
     except FileNotFoundError:
         data = {}
     except OSError as exc:
@@ -228,6 +255,7 @@ def _load() -> dict:
             diag.log(f"policy: {_LOAD_PROBLEM}")
     data.setdefault("risk_overrides", {})
     data.setdefault("shell_allow", [])
+    data.setdefault("shortcut_allow", [])
     return data
 
 
@@ -405,6 +433,49 @@ def remove_shell_allow(token: str) -> "str | None":
     for i, p in enumerate(data["shell_allow"]):
         if p.lower() == target.lower():
             removed = data["shell_allow"].pop(i)
+            _save(data)
+            return removed
+    return None
+
+
+# --- run_shortcut name allowlist (/policy shortcut) ---------------------------------------
+#
+# A shortcut is allowlisted by its exact name (case-insensitive, as the Shortcuts app treats
+# names), always persisted: the entry says "this one shortcut may run without asking". The
+# gate's `a` never adds one — the user types the name.
+
+
+def shortcut_allow() -> list[str]:
+    """The allowlisted shortcut names, as stored."""
+    return list(_load()["shortcut_allow"])
+
+
+def shortcut_allowed(name: str) -> bool:
+    name = " ".join(str(name).split()).lower()
+    return bool(name) and any(n.lower() == name for n in shortcut_allow())
+
+
+def add_shortcut_allow(name: str) -> bool:
+    """Allowlist one shortcut by name; False if it already is. Raises ValueError on an empty
+    name."""
+    name = " ".join(str(name).split())
+    if not name:
+        raise ValueError("empty shortcut name")
+    data = _load()
+    if any(n.lower() == name.lower() for n in data["shortcut_allow"]):
+        return False
+    data["shortcut_allow"].append(name)
+    _save(data)
+    return True
+
+
+def remove_shortcut_allow(name: str) -> "str | None":
+    """Remove a shortcut from the allowlist; returns the stored name, or None."""
+    name = " ".join(str(name).split()).lower()
+    data = _load()
+    for i, n in enumerate(data["shortcut_allow"]):
+        if n.lower() == name:
+            removed = data["shortcut_allow"].pop(i)
             _save(data)
             return removed
     return None

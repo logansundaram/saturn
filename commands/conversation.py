@@ -237,3 +237,49 @@ def _load_named(ctx, name: str):
     _swap_to_messages(ctx, messages)
     _print(f"  loaded {len(messages)} message(s) from {path.name} (saved {saved_at}).")
     _print("  fresh state — conversation history restored.")
+
+
+# ── /copy ────────────────────────────────────────────────────────────────────────────────────
+
+def _pbcopy(text: str) -> bool:
+    """Put `text` on the clipboard (macOS `pbcopy`); False when that is not possible here."""
+    import subprocess
+    import sys
+
+    if sys.platform != "darwin":
+        return False
+    try:
+        proc = subprocess.run(["pbcopy"], input=text.encode("utf-8"), capture_output=True, timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return proc.returncode == 0
+
+
+@command(
+    "copy",
+    "Copy Saturn's last answer to the clipboard.",
+    details="""
+Puts the text of the most recent answer on the clipboard, without the Sources receipt or the
+incidents note. macOS only (pbcopy).
+
+The other direction is a mention, not a command: type @clipboard in a message and whatever is
+on the clipboard is attached to that message, like an @file ("fix the tone of @clipboard").
+Saturn never reads the clipboard on its own.
+""",
+)
+def _copy(ctx, args):
+    from nodes.agent import strip_trailers
+
+    answer = ""
+    for m in reversed((ctx.state or {}).get("messages") or []):
+        if getattr(m, "type", "") == "ai" and not getattr(m, "tool_calls", None):
+            answer = strip_trailers(str(getattr(m, "content", "") or ""))
+            if answer:
+                break
+    if not answer:
+        _print("  nothing to copy yet — there is no answer in this conversation.")
+        return
+    if _pbcopy(answer):
+        _print(f"  copied the last answer ({len(answer)} characters) to the clipboard.")
+    else:
+        _print("  could not reach the clipboard (this needs macOS's pbcopy).")

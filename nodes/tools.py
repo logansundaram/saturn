@@ -192,10 +192,15 @@ def tool_node(state: AgentState):
         # number these (core/sources.py). Only a call that COMPLETED and returns material: a
         # failed or air-gap-blocked call informed nothing (it is in the incidents note), and a
         # tool declared side_effecting (write_file, remember, schedule_notification) returns a
-        # confirmation of what it changed, not something to cite. Retrieval results go to
-        # documents_retrieved, every other tool's to tool_results paired with its call —
-        # keeping retrieval OUT of tool_results keeps a passage from being cited twice.
-        if call_status != "done" or DECLARED_RISK.get(name) == "side_effecting":
+        # confirmation of what it changed, not something to cite — as does a destructive one
+        # (send_message, delete_calendar_event) unless what it returns is external output
+        # (run_shell, run_shortcut, an MCP tool: the tools declared untrusted). Retrieval
+        # results go to documents_retrieved, every other tool's to tool_results paired with
+        # its call — keeping retrieval OUT of tool_results keeps a passage from being cited twice.
+        declared = DECLARED_RISK.get(name)
+        action = declared == "side_effecting" or (
+            declared == "destructive" and not quarantine.is_untrusted(name))
+        if call_status != "done" or action:
             pass
         elif name in RETRIEVAL_TOOLS:
             documents_retrieved.append(clamped)

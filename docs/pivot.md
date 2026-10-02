@@ -68,14 +68,15 @@ important daily-task property Claude Code has and Saturn lacks.
 **Known slow case (2026-09-29):** launched from `~`, a content search that matches nothing
 reads every text file under home — measured 80 s (17,101 files, 796 MB); a name search takes
 0.7 s and startup walks nothing. `search_files` now stops at 10 s and says the scan was partial
-(2026-09-29).
+(2026-09-29). Since 2026-10-01 a plain phrase also goes to Spotlight's index on macOS: the
+no-match case from `~` answers in 2 s, and matches inside PDFs are found.
 
 ### 2. Read the files people actually have (half a day) — shipped 2026-09-29 (`core/doctext.py`; .xlsx via the stdlib, no new dependency; `@file` attachments too)
 Route `read_file` through the loaders already in `stores/rag.py` (pypdf, python-docx) for a
 direct read of PDF / .docx / .xlsx-as-CSV; keep the knowledge base for search across many
 documents. "Summarize this PDF" stops depending on the embedder.
 
-### 3. Contacts and Reminders as native readers (1 day)
+### 3. Contacts and Reminders as native readers (1 day) — shipped 2026-10-01 (`tools/contacts.py`, `tools/reminders.py`; Reminders cannot repeat or trigger at a place from a script, and `schedule_notification` stays for a one-off alert)
 Two more AppleScript readers beside Notes / Calendar / Mail — `search_contacts` (resolves
 "Petra" to an email address and a phone number) and `list_reminders` / `create_reminder`
 (the natural home for "remind me to…", replacing the launchd notification for anything with a
@@ -115,7 +116,7 @@ from the v1 plan, in Claude Code's vocabulary and file format: no DSL, no parame
 request text, listed by `/skills`, injected into the prompt only when invoked or matched by
 name. This is where "the plan" comes back — authored by the user, once.
 
-### 9. Script tools without Python (1–2 days)
+### 9. Script tools without Python (1–2 days) — the Mac-native half shipped 2026-10-01 (`run_shortcut`: any of the user's Shortcuts, gated, allowlisted by name); script files are still open
 `~/.saturn/tools/*.sh|py` with a frontmatter (`name`, `description`, `risk`, `args`) registered
 through `toolspec.register_tool_object` like MCP tools — the cheapest way for a user to teach
 Saturn one thing their life needs (a `pay-rent` script, a `home-assistant` toggle). Risk fails
@@ -136,7 +137,7 @@ behind `/help --all`. Nothing is removed; the first screen stops looking like an
 16 GB, 4b below), pulls the model on consent, and says plainly what each tier feels like. Until
 this exists, "most users run the good model" is hoped for, not true.
 
-### 13. `send_mail` / `send_message`, gated (1 day, after 1–6)
+### 13. `send_mail` / `send_message`, gated (1 day, after 1–6) — `send_message` shipped 2026-10-01 (`tools/messages.py`: always asks, on the ledger, compiled but not yet run); `send_mail` still open
 The one new egress chokepoint the daily-task goal needs: a reply that actually sends. Always
 gated, never auto-approved, shown whole at the gate, on the ledger. The findings are in
 `docs/superpowers/specs/2026-09-06-macos-apps.md`.

@@ -221,3 +221,33 @@ def test_scan_matches_raw_and_visible_forms():
     assert {f.kind for f in quarantine.scan("x " + OSC52)} == {"terminal-escape"}
     assert {f.kind for f in quarantine.scan("x ␛[2K")} == {"terminal-escape"}
     assert quarantine.scan("x ␛[31m colour only") == []
+
+
+# ── Task 4: edit_file ─────────────────────────────────────────────────────────────────────────
+
+def test_edit_file_explains_a_pictured_control(isolated_paths, tmp_path):
+    from core import workspace
+    from tools.files import edit_file
+    from tools.toolspec import ToolError
+
+    root = tmp_path / "work"
+    root.mkdir()
+    workspace.set_root(root)
+    (root / "banner.sh").write_text("echo '" + ESC + "[1mHello" + ESC + "[0m'\n", encoding="utf-8")
+    with pytest.raises(ToolError, match="control character"):
+        edit_file.invoke({"file_path": "banner.sh",
+                          "old_string": "echo '␛[1mHello", "new_string": "echo 'Hi"})
+    assert (root / "banner.sh").read_text(encoding="utf-8").startswith("echo '" + ESC)
+
+
+def test_edit_file_plain_not_found_is_unchanged(isolated_paths, tmp_path):
+    from core import workspace
+    from tools.files import edit_file
+    from tools.toolspec import ToolError
+
+    root = tmp_path / "work"
+    root.mkdir()
+    workspace.set_root(root)
+    (root / "a.txt").write_text("one two", encoding="utf-8")
+    with pytest.raises(ToolError, match="was not found"):
+        edit_file.invoke({"file_path": "a.txt", "old_string": "three", "new_string": "four"})

@@ -25,7 +25,7 @@ import sys
 import time
 from pathlib import Path
 
-from textutil import truncate
+from textutil import has_controls, is_control_picture, truncate
 from tools.toolspec import ToolError, register_tool
 
 from core import doctext, hooks
@@ -239,6 +239,15 @@ def edit_file(file_path: str, old_string: str, new_string: str, replace_all: boo
     if old_string == new_string:
         raise ToolError("old_string and new_string are identical — nothing to change.")
     count = content.count(old_string)
+    if count == 0 and has_controls(content) and any(is_control_picture(c) for c in old_string):
+        # read_file showed this file's control characters as symbols (nodes/tools.py); the
+        # file holds the raw character, which a displayed copy can never match.
+        raise ToolError(
+            f"old_string contains a symbol such as ␛ that read_file shows in place of a terminal "
+            f"control character; {file_path} holds the control character itself, which edit_file "
+            "cannot match from the displayed copy. Edit text that does not include those "
+            "symbols, or rewrite the whole file with write_file."
+        )
     if count == 0:
         raise ToolError(
             "old_string was not found in the file. It must match the current contents "

@@ -10,7 +10,7 @@ import time
 
 import diag
 
-from textutil import fmt_args, head_tail
+from textutil import fmt_args, head_tail, visible_format_chars
 
 from . import _base
 from ._base import (
@@ -48,11 +48,14 @@ def _show_preamble_if_due() -> None:
 
 
 def _frame_row(*spans: "tuple[str, str]") -> None:
-    """One row inside the approval frame: the bold `┃` gutter, then each `(text, style)` span."""
+    """One row inside the approval frame: the bold `┃` gutter, then each `(text, style)` span.
+    Bidi overrides and zero-width characters are shown by code point — the rows ARE what the
+    human approves, and an RTL override can make a command display in another order
+    (textutil.visible_format_chars). Terminal controls are handled by the console itself."""
     row = Text()
     row.append("  ┃ ", style="bold")
     for text, style in spans:
-        row.append(text, style=style)
+        row.append(visible_format_chars(text), style=style)
     _console.print(row)
 
 
@@ -474,7 +477,7 @@ def _render_explain(value: dict) -> None:
 def _grant_note(msg: str) -> None:
     """Disclosure line for an always-grant — yellow, not dim: widening the gate is exactly the
     line the user must not skim past."""
-    _console.print(Text(f"  {msg}", style="yellow"))
+    _console.print(Text(f"  {visible_format_chars(msg)}", style="yellow"))
 
 
 def _grant_lifetime() -> str:
@@ -777,7 +780,7 @@ def ask_approval(value: dict) -> "bool | dict":
     # byte-identical to what is granted (prompt.ask does the same). The main gate prompt below
     # keeps its intentional [bold] markup.
     def ask(p):
-        return _console.input(p, markup=False, emoji=False)
+        return _console.input(visible_format_chars(p), markup=False, emoji=False)
 
     while True:
         # The key legend rides ABOVE the prompt, always — not only after an unrecognized answer.

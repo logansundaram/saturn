@@ -329,3 +329,48 @@ def test_command_printer_neutralises(capsys):
     _print("  fact: likes tea " + OSC52)
     out = capsys.readouterr().out
     assert no_raw_controls(out.rstrip("\n")) and "␛]52" in out
+
+
+# ── Task 6: the gate ──────────────────────────────────────────────────────────────────────────
+
+def _gate_capture(monkeypatch, answers):
+    import builtins
+    import importlib
+    import types
+
+    approval = importlib.import_module("tui.ui.approval")
+    con, buf = _safe_console()
+    monkeypatch.setattr("tools.registry", types.SimpleNamespace(TOOL_RISK={}), raising=False)
+    monkeypatch.setattr(approval, "_console", con)
+    monkeypatch.setattr(approval, "_live_stop", lambda: None)
+    monkeypatch.setattr(approval, "_live_start", lambda: None)
+    it = iter(answers)
+    monkeypatch.setattr(builtins, "input", lambda *a, **k: next(it))
+    return approval, buf
+
+
+def test_gate_shows_a_bidi_override_in_a_shell_command(monkeypatch):
+    approval, buf = _gate_capture(monkeypatch, ["n"])
+    cmd = "rm -rf ~/x \u202e#txt.olleh"
+    approval.ask_approval({"tool_calls": [
+        {"id": "1", "name": "run_shell", "risk": "destructive", "args": {"command": cmd}}]})
+    out = buf.getvalue()
+    assert "\u202e" not in out and "⟨U+202E⟩" in out
+
+
+def test_gate_shows_zero_width_and_controls_in_full_arguments(monkeypatch):
+    approval, buf = _gate_capture(monkeypatch, ["n"])
+    approval.ask_approval({"tool_calls": [
+        {"id": "1", "name": "send_message", "risk": "destructive",
+         "args": {"to": "+1555\u200b0100", "text": "hi " + OSC52}}]})
+    out = buf.getvalue()
+    assert "⟨U+200B⟩" in out and "\x1b]52" not in out
+
+
+def test_answers_keep_rtl_and_zwj_text(capsys):
+    from tui.ui import response
+
+    text = "שלום — family 👨\u200d👩\u200d👧"
+    response(text)
+    out = capsys.readouterr().out
+    assert "שלום" in out and "👨\u200d👩\u200d👧" in out and "U+200D" not in out

@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from functools import cache
 from typing import Callable
 
+from textutil import visible_controls
+
 
 @dataclass
 class CommandContext:
@@ -82,7 +84,9 @@ def command_completions() -> list[tuple[str, str]]:
 
 
 def _print(line: str = "") -> None:
-    print(line)
+    # Slash-command output carries stored text (memory facts, trace records, MCP descriptions,
+    # egress hosts): terminal controls in it are made visible, never sent to the terminal.
+    print(visible_controls(line))
 
 
 _HELP_FLAGS = {"--help", "-h"}

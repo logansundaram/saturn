@@ -10,6 +10,8 @@ import math
 import os
 import time
 
+from textutil import visible_controls
+
 from ._base import Console, Text, _console
 
 
@@ -314,6 +316,7 @@ def splash(work=None):
     _console.print(_saturn_text(1.0, final=True))   # the settled ring, in the same spot …
     spill = captured.getvalue()
     if spill.strip():                                # … then the loading output beneath it
+        spill = visible_controls(spill)  # startup output can carry a server's or a hook's text
         real_out.write(spill if spill.endswith("\n") else spill + "\n")
         real_out.flush()
     return _finish()

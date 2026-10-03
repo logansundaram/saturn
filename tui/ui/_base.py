@@ -13,11 +13,31 @@ from rich.constrain import Constrain
 from rich.live import Live
 from rich.markdown import Markdown
 from rich.padding import Padding
+from rich.segment import Segment
 from rich.text import Text
 
 from textutil import truncate as _truncate
+from textutil import visible_controls
 
-_console = Console(highlight=False)
+
+class SafeConsole(Console):
+    """The one console every TUI surface prints through. Rich passes ESC and the C1 controls in
+    text straight to the terminal (its own sanitiser drops only BEL, BS, VT, FF and CR — and
+    `Text` keeps CR), so a tool result, a model answer or an old recorded run could write the
+    clipboard, relink text or redraw the rail. Text segments are made inert here
+    (textutil.visible_controls), in the one place Rich turns segments into output; control
+    segments — Rich's own cursor movement for `Live` — and the colour codes Rich renders from
+    styles pass untouched. `_render_buffer` is a private Rich method: tests/test_terminal_safe.py
+    fails if a Rich upgrade renames it."""
+
+    def _render_buffer(self, buffer):
+        return super()._render_buffer(
+            seg if seg.control else Segment(visible_controls(seg.text), seg.style, seg.control)
+            for seg in buffer
+        )
+
+
+_console = SafeConsole(highlight=False)
 
 
 # ── palette ──────────────────────────────────────────────────────────────────

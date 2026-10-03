@@ -251,3 +251,81 @@ def test_edit_file_plain_not_found_is_unchanged(isolated_paths, tmp_path):
     (root / "a.txt").write_text("one two", encoding="utf-8")
     with pytest.raises(ToolError, match="was not found"):
         edit_file.invoke({"file_path": "a.txt", "old_string": "three", "new_string": "four"})
+
+
+# ── Task 5: the sink ──────────────────────────────────────────────────────────────────────────
+
+_LIVE_SEQ = re.compile(r"\x1b(?!\[[0-9;]*m)")  # any ESC that is not Rich's own colour code
+
+
+def _safe_console(**kw):
+    import io
+
+    from tui.ui._base import SafeConsole
+
+    buf = io.StringIO()
+    return SafeConsole(file=buf, force_terminal=True, width=100, highlight=False, **kw), buf
+
+
+def test_rich_still_has_the_method_safe_console_overrides():
+    from rich.console import Console
+
+    assert "_render_buffer" in vars(Console), (
+        "Rich renamed Console._render_buffer: tui/ui/_base.SafeConsole no longer neutralises "
+        "terminal escapes — move the override to the new method")
+
+
+def test_production_console_is_safe():
+    from tui.ui import _base
+
+    assert isinstance(_base._console, _base.SafeConsole)
+
+
+@pytest.mark.parametrize("make", ["text", "markdown", "padding"])
+def test_safe_console_neutralises_every_renderable(make):
+    from rich.markdown import Markdown
+    from rich.padding import Padding
+    from rich.text import Text
+
+    body = "x " + OSC52 + " " + OSC8 + " " + ERASE_UP + " " + C1_CSI + " \r y"
+    obj = {"text": Text(body, style="bold"), "markdown": Markdown("# t\n\n" + body),
+           "padding": Padding(Text(body), (0, 0, 0, 2))}[make]
+    con, buf = _safe_console()
+    con.print(obj)
+    out = buf.getvalue()
+    assert not _LIVE_SEQ.search(out) and "\x9b" not in out and "\r" not in out
+    assert "␛]52" in out
+
+
+def test_safe_console_keeps_rich_colour_and_live_cursor_control():
+    from rich.live import Live
+    from rich.text import Text
+
+    con, buf = _safe_console()
+    with Live(Text("start"), console=con, transient=True, auto_refresh=False) as live:
+        live.update(Text("evil " + OSC52, style="green"), refresh=True)
+    out = buf.getvalue()
+    assert "\x1b]52" not in out
+    assert re.search(r"\x1b\[[0-9;]*m", out)          # Rich's own styling survives
+    assert re.search(r"\x1b\[(2K|\d*A|\?25)", out)    # Rich's own Live cursor control survives
+
+
+def test_rail_renders_an_old_record_with_raw_escapes_clean(capsys):
+    import importlib
+
+    base = importlib.import_module("tui.ui._base")
+    trace = importlib.import_module("tui.ui.trace")
+    base._trace_started, base._t_last = False, None
+    trace.show_node("tools", {"tool_events": [{
+        "name": "web_extract", "args": {"url": "https://x.example"},
+        "result": "page " + OSC52 + ERASE_UP, "dur": 0.01, "ok": True}]})
+    out = capsys.readouterr().out
+    assert no_raw_controls(out) and "␛]52" in out
+
+
+def test_command_printer_neutralises(capsys):
+    from commands._framework import _print
+
+    _print("  fact: likes tea " + OSC52)
+    out = capsys.readouterr().out
+    assert no_raw_controls(out.rstrip("\n")) and "␛]52" in out

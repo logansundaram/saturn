@@ -427,3 +427,49 @@ def test_copy_puts_the_neutralised_answer_on_the_clipboard(monkeypatch):
     ctx = SimpleNamespace(state={"messages": [AIMessage(content="done " + ESC + "[201~rm -rf ~")]})
     conversation._copy(ctx, [])
     assert copied and no_raw_controls(copied[0])
+
+
+# ── Task 8: end to end ────────────────────────────────────────────────────────────────────────
+
+ALL_SEQS = "x " + OSC52 + " " + OSC8 + " " + ERASE_UP + " " + C1_CSI + " y"
+
+
+def test_a_hostile_tool_result_never_reaches_state_trace_rail_or_answer(
+        monkeypatch, gate_mode, tmp_path, capsys):
+    import importlib
+    import sqlite3
+
+    from stores.trace import Tracer
+
+    delta = _run_fake_tool(monkeypatch, "web_extract", ALL_SEQS)
+    assert no_raw_controls(delta["messages"][0].content)
+
+    tracer = Tracer(str(tmp_path / "trace.db"))
+    run = tracer.start_run("t1", "q")
+    tracer.log_event(run, "tools", delta)
+    (data,) = sqlite3.connect(tmp_path / "trace.db").execute(
+        "SELECT data FROM events WHERE run_id = ?", (run,)).fetchone()
+    assert "\\u001b" not in data and no_raw_controls(data)
+
+    base = importlib.import_module("tui.ui._base")
+    trace = importlib.import_module("tui.ui.trace")
+    base._trace_started, base._t_last = False, None
+    trace.show_node("tools", delta)
+    assert no_raw_controls(capsys.readouterr().out)
+
+
+def test_a_model_answer_that_echoes_an_escape_renders_inert(monkeypatch, capsys):
+    from langchain.messages import AIMessage, HumanMessage
+
+    from nodes import agent
+    from tui.ui import response
+
+    monkeypatch.setattr(agent, "_generate",
+                        lambda i, *, tools, think=False: AIMessage(content="done " + ALL_SEQS))
+    state = {"messages": [HumanMessage(content="q")], "current_query": "q", "context": "",
+             "plan": [], "iteration": 0, "tools_called": [], "tool_results": [],
+             "documents_retrieved": [], "tool_events": [], "gate_events": []}
+    final = agent.agent_node(state)["messages"][-1].content
+    response(final)
+    out = capsys.readouterr().out
+    assert no_raw_controls(out) and "␛]52" in out

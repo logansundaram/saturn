@@ -81,6 +81,15 @@ def _control_files() -> "dict[Path, str]":
     }
 
 
+def _control_dirs() -> "dict[Path, str]":
+    """Folders whose every file controls Saturn: the skills folders (core/skills). The model
+    follows a skill as the user's own words, so a file planted there would be an instruction the
+    user never wrote — refused like hooks.yaml, even approved."""
+    from core import skills
+
+    return {folder: "holds the user's skills" for folder in skills.control_dirs()}
+
+
 def _touches(target: Path, control: Path) -> bool:
     """Whether writing or moving `target` reaches `control`: it IS the file, or it is a folder
     the file lives in (moving that folder away and another into its place replaces the file
@@ -92,13 +101,23 @@ def _touches(target: Path, control: Path) -> bool:
 
 
 def _refuse_control_file(target_path) -> None:
-    """Raise when `target_path` is a control file (`_control_files`) or a folder holding one:
-    never the agent's to write or move."""
+    """Raise when `target_path` is a control file (`_control_files`), a folder holding one, or
+    anything inside a control folder (`_control_dirs`): never the agent's to write or move."""
     try:
         target = Path(target_path).resolve()
         protected = {Path(p).resolve(): why for p, why in _control_files().items()}
+        folders = {Path(p).resolve(): why for p, why in _control_dirs().items()}
     except OSError:
-        protected, target = {}, None
+        protected, folders, target = {}, {}, None
+    if target is not None:
+        inside = next((d for d in folders if _ws._inside(target, d)
+                       or Path(str(target).casefold()).is_relative_to(str(d).casefold())), None)
+        if inside is not None:
+            raise PermissionError(f"{target} is inside {inside}, which {folders[inside]}; Saturn "
+                                  "never writes there. Ask the user to edit it by hand "
+                                  "(/skills create <name> starts one, /skills delete <name> "
+                                  "removes one).")
+        protected.update(folders)  # a folder that HOLDS a control folder is refused like one
     hit = next((p for p in protected if target is not None and _touches(target, p)), None)
     if hit is not None:
         if len(target.parts) < len(hit.parts):

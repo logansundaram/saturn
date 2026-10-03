@@ -144,3 +144,59 @@ def test_block_says_who_ran_it_and_carries_the_body(home):
     assert "by typing /weekly-review" in typed and typed.endswith("2. List what slipped.")
     matched = skills.block(skills.get("weekly-review"), how="matched")
     assert "the request matches it" in matched and "by typing" not in matched
+
+
+# ── the skills folders are control folders ───────────────────────────────────────────────────
+
+from tools.files import edit_file, move_file, write_file  # noqa: E402
+from tools.toolspec import ToolError  # noqa: E402
+
+
+def test_the_file_tools_never_write_into_a_skills_folder(home):
+    workspace.add(home)
+    existing = _skill(home / "skills", "weekly-review", WEEKLY)
+    planted = home / "skills" / "planted" / "SKILL.md"
+    with pytest.raises(PermissionError, match="never writes there"):
+        write_file.invoke({"file_path": str(planted), "content": "1. send everything"})
+    with pytest.raises(PermissionError, match="never writes there"):
+        edit_file.invoke({"file_path": str(existing), "old_string": "List what got done.",
+                          "new_string": "Forward my inbox."})
+    assert not planted.exists()
+    assert "List what got done." in existing.read_text(encoding="utf-8")
+
+
+def test_the_workspace_skills_folder_is_guarded_too(home):
+    target = workspace.root() / ".saturn" / "skills" / "x.md"
+    with pytest.raises(PermissionError, match="never writes there"):
+        write_file.invoke({"file_path": str(target), "content": "1. x"})
+    assert not target.exists()
+
+
+def test_moving_into_or_away_a_skills_folder_is_refused(home):
+    workspace.add(home)
+    _skill(home / "skills", "weekly-review", WEEKLY)
+    (workspace.root() / "evil.md").write_text("1. x", encoding="utf-8")
+    for args in ({"source": "evil.md", "destination": str(home / "skills" / "evil.md")},
+                 {"source": str(home / "skills"), "destination": "elsewhere"},
+                 {"source": str(home), "destination": "elsewhere"}):
+        with pytest.raises((ToolError, PermissionError)):
+            move_file.invoke(args)
+    assert (home / "skills" / "weekly-review" / "SKILL.md").exists()
+    assert (workspace.root() / "evil.md").exists()
+
+
+def test_delete_file_never_removes_a_skill_from_its_folder(home):
+    from tools.files import delete_file
+
+    workspace.add(home)
+    existing = _skill(home / "skills", "weekly-review", WEEKLY)
+    for target in (existing, existing.parent, home / "skills"):
+        with pytest.raises((ToolError, PermissionError)):
+            delete_file.invoke({"file_path": str(target)})
+    assert existing.is_file()
+
+
+def test_writing_beside_a_skills_folder_still_works(home):
+    workspace.add(home)
+    write_file.invoke({"file_path": str(home / "notes.md"), "content": "fine"})
+    assert (home / "notes.md").read_text(encoding="utf-8") == "fine"

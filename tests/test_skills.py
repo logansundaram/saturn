@@ -200,3 +200,32 @@ def test_writing_beside_a_skills_folder_still_works(home):
     workspace.add(home)
     write_file.invoke({"file_path": str(home / "notes.md"), "content": "fine"})
     assert (home / "notes.md").read_text(encoding="utf-8") == "fine"
+
+
+# ── the grounding ────────────────────────────────────────────────────────────────────────────
+
+from langchain.messages import HumanMessage  # noqa: E402
+
+
+def test_an_invoked_skill_rides_the_dynamic_half_only(home, monkeypatch):
+    from nodes import ground
+
+    monkeypatch.setattr(ground, "memory_context_split", lambda q: ("", "", []))
+    monkeypatch.setattr(ground, "mark_used", lambda ids: 0)
+    base = {"messages": [HumanMessage("/weekly-review")], "current_query": "/weekly-review"}
+    plain = ground.grounding_node(dict(base))
+    ran = ground.grounding_node({**base, "skill": "### Skill /weekly-review — x\n1. List what got done."})
+    assert ran["context_stable"] == plain["context_stable"]
+    assert "1. List what got done." in ran["context_dynamic"]
+    assert "1. List what got done." not in ran["context_stable"]
+    assert ran["context_dynamic"].startswith("### Now")
+
+
+def test_a_skill_never_leaks_into_the_next_turn(isolated_paths):
+    from app.session import _fresh_turn, _initial_state
+
+    state = _initial_state()
+    assert state["skill"] == ""
+    state["skill"] = "### Skill /weekly-review — x\n1. y"
+    state = _fresh_turn(state, "an unrelated question")
+    assert state["skill"] == ""

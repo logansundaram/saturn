@@ -139,6 +139,10 @@ class AgentState(TypedDict):
     # This turn's @file attachments, pre-formatted by `mentions.expand`; empty without any.
     attachments: str
 
+    # The skill the user ran this turn by typing /<name> (core/skills.block); empty otherwise.
+    # The ground node folds it into the DYNAMIC half, so it never touches the cached prefix.
+    skill: str
+
     # The model's checklist (see "The plan" above); intent, not record.
     plan: List[dict]
 

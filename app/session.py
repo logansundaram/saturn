@@ -173,6 +173,7 @@ def _initial_state() -> AgentState:
         "current_query": "",
         "context": "",
         "attachments": "",
+        "skill": "",
         "plan": [],
         "iteration": 0,
         "tools_called": [],

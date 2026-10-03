@@ -150,6 +150,13 @@ def grounding_node(state: AgentState) -> dict:
     stable = stable_grounding(always)
     sections = [now_section()]
 
+    # A skill the user ran this turn by typing /<name> (core/skills): their own procedure for
+    # THIS request — the dynamic half, so the stable prefix is untouched and the next turn,
+    # which resets `skill`, does not carry it.
+    skill = state.get("skill", "")
+    if skill:
+        sections.append(skill)
+
     # Selected against THIS request (memory_registry.select_for_context): agent/entities/
     # negative facts only when they share tokens with the query, plus the trailer naming what
     # didn't load — under one cap with the always half above. /trace context shows the exact

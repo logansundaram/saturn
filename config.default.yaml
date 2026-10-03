@@ -69,7 +69,7 @@ runtime:
   # Auto-compaction: when a turn leaves the context window filled past `compact_threshold` (a
   # fraction, 0–1), the older turns are folded into one LLM-written summary before the next turn so
   # the conversation stops re-sending — and overflowing — the window. The mechanical per-turn
-  # compaction always runs; this is the heavier LLM summary. `/compact` triggers it on demand.
+  # compaction always runs; this is the heavier LLM summary.
   auto_compact: true
   compact_threshold: 0.85
   # Answer provenance: append a mechanical "Sources" footer listing the tool calls and
@@ -87,7 +87,7 @@ runtime:
   # `/policy egress`.
   airgap: false
   # Prompt-injection quarantine (quarantine.py): UNTRUSTED tool output (web, remote
-  # MCP, the ingested corpus) is scanned for instruction-shaped content ("ignore your previous
+  # MCP, files, the shell, mail / notes / messages, the ingested corpus) is scanned for instruction-shaped content ("ignore your previous
   # instructions", tool-coercion, role overrides). A hit is flagged in the trace rail, fenced
   # between data-not-instructions markers before the model sees it, and shown at the approval
   # gate. One of:
@@ -143,7 +143,7 @@ memory:
   stale_days: 90
   # Whether /memory review (and /quit, when candidates are pending) asks the model to
   # propose facts from the session transcript on top of the mechanical candidates (steer
-  # notes, gate denials, failed tool calls, the compaction summary). Every
+  # notes, gate denials, the compaction summary). Every
   # candidate still faces the review screen — nothing is written without your accept.
   review_llm: true
 

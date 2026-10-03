@@ -3,7 +3,7 @@
 _2026-09-27. The first v2 sub-project. Decided against main @ cbd1bd7 after the pivot to a
 "Claude Code for daily tasks" companion: terminal stays the surface (the Claude Code audience,
 technical people doing non-code life admin); the trust stack stays; the plan-as-control-surface
-half of the old moat goes._
+half of the old moat goes. Status: shipped 2026-09-27; `docs/engine.md` is the loop's shape today._
 
 ## Why
 

@@ -51,10 +51,10 @@ finding that a model at ~61% single-run success drops to ~25% across eight runs
 | Item | From | Verdict |
 |---|---|---|
 | Drafts in the user's own voice | advantages §5.3 | **Next plan to write.** Few-shot `draft_mail` / `reply_mail` with the last few messages the user sent to that recipient. Every email product leads with it (Part 2). Needs one bulk Sent-mailbox reader; costs the chat turn nothing. |
-| The catalog's shape | pivot loop 9 | **Now has evidence.** The catalog is 42 tools and ~6k tokens of schema (checked today; the docs still say 26 / 3.7k), and two of the 4b's five stable misses today are wrong-tool picks (`list_mail` for "what can you do with my email?", `draft_mail` for "send a text"). See Part 2, engine 1. |
+| The catalog's shape | pivot loop 9 | **Now has evidence.** The catalog is 42 tools and ~6k tokens of schema (checked 2026-10-01; 43 since `delete_file`, 2026-10-02), and two of the 4b's five stable misses today are wrong-tool picks (`list_mail` for "what can you do with my email?", `draft_mail` for "send a text"). See Part 2, engine 1. |
 | Sharper tool descriptions; `calculate` takes the whole expression | engine 7–8 | An afternoon each. Do them with schema examples (Part 2, engine 3). `robust_no_tool` also needs its expectation revisited: Saturn can send a text now. |
 | Concurrent tool batches | engine 9 | Worth a day once ledger events carry a call id. Run only the read-only calls of a batch concurrently and keep Apple events serial. LLMCompiler reports up to 3.7× latency speedup from parallel calls ([F] arxiv.org/abs/2312.04511). |
-| `send_mail` | pivot #13 | Wait. `reply_mail` already leaves the user one keystroke from sent, and a second always-asks chokepoint is real work. Revisit after `send_message` has run for real. |
+| `send_mail` | pivot #13 | Wait. `reply_mail` already leaves the user one keystroke from sent, and a second always-asks chokepoint is real work. Revisit now that `send_message` has run for real (first send 2026-10-02). |
 | Script tools (`~/.saturn/tools/*.sh`) | pivot #9 | Wait. `run_shortcut` covers the Mac-native half and skills cover procedures; build when a user asks for it by name. |
 | Index everything | advantages §5.1 | No. `pivot.md` already says stop investing in RAG, Spotlight search shipped today, and the memory benchmarks in Part 2 favour plain files plus search over a store. |
 | Free background compute | advantages §5.2 | Becomes **routines** (Part 2, product 1), not an indexer. |
@@ -140,7 +140,7 @@ Today the quarantine escalation arms only when `scan()` matches one of eight phr
 (`quarantine.flag` → `_GATE_PENDING`), for one batch, and resets each turn. An injection that
 is paraphrased arms nothing. With the default `auto_approve: read_only` every acting call asks
 anyway, so the exposure is exactly the users who loosened the gate: an always-allow grant, a
-raised tier, `--yolo`. `nodes/approval._provenance` already computes, deterministically and
+raised tier, `--yolo`. `nodes/approval.provenance` already computes, deterministically and
 over the whole conversation, whether untrusted content has entered it (the URL hold uses it).
 The change: once content from an *external* source (web, mail, messages, an MCP server, a
 browser tab, a shared note) is in the conversation, grants and raised tiers stop applying to
@@ -154,7 +154,11 @@ scanner *flagged* it (`benchmark.py`, `INJECTION_DOC_BODY`, `grade_injection`) �
 the detector on the inputs it was written for, not whether an attack that avoids those
 phrasings reaches an action. The probe that matters asserts the gate was reached.
 
-**T3. Show argument provenance at the gate (1 day).**
+**T3. Show argument provenance at the gate (1 day) — the Messages half shipped 2026-10-02.**
+`send_message` and `read_messages` handles are checked now (`quarantine.handle_hold`: a handle in
+nothing the user typed and nothing a tool returned is refused before the gate, and the gate
+names the contact card it came from); `draft_mail`, `reply_mail` and `create_calendar_event`
+attendees are open.
 CaMeL ([F] arxiv.org/abs/2503.18813) and FIDES ([F] arxiv.org/html/2505.23643) both track
 where each value came from and check it at the tool call; FIDES reports injections on its
 benchmark going from 156 to 0 with flow policies. The full interpreter is too heavy for a 9b,
@@ -257,7 +261,7 @@ hermes-agent.nousresearch.com/docs/user-guide/features/skills) — the request i
 **P8. Search over past sessions — a decision to revisit, not a recommendation.**
 The products keep two memories: a small curated profile and full-text search over history
 (Claude's chat search, Hermes's `session_search` over SQLite FTS5). Saturn cut exactly this on
-2026-09-30 (`recall_runs`, `/trace search`) on the argument that "what did I decide" is
+2026-09-29 and 2026-09-30 (`recall_runs`, then `/trace search`) on the argument that "what did I decide" is
 memory's job. The research is on the other side of that call, mildly: LongMemEval found that
 replacing raw history with extracted facts alone loses information ([F]
 arxiv.org/html/2410.10813), and Letta's file-and-grep agent beat dedicated memory systems on
@@ -268,7 +272,7 @@ untrusted; if it passes, the cut was right.
 
 ### Engine — what the literature says about small models
 
-**E1. The catalog is the next engine problem.** 42 bound tools, ~6k tokens of schema, and two
+**E1. The catalog is the next engine problem.** 42 bound tools (43 since 2026-10-02), ~6k tokens of schema, and two
 of today's five stable 4b misses are wrong-tool picks. Tool-selection accuracy falls steeply
 with catalog size (RAG-MCP: 13.6% with everything bound, 43.1% with a retrieved subset, [F]
 arxiv.org/abs/2505.03275), but swapping tools per turn breaks the cached prefix — Manus's
@@ -334,7 +338,7 @@ rests on.
 5. E1(a) — `tools.disabled`, and measure the trimmed catalog
 6. P1 — routines (after skills)
 7. P2 — triage skill and the awaiting-reply reader (after skills)
-8. T3 — argument provenance at the gate
+8. T3 — argument provenance at the gate (mail and calendar; Messages shipped 2026-10-02)
 9. T4 — MCP hash pinning
 10. E3, E2 — schema examples; alias tokens for memory matching
 11. P5, P6 — the memory receipt; the Shortcut entry point
@@ -345,11 +349,14 @@ rests on.
 
 - Sources marked [S] and [A] above; the OpenAI primary pages for Pulse, Tasks and link safety
   returned 403 and are cited through secondary write-ups.
-- T1 end to end in a live terminal; whether `web_extract` re-checks the URL hold on each
-  redirect; whether `arg_tail_rejects` screens network-capable
+- T1 end to end in a live terminal; whether `arg_tail_rejects` screens network-capable
   programs such as `nslookup` under a prefix grant (DNS exfiltration through allowlisted
   commands is a published attack, [S]
   embracethered.com/blog/posts/2025/claude-code-exfiltration-via-dns-requests/ — the
   interpreter table in `trust/policy.py` lists `ssh`, `scp` and `rsync` but no DNS or HTTP
   client, and `curl` under a granted prefix is screened only by its arguments).
+- Answered since from the code (`tools/web._fetch`): `web_extract` follows redirects one hop at
+  a time — each new host is air-gap checked and recorded, and a hop from a public page to a
+  private address is refused; the composed-URL half of the hold is checked on the argument
+  only, not per hop.
 - Any effect on Saturn's benchmarks. Nothing in this file has been run.

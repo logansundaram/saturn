@@ -24,7 +24,7 @@ everything that changed sits after such a checkpoint. The agent's prompt is buil
 ```
 
 - **[have] Stable/dynamic grounding split** (`nodes/ground.py`). `context_stable` (the
-  SATURN.md files, the knowledge-base manifest, the always-loaded memory layers) rides as its
+  working folder, the SATURN.md files, the knowledge-base manifest, the always-loaded memory layers) rides as its
   own message right after the system prompt; `context_dynamic` (the date line, matched memory,
   attachments) goes with the request, after the history.
 - **[have] The idle prime** (`core/prime.py`, `runtime.prime`). After the startup warm-up and
@@ -64,7 +64,7 @@ everything that changed sits after such a checkpoint. The agent's prompt is buil
   arguments, a repeat of a declined call, a third identical call, a call past the cap) answers with an error
   ToolMessage — no gate, no model call — and the Sources and incidents trailers are appended
   mechanically. There is no judge and no answer rewrite: the model's last message is the answer.
-  The plan engine's rewrite had cost ~10 s of decode per single-step turn (run 45: the step
+  The plan engine's rewrite had cost ~10 s of decode per single-step turn (run 45 in the v1 trace DB: the step
   wrote 452 tokens, synthesize rewrote them in 414).
 - **[have] Adaptive thinking** (`runtime.think`, since 2026-09-29). Every pass runs think-off
   except the one right after a tool round with an error, bounded by `runtime.think_budget`

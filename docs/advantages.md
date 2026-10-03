@@ -6,9 +6,9 @@ agent, and the work that turns each one into something a user feels. Companion t
 
 ## 1. Latency that scales with the request (adaptive thinking) — shipped 2026-09-28 (`runtime.think`)
 
-The v2 loop already gets the floor right: a chat question is one model call, a lookup is two.
-What it does not do yet is scale the *depth* of a pass. Think is hard-off everywhere, so a
-genuinely hard multi-step task gets the same zero-reasoning call as "what time is it" and pays
+The v2 loop gets the floor right: a chat question is one model call, a lookup is two.
+Until 2026-09-28 it did not scale the *depth* of a pass: think was hard-off everywhere, so a
+genuinely hard multi-step task got the same zero-reasoning call as "what time is it" and paid
 for it in extra passes, hygiene bounces, or a wrong plan.
 
 The lever is **adaptive thinking**:
@@ -22,15 +22,16 @@ The lever is **adaptive thinking**:
   call, and the wrap-up answer of a multi-step task. On qwen3.5 (4b and 9b) a thinking pass
   whose right move is a short answer writes the answer inside its reasoning and emits nothing,
   so a thinking pass that comes back empty is rerun once think-off.
-- The cap pass (past `runtime.max_iterations`) stays think-off and tool-free: it answers from
-  what it has.
+- The cap pass (from `runtime.max_iterations` on) stays think-off and keeps its tools bound so
+  the cached prefix holds: a call it emits is refused and the model answers from what it has;
+  only a model that calls again is rerun with tools unbound.
 
 Cost on the chat shape: zero. Cost on a hard shape: one bounded thinking budget where it helps.
 This is a bounded change in `nodes/agent.py` plus a config knob, and it is the only item in the
 backlog that changes the latency *shape* rather than adding a feature.
 
 Two things to confirm alongside it: the idle prime still covers the bound agent lineage after
-the v2 cut (the tool catalog is ~3.8k tokens of prefix; cached it is free, cold it is ~10 s at
+the v2 cut (the tool catalog is ~6k tokens of prefix; cached it is free, cold it is ~15 s at
 400 tok/s) — confirmed, `test_prime_lineage_is_the_bound_agent_prefix` pins it — and a
 multi-call batch in `nodes/tools.py` runs concurrently, not serially. It runs serially, and
 deliberately: the per-call egress slice (`_egress_slice`) attributes ledger events to the call
@@ -47,11 +48,12 @@ a cloud agent cannot promise:
   a queue's.
 - **Every byte out is a decision.** The egress ledger, the air-gap, and quarantine of untrusted
   content are not compliance features; they are what makes the next two sections safe to want.
-- **The whole computer is in scope.** Files, shell, Apple Notes / Calendar / Mail, launchd, MCP.
+- **The whole computer is in scope.** Files, shell, Apple Notes / Calendar / Mail / Contacts /
+  Reminders / Messages, Shortcuts, launchd, MCP.
   A cloud agent reaches these through a bridge and a consent screen; Saturn is already on the
-  right side of the door. The gap today is that the file tools are jailed to
-  `database/workspace` (pivot #1) and read UTF-8 text only (pivot #2). Closing those two is what
-  makes "summarize the PDF on my desktop" a one-line request.
+  right side of the door. Both gaps that stood here closed 2026-09-29: the file tools work in
+  the launch folder plus `/add-dir` folders (pivot #1) and `read_file` reads PDF / .docx / .xlsx
+  directly (pivot #2), so "summarize this PDF" is a one-line request.
 
 ## 3. Terminal-native
 
@@ -64,11 +66,11 @@ The audience is people who live in a terminal. Lean into what that gives:
 - **It is fast to start and cheap to keep open.** Import time is under a second; the model stays
   loaded between turns. A launch brief (pivot #6) turns "open the terminal" into "here is your
   day".
-- **It should not look like an audit console.** Nine command modules is still too many on the
-  first screen. The command diet (pivot #11) keeps every command and hides the auditor's ones
-  behind `/help --all`.
-- **It is yours to shape the way Claude Code is.** A global `SATURN.md`, markdown skills, script
-  tools, hooks (pivot #7–#10). Same file formats, same vocabulary, pointed at a life instead of a
+- **It no longer looks like an audit console.** Since 2026-09-28 bare `/help` lists five
+  commands and the auditor's ones sit behind `/help --all` (pivot #11).
+- **It is yours to shape the way Claude Code is.** A global `SATURN.md` and hooks shipped (pivot
+  #7, #10) and any Shortcut is a tool (`run_shortcut`, the Mac-native half of #9); markdown
+  skills (#8) and script-file tools are still open. Same file formats, same vocabulary, pointed at a life instead of a
   codebase.
 
 ## 4. Memory — the thing local-first unlocks
@@ -79,8 +81,8 @@ everything** — their calendar, their mail, the names of the people in their li
 worried about, what they decided about the lease — and the agent can know them the way a good
 assistant does. Knowing the user is the feature, not a privacy concession.
 
-What exists: six memory layers in one markdown file, `user` and `commitments` loaded every turn,
-the rest by token match, `sens=` facts withheld whenever inference is not local, every fact
+What exists: six memory layers in one markdown file, `user`, `commitments` and the last five
+`memo` entries loaded every turn, the rest by token match, `sens=` facts withheld whenever inference is not local, every fact
 provenance-stamped, learning gated behind a review.
 
 What is missing is the *rate* at which it learns:
@@ -92,8 +94,8 @@ What is missing is the *rate* at which it learns:
   summaries keep the review queue. A tool result must never plant a memory; that gate stays.
 - **The first run should be an interview, not a model picker** (pivot #5). Five questions, and
   the second turn already knows who it is talking to.
-- **Contacts and Reminders as readers** (pivot #3) give the memory something to resolve against:
-  "Petra" becomes an address and a number.
+- **Contacts and Reminders as readers** (pivot #3, shipped 2026-10-01) give the memory something
+  to resolve against: "Petra" is now an address and a number.
 
 The pitch, in one line: *the agent that can be told everything, because it keeps everything
 here.* Every other advantage in this file exists to make that line safe.
@@ -107,7 +109,7 @@ daily value against what already exists in the repo.
    chooses to upload. A local one can index the whole home directory: the mail archive, Notes,
    Downloads, the PDFs never filed. "What did I decide about the lease" is answered from an
    email two years old. The RAG store and loaders exist and the embedder pulls lazily; the
-   change is scope — point it at `~` with an exclusion list instead of `database/corpus`, and
+   change is scope — point it at `~` with an exclusion list instead of `database/documents`, and
    index in the background at idle.
 2. **Free background compute.** Cloud tokens cost money, so a cloud agent does nothing between
    messages. A local GPU is idle most of the night. That pays for overnight reindexing, a
@@ -119,13 +121,14 @@ daily value against what already exists in the repo.
    sent folder. `read_mail` and `draft_mail` exist; the change is a prompt-side sample of recent
    sent messages to the same person.
 4. **The logged-in apps are the integrations.** No OAuth dance, no token stored on someone's
-   server. Notes, Calendar and Mail already work this way through AppleScript. The same pattern
-   reaches Contacts, Reminders, Messages, Safari tabs, Photos metadata, Finder tags, and the
+   server. Notes, Calendar, Mail, Contacts, Reminders, Messages, the front browser tab, the Finder
+   selection and Shortcuts already work this way through AppleScript. The same pattern
+   reaches Photos metadata, Finder tags, and the
    Keychain via the `security` CLI. Each is a hundred-line reader module.
 5. **Ambient awareness.** A local process can watch the filesystem, the clipboard, and the
    frontmost app. "Fix this" can mean what is on the clipboard; a new file in Downloads can
    prompt "file this?". A cloud agent cannot see the machine between messages. The menu bar
-   agent already outlives the terminal, so it has somewhere to live.
+   agent already outlives the terminal (off by default since 2026-09-29), so it has somewhere to live.
 6. **Shell composition.** The agent lives where the user already works: `git diff | saturn -q
    "summarize"`, `saturn` in a cron job, `!cmd` passthrough in the REPL, `@file` mentions, shell
    completions. `-q`, `--json` and `core/mentions.py` exist; the rest is small ergonomics that
@@ -141,4 +144,6 @@ daily value against what already exists in the repo.
    spent, and only on hard shapes.
 
 Pursue 1, 3 and 2 first. They compound with §4: the agent knows the user's files, writes like
-them, and does its homework while they sleep.
+them, and does its homework while they sleep. (`research.md`, 2026-10-01, weighed these: 3 is
+the next plan to write, 1 is declined in favour of Spotlight search plus plain files, 2 becomes
+routines, and 5 is declined.)

@@ -92,7 +92,7 @@ decoder, both behind a `read_messages` tool marked `untrusted=True`.
 ### Other platforms
 
 Every tool registers everywhere and answers "only available on macOS (this is linux)" — the
-notify precedent, so the planner catalog is stable across platforms.
+notify precedent, so the bound tool catalog is the same on every platform.
 
 ## 2026-10-01 — the write side, five more apps, and sending
 
@@ -148,15 +148,23 @@ notify precedent, so the planner catalog is stable across platforms.
 - **`pbpaste` reads the clipboard with no prompt** on this macOS. The clipboard is still not
   a tool: it is attached only when the user types `@clipboard`.
 - **`chat.db` is `authorization denied` without Full Disk Access** (still true). The reader
-  and the typedstream decoder are tested against a synthetic database only.
+  has since run on the real history (2026-10-02, below); whether those rows came through the
+  typedstream decoder is not recorded, so the decoder is still verified only against the
+  synthetic database.
+
+### Executed since (2026-10-02, from the trace DB)
+
+- `send_message` first ran for real in run 51: approved at the gate, handed to Messages, on
+  the ledger. Still unexecuted: a send to an email handle, and a send that fails.
+- `read_messages` ran against the real history once the terminal had Full Disk Access (runs
+  48–50); the denial path was hit first (runs 45 and 47) and its remedy text shown. Not run:
+  the `query` text filter (only `contact` and `limit` were passed).
 
 ### Not executed
 
-- `send_message` was compiled (`osacompile`) and unit-tested, never run: sending a real
-  message needs the user. First real use should be to yourself.
-- `run_shortcut` was never run against a real shortcut (each does something real). Whether
-  `shortcuts run` prints a shortcut's output on a pipe, as the tool assumes, is unverified.
-- `read_messages` against the real history (no Full Disk Access).
+- `run_shortcut` was never run against a real shortcut (each does something real). It reads
+  the result from `--output-path` as plain text; whether a real shortcut's output lands there
+  is unverified.
 - `update_mail` `move` / `trash` (flag and unflag were run and reverted on one message).
 - `update_calendar_event` / `delete_calendar_event` on a recurring event or one with
   attendees; `append_note` on a shared note, a checklist or a note with attachments.

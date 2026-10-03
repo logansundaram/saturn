@@ -30,9 +30,9 @@ saturn -q "query"                    # pipe-friendly one-shot (answer only on st
 saturn -p "query" --json --export run.json
 saturn --replay logging/exports/run_1.json   # render an exported record, no DB/models needed
 
-# tests — fully offline (no Ollama, no network, no embedder); ~5s for ~1270 tests
+# tests — fully offline (no Ollama, no network, no embedder); ~5s for ~1350 tests
 python -m pytest tests/ -q
-python -m pytest tests/test_engine.py -q                 # one file
+python -m pytest tests/test_agent_loop.py -q             # one file
 python -m pytest tests/test_policy.py -q -k prefix       # one test by name
 
 # trust benchmark — needs a running Ollama with the active tier pulled
@@ -66,8 +66,8 @@ ground → agent ─(no tool calls)─→ END
            └── tools ← approval      (a fully-rejected batch → agent)
 ```
 
-- `ground` assembles `state["context"]` in two halves (`~/.saturn/SATURN.md` then the workspace `SATURN.md`, the knowledge-base manifest, the always-loaded
-  memory layers = stable; memory matches + attachments = dynamic). No model call.
+- `ground` assembles `state["context"]` in two halves (the working folder, `~/.saturn/SATURN.md` then the workspace `SATURN.md`, the knowledge-base manifest, the always-loaded
+  memory layers = stable; the `### Now` date line + memory matches + attachments = dynamic). No model call.
 - `agent` (`nodes/agent.py`) makes ONE native tool-calling call per pass (`get_model()`,
   `bind_tools(registry)`, streamed; think is adaptive — `runtime.think`: a pass thinks only right after a
   tool round with an error, an empty thinking pass is rerun think-off, the capped pass never thinks). Prompt order is prefix-cache order:
@@ -80,9 +80,12 @@ ground → agent ─(no tool calls)─→ END
   bound call so the cached prefix holds, a call it emits is answered with `BUDGET_TEXT` and routed
   back for the answer; a model that calls again is rerun once with tools UNBOUND and a budget
   note — a real answer, never a stub) → generate → **hygiene** on each emitted call (unknown tool,
-  missing arguments via `core/tool_args.coerce_args`, malformed JSON, a repeat of a call the user
+  arguments that belong to another tool via `core/tool_args.tool_for_args`,
+  missing arguments via `core/tool_args.coerce_args`, malformed JSON, a recipient the model
+  invented (`quarantine.handle_hold`), a repeat of a call the user
   DECLINED this turn, a third identical call with nothing changed in between — each answered with
-  an error ToolMessage that routes straight back to `agent`, no gate, no model call) → **answer** (a message without tool calls IS
+  an error ToolMessage that routes straight back to `agent`, no gate, no model call; `ask_user`
+  runs alone, its siblings answered the same way) → **answer** (a message without tool calls IS
   the answer; the Sources receipt and the incidents note are appended to the RECORDED message,
   never the stream). `nodes.agent._generate` is the one model seam tests replace.
 - `approval` asks `trust/policy.approves(name, risk, args)` — the ONE gate question — on the
@@ -135,7 +138,8 @@ and the turn ends in an answer (one pass later at most).
 `config.yaml` is **gitignored user data**, seeded on first run from the tracked template
 `config.default.yaml` (or `~/.saturn/config.yaml` for wheel installs — `config.saturn_home`). Change defaults in the
 template. `config.persist()` does a surgical single-line YAML edit to preserve comments — don't replace
-it with a full dump. `config.py`, `diag.py`, `textutil.py` import nothing project-side and are safe
+it with a full dump. `diag.py` and `textutil.py` import nothing project-side, and `config.py` only the leaves `diag`
+and `core/model_family`; all three are safe
 leaves; `diag.log()` replaces `print()` in nodes/tools (stdout collides with the rich Live TUI).
 
 ### Memory (`stores/memory_registry.py`, `core/memory_review.py`)
@@ -167,7 +171,7 @@ accept). The benchmark's memory tasks and `tests/test_memory_*.py` pin this.
   `NO_BLANKET_GRANT`. Persisted in `database/permissions.json`.
 - `egress.py` — every outbound network op calls `check()` (air-gap) then `record()`. The complete list
   of egress chokepoints is `core/llms.py`, `tools/web.py`, `tools/mcp_client.py`, `tools/messages.py`
-  (`send_message`); `tests/test_no_new_egress.py` fails on a network-client import anywhere else, and
+  (`send_message`); `tests/test_no_new_egress.py` fails on a network-client import anywhere else (`stores/rag.py` may import `trafilatura` for local extraction; the same test pins that it never fetches), and
   `tests/test_messages.py` pins the one chokepoint that imports none (it sends through `osascript`).
   A new chokepoint is a deliberate edit to that test plus check/record wiring. A remote `OLLAMA_HOST` counts as egress
   (`is_loopback_host` parses the address; never match it as a string). `run_shell`, `run_shortcut` and
@@ -176,7 +180,10 @@ accept). The benchmark's memory tasks and `tests/test_memory_*.py` pin this.
   auto-approved — headless refuses them even with `--yolo`.
 - `quarantine.py` — untrusted output (web, MCP, files, shell, corpus — a FAILED call's text too) is
   scanned, fenced as data, and the next batch that can act is escalated to the gate; `url_hold`
-  is the exfiltration hold on `web_extract` (above).
+  is the exfiltration hold on `web_extract` (above). `handle_hold` is the invented-recipient check
+  the agent's hygiene asks for `send_message.to` and `read_messages.contact` (`HANDLE_ARGS`): a
+  number or address found in nothing the user typed and no tool result never reaches the gate; for
+  one that does, the gate prompt names the contact it belongs to (`nodes/approval._handle_note`).
 
 ### Tools
 
@@ -262,5 +269,6 @@ Every document but the three the root needs (`README.md`, `CHANGELOG.md`, this f
 product goal since 2026-09-27 and the ranked work that closes the distance to it. `docs/engine.md`
 — the loop's shape today and the ranked engine improvements. `docs/dogfood.md` — the prompts a real
 user would try. `docs/advantages.md` — why the pivot items matter. `docs/OPTIMIZATIONS.md` — latency
-techniques with the numbers behind them. `docs/superpowers/` — specs and plans from past feature
-work. `CHANGELOG.md` — user-visible history.
+techniques with the numbers behind them. `docs/research.md` — everything still open in pivot /
+engine / advantages, ranked, with plans for the top items and an outside survey.
+`docs/superpowers/` — specs and plans (the plans dated 2026-10-01 are not built yet). `CHANGELOG.md` — user-visible history.

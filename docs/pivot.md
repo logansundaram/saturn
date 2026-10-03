@@ -37,20 +37,23 @@ a two-file comparison issues both reads in one pass.
 
 **Stays.** The gate, the egress ledger, the air-gap, quarantine, the trace DB and replay, the
 six-layer memory with gated learning, the tool surface (files, shell, web, knowledge base, Apple
-Notes / Calendar / Mail, notifications, MCP), the tiers and the prefix cache.
+Notes / Calendar / Mail, notifications, MCP), the tiers and the prefix cache. (Since then:
+Contacts, Reminders, Messages, Shortcuts, the front browser tab, the Finder selection.)
 
-**Parked.** Token steering and confidence coloring (modules kept, loop does not arm them). The
-trust benchmark's engine metrics.
+**Cut.** Token steering and confidence coloring (deleted 2026-09-27). **Parked.** The trust
+benchmark's engine metrics (the loop benchmark carries them since 2026-09-28).
 
 ## Where Saturn is against the goal (honest)
 
+_Table updated 2026-10-03 against the tree; the ranked list below keeps each item's own status._
+
 | Goal leg | Today | Gap |
 |---|---|---|
-| Know the user | Six memory layers exist; every fact still needs a review click; the agent reads Notes/Calendar/Mail but not Contacts or Reminders; first run asks for a model tier, not for you | The agent starts every session knowing almost nothing and learns slowly |
-| Yours to shape | `SATURDAY.md` per workspace; MCP config in YAML with zero servers enabled; `/policy` for the gate | No global instructions file, no user-authored procedures, no hooks, no way to add a tool without Python |
-| Visible + gated | Done and true | Fifteen slash-command modules and a trace vocabulary built for auditors, not for someone asking about their Thursday |
-| Works where you are | File tools are jailed to `database/workspace`; `read_file` is UTF-8 text only | "summarize the PDF on my desktop" fails before the model is consulted |
-| Feels like a product | Install hardcodes the 4b tier; no hardware probe; the 27b experience is a demo, not the default | Most people's first turn is on the weakest model |
+| Know the user | Six memory layers exist; every fact still needs a user action (a review accept, a gated `remember`, `/memory add`); the agent reads Notes / Calendar / Mail / Contacts / Reminders / Messages; first run asks for a model tier, not for you | The agent starts every session knowing almost nothing and learns slowly (auto-memory, the interview and the brief are planned, not built) |
+| Yours to shape | `~/.saturn/SATURN.md` global plus `SATURN.md` per folder; hooks in `~/.saturn/hooks.yaml`; any of your Shortcuts as a tool (`run_shortcut`); MCP config in YAML with zero servers enabled; `/policy` for the gate | No user-authored procedures (skills), no script-file tools |
+| Visible + gated | Done and true; bare `/help` lists five commands, the other fourteen sit behind `/help --all` | A trace vocabulary built for auditors, not for someone asking about their Thursday; the macOS permission dialogs name the terminal, not Saturn (`superpowers/specs/2026-10-02-macos-app-identity.md`, undecided) |
+| Works where you are | File tools work in the launch folder plus `/add-dir` folders; `read_file` reads PDF / .docx / .xlsx directly; `search_files` asks Spotlight | No always-listed roots: "the PDF on my desktop" from another folder needs `/add-dir ~/Desktop` first |
+| Feels like a product | First launch runs `/models`: it probes the hardware, recommends a tier and pulls it on consent; `install.sh` still seeds and pulls the 4b first | The installer's download is the weakest model even on a machine that should run the 27b |
 
 ## Next improvements, ranked
 
@@ -82,7 +85,7 @@ Two more AppleScript readers beside Notes / Calendar / Mail — `search_contacts
 (the natural home for "remind me to…", replacing the launchd notification for anything with a
 due date). Readers `untrusted=True` as today.
 
-### 4. Learn from what the user *says*, without the click (2–3 days)
+### 4. Learn from what the user *says*, without the click (2–3 days) — open; plan written 2026-10-01 (`superpowers/plans/2026-10-01-auto-memory-from-user-statements.md`)
 Provenance-gated auto-memory. A fact the user states in their own words ("I'm vegetarian",
 "Petra is my manager", "my lease ends in March") is written by the trusted principal and lands
 directly in the `user` / `entities` / `commitments` layer with `by=user`; the rail shows a one-line
@@ -92,24 +95,24 @@ source of the fact is a tool result — a web page must never plant a memory. Th
 that turns "it never remembers" into "it knows me", and it costs nothing at the gate for the
 common case.
 
-### 5. A first-run interview, not a model picker (1 day)
+### 5. A first-run interview, not a model picker (1 day) — open; plan written 2026-10-01 (`superpowers/plans/2026-10-01-first-run-interview.md`)
 After the tier is chosen, ask five questions in the REPL — name, what you do, the people you
 mention most, what you want help with, what it should never do — and write the answers to the
 `user` / `entities` / `negative` layers. Skippable, re-runnable as `/memory setup`. The agent's
 second turn should already know who it is talking to.
 
-### 6. A launch brief (1 day)
+### 6. A launch brief (1 day) — open; plan written 2026-10-01 (`superpowers/plans/2026-10-01-launch-brief.md`)
 On session start, one dim block: today's events, mail threads waiting on a reply (from
 `list_mail`), open commitments, the memo digest — read-only calls, auto-approved, cached for the
 session. Nothing runs in the background; the brief is the first turn, done for you. `/brief`
 re-runs it; `runtime.brief: false` turns it off.
 
-### 7. `SATURN.md` global + per-folder instructions (half a day) — shipped 2026-09-28 (`/init` still writes SATURDAY.md)
+### 7. `SATURN.md` global + per-folder instructions (half a day) — shipped 2026-09-28; the per-folder file is `SATURN.md` since 2026-09-29 (`/init` writes it, the global one is hand-written) and `SATURDAY.md` stopped being read 2026-09-30
 `~/.saturn/SATURN.md` loaded every turn (tone, standing rules, "always metric", "never draft to
 my boss without asking"), merged under a folder's `SATURDAY.md`. Rename the per-folder file to
 `SATURN.md` too and keep reading the old name. `/init` drafts both.
 
-### 8. Skills: user-authored procedures as markdown (2–3 days)
+### 8. Skills: user-authored procedures as markdown (2–3 days) — open; plan written 2026-10-01 (`superpowers/plans/2026-10-01-skills.md`)
 `~/.saturn/skills/<name>.md` with a one-line description and a body of steps the agent follows
 when the request matches (`/weekly-review`, `/expense`, `/travel-checklist`). The runbook idea
 from the v1 plan, in Claude Code's vocabulary and file format: no DSL, no parameters beyond the
@@ -127,7 +130,7 @@ closed to `destructive`; every call faces the gate; stdout is untrusted.
 `after-write`. The same seam Claude Code exposes; the memory review and the launch brief could be
 built on it.
 
-### 11. The command diet (1 day) — shipped 2026-09-28 (`/help --all`)
+### 11. The command diet (1 day) — shipped 2026-09-28 (`/help --all`; the daily five are `/memory`, `/policy`, `/trace`, `/help`, `/quit`; `/skills` waits on #8, `/confidence` was cut, `/privacy` merged into `/policy` 2026-09-30)
 Five commands a person needs — `/memory`, `/skills`, `/policy`, `/trace`, `/help` — listed by
 default; `/confidence`, `/privacy`, `/notify`, `/mcp`, `/models`, `/config`, `/docs`, `/undo`
 behind `/help --all`. Nothing is removed; the first screen stops looking like an audit console.
@@ -137,7 +140,7 @@ behind `/help --all`. Nothing is removed; the first screen stops looking like an
 16 GB, 4b below), pulls the model on consent, and says plainly what each tier feels like. Until
 this exists, "most users run the good model" is hoped for, not true.
 
-### 13. `send_mail` / `send_message`, gated (1 day, after 1–6) — `send_message` shipped 2026-10-01 (`tools/messages.py`: always asks, on the ledger, compiled but not yet run); `send_mail` still open
+### 13. `send_mail` / `send_message`, gated (1 day, after 1–6) — `send_message` shipped 2026-10-01 (`tools/messages.py`: always asks, on the ledger; first real send 2026-10-02); `send_mail` still open
 The one new egress chokepoint the daily-task goal needs: a reply that actually sends. Always
 gated, never auto-approved, shown whole at the gate, on the ledger. The findings are in
 `docs/superpowers/specs/2026-09-06-macos-apps.md`.
@@ -145,10 +148,11 @@ gated, never auto-approved, shown whole at the gate, on the ledger. The findings
 ## What to stop investing in
 
 - **RAG as a first-class feature.** Keep `search_knowledge_base` working; direct reads (2) cover
-  the daily case. Lazy-pull the embedder on first `/docs add`.
-- **Confidence coloring and token steering.** Parked. Bring back only if a demo needs them.
+  the daily case. The embedder is pulled lazily on the first `/docs add` (since 2026-09-27).
+- **Confidence coloring and token steering.** Cut 2026-09-27. Bring back only if a demo needs them.
 - **The trust benchmark's capability suites.** Keep the trust probes (gate, egress, quarantine,
-  memory planting) as the regression floor; drop the engine metrics they lost today.
+  memory planting) as the regression floor; the grounding and fabrication suites were dropped 2026-09-27 and the
+  loop benchmark measures the engine.
 - **Auditor-grade trace surfaces.** `/trace export`, replay and `/trace why` stay; no new views.
 
 ## Cut list and loop improvements (2026-09-28 survey)
@@ -167,12 +171,12 @@ shape without adding a call to the chat turn. Pivot #1 and #2 above stay the top
   the remote host.
 - ~~**The Sources footer on the answer.**~~ Kept (2026-09-29, the user's call): the receipt of
   what informed an answer stays on the recorded message.
-- **The menu bar LaunchAgent** — defaulted off 2026-09-29 (`notify.menubar: false`). (`notify/menubar.py` + `notify/menubar_app.py`, 443 lines, the
-  pyobjc dependency). Every interactive launch installs a login item (`app/repl.py`,
+- ~~**The menu bar LaunchAgent**~~ — defaulted off 2026-09-29 (`notify.menubar: false`), kept by choice. (Was: `notify/menubar.py` + `notify/menubar_app.py`, 443 lines, the
+  pyobjc dependency. Every interactive launch installs a login item (`app/repl.py`,
   `_menubar.ensure_running()`) for an icon that lists pending notifications. Default it off, or
-  cut it until the ambient-awareness work (advantages.md §5.5) gives it a job.
-- ~~**The second model role.**~~ Cut 2026-09-30: a tier binds one `model` (a `roles:` block is
-  still read); `/models use <id>` replaces the per-role spellings. The `capabilities` block
+  cut it until the ambient-awareness work (advantages.md §5.5) gives it a job.)
+- ~~**The second model role.**~~ Cut 2026-09-30: a tier binds one `model` (a leftover `roles:` block is
+  refused with the one `model:` line to write instead); `/models use <id>` replaces the per-role spellings. The `capabilities` block
   stays — it is the `num_ctx` source. Loop item 6 would now compress with the same model.
   (Was: all four tiers bind `utility` to the same model as `tool_caller`;
   the `capabilities` block is read once for a startup warning and `max_context_window` is
@@ -224,15 +228,17 @@ shape without adding a call to the chat turn. Pivot #1 and #2 above stay the top
 
 - ~~`README.md` (the "life of a turn" block and the layout listing) still documents plan,
   rectify and synthesize.~~ Fixed 2026-09-29, with the stale headers below and `/trace answer`.
-- Stale headers: `tui/ui/__init__.py` describes plan_gate / update_plan / synthesize rows;
+- ~~Stale headers: `tui/ui/__init__.py` describes plan_gate / update_plan / synthesize rows;
   `nodes/tools.py` opens with "living-plan ReAct loop (Phase 1)"; `nodes/approval.py` says
   "Phase 2"; `config.default.yaml` says "Phase 3" and "Saturday.ai"; `core/context.py`
-  references plan_context.
-- `/trace` usage still lists `answer`, cut with the Glass Box.
-- Two names: done 2026-09-29 (`SATURN_*` with `SATURDAY_*` fallbacks; `/init` writes
-  `SATURN.md`); 2026-09-29 also: one home — a new wheel install keeps its data in ~/.saturn
-  (`config.saturn_home`; an existing ~/.saturday install stays put), the installer's clone
-  folder is `SATURN_INSTALL_DIR`. Pick `SATURN_*`, read the old spellings as fallbacks for one release.
+  references plan_context.~~ Fixed 2026-09-29.
+- ~~`/trace` usage still lists `answer`, cut with the Glass Box.~~ Fixed 2026-09-29.
+- ~~Two names~~: done 2026-09-29 (`SATURN_*`; `/init` writes `SATURN.md`; a wheel install keeps
+  its data in ~/.saturn, `config.saturn_home`); the `SATURDAY_*` / `SATURDAY.md` / `~/.saturday`
+  fallbacks were dropped 2026-09-30. The installer's clone folder is `SATURN_INSTALL_DIR` (its
+  default is still `~/.saturday`).
+- ~~`README.md` still pitched the plan engine, a jailed workspace and "no consumer integrations".~~
+  Rewritten 2026-10-03 against the v2 loop and the tool surface.
 
 ### Improve
 
@@ -258,9 +264,9 @@ shape without adding a call to the chat turn. Pivot #1 and #2 above stay the top
 6. **Concurrent tool batches.** Serial today so egress events attribute by sequence
    (`_egress_slice`). Tag ledger events with a call id via a contextvar and the batch can run
    in a pool; a two-file compare then reads both at once.
-7. **Fold the `/models` page into first run.** `commands/runtime.py` (697 lines, a 696-line
-   test) already probes hardware and recommends a tier — pivot #12. Run the recommendation once
-   at first launch and shrink `/models` to list and use.
+7. **Fold the `/models` page into first run** — shipped 2026-09-29 (first launch dispatches
+   `/models`; the probe is `core/hardware.py`); `/config setup` and `/models rescan|tier` cut
+   2026-09-30.
 
 
 ## Loop improvements (2026-09-28 brainstorm)
@@ -286,12 +292,14 @@ an item here subsumes one of those it says so._
    evening, with the rounds rule in the prompt and the foreign-arguments refusal: 4b loop
    20/25 (the new `multi_dependent` passes: read in pass 1, write in pass 2), 4b trust all
    pass including supersession.
-2. **`_llm_input` becomes a budgeted prompt projection.** Today it maps state to the prompt and
+2. **`_llm_input` becomes a budgeted prompt projection** — open; plan written 2026-10-01
+   (`superpowers/plans/2026-10-01-observation-budget.md`). Today it maps state to the prompt and
    only strips trailers, so ten reads on a 32k window push the system prompt off the front. Give
    the projection a token budget: an observation a later pass has already moved past collapses
    to a one-line stub in the PROMPT only — state, the trace and replay stay whole. Subsumes
    "size the observation clamp to the window". Costs the chat turn nothing.
-3. **A question is an answer: delete the `ask_user` interrupt.** The model's last message is
+3. **A question is an answer: delete the `ask_user` interrupt** — open; plan written 2026-10-01
+   (`superpowers/plans/2026-10-01-question-is-an-answer.md`). The model's last message is
    the answer; when it needs a value it answers with the question and the turn ends, and the
    user's reply is the next turn with the history intact. Deletes the interrupt, the run-alone
    hack (`ASK_ALONE_TEXT`), the headless special case and the tool; `plan` state carries across
@@ -302,23 +310,27 @@ an item here subsumes one of those it says so._
    directory and a short workspace listing, the way Claude Code puts cwd and git status in
    front of the model. Subsumes "put the date in the dynamic grounding"; `current_time` and
    its prompt line go. "The file on my desktop" and "Thursday" resolve on pass one.
-5. **A phantom-action guard.** The characteristic small-model failure: "I'll read the file
+5. **A phantom-action guard** — declined 2026-10-01: the loop benchmark shows zero phantoms on
+   both tiers. The characteristic small-model failure: "I'll read the file
    now." with no tool call, and the turn ends. Deterministic check on an answer — no calls,
    short, ends in an intent verb, no tool used this turn — followed by ONE nudge pass. Fires only
    on the failure shape; the benchmark's phantom count says whether it earns its place.
-6. **Compress oversize observations instead of clipping them.** Head-and-tail loses the middle
+6. **Compress oversize observations instead of clipping them** — declined 2026-10-01, replaced
+   by the relevance-aware clamp (`superpowers/plans/2026-10-01-observation-budget.md`); the
+   utility role it wanted was cut 2026-09-30. Head-and-tail loses the middle
    of a web page or a long file. Past the clamp, one utility-role call extracts what is relevant
    to the request. Costs a call only on an oversize result. Pulls against collapsing the utility
    role (cut list above) — decide the two together.
-7. **A wall-clock budget beside the pass cap.** `runtime.turn_seconds` triggers the same
+7. **A wall-clock budget beside the pass cap** — declined (engine.md 10): the hygiene budget
+   removes its main cause. `runtime.turn_seconds` triggers the same
    capped last pass. Sixteen passes on a 4b can be minutes; a companion should not make someone
    wait that long without a decision.
 8. **Record the reasoning** — shipped 2026-09-29, in the `llm_calls` record (not the
    AIMessage: langchain-ollama would send `reasoning_content` back as `thinking`). A thinking pass streams `reasoning_content` and drops it. Stamp it
    on the recorded AIMessage so `/trace why` can show why the pass chose its calls, and the
    loop benchmark can grade it.
-9. **The catalog's shape — measure before touching.** Twenty-six schemas is 3.7k tokens and
-   twenty-six choices for a 4b. Two candidates to benchmark: domain tools with an action enum
+9. **The catalog's shape — measure before touching.** Forty-three schemas is about 6k tokens and
+   forty-three choices for a 4b (26 / 3.7k when this was written). Two candidates to benchmark: domain tools with an action enum
    (`mail(action=…)`), or a small core set plus a deferred group. Both fight the prefix cache,
    so only if the loop benchmark shows tool-choice errors.
 

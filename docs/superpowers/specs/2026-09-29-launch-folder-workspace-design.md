@@ -1,7 +1,8 @@
 # Work where you launched: the launch folder is the workspace
 
 _2026-09-29. Pivot item #1 ("work where you launched"). Decided in conversation: the launch
-folder only, other folders by an explicit command, and home treated like any other folder._
+folder only, other folders by an explicit command, and home treated like any other folder. Status: shipped 2026-09-29; the parked follow-ups are at
+the end._
 
 ## Why
 

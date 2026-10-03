@@ -25,8 +25,8 @@ lookup is two calls in ~3 s, a two-file comparison issues both reads in one pass
 Assembles `state["context"]` in two halves so the prefix cache holds:
 
 - **stable** — byte-identical across turns while nothing on disk changed: the working folder
-  (launch folder + `/add-dir` folders), `~/.saturn/SATURN.md`, the folder's `SATURN.md`
-  (`SATURDAY.md` still read), the knowledge-base manifest, and the always-loaded memory layers
+  (launch folder + `/add-dir` folders), `~/.saturn/SATURN.md`, the folder's `SATURN.md`,
+  the knowledge-base manifest, and the always-loaded memory layers
   (`user`, `commitments`, the last five `memo` entries).
 - **dynamic** — per turn: the `### Now` line (weekday, date, time, UTC offset), memory facts
   matched to the request by token overlap, and `@file` attachments (a PDF / .docx / .xlsx
@@ -71,9 +71,12 @@ each costing a chat turn nothing):
    what the failed attempt streamed is retracted first (`RETRACT` on LangGraph's custom
    stream, which `app/turn.run_turn` hands to `on_retract` — the REPL's `answer.discard`).
 5. **hygiene** — on each emitted call, answered with an error ToolMessage that routes straight
-   back to `agent` (no gate, no execution): an unknown tool; arguments that belong to another
+   back to `agent` (no gate, no execution): an unknown tool; a call whose arguments were not valid JSON
+   (answered with the schema hint); arguments that belong to another
    tool (`recall(fact=…)` → "those belong to remember"); missing required arguments after
-   alias coercion (`core/tool_args`); a repeat of a call the user DECLINED this turn; a third
+   alias coercion (`core/tool_args`); a number or address the model composed — in nothing the
+   user typed and no tool result (`quarantine.handle_hold`, for `send_message` and
+   `read_messages`); a repeat of a call the user DECLINED this turn; a third
    identical call with nothing changed since the first (`STALL_REPEATS` — a completed write,
    edit or command in between resets the count, so edit → test → edit → test is not a stall). `ask_user` runs alone — a resumed interrupt re-executes
    the tools node, so siblings in its batch are answered with `ASK_ALONE_TEXT`.
@@ -97,7 +100,9 @@ call, with always-allow grants scoped by `runtime.grant_scope`. The next batch
 that can act (send or change something) after quarantine-flagged output is escalated to the gate
 regardless of tier; a `web_extract` URL the model composed after external content entered the
 conversation, or a private address the user did not type, is held too (`quarantine.url_hold`);
-under air-gap `run_shell` and MCP calls always ask (`policy.airgap_holds`). Rejected calls get a
+under air-gap `run_shell`, `run_shortcut` and MCP calls always ask (`policy.airgap_holds`), and a
+send (`send_message`, `policy.ALWAYS_ASKS`) asks whatever the tier, an open gate or an
+always-allow says; the prompt states each reason (`notes`), including whose number a call names. Rejected calls get a
 decline ToolMessage (the declined-repeat guard keeps that "no" for the rest of the turn); a
 fully-rejected batch routes back to `agent`. Every human decision lands in `gate_events`, the
 one record nothing can recompute.
@@ -108,7 +113,7 @@ Runs the pending calls one after another (serial, so egress events attribute to 
 sequence). Per call: the observation is clamped to `_MAX_OBSERVATION` (12,000 characters,
 head and tail); the egress slice is attached; untrusted output (web, MCP, files, the shell,
 notes, mail — a failed call's text too) is scanned by `trust/quarantine.py` and fenced as data; a structural `saturn_status` stamp
-(`done` / `error` / `blocked` / `skipped`) rides the ToolMessage so no reader has to sniff
+(`done` / `error` / `blocked` here; `skipped` is the gate's decline) rides the ToolMessage so no reader has to sniff
 outcome from text — a tool reports failure by RAISING `tools.toolspec.ToolError` (an edit
 whose text was not found, a non-zero shell exit, a refused path, an MCP error), which the node
 stamps `error`; before 2026-09-30 most tools returned such failures as strings, stamped `done`; a successful `plan` call maps onto `state["plan"]` (the rail's checklist —

@@ -67,6 +67,8 @@ The whole product is one loop. Reading it end to end explains 80% of the repo:
      again is rerun once with tools unbound); each emitted call passes hygiene (unknown tool, missing or malformed
      arguments via `core/tool_args`, arguments that belong to another tool, a number or address that appears in nothing the user
      typed and no tool result (`quarantine.handle_hold` — `send_message.to`, `read_messages.contact`),
+     a group chat ref no tool returned (`quarantine.chat_hold` — `chat=`), a messaging call naming both a
+     person and a group or neither (`tools/messages.route_target`, which moves a target in the wrong slot),
      a repeat of a call the user declined this turn, a third
      identical call with nothing changed in between — each answered with an error ToolMessage back to the model;
      `ask_user` runs alone — its siblings in the batch are answered with "ask first"). A message
@@ -148,7 +150,7 @@ every check in the agent node. Note: `nodes/tools.py` is the *tool-execution nod
 | `contacts.py` | Apple Contacts: `search_contacts` (`read_only`, **untrusted**) — a name to the addresses, numbers and birthday on the card; an exact name ranks before a substring match, and a miss offers the closest names. Resolves ids once, then fetches at most `limit` people by id (a loop over the `whose` result is ~0.6s a person). |
 | `reminders.py` | Apple Reminders: `list_reminders` (`read_only`, **untrusted** — shared lists) + `create_reminder` / `complete_reminder` (`side_effecting`). One `properties of` fetch per list (each Apple event costs ~1s). The dictionary has no recurrence and no location; the tool says so. |
 | `shortcuts.py` | The user's Shortcuts through the `shortcuts` CLI: `list_shortcuts` (`read_only`) + `run_shortcut` (`destructive`, **untrusted** output). A shortcut is a process the ledger cannot see inside: each run is recorded `UNTRACKED`, air-gap holds it, and the gate is relaxed per shortcut by name (`/policy shortcut`), never by a blanket always-allow. Two tools, not one per shortcut — the bound schemas are the cached prefix. |
-| `messages.py` | `send_message` — an iMessage through Messages; an **egress chokepoint** (`egress.check` → `record`, recipient as the host label), `destructive`, and in `policy.ALWAYS_ASKS`: no tier, open gate, override or always-allow skips the human, headless refuses it even with `--yolo`. `to` must be a number or address, never a name. `read_messages` (`read_only`, **untrusted**) reads `~/Library/Messages/chat.db` read-only — needs Full Disk Access — and decodes `attributedBody` typedstreams. A contact is matched against the handle and chat tables and selected in SQL; a text filter runs in Python over the newest `_SCAN` rows and the result says when that was not the whole history. |
+| `messages.py` | `send_message` — an iMessage through Messages; an **egress chokepoint** (`egress.check` → `record`, recipient as the host label), `destructive`, and in `policy.ALWAYS_ASKS`: no tier, open gate, override or always-allow skips the human, headless refuses it even with `--yolo`. `to` must be a number or address, never a name; `chat=` sends to ONE existing group chat instead (a `g…` ref from `find_group_chats`, which lists the app's group chats with their people over AppleScript — no Full Disk Access; one egress event per recipient; the gate lists every member via `describe_group`). `read_messages` (`read_only`, **untrusted**) reads `~/Library/Messages/chat.db` read-only — needs Full Disk Access — and decodes `attributedBody` typedstreams. A contact is matched against the handle and chat tables and selected in SQL; a text filter runs in Python over the newest `_SCAN` rows and the result says when that was not the whole history. |
 | `desktop.py` | What the user is pointing at: `read_browser_tab` (`read_only`, **untrusted**; Safari's page text is a plain property, read locally with no fetch; Chromium needs *Allow JavaScript from Apple Events* and degrades to URL + title; a closed browser is never launched; with several browsers running, the frontmost by `lsappinfo` window order is read and one without a window passes to the next) and `finder_selection` (`read_only`; out-of-reach paths come back with the `/add-dir` that would allow them). |
 
 ### `notify/` — the OS-scheduled side
@@ -211,7 +213,7 @@ deliberate name reuse. When you're jumping by filename, disambiguate here:
 | `policy` | `trust/policy.py` (the gate) and `trust/egress.py` (ledger, air-gap) are the mechanisms · `commands/policy.py` is their one front door. |
 | `knowledge` ×2 | `tools/knowledge.py` = the RAG/memory tools · `commands/knowledge.py` = /docs /memory /init /undo. |
 | `notify` ×3 | `notify/` is the OS-scheduler seam · `tools/notify.py` is `schedule_notification` · `commands/notify.py` is `/notify`. |
-| `messages` ×2 | `core/messages.py` holds every system prompt · `tools/messages.py` is iMessage (`send_message` / `read_messages`). |
+| `messages` ×2 | `core/messages.py` holds every system prompt · `tools/messages.py` is iMessage (`send_message` / `read_messages` / `find_group_chats`). |
 
 ## Suggested reading order
 

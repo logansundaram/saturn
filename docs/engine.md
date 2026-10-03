@@ -76,7 +76,8 @@ each costing a chat turn nothing):
    tool (`recall(fact=…)` → "those belong to remember"); missing required arguments after
    alias coercion (`core/tool_args`); a number or address the model composed — in nothing the
    user typed and no tool result (`quarantine.handle_hold`, for `send_message` and
-   `read_messages`); a repeat of a call the user DECLINED this turn; a third
+   `read_messages`), or a group chat ref no tool returned (`quarantine.chat_hold`); a messaging
+   call naming both a person and a group, or a send naming neither (`tools/messages.route_target`); a repeat of a call the user DECLINED this turn; a third
    identical call with nothing changed since the first (`STALL_REPEATS` — a completed write,
    edit or command in between resets the count, so edit → test → edit → test is not a stall). `ask_user` runs alone — a resumed interrupt re-executes
    the tools node, so siblings in its batch are answered with `ASK_ALONE_TEXT`.

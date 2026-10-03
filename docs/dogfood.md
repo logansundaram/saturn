@@ -105,6 +105,10 @@ One call, no tools. Saturn should just answer, briefly.
 - Draft a thank-you note to Jonah for the birthday present, in my usual tone.
 - Unsubscribe me from the newsletters I never open. Show me the list first.
 - Text Sam that I'm running 15 minutes late.
+- Tell the family chat I landed. (If two groups could be "the family chat", it should ask which.)
+- Text Sam and Alex together: dinner at 7? (The group with exactly them — not Sam alone.)
+- What's the climbing chat been saying today?
+- Text Priya and Jordan together. (No such group: it should say so, not text them one by one.)
 
 ## 4. Files on your machine
 

@@ -76,8 +76,9 @@ button, and it keeps the egress surface unchanged.
 
 ### Messages history (reading texts)
 
-Not possible through AppleScript: `chats` iteration fails with -10000 and there is no message
-element. `find_message_contact` would work (participants list name + handle; verified) but is
+Not possible through AppleScript: there is no message element. (`chats` iteration failed with
+-10000 here; on 2026-10-03 it iterates — bind `id of chats` to a variable first — and backs
+`find_group_chats`: docs/superpowers/specs/2026-10-03-imessage-group-chats-design.md.) `find_message_contact` would work (participants list name + handle; verified) but is
 pointless without the history reader. The only route is `~/Library/Messages/chat.db`:
 
 - Requires **Full Disk Access** for the terminal app (authorization denied otherwise —

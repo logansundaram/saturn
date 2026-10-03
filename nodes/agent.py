@@ -78,6 +78,9 @@ UNKNOWN_HANDLE_TEXT = ("Not executed: {handle} appears nowhere in this conversat
                        "the user wrote and not in any tool result — so it cannot be used. Look the "
                        "person up with search_contacts and use the number or address from their "
                        "card, or ask the user for it.")
+UNKNOWN_CHAT_TEXT = ("Not executed: group chat {ref} did not come from find_group_chats in this "
+                     "conversation, so it cannot be used. Find the group with find_group_chats and "
+                     "use the chat ref it returns.")
 MALFORMED_CALL_TEXT = ("Error: that tool call was not valid JSON (no tool name could be read). "
                        "Emit one call with a tool name you were given and its arguments as a "
                        "JSON object; otherwise answer in plain text.")
@@ -329,6 +332,7 @@ def _hygiene(call: dict, rounds: list, malformed: bool = False,
     """The corrected call, or the ToolMessage that answers it instead of running it.
     `provenance` is (what the user typed, what else entered the conversation) for the handle
     check — a recipient the model composed is refused here, before any gate sees it."""
+    from tools.messages import route_target
     from tools.registry import tools_by_name
 
     name = str(call.get("name") or "")
@@ -355,11 +359,21 @@ def _hygiene(call: dict, rounds: list, malformed: bool = False,
         problem = ("the arguments were not an object" if not isinstance(raw, dict)
                    else f"required arguments missing from {raw!r}")
         return refuse("Error: " + schema_hint(name, problem))
+    # One person or one group chat, never both — and a recipient in the wrong slot moved to
+    # the right one when its form says which it is (tools.messages.route_target).
+    args, problem = route_target(name, args)
+    if problem:
+        return refuse("Error: " + problem)
     handle_arg = quarantine.HANDLE_ARGS.get(name)
     if handle_arg and provenance is not None:
         handle = str(args.get(handle_arg) or "").strip()
         if quarantine.handle_hold(handle, *provenance[:2]):
             return refuse(UNKNOWN_HANDLE_TEXT.format(handle=handle))
+    chat_arg = quarantine.CHAT_ARGS.get(name)
+    if chat_arg and provenance is not None:
+        ref = str(args.get(chat_arg) or "").strip()
+        if quarantine.chat_hold(ref, *provenance[:2]):
+            return refuse(UNKNOWN_CHAT_TEXT.format(ref=ref))
     key = _call_key(name, args)
     if any(r[3] == "skipped" for r in rounds if r[0] == key):
         return refuse(ALREADY_DECLINED_TEXT, "skipped")

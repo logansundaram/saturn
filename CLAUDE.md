@@ -81,8 +81,10 @@ ground → agent ─(no tool calls)─→ END
   back for the answer; a model that calls again is rerun once with tools UNBOUND and a budget
   note — a real answer, never a stub) → generate → **hygiene** on each emitted call (unknown tool,
   arguments that belong to another tool via `core/tool_args.tool_for_args`,
-  missing arguments via `core/tool_args.coerce_args`, malformed JSON, a recipient the model
-  invented (`quarantine.handle_hold`), a repeat of a call the user
+  missing arguments via `core/tool_args.coerce_args`, malformed JSON, a messaging call with both
+  a person and a group chat, neither, or a name for a recipient (`tools/messages.route_target` — a
+  target in the wrong slot is moved, not refused), a recipient or group chat ref the model
+  invented (`quarantine.handle_hold` / `chat_hold`), a repeat of a call the user
   DECLINED this turn, a third identical call with nothing changed in between — each answered with
   an error ToolMessage that routes straight back to `agent`, no gate, no model call; `ask_user`
   runs alone, its siblings answered the same way) → **answer** (a message without tool calls IS
@@ -184,6 +186,8 @@ accept). The benchmark's memory tasks and `tests/test_memory_*.py` pin this.
   the agent's hygiene asks for `send_message.to` and `read_messages.contact` (`HANDLE_ARGS`): a
   number or address found in nothing the user typed and no tool result never reaches the gate; for
   one that does, the gate prompt names the contact it belongs to (`nodes/approval._handle_note`).
+  `chat_hold` (`CHAT_ARGS`) is the same check for a group chat ref (`chat=`), and the gate names
+  every member of the group, resolved from Messages at approval.
 
 ### Tools
 
@@ -232,7 +236,9 @@ RS/US-delimited via `records()`. Each Apple event costs real time (Reminders ~1s
 fetch in bulk, never per item, and never issue two `messages of <mailbox>` references in one Mail script. AppleScript, not EventKit: EventKit access from a terminal Python depends on the
 terminal app's Info.plist. Readers are `untrusted=True` (shared notes, invitations, email); tests capture `applescript._run`.
 `draft_mail` and `reply_mail` open an unsent draft and are NOT egress. `send_message` (iMessage) IS — the
-chokepoint wiring above; `send_mail` is still deferred. `read_messages` reads `chat.db` and needs Full Disk
+chokepoint wiring above — to ONE person (`to=`, a handle from `search_contacts`) or ONE existing group
+chat (`chat=`, a short `g…` ref only `find_group_chats` hands out; groups are never created; one ledger
+event per recipient); `send_mail` is still deferred. `read_messages` reads `chat.db` and needs Full Disk
 Access. `tools/shortcuts.py` runs the user's Shortcuts through the `shortcuts` CLI (two tools, not one per
 shortcut: the bound schemas are the cached prefix). There is no clipboard tool on purpose — the user types
 `@clipboard` (`core/mentions.py`) or `/copy`. Probe findings and what is still unverified:

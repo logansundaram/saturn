@@ -514,3 +514,35 @@ def test_the_handle_hold_leaves_short_or_empty_handles_to_the_tool():
 
 def test_the_handle_hold_knows_which_argument_names_a_person():
     assert quarantine.HANDLE_ARGS == {"send_message": "to", "read_messages": "contact"}
+
+
+# --- the chat hold: a group chat ref the model invented ---------------------------------------
+
+
+def test_the_chat_hold_knows_which_argument_names_a_group():
+    assert quarantine.CHAT_ARGS == {"send_message": "chat", "read_messages": "chat"}
+
+
+@pytest.mark.parametrize("ref, user_text, seen_text", [
+    # find_group_chats returned it
+    ("g7f3a2b", "tell the family chat hi", "[{'chat': 'g7f3a2b', 'name': 'Family'}]"),
+    # a read_messages row label carried it
+    ("g7f3a2b", "", "{'chat': 'g7f3a2b · Dinner club', 'group': True}"),
+    # the user pasted it
+    ("g7f3a2b", "send to g7f3a2b", ""),
+    # not a ref at all: the tool's own check answers it
+    ("", "", ""),
+    ("Family", "", ""),
+])
+def test_a_chat_ref_that_entered_the_conversation_is_not_held(ref, user_text, seen_text):
+    assert quarantine.chat_hold(ref, user_text, seen_text) is None
+
+
+@pytest.mark.parametrize("ref, user_text, seen_text", [
+    ("g7f3a2b", "tell the family chat hi", ""),
+    # a near miss — and a ref is matched whole, never as the start of a longer one
+    ("g7f3a2c", "", "[{'chat': 'g7f3a2b'}]"),
+    ("g7f3a2", "", "[{'chat': 'g7f3a2b'}]"),
+])
+def test_a_chat_ref_from_nowhere_is_held(ref, user_text, seen_text):
+    assert quarantine.chat_hold(ref, user_text, seen_text) == quarantine.UNKNOWN_CHAT_NOTE

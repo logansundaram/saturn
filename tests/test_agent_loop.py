@@ -1087,6 +1087,82 @@ def test_hygiene_lets_a_recipient_from_a_contact_card_or_the_user_through(monkey
     assert agent.route_after_agent({"messages": out["messages"]}) == "approval"
 
 
+def test_hygiene_refuses_a_group_chat_the_model_invented(monkeypatch):
+    """A chat ref only comes from find_group_chats: one composed by the model never reaches
+    the gate, and the model is sent to look the group up."""
+    from nodes import agent
+
+    prior = [HumanMessage(content="tell the family chat I'm late")]
+    monkeypatch.setattr(agent, "_generate", lambda i, *, tools, think=False: AIMessage(
+        content="", tool_calls=[_call("send_message", {"chat": "g7f3a2b", "text": "late"}, "c1")]))
+    out = agent.agent_node(_state(prior))
+    reply = out["messages"][-1]
+    assert isinstance(reply, ToolMessage) and reply.additional_kwargs["saturn_status"] == "error"
+    assert reply.content == agent.UNKNOWN_CHAT_TEXT.format(ref="g7f3a2b")
+    assert "find_group_chats" in reply.content
+    assert agent.route_after_agent({"messages": out["messages"]}) == "agent"
+
+
+def test_hygiene_lets_a_group_chat_from_find_group_chats_through(monkeypatch):
+    from nodes import agent
+
+    found = "[{'chat': 'g7f3a2b', 'name': 'Family', 'people': ['Mom', 'Dad'], 'size': 2}]"
+    prior = ([HumanMessage(content="tell the family chat I'm late")]
+             + _round("find_group_chats", {"query": "family"}, "c1", found))
+    monkeypatch.setattr(agent, "_generate", lambda i, *, tools, think=False: AIMessage(
+        content="", tool_calls=[_call("send_message", {"chat": "g7f3a2b", "text": "late"}, "c2")]))
+    out = agent.agent_node(_state(prior))
+    assert not isinstance(out["messages"][-1], ToolMessage)
+    assert agent.route_after_agent({"messages": out["messages"]}) == "approval"
+
+
+def test_hygiene_moves_a_chat_ref_passed_as_to_into_chat(monkeypatch):
+    """The 9b's likely slip: the ref in the familiar `to` slot. Its form says it is a group, so
+    the call is corrected — no refusal, no extra pass — and the gate shows the corrected call."""
+    from nodes import agent
+
+    found = "[{'chat': 'g7f3a2b', 'name': 'Family'}]"
+    prior = ([HumanMessage(content="tell the family chat I'm late")]
+             + _round("find_group_chats", {"query": "family"}, "c1", found))
+    monkeypatch.setattr(agent, "_generate", lambda i, *, tools, think=False: AIMessage(
+        content="", tool_calls=[_call("send_message", {"to": "g7f3a2b", "text": "late"}, "c2")]))
+    out = agent.agent_node(_state(prior))
+    issued = out["messages"][-1]
+    assert isinstance(issued, AIMessage)
+    assert issued.tool_calls[0]["args"] == {"chat": "g7f3a2b", "text": "late"}
+
+
+def test_hygiene_refuses_a_name_as_a_recipient_before_any_gate(monkeypatch):
+    """A 4b answered "text Priya and Jordan together" with send_message(to='Priya Jordan'): a
+    name the gate would have shown as the recipient. It is answered here instead."""
+    from nodes import agent
+
+    prior = [HumanMessage(content="text Priya and Jordan together that the deck is ready")]
+    monkeypatch.setattr(agent, "_generate", lambda i, *, tools, think=False: AIMessage(
+        content="", tool_calls=[_call("send_message", {"to": "Priya Jordan", "text": "ready"}, "c1")]))
+    out = agent.agent_node(_state(prior))
+    reply = out["messages"][-1]
+    assert isinstance(reply, ToolMessage) and "not a name" in reply.content
+    assert agent.route_after_agent({"messages": out["messages"]}) == "agent"
+
+
+def test_hygiene_refuses_a_send_with_both_a_person_and_a_group(monkeypatch):
+    from nodes import agent
+
+    card = "[{'name': 'Sam Lee', 'phones': [{'label': 'mobile', 'value': '+15550102000'}]}]"
+    found = "[{'chat': 'g7f3a2b', 'name': 'Family'}]"
+    prior = ([HumanMessage(content="text sam in the family chat")]
+             + _round("search_contacts", {"query": "Sam"}, "c1", card)
+             + _round("find_group_chats", {"query": "family"}, "c2", found))
+    monkeypatch.setattr(agent, "_generate", lambda i, *, tools, think=False: AIMessage(
+        content="", tool_calls=[_call("send_message", {"to": "+15550102000", "chat": "g7f3a2b",
+                                                       "text": "late"}, "c3")]))
+    out = agent.agent_node(_state(prior))
+    reply = out["messages"][-1]
+    assert isinstance(reply, ToolMessage) and "not both" in reply.content
+    assert agent.route_after_agent({"messages": out["messages"]}) == "agent"
+
+
 def test_the_models_own_answer_is_not_provenance_for_a_recipient(monkeypatch):
     """Run 48: the invented number sat in the previous answer; that must not vouch for it."""
     from nodes import agent

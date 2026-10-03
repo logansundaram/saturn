@@ -71,12 +71,18 @@ def provenance(state) -> "tuple[str, str, bool]":
 def _handle_note(tc: dict, state) -> "str | None":
     """Whose number or address a gated call names, for the prompt: the contact card that
     produced it, the user's own typing, or — past the agent's hygiene this should not happen —
-    nowhere. A bare +13057108702 at the gate (run 51, 2026-10-02) is not something a person
+    nowhere. A group chat is named with every member (tools.messages.describe_group). A bare +13057108702 at the gate (run 51, 2026-10-02) is not something a person
     can check."""
     from tools.contacts import owner_of
 
-    arg = quarantine.HANDLE_ARGS.get(tc.get("name"))
     args = tc.get("args") if isinstance(tc.get("args"), dict) else {}
+    chat_arg = quarantine.CHAT_ARGS.get(tc.get("name"))
+    ref = str((args or {}).get(chat_arg) or "").strip() if chat_arg else ""
+    if ref:
+        # A group reaches everyone in it: name them all, resolved from Messages now.
+        from tools.messages import describe_group
+        return f"{tc['name']}: {describe_group(ref)}"
+    arg = quarantine.HANDLE_ARGS.get(tc.get("name"))
     handle = str((args or {}).get(arg) or "").strip() if arg else ""
     if not handle:
         return None

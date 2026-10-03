@@ -670,7 +670,8 @@ def test_loop_tasks_are_well_formed():
     from tools.registry import tools_by_name
 
     ids = [t["id"] for t in benchmark.LOOP_TASKS]
-    assert 20 <= len(ids) <= 30 and len(set(ids)) == len(ids)
+    # 36: the six messaging-routing tasks (2026-10-03) took it past the old 30
+    assert 20 <= len(ids) <= 36 and len(set(ids)) == len(ids)
     for t in benchmark.LOOP_TASKS:
         assert t["shape"] in benchmark.LOOP_SHAPES, t["id"]
         assert t["max_passes"] >= 1
@@ -698,6 +699,85 @@ def test_loop_benchmark_run_is_offline_gradable(monkeypatch, isolated_paths):
     from config import get_config
     leftovers = sorted(p.name for p in get_config().path("workspace").glob("bench_*"))
     assert leftovers == []
+
+
+def test_loop_grade_a_question_is_read_without_the_answer_trailers():
+    """The model asked "Which family chat?" — the Sources receipt appended after it must not
+    turn that into no_question (live messaging run, 2026-10-03)."""
+    import benchmark
+
+    task = {"id": "t", "shape": "messaging", "query": "q", "tools": {"find_group_chats"},
+            "required": [], "max_passes": 3, "must_ask": True}
+    asked = "Which family chat should I message?\n\nSources:\n  [1] find_group_chats(query='family')"
+    assert benchmark.grade_loop_task(task, _loop_entry(response=asked, tools_called=["find_group_chats"],
+                                                       iterations=2)) == []
+    told = "I found two family chats.\n\nSources:\n  [1] find_group_chats(query='family')"
+    assert "no_question" in benchmark.grade_loop_task(
+        task, _loop_entry(response=told, tools_called=["find_group_chats"], iterations=2))
+
+
+def test_a_declined_call_is_not_a_hygiene_bounce():
+    """run_query counts a ToolMessage with no tool_events record as a call the agent answered
+    itself — except a gate decline (saturn_status skipped), which the messaging tasks expect."""
+    import benchmark
+    from langchain.messages import ToolMessage
+
+    from nodes.agent import BUDGET_TEXT
+
+    msgs = [ToolMessage(content="ok", tool_call_id="c1", name="find_group_chats"),
+            ToolMessage(content="declined", tool_call_id="c2", name="send_message",
+                        additional_kwargs={"saturn_status": "skipped"}),
+            ToolMessage(content="Error: unknown tool", tool_call_id="c3", name="nope",
+                        additional_kwargs={"saturn_status": "error"}),
+            ToolMessage(content=BUDGET_TEXT, tool_call_id="c4", name="read_file")]
+    assert benchmark._hygiene_count(msgs, [{"name": "find_group_chats"}]) == 1
+
+
+def test_loop_grade_who_a_declined_send_named():
+    """The messaging tasks grade the send the gate was ASKED about (the benchmark declines every
+    send): the right person or group chat, none at all, or one that should not have come."""
+    import benchmark
+    from tools.messages import chat_ref
+
+    to_sam = [{"name": "send_message", "args": {"to": "+1 (555) 010-2000", "text": "late"}}]
+    assert benchmark._send_tags(("to", "+15550102000"), to_sam) == []
+    assert benchmark._send_tags(("to", "+15550000004"), to_sam) == ["wrong_target:to=+1 (555) 010-2000"]
+    ref = chat_ref("any;+;chat70c1")
+    to_group = [{"name": "search_contacts", "args": {}},
+                {"name": "send_message", "args": {"chat": ref, "text": "x"}}]
+    assert benchmark._send_tags(("chat", "any;+;chat70c1"), to_group) == []
+    assert benchmark._send_tags(("chat", "any;+;chat5a11"), to_group) == [f"wrong_target:chat={ref}"]
+    # the group was meant, the model texted one person instead
+    assert benchmark._send_tags(("chat", "any;+;chat5a11"), to_sam)[0].startswith("wrong_target:to=")
+    assert benchmark._send_tags(("chat", "any;+;chat5a11"), []) == ["missing_send"]
+    assert benchmark._send_tags(None, to_group) == ["unwanted_send"]
+    assert benchmark._send_tags(None, []) == []
+
+
+def test_the_messaging_world_is_planted_and_never_reaches_the_users_apps(monkeypatch):
+    """Under the planted world the messaging tools read fixtures — Sam's card, the planted
+    groups, the climbing chat — every other AppleScript is refused, and leaving it restores
+    the real seams."""
+    import benchmark
+    from tools import applescript, contacts, messages
+    from tools.messages import chat_ref
+    from tools.registry import tools_by_name
+    from tools.toolspec import ToolError
+
+    real = (contacts._cards, messages._groups, messages._db_path, applescript._run)
+    with benchmark._messaging_world():
+        (sam,) = tools_by_name["search_contacts"].invoke({"query": "Sam"})
+        assert sam["phones"][0]["value"] == "+1 555 010 2000"
+        found = tools_by_name["find_group_chats"].invoke({"query": "climbing"})
+        assert found[0]["chat"] == chat_ref("any;+;chat70c1") and found[0]["name"] == "Climbing crew"
+        rows = tools_by_name["read_messages"].invoke({"chat": found[0]["chat"]})
+        assert any("rope" in r["text"] and r["from"] == "Alex Kim" for r in rows)
+        fam = tools_by_name["find_group_chats"].invoke({"query": "the family chat"})
+        assert "ask_user" in fam[-1]["note"]                       # the ambiguous task really is
+        assert isinstance(tools_by_name["find_group_chats"].invoke({"query": "Priya and Jordan"}), str)
+        with pytest.raises(ToolError):                            # nothing real ever runs
+            tools_by_name["send_message"].invoke({"to": "+15550102000", "text": "x"})
+    assert (contacts._cards, messages._groups, messages._db_path, applescript._run) == real
 
 
 def test_headless_yolo_still_refuses_what_the_airgap_holds(monkeypatch, capsys):

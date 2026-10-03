@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 import pytest
 
 from tools import applescript
+from tools.applescript import FS, GS, RS, US
 from trust import egress, policy, quarantine
 
 
@@ -283,12 +284,13 @@ def history(tmp_path, monkeypatch):
     db = sqlite3.connect(path)
     db.executescript("""
         CREATE TABLE handle (ROWID INTEGER PRIMARY KEY, id TEXT);
-        CREATE TABLE chat (ROWID INTEGER PRIMARY KEY, chat_identifier TEXT, display_name TEXT);
+        CREATE TABLE chat (ROWID INTEGER PRIMARY KEY, guid TEXT, chat_identifier TEXT, display_name TEXT);
         CREATE TABLE message (ROWID INTEGER PRIMARY KEY, text TEXT, attributedBody BLOB,
                               handle_id INTEGER, date INTEGER, is_from_me INTEGER);
         CREATE TABLE chat_message_join (chat_id INTEGER, message_id INTEGER);
         INSERT INTO handle VALUES (1, '+15550102000'), (2, 'jonah@example.com');
-        INSERT INTO chat VALUES (1, '+15550102000', ''), (2, 'chat99', 'Dinner club');
+        INSERT INTO chat VALUES (1, 'iMessage;-;+15550102000', '+15550102000', ''),
+                                (2, 'iMessage;+;chat99', 'chat99', 'Dinner club');
     """)
     rows = [
         (1, "Dinner at 7?", None, 1, datetime(2026, 9, 5, 18, 0, tzinfo=timezone.utc), 0, 1),
@@ -304,6 +306,8 @@ def history(tmp_path, monkeypatch):
     db.close()
     monkeypatch.setattr(applescript, "_platform", lambda: "darwin")
     monkeypatch.setattr(messages, "_db_path", lambda: path)
+    # The group names come from the Messages app; no test may ask the real one.
+    monkeypatch.setattr(messages, "_groups", lambda: [])
     return path
 
 
@@ -318,7 +322,7 @@ def test_typedstream_text_short_and_long():
 def test_read_messages_newest_first_with_decoded_bodies(history):
     out = _tool("read_messages").invoke({})
     assert [m["text"] for m in out] == ["See you at dinner", "x" * 300, "Yes — the Thai place", "Dinner at 7?"]
-    assert out[0]["chat"] == "Dinner club" and out[0]["from"] == "jonah@example.com"
+    assert out[0]["chat"] == f"{_ref('chat99')} · Dinner club" and out[0]["from"] == "jonah@example.com"
     assert out[2]["from"] == "me" and out[2]["chat"] == "+15550102000"
     local = datetime(2026, 9, 6, 9, 0, tzinfo=timezone.utc).astimezone().isoformat(timespec="minutes")[:16]
     assert out[0]["when"] == local
@@ -431,3 +435,334 @@ def test_the_benchmark_approver_never_lets_a_send_or_an_app_write_through():
     assert benchmark.bench_approver({"type": "approval_request", "tool_calls": [
         {"id": "c1", "name": "write_file", "args": {}}]}, prompted) is True
     assert benchmark.bench_approver({"type": "pause"}, prompted) is True
+
+
+# ── group chats: find_group_chats, send_message(chat=), read_messages(chat=) ──────────────────
+
+FAMILY = ("any;+;chat111", "Family", [("+15550000001", "Mom"), ("+15550000002", "Dad"),
+                                       ("+15550102000", "Sam Lee")])
+SAM_ALEX = ("any;+;chat222", "", [("+15550102000", "Sam Lee"), ("alex@example.com", "Alex Kim")])
+SAM_ALEX_JO = ("any;+;chat333", "", [("+15550102000", "Sam Lee"), ("alex@example.com", "Alex Kim"),
+                                      ("+15550000004", "Jo Park")])
+CLIMBING = ("any;+;0ed3abc9", "Climbing 🧗", [("alex@example.com", "Alex Kim"), ("+15550000004", "Jo Park"),
+                                              ("+15550000009", "")])
+BOOK_A = ("any;+;chat555", "Book club", [("+15550000001", "Mom"), ("+15550000004", "Jo Park")])
+BOOK_B = ("any;+;chat666", "Book club 2", [("+15550000002", "Dad"), ("+15550000004", "Jo Park")])
+GROUPS = (FAMILY, SAM_ALEX, SAM_ALEX_JO, CLIMBING, BOOK_A, BOOK_B)
+
+
+def _as_groups(*groups) -> str:
+    """The output the group listing script prints: one record per group chat — its id, its name
+    and its people as handle/full-name pairs."""
+    return "".join(US.join([guid, name, "".join(f"{h}{FS}{n}{GS}" for h, n in people)]) + RS
+                   for guid, name, people in groups)
+
+
+def _ref(guid):
+    from tools.messages import chat_ref
+    return chat_ref(guid)
+
+
+def test_find_group_chats_is_a_read_only_untrusted_reader():
+    from tools.registry import risk_of
+    from tools.toolspec import _UNTRUSTED
+    # any member can rename a group: its name is someone else's text
+    assert risk_of("find_group_chats") == "read_only" and "find_group_chats" in _UNTRUSTED
+
+
+def test_a_chat_ref_is_short_stable_and_the_same_from_either_source():
+    from tools.messages import chat_ref, is_chat_ref
+    ref = chat_ref("any;+;chat111")
+    assert is_chat_ref(ref) and len(ref) == 6 and ref == chat_ref("any;+;chat111")
+    # chat.db spells the service, the scripting bridge says "any": one chat, one ref
+    assert chat_ref("iMessage;+;chat111") == ref == chat_ref("chat111")
+    assert chat_ref("any;+;chat222") != ref
+    assert not is_chat_ref("+15550102000") and not is_chat_ref("Family") and not is_chat_ref("g12")
+
+
+def test_refs_lengthen_when_two_groups_would_share_one(mac, monkeypatch):
+    from tools import messages
+    monkeypatch.setattr(messages, "_digest", lambda ident: ("abcde" + ident[-1]) * 7)
+    mac.reply(_as_groups(("any;+;chat1", "A", [("+15550000001", "Mom")]),
+                         ("any;+;chat2", "B", [("+15550000002", "Dad")])))
+    refs = [g["ref"] for g in messages._groups()]
+    assert refs == ["gabcde1", "gabcde2"]
+
+
+def test_the_group_listing_reads_every_group_and_only_groups(mac):
+    from tools import messages
+    mac.reply(_as_groups(FAMILY, ("any;-;+15550102000", "", [("+15550102000", "Sam Lee")]), CLIMBING))
+    groups = messages._groups()
+    assert [g["name"] for g in groups] == ["Family", "Climbing 🧗"]
+    assert groups[0]["people"][2] == {"handle": "+15550102000", "name": "Sam Lee"}
+    # a person with no card is shown by their handle
+    assert groups[1]["people"][2] == {"handle": "+15550000009", "name": "+15550000009"}
+    s = mac.script()
+    assert 'tell application "Messages"' in s and ";+;" in s and "participants" in s
+
+
+def test_find_group_chats_by_the_groups_name(mac):
+    mac.reply(_as_groups(*GROUPS))
+    out = _tool("find_group_chats").invoke({"query": "the family chat"})
+    assert out == [{"chat": _ref(FAMILY[0]), "name": "Family", "people": ["Mom", "Dad", "Sam Lee"], "size": 3}]
+    # an exact name beats a name that only contains the query
+    out = _tool("find_group_chats").invoke({"query": "book club"})
+    assert [g["name"] for g in out if "chat" in g] == ["Book club"] and "exactly" in out[-1]["note"]
+
+
+def test_find_group_chats_by_the_people_in_it_ranks_the_exact_group_first(mac):
+    mac.reply(_as_groups(*GROUPS))
+    out = _tool("find_group_chats").invoke({"query": "Sam and Alex"})
+    # One group IS exactly who was named: it alone is returned, and the note says so. Listing
+    # the larger group beside it made a 9b ask "which one?" (live run, 2026-10-03).
+    assert out[0]["chat"] == _ref(SAM_ALEX[0])
+    assert out[0]["name"] is None and out[0]["people"] == ["Sam Lee", "Alex Kim"]
+    assert len(out) == 2 and "exactly" in out[1]["note"] and "1 other" in out[1]["note"]
+    assert "ask" not in out[1]["note"]
+
+
+def test_find_group_chats_says_to_ask_when_the_match_is_not_decisive(mac):
+    mac.reply(_as_groups(*GROUPS))
+    out = _tool("find_group_chats").invoke({"query": "book"})
+    assert [g["name"] for g in out if "chat" in g] == ["Book club", "Book club 2"]
+    assert "ask_user" in out[-1]["note"]
+    out = _tool("find_group_chats").invoke({"query": "Jo"})    # in four groups, exactly in none
+    assert len([g for g in out if "chat" in g]) == 4 and "ask_user" in out[-1]["note"]
+
+
+def test_find_group_chats_matches_a_handle_and_a_name_together(mac):
+    mac.reply(_as_groups(*GROUPS))
+    out = _tool("find_group_chats").invoke({"query": "climbing alex"})
+    assert [g["chat"] for g in out] == [_ref(CLIMBING[0])]
+
+
+def test_find_group_chats_with_no_match_says_groups_are_not_created_here(mac):
+    mac.reply(_as_groups(*GROUPS))
+    out = _tool("find_group_chats").invoke({"query": "Priya and Jordan"})
+    assert isinstance(out, str) and "No group chat" in out and "start" in out and "Messages" in out
+    # the user asked for a GROUP: separate one-to-one texts are not a substitute (a 9b sent
+    # two of them in the live run, 2026-10-03)
+    assert "one by one" in out and "unless the user asks" in out
+
+
+def test_find_group_chats_with_no_query_lists_the_groups(mac, monkeypatch):
+    mac.reply(_as_groups(*GROUPS))
+    out = _tool("find_group_chats").invoke({"limit": 2})
+    assert [g["name"] for g in out[:2]] == ["Family", None]
+    assert "6 group chats" in out[-1]["note"]
+
+
+def test_find_group_chats_reports_non_mac_honestly(monkeypatch):
+    monkeypatch.setattr(applescript, "_platform", lambda: "linux")
+    assert "only available on macOS" in _err("find_group_chats", {"query": "family"})
+
+
+# send_message(chat=)
+
+def test_send_message_to_a_group_sends_to_the_chat_itself(mac, gate):
+    mac.reply(_as_groups(*GROUPS))
+    ref = _ref(FAMILY[0])
+    out = _tool("send_message").invoke({"chat": ref, "text": 'Dinner at 7 — "ok"?'})
+    assert out["chat"] == ref and out["group"] == "Family"
+    assert out["to"] == ["+15550000001", "+15550000002", "+15550102000"]
+    assert out["people"] == ["Mom", "Dad", "Sam Lee"]
+    s = mac.script()
+    assert 'send "Dinner at 7 — \\"ok\\"?" to chat id "any;+;chat111"' in s
+    assert "participant" not in s
+
+
+def test_a_group_send_puts_every_recipient_on_the_ledger(mac, gate):
+    mac.reply(_as_groups(*GROUPS))
+    mark = egress.next_seq()
+    _tool("send_message").invoke({"chat": _ref(SAM_ALEX[0]), "text": "héllo"})
+    events = egress.events_since(mark)
+    assert [(e.channel, e.host, e.status) for e in events] == [
+        ("message", "+15550102000", egress.SENT), ("message", "alex@example.com", egress.SENT)]
+    assert all(e.n_bytes == len("héllo".encode("utf-8")) for e in events)
+
+
+def test_airgap_refuses_a_group_send_before_it_is_sent(mac, gate, monkeypatch):
+    monkeypatch.setitem(gate._data["runtime"], "airgap", True)
+    mac.reply(_as_groups(*GROUPS))
+    mark = egress.next_seq()
+    out = _err("send_message", {"chat": _ref(FAMILY[0]), "text": "hi"})
+    assert "Air-gap is ON" in out
+    assert not any("send " in mac.script(i) for i in range(len(mac.calls)) if "-e" in mac.calls[i])
+    assert [e.status for e in egress.events_since(mark)] == [egress.BLOCKED]
+
+
+def test_a_group_send_that_times_out_is_not_retried(mac, gate, monkeypatch):
+    from tools import messages
+    monkeypatch.setattr(messages, "_groups", lambda: messages._parse_groups(_as_groups(*GROUPS)))
+
+    def slow(argv, timeout):
+        raise subprocess.TimeoutExpired(argv, timeout)
+
+    monkeypatch.setattr(applescript, "_run", slow)
+    out = _err("send_message", {"chat": _ref(FAMILY[0]), "text": "hi"})
+    assert "may or may not have been sent" in out and "do not send it again" in out
+
+
+def test_send_message_to_a_chat_that_does_not_exist_sends_nothing(mac, gate):
+    mac.reply(_as_groups(*GROUPS))
+    mark = egress.next_seq()
+    out = _err("send_message", {"chat": "g000000", "text": "hi"})
+    assert "find_group_chats" in out
+    assert egress.events_since(mark) == []
+    assert all("send " not in mac.script(i) for i in range(len(mac.calls)) if "-e" in mac.calls[i])
+
+
+def test_send_message_takes_one_recipient_or_one_chat_never_both_or_neither(mac, gate):
+    mark = egress.next_seq()
+    both = _err("send_message", {"to": "+15550102000", "chat": _ref(FAMILY[0]), "text": "hi"})
+    assert "not both" in both
+    neither = _err("send_message", {"text": "hi"})
+    assert "search_contacts" in neither and "find_group_chats" in neither
+    assert mac.calls == [] and egress.events_since(mark) == []
+
+
+def test_a_name_in_to_points_at_both_lookups(mac, gate):
+    out = _err("send_message", {"to": "the family chat", "text": "hi"})
+    assert "search_contacts" in out and "find_group_chats" in out and "chat=" in out
+
+
+def test_a_group_send_always_faces_the_human_even_headless_with_yolo(gate, capsys):
+    from app import headless
+
+    prev = policy.tier()
+    try:
+        policy.set_gate_off(True)
+        call = {"id": "c1", "name": "send_message", "args": {"chat": "g7f3a2b", "text": "x"}}
+        assert not policy.approves("send_message", "destructive", call["args"])
+        decision = headless.headless_approver({"type": "approval_request", "tool_calls": [call]})
+        assert decision in (False, {"approved_ids": []})
+    finally:
+        policy.set_tier(prev)
+        policy._tier_before_gate_off = None
+
+
+# routing: the argument names say which path a call is on
+
+@pytest.mark.parametrize("name, args, want", [
+    ("send_message", {"to": "+15550102000", "text": "t"}, {"to": "+15550102000", "text": "t"}),
+    ("send_message", {"chat": "gabc123", "text": "t"}, {"chat": "gabc123", "text": "t"}),
+    # a value in the wrong slot whose form says where it belongs is moved, not refused
+    ("send_message", {"to": "gabc123", "text": "t"}, {"chat": "gabc123", "text": "t"}),
+    ("send_message", {"chat": "+1 555 010 2000", "text": "t"}, {"to": "+1 555 010 2000", "text": "t"}),
+    ("send_message", {"to": "+15550102000", "chat": "", "text": "t"}, {"to": "+15550102000", "text": "t"}),
+    ("read_messages", {"contact": "gabc123"}, {"chat": "gabc123"}),
+    ("read_messages", {"chat": "sam@example.com", "query": "x"}, {"contact": "sam@example.com", "query": "x"}),
+    ("read_messages", {}, {}),
+    ("search_contacts", {"query": "Sam"}, {"query": "Sam"}),       # not a messaging tool: untouched
+])
+def test_route_target_keeps_or_moves_the_recipient(name, args, want):
+    from tools.messages import route_target
+    assert route_target(name, args) == (want, None)
+
+
+@pytest.mark.parametrize("name, args, words", [
+    ("send_message", {"to": "+15550102000", "chat": "gabc123", "text": "t"}, ["not both"]),
+    ("send_message", {"text": "t"}, ["search_contacts", "find_group_chats"]),
+    ("read_messages", {"contact": "+15550102000", "chat": "gabc123"}, ["not both"]),
+    # a NAME never reaches the gate: a 4b sent to='Priya Jordan' (live run, 2026-10-03)
+    ("send_message", {"to": "Priya Jordan", "text": "t"}, ["search_contacts", "find_group_chats", "not a name"]),
+    ("read_messages", {"contact": "Sam"}, ["search_contacts", "not a name"]),
+    ("send_message", {"chat": "the family chat", "text": "t"}, ["find_group_chats"]),
+])
+def test_route_target_refuses_two_targets_or_a_send_with_none(name, args, words):
+    from tools.messages import route_target
+    _args, problem = route_target(name, args)
+    assert problem and all(w in problem for w in words)
+
+
+# the gate names everyone a group send reaches
+
+def test_the_gate_prompt_lists_every_member_of_a_group(gate, mac, monkeypatch):
+    from langchain.messages import AIMessage, HumanMessage, ToolMessage
+
+    mac.reply(_as_groups(*GROUPS))
+    ref = _ref(FAMILY[0])
+    send = {"id": "c2", "name": "send_message", "args": {"chat": ref, "text": "hi"}}
+    msgs = [HumanMessage(content="tell the family chat hi"),
+            AIMessage(content="", tool_calls=[{"id": "c1", "name": "find_group_chats", "args": {"query": "family"}}]),
+            ToolMessage(content=f"[{{'chat': '{ref}', 'name': 'Family'}}]", tool_call_id="c1", name="find_group_chats"),
+            AIMessage(content="", tool_calls=[send])]
+    notes = _gate_notes(monkeypatch, msgs)
+    (note,) = [n for n in notes if ref in n]
+    assert '"Family"' in note and "3 people" in note
+    for who in ("Mom (+15550000001)", "Dad (+15550000002)", "Sam Lee (+15550102000)"):
+        assert who in note
+
+
+def test_the_gate_prompt_says_when_a_group_cannot_be_resolved(gate, mac, monkeypatch):
+    from langchain.messages import AIMessage, HumanMessage
+
+    mac.reply(_as_groups(*GROUPS))
+    send = {"id": "c1", "name": "send_message", "args": {"chat": "g000000", "text": "hi"}}
+    notes = _gate_notes(monkeypatch, [HumanMessage(content="g000000 hi"), AIMessage(content="", tool_calls=[send])])
+    assert any("g000000" in n and "not found" in n for n in notes), notes
+
+
+# read_messages(chat=)
+
+@pytest.fixture
+def group_history(history, monkeypatch):
+    """The history fixture's Dinner club group, with Messages naming its people."""
+    from tools import messages
+    dinner = ("any;+;chat99", "Dinner club", [("jonah@example.com", "Jonah Reyes"), ("+15550102000", "Sam Lee")])
+    monkeypatch.setattr(messages, "_groups", lambda: messages._parse_groups(_as_groups(dinner, FAMILY)))
+    return _ref(dinner[0])
+
+
+def test_read_messages_reads_one_whole_group_with_names(group_history):
+    out = _tool("read_messages").invoke({"chat": group_history})
+    assert [m["text"] for m in out] == ["See you at dinner", "x" * 300]
+    assert all(m["from"] == "Jonah Reyes" and m["group"] is True for m in out)
+    assert out[0]["chat"] == f"{group_history} · Dinner club"
+
+
+def test_every_listing_labels_a_group_row_so_the_model_can_follow_it(group_history):
+    out = _tool("read_messages").invoke({})
+    assert out[0]["chat"] == f"{group_history} · Dinner club" and out[0]["group"] is True
+    assert out[2]["chat"] == "+15550102000" and "group" not in out[2]       # a 1:1 row is unchanged
+
+
+def test_an_unnamed_group_is_labelled_by_its_people(history, monkeypatch):
+    from tools import messages
+    db = sqlite3.connect(history)
+    db.execute("UPDATE chat SET display_name = '' WHERE ROWID = 2")
+    db.commit()
+    db.close()
+    people = [("jonah@example.com", "Jonah Reyes"), ("+15550102000", "Sam Lee"), ("+15550000001", "Mom"),
+              ("+15550000002", "Dad"), ("+15550000004", "Jo Park")]
+    monkeypatch.setattr(messages, "_groups", lambda: messages._parse_groups(_as_groups(("any;+;chat99", "", people))))
+    out = _tool("read_messages").invoke({})
+    assert out[0]["chat"] == f"{_ref('chat99')} · with Jonah Reyes, Sam Lee, Mom +2"
+
+
+def test_read_messages_keeps_handles_when_messages_cannot_name_anyone(history, monkeypatch):
+    from tools import messages
+
+    from tools.toolspec import ToolError
+
+    def denied():
+        raise ToolError("macOS denied automation access to Messages")
+
+    monkeypatch.setattr(messages, "_groups", denied)
+    out = _tool("read_messages").invoke({"chat": _ref("chat99")})
+    assert [m["from"] for m in out] == ["jonah@example.com", "jonah@example.com"]
+    assert out[0]["chat"] == f"{_ref('chat99')} · Dinner club"
+
+
+def test_read_messages_with_an_unknown_chat_points_at_find_group_chats(history):
+    out = _tool("read_messages").invoke({"chat": "g000000"})
+    assert isinstance(out, str) and "g000000" in out and "find_group_chats" in out
+
+
+def test_read_messages_refuses_a_contact_and_a_chat_together(history):
+    assert "not both" in _err("read_messages", {"contact": "+15550102000", "chat": _ref("chat99")})
+
+
+def test_a_contact_filter_still_finds_their_group_messages_labelled(group_history):
+    out = _tool("read_messages").invoke({"contact": "jonah@example.com"})
+    assert out[0]["chat"] == f"{group_history} · Dinner club" and out[0]["group"] is True

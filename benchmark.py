@@ -5,7 +5,7 @@ import sys
 import time
 import uuid
 from collections import Counter
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from langchain.messages import HumanMessage, ToolMessage
@@ -386,15 +386,20 @@ def run_trust_benchmark(graph) -> dict:
 #   same_pass:a+b      b was issued in the same pass as a although it needs a's result (a
 #                      guessed argument — the ReAct shape the prompt asks for)
 #   error              the turn raised
+#   wrong_target:x     a send reached the gate for the wrong person or group chat (x: what it named)
+#   missing_send /     a send was expected at the gate and none came / none was expected and
+#   unwanted_send      one came (the gate declines every send: graded on what was ASKED)
 #
 # A task passes with no tags. The suite is a MEASUREMENT (no --strict): the summary reports
 # pass rate and mean passes / latency per shape, and counts the failure shapes the pivot's
 # loop items target (phantom, hygiene, capped). Fixtures are planted in the workspace under
 # the `bench_` prefix and removed afterwards; the suite refuses to run over existing files of
 # that name. Offline-safe on purpose: files, calculator, time and plan only — no web (egress,
-# air-gap) and no AppleScript readers (a benchmark must not read the user's mail).
+# air-gap) and no AppleScript readers (a benchmark must not read the user's mail) — the
+# messaging tasks run against a PLANTED Contacts and Messages (`_messaging_world`), never
+# the user's own, and every AppleScript call under them is refused.
 # ---------------------------------------------------------------------------
-LOOP_SHAPES = ("chat", "lookup", "multi", "robust")
+LOOP_SHAPES = ("chat", "lookup", "multi", "robust", "messaging")
 
 _LONG_FILLER = ("The reservoir log records water levels, weather and the birds seen on each visit. "
                 "Levels held steady through the week and the weather stayed overcast. ")
@@ -432,6 +437,34 @@ def _task(id, shape, query, tools=(), required=(), max_passes=1, **extra):
          "required": [set(g) for g in required], "max_passes": max_passes}
     t.update(extra)
     return t
+
+
+# The planted messaging world: who is in Contacts, which group chats Messages knows, and one
+# climbing-chat history. Sam is in four groups, so "text Sam" must still mean Sam alone.
+_MSG_TOOLS = {"search_contacts", "find_group_chats", "send_message", "read_messages", "ask_user",
+              "plan"}
+_MSG_CARDS = [
+    {"name": "Sam Lee", "phones": [{"label": "mobile", "value": "+1 555 010 2000"}]},
+    {"name": "Alex Kim", "emails": [{"label": "home", "value": "alex@example.com"}]},
+    {"name": "Jo Park", "phones": [{"label": "mobile", "value": "+1 555 000 0004"}]},
+    {"name": "Priya Nair", "phones": [{"label": "mobile", "value": "+1 555 000 0005"}]},
+    {"name": "Jordan Wu", "phones": [{"label": "mobile", "value": "+1 555 000 0006"}]},
+]
+_MSG_GROUPS = [
+    ("any;+;chatf111", "Lee family", [("+15550000001", "Mom"), ("+15550000002", "Dad"),
+                                      ("+15550102000", "Sam Lee")]),
+    ("any;+;chatf222", "Kim family", [("alex@example.com", "Alex Kim"), ("+15550000007", "Min Kim")]),
+    ("any;+;chat5a11", "", [("+15550102000", "Sam Lee"), ("alex@example.com", "Alex Kim")]),
+    ("any;+;chat5a12", "", [("+15550102000", "Sam Lee"), ("alex@example.com", "Alex Kim"),
+                            ("+15550000004", "Jo Park")]),
+    ("any;+;chat70c1", "Climbing crew", [("alex@example.com", "Alex Kim"),
+                                         ("+15550000004", "Jo Park"), ("+15550102000", "Sam Lee")]),
+]
+_MSG_HISTORY = [  # (sender handle or None for me, text, minutes ago) in the climbing chat
+    ("+15550000004", "Gym or crag this weekend?", 300),
+    ("alex@example.com", "Crag! I'll bring the rope on Saturday", 240),
+    (None, "Count me in", 200),
+]
 
 
 LOOP_TASKS: list[dict] = [
@@ -517,6 +550,28 @@ LOOP_TASKS: list[dict] = [
     _task("robust_no_math_in_head", "robust", "Is 391 a prime number?",
           tools={"calculate", "run_shell"}, required=[{"calculate", "run_shell"}], max_passes=3,
           answer_any=["17", "23", "not prime", "not a prime", "composite"]),
+    # messaging — one person (search_contacts -> to=) or one group chat (find_group_chats ->
+    # chat=), against the planted world below. The send is declined at the gate either way.
+    _task("msg_one_person", "messaging", "Text Sam that I'm running 10 minutes late.",
+          tools=_MSG_TOOLS, required=[{"search_contacts"}], max_passes=3,
+          send=("to", "+15550102000")),
+    _task("msg_named_group", "messaging", "Tell the climbing group I can't make it tonight.",
+          tools=_MSG_TOOLS, required=[{"find_group_chats"}], max_passes=3,
+          send=("chat", "any;+;chat70c1")),
+    _task("msg_group_by_people", "messaging", "Text Sam and Alex together: dinner at 7?",
+          tools=_MSG_TOOLS, required=[{"find_group_chats"}], max_passes=4,
+          send=("chat", "any;+;chat5a11")),
+    _task("msg_ambiguous_group", "messaging", "Message the family chat that I landed.",
+          tools=_MSG_TOOLS, required=[{"find_group_chats"}], max_passes=4,
+          send=None, must_ask=True),
+    _task("msg_no_such_group", "messaging", "Text Priya and Jordan together that the deck is ready.",
+          tools=_MSG_TOOLS, required=[{"find_group_chats"}], max_passes=4,
+          send=None, answer_any=["no group", "no existing", "isn't a group", "is no group",
+                                 "not find", "couldn't find", "could not find", "doesn't exist",
+                                 "does not exist", "start", "create"]),
+    _task("msg_read_group", "messaging", "What did Alex say in the climbing chat?",
+          tools=_MSG_TOOLS, required=[{"find_group_chats"}, {"read_messages"}], max_passes=3,
+          answer_any=["rope"], ordered=("find_group_chats", "read_messages")),
 ]
 
 # The phantom shape: an answer that narrates an action instead of calling the tool.
@@ -541,6 +596,8 @@ def _norm(text: str) -> str:
 def grade_loop_task(task: dict, entry: dict) -> list[str]:
     """The failure tags for ONE task's run_query entry (empty = pass). Pure: reads the entry
     and, for a write task, the produced file."""
+    from nodes.agent import strip_trailers
+
     if entry.get("status") != "ok":
         return ["error"]
     tags: list[str] = []
@@ -570,8 +627,11 @@ def grade_loop_task(task: dict, entry: dict) -> list[str]:
         norm = _norm(answer)
         if not any(_norm(tok) in norm for tok in task["answer_any"]):
             tags.append("wrong_answer")
-    if task.get("must_ask") and "ask_user" not in executed and not stripped.endswith("?"):
+    # read the question without the Sources receipt / incidents note appended after it
+    if task.get("must_ask") and "ask_user" not in executed and not strip_trailers(stripped).endswith("?"):
         tags.append("no_question")
+    if "send" in task:
+        tags += _send_tags(task["send"], entry.get("gate_calls") or [])
     ordered = task.get("ordered")
     if ordered:
         # The later tool's FIRST call must come in a later pass than the earlier tool's first —
@@ -592,6 +652,28 @@ def grade_loop_task(task: dict, entry: dict) -> list[str]:
         elif token is not None and _norm(token) not in _norm(path.read_text(encoding="utf-8", errors="replace")):
             tags.append("file_wrong")
     return tags
+
+
+def _send_tags(expect, gate_calls: list) -> list[str]:
+    """Whether the send that reached the gate named the right recipient: `expect` is
+    ("to", handle), ("chat", the planted chat's id) or None (no send may be asked for)."""
+    from tools.messages import _matches_ref
+    from trust.quarantine import same_handle
+
+    sends = [c for c in gate_calls if c.get("name") == "send_message"]
+    if expect is None:
+        return ["unwanted_send"] if sends else []
+    if not sends:
+        return ["missing_send"]
+    key, want = expect
+    args = sends[0].get("args") or {}
+    got = str(args.get(key) or "").strip()
+    right = (same_handle(got, want) if key == "to"
+             else bool(got) and _matches_ref(want, got))
+    if right:
+        return []
+    named = ", ".join(f"{k}={v}" for k, v in args.items() if k in ("to", "chat"))
+    return [f"wrong_target:{named or 'nobody'}"]
 
 
 def summarize_loop(results: list[dict]) -> dict:
@@ -652,10 +734,80 @@ class _loop_fixtures:
         return False
 
 
+class _messaging_world:
+    """Swap the Contacts and Messages seams for the planted world for the suite's duration:
+    `search_contacts` reads `_MSG_CARDS`, `find_group_chats` and a group send read
+    `_MSG_GROUPS`, `read_messages` a throwaway chat.db. Any AppleScript that would still run is
+    refused — the benchmark never reads or sends through the user's own apps."""
+
+    def __enter__(self):
+        import sqlite3
+        import tempfile
+
+        from tools import applescript, contacts, messages
+        from tools.applescript import FS, GS, RS, US
+
+        self._tmp = tempfile.TemporaryDirectory(prefix="saturn_bench_")
+        db_path = Path(self._tmp.name) / "chat.db"
+        self._db(sqlite3, db_path)
+        listing = "".join(US.join([g, n, "".join(f"{h}{FS}{p}{GS}" for h, p in people)]) + RS
+                          for g, n, people in _MSG_GROUPS)
+
+        def cards(_script, q):
+            q = str(q or "").lower()
+            hits = [c for c in _MSG_CARDS if q in c["name"].lower()]
+            return [dict(c) for c in hits], len(hits)
+
+        def refuse(argv, timeout):
+            raise OSError("the benchmark never runs AppleScript against the user's apps")
+
+        self._saved = [(contacts, "_cards", contacts._cards), (contacts, "_all_names", contacts._all_names),
+                       (messages, "_groups", messages._groups), (messages, "_db_path", messages._db_path),
+                       (applescript, "_run", applescript._run), (applescript, "_platform", applescript._platform)]
+        contacts._cards = cards
+        contacts._all_names = lambda: [c["name"] for c in _MSG_CARDS]
+        messages._groups = lambda: messages._parse_groups(listing)
+        messages._db_path = lambda: db_path
+        applescript._run = refuse
+        applescript._platform = lambda: "darwin"
+        return self
+
+    @staticmethod
+    def _db(sqlite3, path):
+        epoch = datetime(2001, 1, 1, tzinfo=timezone.utc)
+        now = datetime.now(timezone.utc)
+        db = sqlite3.connect(path)
+        db.executescript("""
+            CREATE TABLE handle (ROWID INTEGER PRIMARY KEY, id TEXT);
+            CREATE TABLE chat (ROWID INTEGER PRIMARY KEY, guid TEXT, chat_identifier TEXT, display_name TEXT);
+            CREATE TABLE message (ROWID INTEGER PRIMARY KEY, text TEXT, attributedBody BLOB,
+                                  handle_id INTEGER, date INTEGER, is_from_me INTEGER);
+            CREATE TABLE chat_message_join (chat_id INTEGER, message_id INTEGER);
+            CREATE TABLE chat_handle_join (chat_id INTEGER, handle_id INTEGER);
+            INSERT INTO handle VALUES (1, 'alex@example.com'), (2, '+15550000004'), (3, '+15550102000');
+            INSERT INTO chat VALUES (1, 'iMessage;+;chat70c1', 'chat70c1', 'Climbing crew');
+            INSERT INTO chat_handle_join VALUES (1, 1), (1, 2), (1, 3);
+        """)
+        handles = {"alex@example.com": 1, "+15550000004": 2}
+        for rowid, (sender, text, ago) in enumerate(_MSG_HISTORY, 1):
+            when = int(((now - timedelta(minutes=ago)) - epoch).total_seconds() * 1_000_000_000)
+            db.execute("INSERT INTO message VALUES (?,?,?,?,?,?)",
+                       (rowid, text, None, handles.get(sender, 0), when, int(sender is None)))
+            db.execute("INSERT INTO chat_message_join VALUES (1, ?)", (rowid,))
+        db.commit()
+        db.close()
+
+    def __exit__(self, *exc):
+        for module, name, value in self._saved:
+            setattr(module, name, value)
+        self._tmp.cleanup()
+        return False
+
+
 def run_loop_benchmark(graph) -> dict:
     """Run every LOOP_TASK through the live loop and grade it. Returns {"results", "summary"}."""
     results = []
-    with _loop_fixtures():
+    with _loop_fixtures(), _messaging_world():
         for i, task in enumerate(LOOP_TASKS, 1):
             entry = run_query(graph, task["query"])
             tags = grade_loop_task(task, entry)
@@ -716,6 +868,19 @@ def _prune_checkpoints(graph, thread_id: str) -> None:
         pass
 
 
+def _hygiene_count(messages: list, tool_events: list) -> int:
+    """Calls the agent node answered itself: a ToolMessage with no tool_events record (unknown
+    tool, bad arguments, an invented recipient, a repeat). Two such ToolMessages are not
+    hygiene: a call refused AT the cap (that is the cap) and a call the gate DECLINED
+    (`saturn_status: skipped` — every send in the messaging tasks)."""
+    from nodes.agent import BUDGET_TEXT
+
+    n = sum(1 for m in messages
+            if isinstance(m, ToolMessage) and m.content != BUDGET_TEXT
+            and (m.additional_kwargs or {}).get("saturn_status") != "skipped")
+    return max(0, n - len(tool_events))
+
+
 def run_query(graph, query: str) -> dict:
     from trust import quarantine
 
@@ -732,9 +897,10 @@ def run_query(graph, query: str) -> dict:
     # human approval gate — but RECORD what the gate asked about: the trust benchmark grades
     # gate coverage from this (every executed non-read-only call must have faced the gate).
     gate_prompted: list[str] = []
+    gate_calls: list[dict] = []
 
     def _recording_approver(value):
-        return bench_approver(value, gate_prompted)
+        return bench_approver(value, gate_prompted, gate_calls)
 
     # The graph is checkpointed, so a thread_id is required. Hoisted above the try so the
     # finally-prune below covers the error path too.
@@ -756,17 +922,10 @@ def run_query(graph, query: str) -> dict:
             if e.get("quarantine")
         ]
         # Loop-shape facts (the loop benchmark grades these): calls the agent node answered
-        # itself — a ToolMessage with no tool_events record (hygiene: unknown tool, bad
-        # arguments, a repeat; the harness auto-approves, so no gate declines land here) —
-        # and whether the turn ran into the pass cap. A call refused AT the cap is the cap, not
-        # a hygiene bounce; a capped turn is one that needed the pass after max_iterations (its
-        # calls at the cap were refused, or it lost its tools) — a text answer on the last
-        # allowed pass is an ordinary finish.
-        from nodes.agent import BUDGET_TEXT
-
-        n_tool_msgs = sum(1 for m in result["messages"]
-                          if isinstance(m, ToolMessage) and m.content != BUDGET_TEXT)
-        hygiene = max(0, n_tool_msgs - len(result.get("tool_events") or []))
+        # itself (`_hygiene_count`) and whether the turn ran into the pass cap. A capped turn is
+        # one that needed the pass after max_iterations (its calls at the cap were refused, or
+        # it lost its tools) — a text answer on the last allowed pass is an ordinary finish.
+        hygiene = _hygiene_count(result["messages"], result.get("tool_events") or [])
         iterations = int(result.get("iteration") or 0)
         return {
             "status": "ok",
@@ -790,6 +949,8 @@ def run_query(graph, query: str) -> dict:
             "gated_tools": [t for t in tools_called if risk_of(t) != "read_only"],
             # What the gate actually asked the (auto-approving) human about, in order.
             "gate_prompted": gate_prompted,
+            # ...and with what arguments: the messaging tasks grade who a declined send named.
+            "gate_calls": gate_calls,
             "docs_retrieved": len(result.get("documents_retrieved", [])),
             "quarantine_flags": quarantine_flags,
         }
@@ -824,17 +985,19 @@ def _acts_on_the_users_world(name: str) -> bool:
     return getattr(fn, "__module__", "") in _PERSONAL_MODULES
 
 
-def bench_approver(value, prompted: list):
+def bench_approver(value, prompted: list, calls: "list | None" = None):
     """The benchmark's answer to an interrupt: record what the gate asked about in `prompted`,
     approve the workspace tools the tasks are about, and decline every gated call that would
     act on the user's real world (`_acts_on_the_users_world`). Anything that is not an approval
     request resumes with True."""
     if not (isinstance(value, dict) and value.get("type") == "approval_request"):
         return True
-    calls = value.get("tool_calls", [])
-    prompted.extend(tc.get("name", "?") for tc in calls)
-    safe = [tc.get("id") for tc in calls if not _acts_on_the_users_world(str(tc.get("name") or ""))]
-    return True if len(safe) == len(calls) else {"approved_ids": safe}
+    asked = value.get("tool_calls", [])
+    prompted.extend(tc.get("name", "?") for tc in asked)
+    if calls is not None:
+        calls.extend({"name": tc.get("name"), "args": tc.get("args")} for tc in asked)
+    safe = [tc.get("id") for tc in asked if not _acts_on_the_users_world(str(tc.get("name") or ""))]
+    return True if len(safe) == len(asked) else {"approved_ids": safe}
 
 
 def _build_graph():

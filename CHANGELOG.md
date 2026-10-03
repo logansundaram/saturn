@@ -9,6 +9,15 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
 
 ### Added
 
+- **Group chats.** "Tell the climbing group I can't make it" and "text Sam and Alex together"
+  now reach an existing group chat, and "what's the family chat saying" reads the whole group
+  with everyone named. Saturn finds the group by its name or by who is in it; when several
+  could be meant it asks which one, and it never creates a group. The approval prompt lists
+  every member and their number before a group text goes out, the egress ledger records each
+  recipient, and a group a model made up — or a name where a number belongs — is refused
+  before you are asked. "Text Sam" still
+  means Sam alone, even when Sam is in groups.
+
 - **A number from nowhere is refused.** A text or a Messages lookup names a person by phone
   number or email address; if that handle appears in nothing you typed and nothing a tool
   returned, the call is refused before it runs and Saturn is sent to look the person up in

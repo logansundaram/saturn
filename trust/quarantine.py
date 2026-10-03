@@ -308,6 +308,27 @@ def handle_hold(handle: str, user_text: str, seen_text: str) -> "str | None":
     return UNKNOWN_HANDLE_NOTE
 
 
+# The same hold for a group chat: its ref (tools/messages.chat_ref) only ever comes from
+# find_group_chats or a read_messages row label, so one found in neither — nor typed by the user
+# — is the model's invention. Matched whole: `g7f3a2` is not `g7f3a2b`.
+CHAT_ARGS = {"send_message": "chat", "read_messages": "chat"}
+UNKNOWN_CHAT_NOTE = ("this group chat ref appears in nothing you typed and nothing a tool "
+                     "returned — the model composed it")
+_CHAT_REF = re.compile(r"g[0-9a-f]{5,40}")
+
+
+def chat_hold(ref: str, user_text: str, seen_text: str) -> "str | None":
+    """Why a call naming group chat `ref` must not run, or None. Something that is not a ref
+    at all is left to the tool's own argument check."""
+    ref = str(ref or "").strip()
+    if not _CHAT_REF.fullmatch(ref):
+        return None
+    text = (user_text or "") + "\n" + (seen_text or "")
+    if re.search(rf"(?<![0-9a-z]){re.escape(ref)}(?![0-9a-z])", text):
+        return None
+    return UNKNOWN_CHAT_NOTE
+
+
 # --- per-turn flag state (reset by app.session._fresh_turn) ---------------------------------
 
 _TURN_FLAGS: list[dict] = []  # [{"tool": name, "kinds": [...]}] in flag order

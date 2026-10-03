@@ -16,12 +16,14 @@ import commands
 import diag
 from app import bang
 from app.graph import DB_PATH
-from app.session import _fresh_turn, _initial_state, _maybe_autocompact
+from app.session import (_fresh_turn, _initial_state, _maybe_autocompact, skill_completions,
+                         skill_for_line)
 from app.startup import startup_load, start_warm_up, _warn_flagged_attachments
 from core import prime
 from app.turn import close_run, open_run, run_turn, _make_on_update, _trace_warning
 from config import get_config
 from core import mentions
+from core import skills
 from core.pause import get_pause_controller
 from stores.rag import SUPPORTED_EXTENSIONS
 from stores.trace import Tracer
@@ -189,7 +191,7 @@ def run_repl() -> None:
         if queued is not None:
             ui.echo_queued(queued)
             return queued
-        return ui.prompt(commands.command_completions())
+        return ui.prompt(commands.command_completions() + skill_completions())
 
     # Files dropped on the prompt and queued for the next turn (the drag-and-drop "[a]ttach"
     # choice below); consumed and cleared when that turn starts. `pending_blocks` are ready-made
@@ -246,7 +248,14 @@ def run_repl() -> None:
         # `not dropped` keeps the drag-and-drop promise: a POSIX absolute path ("/home/…")
         # whose owner chose "[Enter] send as-is" must run as a message, not fall through to
         # dispatch as an unknown slash command.
-        if not dropped and commands.is_command(user_input):
+        # A `/name` that is not Saturn's own command but names one of the user's skills
+        # (core/skills) runs as an ordinary turn with the skill in its grounding; `/name --help`
+        # shows the skill instead, like every other slash spelling.
+        invoked = skill_for_line(user_input) if not dropped else None
+        if invoked is not None and invoked[1].lower() in ("--help", "-h"):
+            commands.dispatch(f"/skills show {invoked[0].name}", cmd_ctx)
+            continue
+        if invoked is None and not dropped and commands.is_command(user_input):
             commands.dispatch(user_input, cmd_ctx)
             if cmd_ctx.should_quit:
                 break
@@ -257,6 +266,9 @@ def run_repl() -> None:
             continue
 
         state = _fresh_turn(state, user_input)
+        if invoked is not None:
+            state["skill"] = skills.block(invoked[0])
+            ui.note(f"running your skill /{invoked[0].name} · {mentions.display(invoked[0].path)}")
         # Expand @file mentions: read any files the user referenced as `@path` and stash their
         # contents on state for the grounding node to fold into context (so every node sees the
         # file inline; dropped files queued via "[a]ttach" ride along as extra_paths). The message

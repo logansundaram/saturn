@@ -17,7 +17,7 @@ from pathlib import Path
 from app import __version__
 from app.cli import _read_piped_stdin
 from app.graph import DB_PATH
-from app.session import _fresh_turn, _initial_state
+from app.session import _fresh_turn, _initial_state, skill_for_line
 from app.startup import startup_load, _warn_flagged_attachments
 from app.turn import close_run, open_run, run_turn, _make_on_update, _trace_warning
 from core import mentions
@@ -176,6 +176,14 @@ def run_headless(args) -> None:
     tracer = Tracer(DB_PATH)
     state = _initial_state()
     state = _fresh_turn(state, query)
+    # `saturn -p "/weekly-review"` runs the user's skill exactly as typing it in the REPL does
+    # (app/session.skill_for_line — a built-in command's name never resolves to a skill).
+    invoked = skill_for_line(query)
+    if invoked is not None:
+        from core import skills
+
+        state["skill"] = skills.block(invoked[0])
+        print(f"skill: /{invoked[0].name}", file=sys.stderr)
     # @file mentions work headlessly too: `saturn -p "summarize @notes.md"` attaches the
     # file exactly as the interactive loop does (the grounding node folds it into context).
     attach_block, attached = mentions.expand(query)

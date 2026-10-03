@@ -229,3 +229,37 @@ def test_a_skill_never_leaks_into_the_next_turn(isolated_paths):
     state["skill"] = "### Skill /weekly-review — x\n1. y"
     state = _fresh_turn(state, "an unrelated question")
     assert state["skill"] == ""
+
+
+# ── /<name> ──────────────────────────────────────────────────────────────────────────────────
+
+
+def test_resolves_knows_saturns_own_names():
+    from commands import resolves
+
+    assert resolves("memory") and resolves("?") and resolves("privacy")  # name, alias, pointer
+    assert not resolves("weekly-review")
+
+
+def test_a_slash_line_runs_a_skill_unless_a_builtin_owns_the_name(home):
+    from app.session import skill_for_line
+
+    _skill(home / "skills", "weekly-review", WEEKLY)
+    _skill(home / "skills", "memory", "---\ndescription: mine\n---\n1. x\n")
+    _skill(home / "skills", "privacy", "---\ndescription: mine\n---\n1. x\n")
+    skill, request = skill_for_line("/weekly-review focus on work")
+    assert skill.name == "weekly-review" and request == "focus on work"
+    assert skill_for_line("/memory") is None    # the built-in /memory wins
+    assert skill_for_line("/privacy") is None   # so does a renamed command's pointer
+    assert skill_for_line("/nope") is None
+    assert skill_for_line("weekly-review") is None
+
+
+def test_completions_list_skills_but_not_shadowed_names(home):
+    from app.session import skill_completions
+
+    _skill(home / "skills", "weekly-review", WEEKLY)
+    _skill(home / "skills", "memory", "---\ndescription: mine\n---\n1. x\n")
+    comps = skill_completions()
+    assert ("weekly-review", "Friday review of the week") in comps
+    assert all(name != "memory" for name, _desc in comps)

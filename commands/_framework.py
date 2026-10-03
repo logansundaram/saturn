@@ -72,6 +72,13 @@ def is_command(line: str) -> bool:
     return line.lstrip().startswith("/")
 
 
+def resolves(key: str) -> bool:
+    """Whether `/key` is Saturn's own: a command, an alias, or a renamed command's pointer. A
+    user's skill of the same name never runs — the built-in always wins (core/skills)."""
+    key = str(key or "").lower()
+    return key in COMMANDS or key in _ALIASES or key in _RENAMED
+
+
 @cache
 def command_completions() -> list[tuple[str, str]]:
     """(token, summary) pairs for every invocable command — canonical names and aliases."""

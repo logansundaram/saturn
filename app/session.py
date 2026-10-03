@@ -184,3 +184,30 @@ def _initial_state() -> AgentState:
         "tok_per_sec": 0.0,
         "context_tokens": 0,
     }
+
+
+def skill_for_line(line: str):
+    """The user's skill a `/name …` line runs — (Skill, request text) — or None: not a slash
+    line, a built-in command's name (the built-in wins), or no skill by that name. Shared by the
+    REPL and headless -p, so `/weekly-review` means the same thing in both."""
+    if not str(line or "").lstrip().startswith("/"):
+        return None
+    from commands._framework import resolves
+    from core import skills
+
+    return skills.invocation(line, builtin=resolves)
+
+
+def skill_completions() -> "list[tuple[str, str]]":
+    """The user's skills as `/name` prompt completions — read from disk at each prompt, so a
+    skill written in the editor completes without a restart; a name a built-in owns is left out
+    (typing it runs the built-in)."""
+    from commands._framework import resolves
+    from core import skills
+
+    try:
+        found = skills.discover()
+    except Exception as exc:  # a broken skills folder must never break the prompt
+        diag.log(f"skills: completions skipped: {exc}")
+        return []
+    return sorted((name, s.description) for name, s in found.items() if not resolves(name))

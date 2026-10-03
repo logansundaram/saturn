@@ -15,6 +15,7 @@ from commands._framework import (
     COMMANDS,
     command,
     is_command,
+    resolves,
     dispatch,
     command_completions,
 )
@@ -47,6 +48,7 @@ __all__ = [
     "COMMANDS",
     "command",
     "is_command",
+    "resolves",
     "dispatch",
     "command_completions",
     "write_autosave",

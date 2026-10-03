@@ -259,6 +259,18 @@ every view of a feature (`commands/trace.py` = `/trace` + export/replay engine, 
 must accept `--help`; cut command spellings live in `_RENAMED` and print pointers for one release, then go.
 Shared verb grammar (remove/rm/delete/…, `--save`) is in `commands/_utils.py`.
 
+### Skills (`core/skills.py`, `commands/skills.py`)
+
+The user's procedures as markdown: `$SATURN_HOME/skills/<name>/SKILL.md` or `<name>.md`, plus
+`<workspace>/.saturn/skills/…` (wins on a shared name). The name is the file name; frontmatter
+`name` / `description` / `disable-model-invocation`, every other key ignored. Typing
+`/<name> [request]` (REPL `app/repl.py`, headless `-p`, both through
+`app/session.skill_for_line`) sets `state["skill"]`, which `nodes/ground.py` folds into the
+DYNAMIC half — no extra call, no prefix change, reset every turn. Built-in commands always win
+(`commands._framework.resolves`). The skills folders are control folders: the file tools refuse
+to write or move anything inside them (`tools/files._control_dirs`). A skill never changes the
+gate.
+
 ### Same name, different file
 
 `tools/` (implementations) vs `nodes/tools.py` (execution node) · `trace`: `stores/trace.py` records,

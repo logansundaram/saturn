@@ -9,6 +9,16 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
 
 ### Added
 
+- **Skills — your own procedures.** Write a procedure once in markdown and run it by typing its
+  name: `/weekly-review`, or `/weekly-review focus on work` to point it at something. A skill
+  is `~/.saturn/skills/<name>/SKILL.md` (or `<name>.md`) — the same file shape Claude Code
+  uses, so skills you already have work — and a folder can carry its own in
+  `.saturn/skills`, which wins on a shared name. `/skills` lists them, `/skills show <name>`
+  prints one, `/skills create <name>` writes a template to edit, `/skills delete <name>` moves
+  one to the Trash. Every action a skill leads to
+  still asks for approval as usual; a skill never changes what asks first, and Saturn never
+  writes the skills folders itself. `saturn -p "/weekly-review"` runs one headless. A skill
+  named like a built-in command never runs (startup and `/skills` say so).
 - **Every pulled model on `/models`.** Below the qwen ladders the page now lists whatever else
   Ollama holds, chat models and embedding models in separate sections, each with its size,
   parameter count and whether it fits this machine. The rows are numbered like the rest: pick a

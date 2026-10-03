@@ -50,7 +50,7 @@ _Table updated 2026-10-03 against the tree; the ranked list below keeps each ite
 | Goal leg | Today | Gap |
 |---|---|---|
 | Know the user | Six memory layers exist; every fact still needs a user action (a review accept, a gated `remember`, `/memory add`); the agent reads Notes / Calendar / Mail / Contacts / Reminders / Messages; first run asks for a model tier, not for you | The agent starts every session knowing almost nothing and learns slowly (auto-memory, the interview and the brief are planned, not built) |
-| Yours to shape | `~/.saturn/SATURN.md` global plus `SATURN.md` per folder; hooks in `~/.saturn/hooks.yaml`; any of your Shortcuts as a tool (`run_shortcut`); MCP config in YAML with zero servers enabled; `/policy` for the gate | No user-authored procedures (skills), no script-file tools |
+| Yours to shape | `~/.saturn/SATURN.md` global plus `SATURN.md` per folder; hooks in `~/.saturn/hooks.yaml`; any of your Shortcuts as a tool (`run_shortcut`); MCP config in YAML with zero servers enabled; `/policy` for the gate | No script-file tools (skills shipped 2026-10-03: `~/.saturn/skills`, `/skills`) |
 | Visible + gated | Done and true; bare `/help` lists five commands, the other fourteen sit behind `/help --all` | A trace vocabulary built for auditors, not for someone asking about their Thursday; the macOS permission dialogs name the terminal, not Saturn (`superpowers/specs/2026-10-02-macos-app-identity.md`, undecided) |
 | Works where you are | File tools work in the launch folder plus `/add-dir` folders; `read_file` reads PDF / .docx / .xlsx directly; `search_files` asks Spotlight | No always-listed roots: "the PDF on my desktop" from another folder needs `/add-dir ~/Desktop` first |
 | Feels like a product | First launch runs `/models`: it probes the hardware, recommends a tier and pulls it on consent; `install.sh` still seeds and pulls the 4b first | The installer's download is the weakest model even on a machine that should run the 27b |
@@ -112,7 +112,7 @@ re-runs it; `runtime.brief: false` turns it off.
 my boss without asking"), merged under a folder's `SATURDAY.md`. Rename the per-folder file to
 `SATURN.md` too and keep reading the old name. `/init` drafts both.
 
-### 8. Skills: user-authored procedures as markdown (2–3 days) — open; plan written 2026-10-01 (`superpowers/plans/2026-10-01-skills.md`)
+### 8. Skills: user-authored procedures as markdown (2–3 days) — shipped 2026-10-03 (typed `/<name>`; `/skills` lists, shows, creates and deletes; the agent writing one is `superpowers/plans/2026-10-03-create-skill.md`; the model loading one on its own is Phase 2 of `superpowers/plans/2026-10-01-skills.md`)
 `~/.saturn/skills/<name>.md` with a one-line description and a body of steps the agent follows
 when the request matches (`/weekly-review`, `/expense`, `/travel-checklist`). The runbook idea
 from the v1 plan, in Claude Code's vocabulary and file format: no DSL, no parameters beyond the
@@ -130,7 +130,7 @@ closed to `destructive`; every call faces the gate; stdout is untrusted.
 `after-write`. The same seam Claude Code exposes; the memory review and the launch brief could be
 built on it.
 
-### 11. The command diet (1 day) — shipped 2026-09-28 (`/help --all`; the daily five are `/memory`, `/policy`, `/trace`, `/help`, `/quit`; `/skills` waits on #8, `/confidence` was cut, `/privacy` merged into `/policy` 2026-09-30)
+### 11. The command diet (1 day) — shipped 2026-09-28 (`/help --all`; the daily five are `/memory`, `/policy`, `/trace`, `/help`, `/quit`; `/skills` joined them with #8 on 2026-10-03, `/confidence` was cut, `/privacy` merged into `/policy` 2026-09-30)
 Five commands a person needs — `/memory`, `/skills`, `/policy`, `/trace`, `/help` — listed by
 default; `/confidence`, `/privacy`, `/notify`, `/mcp`, `/models`, `/config`, `/docs`, `/undo`
 behind `/help --all`. Nothing is removed; the first screen stops looking like an audit console.

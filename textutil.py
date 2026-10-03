@@ -200,3 +200,78 @@ def safe_stem(name, fallback: str) -> str:
     if stem.lower().endswith(".json"):
         stem = stem[:-5]
     return _SAFE_STEM.sub("-", stem).strip("-_") or fallback
+
+
+# ── terminal-safe text ───────────────────────────────────────────────────────────────────────
+# A terminal treats ESC (and the 8-bit C1 range) as the start of a command: write the clipboard
+# (OSC 52), relink text (OSC 8), move the cursor and erase lines. Text from outside Saturn — tool
+# output, the model, an old recorded run — passes through `visible_controls` before it can
+# reach a terminal (docs/superpowers/plans/2026-10-01-terminal-escape-sanitising.md):
+#   - complete SGR sequences (colour, bold) are removed: they cannot move anything, and removing
+#     them only makes text more visible;
+#   - CR LF and a lone CR become LF, so an overwrite shows both texts;
+#   - every other C0 control but TAB and LF becomes its control picture (ESC -> ␛), DEL -> ␡,
+#     and a C1 control becomes ␛ plus its 7-bit form (U+009B CSI -> ␛[).
+# Text with no control character comes back as the same object; the result never contains a
+# character this rewrites, so it is idempotent.
+_SGR = re.compile(r"\x1b\[[0-9;:]*m|\x9b[0-9;:]*m")
+_CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+
+
+def _control_picture(m) -> str:
+    code = ord(m.group())
+    if code < 0x20:
+        return chr(0x2400 + code)
+    if code == 0x7F:
+        return "␡"
+    return "␛" + chr(code - 0x40)
+
+
+def visible_controls_n(text) -> "tuple[str, int]":
+    """`visible_controls`, plus how many characters became pictures (removed colour codes and
+    carriage returns are not counted — nothing was turned into a symbol for them)."""
+    s = "" if text is None else str(text)
+    if not _CONTROL.search(s):
+        return s, 0
+    s = _SGR.sub("", s).replace("\r\n", "\n").replace("\r", "\n")
+    return _CONTROL.subn(_control_picture, s)
+
+
+def visible_controls(text) -> str:
+    """`text` with every terminal control made inert and visible (see above)."""
+    return visible_controls_n(text)[0]
+
+
+def has_controls(text) -> bool:
+    """Whether `text` holds a character `visible_controls` would rewrite."""
+    return bool(_CONTROL.search("" if text is None else str(text)))
+
+
+def is_control_picture(ch: str) -> bool:
+    """Whether `ch` is one of the symbols `visible_controls` writes in place of a control."""
+    return "␀" <= ch <= "␡"
+
+
+# Bidi overrides and isolates, zero-width characters and the BOM: legitimate inside an answer
+# (RTL scripts, emoji ZWJ sequences), but at the approval gate they can make a command or an
+# address display in a different order, or hide a character. The gate shows them by code point.
+_FORMAT = re.compile("[\u061c\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]")
+
+
+def visible_format_chars(text) -> str:
+    """`text` with bidi and zero-width characters shown as `⟨U+202E⟩` — for the gate only."""
+    s = "" if text is None else str(text)
+    if not _FORMAT.search(s):
+        return s
+    return _FORMAT.sub(lambda m: f"⟨U+{ord(m.group()):04X}⟩", s)
+
+
+# json.dumps(ensure_ascii=False) escapes C0 but writes DEL, C1 and the two Unicode line
+# separators raw. They can only occur inside JSON strings, where a \u escape is equivalent.
+_JSON_RAW = re.compile("[\x7f-\x9f\u2028\u2029]")
+
+
+def json_terminal_safe(dumped: str) -> str:
+    """A `json.dumps(..., ensure_ascii=False)` result with its remaining raw control characters
+    \\u-escaped: `json.loads` returns exactly the same value, and `cat` shows no control byte."""
+    return _JSON_RAW.sub(lambda m: f"\\u{ord(m.group()):04x}", dumped)

@@ -18,7 +18,7 @@ from tools.registry import DECLARED_RISK, tools_by_name, RETRIEVAL_TOOLS
 from tools.planning import PLAN_TOOL, to_plan
 from tools.toolspec import _HUMAN_APPROVED, ToolError
 from core.state import AgentState, issuing_message
-from textutil import CALL_RESULT_SEP, clip, fmt_call, head_tail
+from textutil import CALL_RESULT_SEP, clip, fmt_call, head_tail, visible_controls_n
 
 # Cap the one-line result preview carried in tool_events (UI tree); the full observation still
 # rides messages/tool_results untouched.
@@ -32,6 +32,11 @@ _MAX_RESULT_PREVIEW = 160
 # mark the elision so the model knows it isn't seeing everything. ~12k chars ≈ 3-4k tokens, which
 # leaves room for the system prompt and conversation inside an 8k+ window.
 _MAX_OBSERVATION = 12000
+
+# Appended when the source layer turned control characters into symbols, so the model does not
+# read `␛` as text the page or file literally contains (and edit_file can say why a match fails).
+CONTROL_NOTE = ("\n[{n} terminal control character(s) in this output are shown as symbols such "
+                "as ␛ (escape); they are not literal text]")
 
 
 def _clamp_observation(observation: str) -> str:
@@ -145,11 +150,17 @@ def tool_node(state: AgentState):
             # /trace why read state["plan"]. The observation still lands as a ToolMessage below.
             plan_update = to_plan(args.get("steps") if isinstance(args, dict) else None)
 
-        observation = str(observation)
+        # Terminal controls become visible symbols BEFORE anything else reads the text (the
+        # clamp, quarantine, state, the trace, the model, the rail preview): an untrusted page
+        # or file must not reach the terminal as a live escape sequence, and the record stays
+        # safe to replay (textutil.visible_controls).
+        observation, n_controls = visible_controls_n(str(observation))
         # Clamp what flows back into the model (ToolMessage + paired tool_results) so one large
         # result can't overflow the context window; the UI preview is derived from the same
         # clamped text. The _preview cap above is just for the one-line tool-I/O tree.
         clamped = _clamp_observation(observation)
+        if n_controls:
+            clamped += CONTROL_NOTE.format(n=n_controls)
         # Prompt-injection quarantine: an UNTRUSTED observation (web, MCP, ingested docs)
         # that carries instruction-shaped content is flagged (rail warning + gate context — and,
         # in `gate` mode, one fresh approval prompt for the next batch) and fenced between

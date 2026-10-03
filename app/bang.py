@@ -15,6 +15,7 @@ import os
 import subprocess
 
 from core.mentions import _MAX_FILE_CHARS
+from textutil import visible_controls
 
 TIMEOUT = 120.0
 _HEADER = ("### Shell output attached to this message (the user ran `!{command}` themselves"
@@ -50,7 +51,7 @@ def run(command: str, cwd: str | None = None) -> tuple[str, int]:
 
 def attachment(command: str, output: str, code: int) -> str:
     """The context block for the next turn: clamped like an @file, fenced as data."""
-    body = output
+    body = visible_controls(output)
     if len(body) > _MAX_FILE_CHARS:
         body = body[:_MAX_FILE_CHARS] + f"\n… [truncated — output exceeds {_MAX_FILE_CHARS} chars]"
     return _HEADER.format(command=command, code=code) + "\n```\n" + body + "\n```"

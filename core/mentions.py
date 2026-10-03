@@ -29,6 +29,8 @@ from __future__ import annotations
 import os
 import re
 
+from textutil import visible_controls
+
 # A mention is `@` at a word boundary followed by a run of non-space, non-`@` characters — or a
 # double-quoted run (`@"my docs\file.md"`), so a path with spaces (e.g. dragged onto the terminal
 # after typing `@`) can be mentioned too.
@@ -173,4 +175,6 @@ def expand(text: str, extra_paths: tuple[str, ...] | list[str] = ()) -> tuple[st
             clip = clip[:_MAX_FILE_CHARS] + f"\n… [truncated — the clipboard exceeds {_MAX_FILE_CHARS} chars]"
         parts.append(f"\n#### {CLIPBOARD}\n```\n{clip}\n```")
         paths.append(CLIPBOARD)
-    return "\n".join(parts), paths
+    # File and clipboard text is read by the model and may be echoed to the terminal: controls
+    # become visible symbols, exactly as tool output does (nodes/tools.py).
+    return visible_controls("\n".join(parts)), paths

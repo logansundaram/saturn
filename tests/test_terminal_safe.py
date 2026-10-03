@@ -102,3 +102,81 @@ def test_json_terminal_safe_round_trips_exactly():
     assert no_raw_controls(dumped) and "\u2028" not in dumped
     assert json.loads(dumped) == payload
     assert "é 🙂" in dumped  # ordinary non-ASCII stays readable
+
+
+# ── Task 2: the source layer ──────────────────────────────────────────────────────────────────
+
+def _run_fake_tool(monkeypatch, name, output):
+    from langchain.messages import AIMessage
+
+    import nodes.tools as tn
+
+    class Fake:
+        def invoke(self, args):
+            return output
+
+    monkeypatch.setitem(tn.tools_by_name, name, Fake())
+    msg = AIMessage(content="", tool_calls=[{"name": name, "args": {"q": "x"}, "id": "c1"}])
+    return tn.tool_node({"messages": [msg]})
+
+
+DIRTY = "page " + OSC52 + " " + OSC8 + " " + ERASE_UP + " " + C1_CSI + " end"
+
+
+def test_tool_output_is_neutralised_before_state(monkeypatch):
+    delta = _run_fake_tool(monkeypatch, "calculate", DIRTY)
+    content = delta["messages"][0].content
+    assert no_raw_controls(content)
+    assert "␛]52;c;ZXZpbA==␇" in content           # visible, not dropped
+    assert all(no_raw_controls(r) for r in delta["tool_results"])
+    assert no_raw_controls(delta["tool_events"][0]["result"])  # the rail's preview
+
+
+def test_the_observation_says_symbols_are_not_literal(monkeypatch):
+    from nodes.tools import CONTROL_NOTE
+
+    delta = _run_fake_tool(monkeypatch, "calculate", "a" + ESC + "[2Jb")
+    assert delta["messages"][0].content == "a␛[2Jb" + CONTROL_NOTE.format(n=1)
+
+
+def test_clean_and_colour_only_output_carries_no_note(monkeypatch):
+    clean = _run_fake_tool(monkeypatch, "calculate", "4")
+    assert clean["messages"][0].content == "4"
+    coloured = _run_fake_tool(monkeypatch, "calculate", ESC + "[32m4" + ESC + "[0m")
+    assert coloured["messages"][0].content == "4"
+
+
+def test_a_failed_call_is_neutralised_too(monkeypatch):
+    from langchain.messages import AIMessage
+
+    import nodes.tools as tn
+    from tools.toolspec import ToolError
+
+    class Boom:
+        def invoke(self, args):
+            raise ToolError("server said " + OSC52)
+
+    monkeypatch.setitem(tn.tools_by_name, "calculate", Boom())
+    msg = AIMessage(content="", tool_calls=[{"name": "calculate", "args": {}, "id": "c1"}])
+    delta = tn.tool_node({"messages": [msg]})
+    assert no_raw_controls(delta["messages"][0].content)
+    assert delta["messages"][0].additional_kwargs["saturn_status"] == "error"
+
+
+def test_file_attachments_are_neutralised(tmp_path, monkeypatch):
+    from core import mentions
+
+    f = tmp_path / "notes.txt"
+    f.write_text("hello " + OSC52, encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    block, paths = mentions.expand("look at @notes.txt")
+    assert paths and no_raw_controls(block) and "␛]52" in block
+
+
+def test_bang_attachment_is_neutralised_but_the_output_is_not_rewritten():
+    from app import bang
+
+    out = "ok " + ERASE_UP
+    block = bang.attachment("cat x", out, 0)
+    assert no_raw_controls(block) and "␛[2K" in block
+    assert out == "ok " + ERASE_UP  # the REPL still prints the user's own output as their shell would

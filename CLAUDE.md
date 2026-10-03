@@ -140,8 +140,8 @@ and the turn ends in an answer (one pass later at most).
 `config.yaml` is **gitignored user data**, seeded on first run from the tracked template
 `config.default.yaml` (or `~/.saturn/config.yaml` for wheel installs — `config.saturn_home`). Change defaults in the
 template. `config.persist()` does a surgical single-line YAML edit to preserve comments — don't replace
-it with a full dump. `diag.py` and `textutil.py` import nothing project-side, and `config.py` only the leaves `diag`
-and `core/model_family`; all three are safe
+it with a full dump. `textutil.py` imports nothing project-side, `diag.py` only `textutil`, and
+`config.py` only the leaves `diag` and `core/model_family`; all three are safe
 leaves; `diag.log()` replaces `print()` in nodes/tools (stdout collides with the rich Live TUI).
 
 ### Memory (`stores/memory_registry.py`, `core/memory_review.py`)
@@ -188,6 +188,13 @@ accept). The benchmark's memory tasks and `tests/test_memory_*.py` pin this.
   one that does, the gate prompt names the contact it belongs to (`nodes/approval._handle_note`).
   `chat_hold` (`CHAT_ARGS`) is the same check for a group chat ref (`chat=`), and the gate names
   every member of the group, resolved from Messages at approval.
+- Terminal safety — text from outside Saturn never reaches the terminal as a live escape
+  sequence. `textutil.visible_controls` is the one rule (SGR removed, CR → LF, every other
+  control → its picture `␛`); `nodes/tools.py` applies it to every observation before the clamp
+  and quarantine (also `@file`/`@clipboard` and `!cmd` attachments), and the sink applies it
+  again: `tui/ui/_base.SafeConsole` (all TUI output), `commands/_framework._print`, headless
+  stdout/stderr, `diag.log`. The gate shows bidi/zero-width characters as `⟨U+202E⟩`
+  (`visible_format_chars`). Never print model or tool text with a bare `print()`.
 
 ### Tools
 
@@ -279,4 +286,4 @@ product goal since 2026-09-27 and the ranked work that closes the distance to it
 user would try. `docs/advantages.md` — why the pivot items matter. `docs/OPTIMIZATIONS.md` — latency
 techniques with the numbers behind them. `docs/research.md` — everything still open in pivot /
 engine / advantages, ranked, with plans for the top items and an outside survey.
-`docs/superpowers/` — specs and plans (the plans dated 2026-10-01 are not built yet). `CHANGELOG.md` — user-visible history.
+`docs/superpowers/` — specs and plans (of the plans dated 2026-10-01 only `terminal-escape-sanitising` is built). `CHANGELOG.md` — user-visible history.

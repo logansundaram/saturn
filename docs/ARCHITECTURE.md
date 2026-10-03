@@ -81,7 +81,7 @@ The whole product is one loop. Reading it end to end explains 80% of the repo:
      agent did not answer itself is auto-approved (risk tier, /policy allow prefixes) or must
      interrupt and ask you. A fully-rejected batch routes back to the agent.
    - `nodes/tools.py` executes the calls, stamps each `done` / `error` / `blocked` (a tool
-     reports failure by raising `ToolError`, so an error is never read as done), clamps the observation, attributes egress
+     reports failure by raising `ToolError`, so an error is never read as done), makes terminal controls visible (`textutil.visible_controls`), clamps the observation, attributes egress
      (`trust/egress.py`), fences injection-suspicious content (`trust/quarantine.py`), and
      maps a `plan` call (`tools/planning.py` — the model's checklist) onto `state["plan"]`.
 3. **The answer renders** — `tui/ui/response.py` streamed the agent's answer tokens as they

@@ -33,9 +33,9 @@ run: they need Ollama.
 | 5 | **Loop guards**: a hygiene budget, a failure-aware final pass, replay of a repeated read | engine 1–3 | ½–1 d | Robustness first: the 4b's 14-pass, 7-bounce spiral that ended in "I've updated my memory" is the worst behaviour on record, and each guard costs the clean path nothing. | `2026-10-01-loop-guards.md` |
 | 6 | **The observation path**: a relevance-aware clamp, then a budgeted prompt projection | engine 4–5 | 2–3 d | `file_long_middle` fails on every tier and on both of today's 4b runs; long errands on a 32k window push the system prompt off the front. The literature is unusually clear that deterministic masking is the right tool (Part 2, context). | `2026-10-01-observation-budget.md` |
 | 7 | **A question is an answer**: delete the `ask_user` interrupt | engine 6 | 1–2 d | Removes a tool, an interrupt, a hack (`ASK_ALONE_TEXT`), a headless special case and a grader ambiguity. Lowest user-visible value of the seven, highest deletion. | `2026-10-01-question-is-an-answer.md` |
-| 8 | **Terminal escape sanitising** | Part 2, trust | ½ d | Not on the backlog: a hole found while checking the research against the code. Do it first. | `2026-10-01-terminal-escape-sanitising.md` |
+| 8 | **Terminal escape sanitising** | Part 2, trust | ½ d | Built 2026-10-03. Was not on the backlog: a hole found while checking the research against the code. | `2026-10-01-terminal-escape-sanitising.md` |
 
-**Order to build.** 8 and 5 first (a day together, both make the product more honest), then 1
+**Order to build.** 8 (done) and 5 first (a day together, both make the product more honest), then 1
 and 4 as the "know the user" pair, then 6 (clamp before projection), 2, 3, and 7 last. Plans 5,
 6 and 7 all edit `nodes/agent.py` and are written to land in that order; each carries merge
 notes for the other two.
@@ -125,15 +125,16 @@ attacks, most at above 90% success ([F] arxiv.org/abs/2510.09023). Detectors fai
 mechanisms hold. Saturn's URL hold, `ALWAYS_ASKS` and the gated `remember` are the second kind.
 The regex scanner in `trust/quarantine.py` is the first kind, and one control still hangs on it.
 
-**T1. Strip terminal escape sequences (½ day) — plan written.**
-Checked today: Rich's `Text` and `Markdown` pass `ESC ] 52` (clipboard write) and `ESC [ 2J`
+**T1. Strip terminal escape sequences (½ day) — built 2026-10-03** (`textutil.visible_controls`,
+applied at the source in `nodes/tools.py` and at the sink in `SafeConsole`). What it closed,
+checked 2026-10-01: Rich's `Text` and `Markdown` pass `ESC ] 52` (clipboard write) and `ESC [ 2J`
 through to the terminal; `textutil.clip` and the rail's `_leaf` keep them; `fmt_args` does not.
-A web page, email or file that carries escape bytes can therefore reach the screen through the
-rail's result preview or through the model echoing them, and cursor and erase sequences can
+A web page, email or file that carries escape bytes could therefore reach the screen through the
+rail's result preview or through the model echoing them, and cursor and erase sequences could
 rewrite what the user sees — in a product whose promise is that what you see is what happened.
 The published attack is "Terminal DiLLMa" ([F]
 embracethered.com/blog/posts/2024/terminal-dillmas-prompt-injection-ansi-sequences/). Not
-verified end to end in a live session; the plan's first task is the reproducing test.
+verified end to end in a live terminal; `tests/test_terminal_safe.py` pins it offline.
 
 **T2. Escalate on provenance, not on a regex match (1–2 days).**
 Today the quarantine escalation arms only when `scan()` matches one of eight phrasings
@@ -331,7 +332,7 @@ is a summarising step, and summarising steps are where provenance gets laundered
 By value per day, with the trust items first because they protect the thesis everything else
 rests on.
 
-1. T1 — escape sanitising (plan written)
+1. T1 — escape sanitising (built 2026-10-03)
 2. T2 — escalate on provenance, with paraphrased-injection probes in the trust benchmark
 3. P3 — drafts in the user's voice
 4. P4 — incognito

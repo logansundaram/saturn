@@ -98,6 +98,15 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
 
 ### Security
 
+- **A web page, email or file can no longer take over your terminal.** Text can carry hidden
+  terminal commands — escape sequences that write your clipboard, turn text into a link to a
+  different address, or move the cursor and erase lines so what you see is not what happened.
+  Saturn now shows them as visible symbols (`␛`) everywhere it prints: the trace, answers,
+  `/trace` and replays (including runs recorded before this change), slash commands, headless
+  output and the debug log. Colour codes from shell commands are removed. Content that carries
+  such sequences is flagged like an injection attempt, and the next action asks first. At the
+  approval prompt, characters that reverse text direction or are invisible are shown by name
+  (`⟨U+202E⟩`), so a command cannot display differently from how it runs.
 - **A shorthand loopback address no longer reads as public.** `127.1`, `0x7f.0.0.1`,
   `0177.0.0.1` and a bare decimal all reach 127.0.0.1, but only the spelled-out form was
   recognised as private: a page that steered the model to `web_extract("http://127.1:11434/…")`,

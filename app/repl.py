@@ -73,6 +73,15 @@ def run_repl() -> None:
     for problem in _hooks.problems():
         ui.warn(f"{_hooks.hooks_path()}: {problem}")
 
+    # The user's skills (core/skills): a broken file, or one a built-in command shadows, is
+    # named once here — a skill that silently never runs can't happen.
+    from core import skills as _skills
+
+    for problem in _skills.problems():
+        ui.warn(f"skill {problem}")
+    for name in sorted(n for n in _skills.discover() if commands.resolves(n)):
+        ui.warn(f"skill /{name}: the built-in /{name} wins, so it never runs — rename its file")
+
     # Startup header — tier/model / tool count / corpus size, like a tool's first line.
     from core.llms import model_id, check_models
     from tools.registry import tool as _tools

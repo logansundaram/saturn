@@ -31,14 +31,14 @@ from commands._session import write_autosave
 # can't silently vanish from /help.
 _GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("conversation", ("clear", "copy", "resume")),
-    ("knowledge & workspace", ("add-dir", "docs", "init", "memory", "rm-dir", "undo")),
+    ("knowledge & workspace", ("add-dir", "docs", "init", "memory", "rm-dir", "skills", "undo")),
     ("trust & control", ("policy",)),
     ("observability", ("mcp", "models", "tools", "trace")),
     ("system", ("config", "help", "notify", "quit", "update")),
 )
 # Bare /help lists only the commands a person needs on a Tuesday; everything else (the auditor's
 # and operator's surfaces) stays registered and listed by `/help --all`. Order is display order.
-_DAILY: tuple[str, ...] = ("memory", "policy", "trace", "help", "quit")
+_DAILY: tuple[str, ...] = ("memory", "skills", "policy", "trace", "help", "quit")
 _ALL_FLAGS = {"--all", "-a", "all"}
 
 # The three-line trust-stack map /help opens with: where the boundary POSTURE is set, where the

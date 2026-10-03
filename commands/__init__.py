@@ -32,6 +32,7 @@ _COMMAND_MODULES = [
     "notify",        # /notify — pending OS-scheduled notifications: list, cancel, test
     "policy",        # /policy — the one trust front door (risk · allow · open · egress · airgap)
     "runtime",       # /tools, /models, /mcp
+    "skills",        # /skills — the user's own procedures (core/skills)
     "system",        # /help, /quit, /update
     "trace",         # /trace (incl. the why/source provenance subviews)
     "workspace_dirs",  # /add-dir, /rm-dir — folders beyond the launch folder

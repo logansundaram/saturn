@@ -263,3 +263,151 @@ def test_completions_list_skills_but_not_shadowed_names(home):
     comps = skill_completions()
     assert ("weekly-review", "Friday review of the week") in comps
     assert all(name != "memory" for name, _desc in comps)
+
+
+# ── /skills ──────────────────────────────────────────────────────────────────────────────────
+
+from commands import dispatch  # noqa: E402
+
+
+def _flat(out: str) -> str:
+    return " ".join(out.split())
+
+
+def test_skills_with_none_says_where_to_start(home, ctx, capsys):
+    dispatch("/skills", ctx)
+    assert "no skills yet" in _flat(capsys.readouterr().out)
+
+
+def test_skills_lists_names_descriptions_and_shadowing(home, ctx, capsys):
+    _skill(home / "skills", "weekly-review", WEEKLY)
+    _skill(home / "skills", "help", "---\ndescription: my help\n---\n1. x\n")
+    _skill(home / "skills", "Bad_Name", "1. x\n", flat=True)
+    dispatch("/skills", ctx)
+    out = _flat(capsys.readouterr().out)
+    assert "/weekly-review" in out and "Friday review of the week" in out
+    assert "built-in /help wins" in out
+    assert "Bad_Name.md" in out  # the problem is named
+
+
+def test_skills_show_prints_the_skill_and_what_is_ignored(home, ctx, capsys):
+    path = _skill(home / "skills", "weekly-review",
+                  "---\ndescription: d\nallowed-tools: Bash\n---\n1. List what got done.\n")
+    (path.parent / "helper.sh").write_text("echo hi", encoding="utf-8")
+    dispatch("/skills show weekly-review", ctx)
+    out = _flat(capsys.readouterr().out)
+    assert "1. List what got done." in out
+    assert "ignored: allowed-tools" in out and "never changes what asks first" in out
+    assert "not used: helper.sh" in out
+
+
+def test_skills_show_an_unknown_name(home, ctx, capsys):
+    dispatch("/skills show nope", ctx)
+    assert "no skill named nope" in capsys.readouterr().out
+
+
+def test_skills_create_writes_a_template_once(home, ctx, capsys):
+    dispatch("/skills create weekly-review", ctx)
+    path = home / "skills" / "weekly-review" / "SKILL.md"
+    assert path.is_file()
+    skill = skills.get("weekly-review")
+    assert skill is not None and not skill.manual_only  # the commented key stays a comment
+    dispatch("/skills create weekly-review", ctx)
+    assert "already exists" in capsys.readouterr().out
+
+
+def test_new_and_add_are_spellings_of_create(home, ctx):
+    dispatch("/skills new travel", ctx)
+    dispatch("/skills add expense", ctx)
+    assert sorted(skills.discover()) == ["expense", "travel"]
+
+
+def test_skills_create_refuses_builtin_and_malformed_names(home, ctx, capsys):
+    dispatch("/skills create help", ctx)
+    dispatch("/skills create Bad_Name", ctx)
+    out = _flat(capsys.readouterr().out)
+    assert "is a built-in command" in out and "lowercase letters, digits and hyphens" in out
+    assert not (home / "skills" / "help").exists()
+
+
+def test_skills_help(ctx, capsys):
+    dispatch("/skills --help", ctx)
+    out = capsys.readouterr().out
+    assert "/skills [show <name> | create <name> | delete <name>]" in out and "weekly-review" in out
+
+
+# ── /skills delete ───────────────────────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def trash(tmp_path, monkeypatch):
+    from tools import files
+
+    folder = tmp_path / "Trash"
+    monkeypatch.setattr(files, "_trash_dir", lambda: folder)
+    return folder
+
+
+def _answers(monkeypatch, *replies, tty=True):
+    """Script the y/N prompt, and whether a person is at the keyboard to answer it."""
+    from commands import _utils
+    from tui import ui
+
+    it = iter(replies)
+    monkeypatch.setattr(ui, "ask", lambda _prompt, **_kw: next(it, ""))
+    monkeypatch.setattr(_utils, "_stdin_is_tty", lambda: tty)
+
+
+def test_skills_delete_moves_a_folder_skill_to_the_trash(home, ctx, capsys, monkeypatch, trash):
+    path = _skill(home / "skills", "weekly-review", WEEKLY)
+    (path.parent / "helper.sh").write_text("echo hi", encoding="utf-8")
+    _answers(monkeypatch, "y")
+    dispatch("/skills delete weekly-review", ctx)
+    out = _flat(capsys.readouterr().out)
+    assert skills.get("weekly-review") is None and not path.parent.exists()
+    assert (trash / "weekly-review" / "SKILL.md").is_file()
+    assert (trash / "weekly-review" / "helper.sh").is_file()   # the folder goes whole
+    assert "helper.sh" in out and "Trash" in out               # and the prompt said so first
+
+
+def test_skills_delete_moves_a_flat_skill_as_its_file(home, ctx, monkeypatch, trash):
+    path = _skill(home / "skills", "expense", "1. Read it.\n", flat=True)
+    _answers(monkeypatch, "yes")
+    dispatch("/skills rm expense", ctx)          # every shared removal verb works
+    assert not path.exists() and (trash / "expense.md").is_file()
+    assert (home / "skills").is_dir()            # never the skills folder itself
+
+
+def test_skills_delete_needs_a_yes_and_a_keyboard(home, ctx, capsys, monkeypatch, trash):
+    path = _skill(home / "skills", "weekly-review", WEEKLY)
+    _answers(monkeypatch, "n")
+    dispatch("/skills delete weekly-review", ctx)
+    _answers(monkeypatch, "")                    # Enter is no
+    dispatch("/skills delete weekly-review", ctx)
+    _answers(monkeypatch, "y", tty=False)        # nobody at the keyboard: never asked
+    dispatch("/skills delete weekly-review", ctx)
+    out = _flat(capsys.readouterr().out)
+    assert path.is_file() and not trash.exists()
+    assert out.count("kept /weekly-review") == 2 and "needs a person at the keyboard" in out
+
+
+def test_deleting_a_workspace_skill_says_the_global_one_now_runs(home, ctx, capsys, monkeypatch,
+                                                                  trash):
+    _skill(home / "skills", "weekly-review", WEEKLY)
+    local = _skill(workspace.root() / ".saturn" / "skills", "weekly-review",
+                   "---\ndescription: this folder's review\n---\n1. Only this project.\n")
+    _answers(monkeypatch, "y")
+    dispatch("/skills delete weekly-review", ctx)
+    out = _flat(capsys.readouterr().out)
+    assert not local.exists() and skills.get("weekly-review").scope == "global"
+    assert "now runs" in out
+
+
+def test_skills_delete_an_unknown_name_or_two_names(home, ctx, capsys, monkeypatch, trash):
+    _skill(home / "skills", "weekly-review", WEEKLY)
+    _answers(monkeypatch, "y")
+    dispatch("/skills delete nope", ctx)
+    dispatch("/skills delete weekly-review expense", ctx)   # one name per call
+    out = _flat(capsys.readouterr().out)
+    assert "no skill named nope" in out and "usage: /skills" in out
+    assert skills.get("weekly-review") is not None and not trash.exists()

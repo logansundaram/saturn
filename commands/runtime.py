@@ -10,6 +10,8 @@ readouts):
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from commands._framework import command, _print
 from commands._utils import (
     _resync_rag_after_model_change, is_list_verb, pull_one as _pull_one, run_pulls,
@@ -95,7 +97,8 @@ def _bind(cfg, target: str, model: str, *, session: bool = False) -> None:
 # window this config gives it (core/hardware.py), marked pulled / recommended / too big, and
 # numbered so one keystroke picks a tier or an embedder. The ladder is one recommended tag per
 # size, priced against this machine — a model off the ladder still binds (`/models use <id>`)
-# and is priced by the size in its tag.
+# and is priced by the size in its tag. Under the ladders, every other pulled model (`_Other`):
+# chat models and embedders apart, numbered on from the ladder rows.
 # Bare /models prompts; `list` renders only; the probe itself is cached at startup (hardware
 # doesn't change mid-session).
 
@@ -175,6 +178,59 @@ def _switch_embedder(cfg, model: str, *, session: bool) -> None:
                    [f"tiers.{key}.embedder" for key in keys], session=session, unpersisted=note)
 
 
+@dataclass(frozen=True)
+class _Other:
+    """A pulled model that sits on neither ladder, as the page lists and picks it."""
+
+    kind: str           # "chat" | "embedder"
+    name: str
+    weights_gb: float   # size on disk; 0 when the daemon did not say
+    params: str
+    tools: bool         # False only for a chat model the daemon SAID cannot call tools
+
+    @property
+    def need_gb(self) -> float:
+        """Size on disk plus the flat headroom of its kind. Unlike a ladder row, the cache its
+        window costs is not priced: the architecture behind an arbitrary tag is not known."""
+        from core.hardware import EMBEDDER_HEADROOM_GB, HEADROOM_GB
+
+        return self.weights_gb + (EMBEDDER_HEADROOM_GB if self.kind == "embedder" else HEADROOM_GB)
+
+
+def _other_models(cfg, local: list) -> "list[_Other]":
+    """Every pulled model no ladder row already shows, chat models first, then embedders, each
+    group in the daemon's name order. The daemon's capability list tells the two apart (and
+    marks a chat model that cannot call tools); with no answer for a model, "embed" in its name
+    is the fallback and tool calling is not doubted."""
+    from core.llms import _model_present, model_capabilities
+
+    shown = {_tier_binding(cfg, key)[1] for key in model_family.classes()}
+    shown |= {model_family.embedder_tag_for(key) for key in model_family.embedder_classes()}
+    rest = [m for m in local if not _model_present(m.name, shown)]
+    if not rest:
+        return []
+    caps = model_capabilities([m.name for m in rest])
+    out = []
+    for m in rest:
+        known = caps.get(m.name)
+        embedder = "embedding" in known if known else "embed" in m.name.lower()
+        out.append(_Other(
+            kind="embedder" if embedder else "chat",
+            name=m.name,
+            weights_gb=(getattr(m, "size_bytes", 0) or 0) / 1e9,
+            params=getattr(m, "params", "") or "",
+            tools=embedder or not known or "tools" in known,
+        ))
+    return [o for o in out if o.kind == "chat"] + [o for o in out if o.kind == "embedder"]
+
+
+def _other_fits(other: _Other, rec) -> bool:
+    """A chat model against the whole budget; an embedder against what the recommended tier
+    leaves (the same question the embedder ladder asks)."""
+    left = rec.budget_gb - (rec.needs[rec.size_class] if other.kind == "embedder" else 0)
+    return other.need_gb <= left
+
+
 def _pulled_cell(models: list, up: bool, have: set) -> tuple:
     from core.llms import _model_present
 
@@ -185,7 +241,7 @@ def _pulled_cell(models: list, up: bool, have: set) -> tuple:
     return ("·", "dim")
 
 
-def _render_page(cfg, prof, rec, *, up: bool, have: set) -> None:
+def _render_page(cfg, prof, rec, *, up: bool, have: set, others: "list[_Other]" = ()) -> None:
     """The readout, in the app's one listing vocabulary (section / table / note — the shapes
     /policy renders with; they own the no-rich fallback)."""
     from core.hardware import (
@@ -196,6 +252,7 @@ def _render_page(cfg, prof, rec, *, up: bool, have: set) -> None:
         EMBEDDER_WEIGHTS_GB,
         HEADROOM_GB,
     )
+    from core.llms import _model_present
     from tui import ui
 
     active = cfg.active_tier
@@ -266,6 +323,35 @@ def _render_page(cfg, prof, rec, *, up: bool, have: set) -> None:
             _pulled_cell([tag], up, have),
             status,
         ))
+    running = {"chat": _tier_model(cfg, active), "embedder": emb_model or ""}
+    for kind, title in (("chat", "other chat models"), ("embedder", "other embedders")):
+        group = [o for o in others if o.kind == kind]
+        if not group:
+            continue
+        rows.append(("",))
+        rows.append(dim("", "", title, "weights", "params", "need", "", "", ""))
+        for o in group:
+            n += 1
+            if not o.tools:
+                status = ("no tool calling", "yellow")
+            elif not o.weights_gb:
+                status = ("size unknown", "dim")
+            elif kind == "embedder":
+                status = ((f"fits beside {rec.size_class}", "dim") if _other_fits(o, rec)
+                          else (f"swaps beside {rec.size_class}", "yellow"))
+            else:
+                status = ("fits", "dim") if _other_fits(o, rec) else ("too big", "yellow")
+            rows.append((
+                (str(n), "dim"),
+                "* " if running[kind] and _model_present(o.name, {running[kind]}) else "  ",
+                o.name,
+                (f"{o.weights_gb:>5.1f} GB" if o.weights_gb else "", "dim"),
+                (o.params, "dim"),
+                f"{o.need_gb:>5.1f} GB" if o.weights_gb else "",
+                "",
+                _pulled_cell([o.name], up, have),
+                status,
+            ))
     ui.table(rows)
 
     override = cfg.num_ctx_override
@@ -274,6 +360,9 @@ def _render_page(cfg, prof, rec, *, up: bool, have: set) -> None:
     ui.note(f"* active · ✓ pulled · need = weights + KV cache at that window + {HEADROOM_GB:g} GB headroom"
             f" · speed = est. decode at {prof.bandwidth_gbps:g} GB/s")
     ui.note(src)
+    if others:
+        ui.note("other models: need = size on disk + headroom (the cache a window costs is not "
+                f"priced) · a chat pick binds the model on tier '{active}'")
     if not rec.cramped:
         decode = rec.decode[rec.size_class]
         ui.note(f"{rec.size_class} feels like: ~{decode:.0f} tok/s (a paragraph in ~{150 / decode:.0f} s)"
@@ -297,19 +386,20 @@ def _render_page(cfg, prof, rec, *, up: bool, have: set) -> None:
                 "and will be tight")
 
 
-def _pick(rec, active: str) -> "list[tuple[str, str]] | None":
+def _pick(rec, active: str, others: "list[_Other]" = ()) -> "list[tuple] | None":
     """The human's say after the readout: Enter takes the recommended TIER (the embedder, whose
     switch re-embeds the whole knowledge base, is confirmed separately — see _confirm_embedder),
-    a row number picks that one tier or embedder, n/q/cancel keeps things as they are. Anything
+    a row number picks that one tier, embedder, or other pulled model, n/q/cancel keeps things
+    as they are. Anything
     unparseable is treated as cancel — an auto-select must never land on a row nobody chose —
     and so is Ctrl-C / Ctrl-D: ui.ask would otherwise hand back the empty reply Enter produces,
     and an interrupt is the one keypress that must never select. Returns [(kind, class), ...]
-    to apply in order, or None."""
+    to apply in order — ("other", the _Other row) for a model off the ladders — or None."""
     from tui import ui
 
     tiers = model_family.classes()
     embs = model_family.embedder_classes()
-    total = len(tiers) + len(embs)
+    total = len(tiers) + len(embs) + len(others)
     reply = ui.ask(
         f"[Enter] {rec.size_class} · 1-{total} pick a row · n keep {active} » ",
         on_interrupt="n",
@@ -328,7 +418,9 @@ def _pick(rec, active: str) -> "list[tuple[str, str]] | None":
         return None
     if idx <= len(tiers):
         return [("tier", tiers[idx - 1])]
-    return [("embedder", embs[idx - len(tiers) - 1])]
+    if idx <= len(tiers) + len(embs):
+        return [("embedder", embs[idx - len(tiers) - 1])]
+    return [("other", others[idx - len(tiers) - len(embs) - 1])]
 
 
 def _confirm_embedder(rec, active_emb: "str | None") -> bool:
@@ -372,6 +464,9 @@ def _apply_pick(cfg, kind: str, key: str, rec, *, have: set, session: bool) -> N
     from core.llms import _model_present
     from tui import ui
 
+    if kind == "other":
+        _apply_other(cfg, key, rec, session=session)
+        return
     tiers = cfg.get("tiers", {}) or {}
     if kind == "tier":
         if key not in tiers:
@@ -409,6 +504,37 @@ def _apply_pick(cfg, kind: str, key: str, rec, *, have: set, session: bool) -> N
         _switch_embedder(cfg, models[0], session=session)
 
 
+def _apply_other(cfg, other: _Other, rec, *, session: bool) -> None:
+    """Land a pick from the other-models rows: a chat model is bound on the ACTIVE tier (what
+    `/models use <id>` does), an embedder on every tier (`/models embedder <id>`). The model is
+    pulled by definition — the rows are the daemon's own list. A model the daemon says cannot
+    call tools is never bound from the page: the loop is one tool-calling call per pass."""
+    from core.llms import _model_present
+    from tui import ui
+
+    if not other.tools:
+        ui.warn(f"{other.name} has no tool calling — the agent loop needs it, so it was not bound")
+        return
+    if other.kind == "chat":
+        if other.weights_gb and not _other_fits(other, rec):
+            ui.warn(f"by the numbers {other.name} wants {other.need_gb:.1f} GB against a "
+                    f"{rec.budget_gb:g} GB budget — it may fail to load, or run slowly, on this machine")
+        if _model_present(other.name, {_tier_model(cfg, cfg.active_tier)}):
+            ui.note(f"already on {other.name} — nothing to change")
+            return
+        _bind(cfg, "model", other.name, session=session)
+        return
+    if other.weights_gb and not _other_fits(other, rec):
+        ui.warn(f"embedder {other.name} will swap in and out beside tier {rec.size_class} — "
+                "knowledge-base lookups pay a reload")
+    tiers = cfg.get("tiers", {}) or {}
+    if tiers and all(isinstance(t, dict) and str(t.get("embedder") or "") == other.name
+                     for t in tiers.values()):
+        ui.note(f"already on embedder {other.name} — nothing to change")
+        return
+    _switch_embedder(cfg, other.name, session=session)
+
+
 def _models_page(cfg, *, prompt: bool, session: bool = False) -> None:
     """Render the page; with `prompt`, ask and apply."""
     from core.hardware import recommend
@@ -423,7 +549,8 @@ def _models_page(cfg, *, prompt: bool, session: bool = False) -> None:
     local = list_local_models()
     up = bool(local) or ollama_reachable()
     have = {m.name for m in local}
-    _render_page(cfg, prof, rec, up=up, have=have)
+    others = _other_models(cfg, local)
+    _render_page(cfg, prof, rec, up=up, have=have, others=others)
     if not prompt or not up:
         # With no daemon there is nothing a pick could be applied to (the models can't even be
         # listed).
@@ -432,7 +559,7 @@ def _models_page(cfg, *, prompt: bool, session: bool = False) -> None:
 
     if not _stdin_is_tty():
         return
-    picks = _pick(rec, cfg.active_tier)
+    picks = _pick(rec, cfg.active_tier, others)
     if picks is None:
         ui.note(f"staying on '{cfg.active_tier}'")
         # Keeping a tier whose model isn't here still offers the pull (the embedder waits for
@@ -466,7 +593,7 @@ _RETIRED_TARGETS = ("all", "tool_caller", "utility")
 
 @command(
     "models",
-    "The model page: your hardware, the qwen ladder priced against it, pick a tier / embedder.",
+    "The model page: your hardware, the qwen ladder priced against it, every other pulled model, pick one.",
     aliases=("model",),
     usage="/models [list] [--session] | /models use|embedder <id> [--session]",
     details="""
@@ -486,8 +613,16 @@ better. A tier that fits but would crawl reads `fits · slow` and is never the d
              table does not know is priced at the M1 baseline and the page says so
   embedder   the largest that fits BESIDE the recommended tier, so lookups never evict it
 
+Below the ladders come the models you have pulled that are on neither: other chat models, then
+other embedders (the daemon says which is which). Each carries its size on disk, its parameter
+count, and whether it fits — size plus headroom against the same budget; the cache its window
+would cost is not priced. A chat model the daemon says cannot call tools reads `no tool
+calling` and cannot be picked here.
+
 The rows are numbered. Enter takes the recommended tier; a number picks that one row (a "too
-big" pick is honored with a warning); n keeps things as they are. When the recommended embedder
+big" pick is honored with a warning); n keeps things as they are. Picking another chat model
+binds it on the active tier (what `/models use <id>` does); picking another embedder sets it on
+every tier. When the recommended embedder
 differs from the active one, Enter then asks — y/N, default no — whether to switch it too,
 because an embedder switch re-embeds the whole corpus. A pick whose model isn't pulled asks
 first — y/N, default no — and only switches after the pull succeeds. An embedder pick is set

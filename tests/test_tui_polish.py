@@ -347,6 +347,118 @@ def test_recording_cut_is_disclosed_on_the_output_side_too(capsys):
 # active-node signal exists to render (that needs a graph hook).
 
 
+# --- status-bar machine gauges: GPU and memory ---------------------------------------------------
+
+def _usage(gpu=31.0, used=21.4, total=36.0, age=0.0):
+    import time
+
+    from core.hardware import LiveUsage
+
+    return (LiveUsage(gpu_pct=gpu, mem_used_gb=used, mem_total_gb=total), time.monotonic() - age)
+
+
+def test_statusbar_shows_gpu_and_memory_while_a_reading_is_fresh(monkeypatch):
+    sb = importlib.import_module("tui.ui.statusbar")
+    monkeypatch.setattr(sb, "_usage", _usage())
+    plain = sb._StatusBar().__rich__().plain
+    assert "gpu 31% · mem 21.4/36 GB" in plain
+    assert plain.rstrip().endswith("esc pause · ctrl-c cancel")     # the legend still trails
+
+
+def test_statusbar_shows_no_machine_gauge_without_a_reading(monkeypatch):
+    sb = importlib.import_module("tui.ui.statusbar")
+    monkeypatch.setattr(sb, "_usage", None)
+    plain = sb._StatusBar().__rich__().plain
+    assert "gpu" not in plain and "mem" not in plain
+
+
+def test_statusbar_drops_a_stale_reading_rather_than_show_it(monkeypatch):
+    sb = importlib.import_module("tui.ui.statusbar")
+    monkeypatch.setattr(sb, "_usage", _usage(age=60.0))
+    plain = sb._StatusBar().__rich__().plain
+    assert "gpu" not in plain and "mem" not in plain
+
+
+def test_statusbar_shows_the_one_gauge_that_was_readable(monkeypatch):
+    sb = importlib.import_module("tui.ui.statusbar")
+    monkeypatch.setattr(sb, "_usage", _usage(gpu=None))
+    plain = sb._StatusBar().__rich__().plain
+    assert "mem 21.4/36 GB" in plain and "gpu" not in plain
+    monkeypatch.setattr(sb, "_usage", _usage(used=None))
+    plain = sb._StatusBar().__rich__().plain
+    assert "gpu 31%" in plain and "mem" not in plain
+
+
+def _style_of(bar, needle):
+    start = bar.plain.index(needle)
+    return next(str(s.style) for s in bar.spans if s.start <= start < s.end)
+
+
+def test_statusbar_memory_turns_yellow_when_nearly_full(monkeypatch):
+    sb = importlib.import_module("tui.ui.statusbar")
+    monkeypatch.setattr(sb, "_usage", _usage(used=21.4))
+    assert _style_of(sb._StatusBar().__rich__(), "21.4/36 GB") == "default"
+    monkeypatch.setattr(sb, "_usage", _usage(used=31.0))                # 86% of 36 GB
+    assert _style_of(sb._StatusBar().__rich__(), "31.0/36 GB") == "yellow"
+
+
+def test_the_sampler_stores_each_reading_until_the_bar_comes_down(monkeypatch):
+    import threading
+
+    sb = importlib.import_module("tui.ui.statusbar")
+    reading, stop, reads = _usage()[0], threading.Event(), []
+
+    def reader():
+        reads.append(1)
+        if len(reads) == 2:
+            stop.set()
+        return reading
+
+    monkeypatch.setattr(sb, "_usage", None)
+    monkeypatch.setattr(sb, "_SAMPLE_EVERY_S", 0)
+    sb._sample_loop(reader, stop)
+    assert len(reads) == 2 and sb._usage[0] is reading
+
+
+def test_a_failed_sample_clears_the_gauge(monkeypatch):
+    import threading
+
+    sb = importlib.import_module("tui.ui.statusbar")
+    stop = threading.Event()
+
+    def reader():
+        stop.set()
+        raise RuntimeError("no")
+
+    monkeypatch.setattr(sb, "_usage", _usage())
+    sb._sample_loop(reader, stop)
+    assert sb._usage is None
+
+
+def test_the_bar_starts_the_sampler_and_stopping_it_ends_the_sampler(monkeypatch):
+    sb = importlib.import_module("tui.ui.statusbar")
+
+    class FakeLive:
+        def __init__(self, *a, **k): pass
+        def start(self): pass
+        def stop(self): pass
+
+    monkeypatch.setattr(sb, "Live", FakeLive)
+    monkeypatch.setattr(sb, "_live", None)
+    sb._live_start()
+    stop = sb._sampler_stop
+    assert stop is not None and not stop.is_set()
+    sb._live_stop()
+    assert stop.is_set() and sb._sampler_stop is None
+
+
+def test_no_test_reads_the_real_machine():
+    """conftest replaces the reader: a suite that spawned ioreg / vm_stat would depend on the
+    machine it ran on."""
+    sb = importlib.import_module("tui.ui.statusbar")
+    assert sb._read_usage() is None
+
+
 def test_statusbar_names_the_last_finished_node_in_past_tense(monkeypatch):
     sb = importlib.import_module("tui.ui.statusbar")
     base = importlib.import_module("tui.ui._base")

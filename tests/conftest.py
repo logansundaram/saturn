@@ -128,6 +128,16 @@ def _no_spotlight(monkeypatch):
     monkeypatch.setattr(files, "_spotlight", lambda literal, directory: None)
 
 
+@pytest.fixture(autouse=True)
+def _no_live_usage(monkeypatch):
+    """The status bar samples GPU and memory use through ioreg / vm_stat while it is up. No
+    test may run them — the gauge would depend on the machine — so the reader answers "no
+    reading" unless a test replaces it (tests/test_tui_polish.py)."""
+    from tui.ui import statusbar
+
+    monkeypatch.setattr(statusbar, "_read_usage", lambda: None)
+
+
 @pytest.fixture
 def mac(monkeypatch):
     """Pin the platform to macOS and capture osascript invocations. Yields a controller whose

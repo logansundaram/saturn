@@ -1,5 +1,6 @@
 """
-Hardware probe -> size-class recommendation, behind `/models` and the first launch.
+Hardware probe -> size-class recommendation, behind `/models` and the first launch — plus
+`live()`, the GPU / memory sample the status bar shows during a turn.
 
 The rule is stated, not learned, on two axes:
 
@@ -357,6 +358,68 @@ def probe() -> HardwareProfile:
         gpu_cores=gpu_cores, bandwidth_gbps=speed.bandwidth_gbps,
         tflops=speed.tflops, baseline=speed.baseline,
     )
+
+
+# ── live usage ─────────────────────────────────────────────────────────────────────────────────
+# What the machine is doing NOW, for the status bar's gauges. Both readers are unprivileged
+# (`powermetrics` would need sudo) and cheap: ioreg ~15 ms, vm_stat ~150 ms on an M4 Pro.
+
+@dataclass(frozen=True)
+class LiveUsage:
+    gpu_pct: float | None       # GPU utilisation, 0-100; None when unreadable
+    mem_used_gb: float | None   # unified memory in use (see _mem_used_gb); None when unreadable
+    mem_total_gb: float         # the profile's unified memory
+
+
+_GPU_UTIL_RE = re.compile(r'"Device Utilization %"\s*=\s*(\d+)')
+_PAGE_SIZE_RE = re.compile(r"page size of (\d+) bytes")
+
+
+def _gpu_utilization() -> float | None:
+    """GPU utilisation from the accelerator's PerformanceStatistics (the same IORegistry entry
+    _gpu_cores reads). None when the key is absent."""
+    found = _GPU_UTIL_RE.search(_run(["ioreg", "-rd1", "-c", "IOAccelerator"], timeout=1))
+    return float(found.group(1)) if found else None
+
+
+def _mem_used_gb() -> float | None:
+    """Memory in use the way Activity Monitor counts "Memory Used": app memory (anonymous pages
+    less the purgeable ones) + wired + what the compressor occupies. File cache is left out —
+    macOS hands it back on demand, so it is not what pushes a model into swap. None when
+    vm_stat's output lacks any of the fields."""
+    out = _run(["vm_stat"], timeout=1)
+    size = _PAGE_SIZE_RE.search(out)
+    pages = {}
+    for label in ("Anonymous pages", "Pages purgeable", "Pages wired down",
+                  "Pages occupied by compressor"):
+        found = re.search(rf"^{label}:\s+(\d+)", out, re.MULTILINE)
+        if not found:
+            return None
+        pages[label] = int(found.group(1))
+    if not size:
+        return None
+    used = (pages["Anonymous pages"] - pages["Pages purgeable"] + pages["Pages wired down"]
+            + pages["Pages occupied by compressor"])
+    return used * int(size.group(1)) / 1024**3
+
+
+def live() -> LiveUsage | None:
+    """One sample of GPU and memory use. Never raises: a reader that fails leaves its field
+    None, and when neither reads (or this is not macOS) the answer is None — a gauge is shown
+    from a real reading or not at all."""
+    if platform.system() != "Darwin":
+        return None
+    try:
+        gpu = _gpu_utilization()
+    except Exception:
+        gpu = None
+    try:
+        mem = _mem_used_gb()
+    except Exception:
+        mem = None
+    if gpu is None and mem is None:
+        return None
+    return LiveUsage(gpu_pct=gpu, mem_used_gb=mem, mem_total_gb=profile().ram_gb)
 
 
 # ── recommend ──────────────────────────────────────────────────────────────────────────────────

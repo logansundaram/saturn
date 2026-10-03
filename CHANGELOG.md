@@ -9,6 +9,15 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
 
 ### Added
 
+- **Every pulled model on `/models`.** Below the qwen ladders the page now lists whatever else
+  Ollama holds, chat models and embedding models in separate sections, each with its size,
+  parameter count and whether it fits this machine. The rows are numbered like the rest: pick a
+  chat model to run it on the active tier, or an embedder to switch to it. A model that cannot
+  call tools is marked and cannot be picked.
+- **GPU and memory in the status bar.** While a turn runs the bar shows `gpu 31% · mem
+  21.4/36 GB`: GPU utilisation and unified memory in use (app + wired + compressed, the number
+  Activity Monitor calls Memory Used), sampled every two seconds. Memory turns yellow at 85%.
+
 - **Group chats.** "Tell the climbing group I can't make it" and "text Sam and Alex together"
   now reach an existing group chat, and "what's the family chat saying" reads the whole group
   with everyone named. Saturn finds the group by its name or by who is in it; when several

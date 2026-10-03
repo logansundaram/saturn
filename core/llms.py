@@ -220,6 +220,8 @@ class LocalModel:
     """A model pulled into the local Ollama daemon, as surfaced by `ollama list`."""
 
     name: str  # the tag you bind (e.g. "qwen3.5:4b")
+    size_bytes: int = 0  # on disk; 0 when the daemon did not say
+    params: str = ""     # parameter count as the daemon words it (e.g. "20.9B")
 
 
 def _field(obj, *names, default=None):
@@ -254,8 +256,37 @@ def list_local_models() -> list[LocalModel]:
     for m in raw or []:
         name = _field(m, "model", "name", default="") or ""
         if name:
-            out.append(LocalModel(name=name))
+            out.append(LocalModel(
+                name=name,
+                size_bytes=int(_field(m, "size", default=0) or 0),
+                params=str(_field(_field(m, "details"), "parameter_size", default="") or ""),
+            ))
     return sorted(out, key=lambda lm: lm.name.lower())
+
+
+def model_capabilities(names) -> dict[str, tuple[str, ...]]:
+    """What the daemon says each model can do (`ollama show`: "completion", "tools",
+    "embedding", "thinking", …) — how `/models` tells an embedder from a chat model and marks
+    one that cannot call tools. Best-effort: a model whose lookup fails, or whose daemon predates
+    the capability list, is simply absent from the answer.
+
+    Asked of a LOCAL daemon only: against a remote OLLAMA_HOST this would be one request per
+    model that no ledger entry covers, so the answer is empty and callers fall back to the name."""
+    if not egress.ollama_is_local():
+        return {}
+    try:
+        import ollama
+    except Exception:
+        return {}
+    out: dict[str, tuple[str, ...]] = {}
+    for name in names:
+        try:
+            caps = _field(ollama.show(name), "capabilities")
+        except Exception:
+            continue
+        if caps:
+            out[name] = tuple(str(c) for c in caps)
+    return out
 
 
 # ── startup health check ──────────────────────────────────────────────────────

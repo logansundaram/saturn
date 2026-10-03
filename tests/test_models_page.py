@@ -301,6 +301,142 @@ def test_gpu_cores_reader_parses_ioreg(monkeypatch):
     assert hardware._gpu_cores() == 0
 
 
+# --- live usage: what the GPU and the memory are doing right now -----------------------------------
+
+_VM_STAT = """Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                   236425.
+Pages active:                                1079266.
+Pages inactive:                               998364.
+Pages wired down:                             191087.
+Pages purgeable:                               58793.
+File-backed pages:                            760499.
+Anonymous pages:                             1407118.
+Pages stored in compressor:                   809475.
+Pages occupied by compressor:                 496589.
+"""
+_IOREG = ('+-o AGXAcceleratorG16X  <class ...>\n    {\n      "gpu-core-count" = 20\n'
+          '      "PerformanceStatistics" = {"In use system memory"=1510588416,'
+          '"Device Utilization %"=31,"Alloc system memory"=3721478144}\n    }')
+
+
+def _wire_live(monkeypatch, *, ioreg=_IOREG, vm_stat=_VM_STAT, ram=48.0):
+    """core.hardware with its one subprocess seam answering from canned text; an answer of
+    None makes that command fail."""
+    from core import hardware
+
+    def run(cmd, timeout=3):
+        out = ioreg if cmd[0] == "ioreg" else vm_stat
+        if out is None:
+            raise RuntimeError("no")
+        return out
+
+    monkeypatch.setattr(hardware.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(hardware, "_run", run)
+    monkeypatch.setattr(hardware, "_CACHED", _profile(ram_gb=ram))
+    return hardware
+
+
+def test_gpu_utilization_is_read_from_the_accelerators_performance_statistics(monkeypatch):
+    hw = _wire_live(monkeypatch)
+    assert hw._gpu_utilization() == 31.0
+    hw = _wire_live(monkeypatch, ioreg='"gpu-core-count" = 20')
+    assert hw._gpu_utilization() is None
+
+
+def test_memory_used_is_app_memory_plus_wired_plus_compressed(monkeypatch):
+    """Activity Monitor's "Memory Used": anonymous pages less the purgeable ones, plus wired,
+    plus what the compressor occupies — file cache is not counted, it is given back on demand."""
+    hw = _wire_live(monkeypatch)
+    pages = 1407118 - 58793 + 191087 + 496589
+    assert hw._mem_used_gb() == pytest.approx(pages * 16384 / 1024**3)
+    assert hw._mem_used_gb() == pytest.approx(31.07, abs=0.01)
+
+
+def test_memory_used_is_unknown_when_vm_stat_lacks_a_field(monkeypatch):
+    hw = _wire_live(monkeypatch, vm_stat=_VM_STAT.replace("Anonymous pages", "Other pages"))
+    assert hw._mem_used_gb() is None
+    hw = _wire_live(monkeypatch, vm_stat="")
+    assert hw._mem_used_gb() is None
+
+
+def test_live_usage_carries_both_readings_and_the_total(monkeypatch):
+    use = _wire_live(monkeypatch).live()
+    assert use.gpu_pct == 31.0 and use.mem_total_gb == 48.0
+    assert use.mem_used_gb == pytest.approx(31.07, abs=0.01)
+
+
+def test_live_usage_keeps_the_reading_that_worked(monkeypatch):
+    use = _wire_live(monkeypatch, vm_stat=None).live()
+    assert use.gpu_pct == 31.0 and use.mem_used_gb is None
+    use = _wire_live(monkeypatch, ioreg=None).live()
+    assert use.gpu_pct is None and use.mem_used_gb == pytest.approx(31.07, abs=0.01)
+
+
+def test_live_usage_is_nothing_when_no_reader_works(monkeypatch):
+    assert _wire_live(monkeypatch, ioreg=None, vm_stat=None).live() is None
+
+
+def test_live_usage_is_nothing_off_macos(monkeypatch):
+    hw = _wire_live(monkeypatch)
+    monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
+    assert hw.live() is None
+
+
+# --- what the daemon is asked ----------------------------------------------------------------------
+
+class _Obj:
+    def __init__(self, **kw):
+        self.__dict__.update(kw)
+
+
+def test_the_model_list_carries_size_and_parameter_count(monkeypatch):
+    """Both response shapes the ollama client has shipped: typed objects and plain mappings."""
+    import ollama
+
+    from core import llms
+
+    monkeypatch.setattr(ollama, "list", lambda: _Obj(models=[
+        _Obj(model="gpt-oss:20b", size=13793441244, details=_Obj(parameter_size="20.9B")),
+        {"name": "old:1b", "size": 5, "details": {"parameter_size": "1B"}},
+        _Obj(model="bare:latest"),
+    ]))
+    got = {m.name: m for m in llms.list_local_models()}
+    assert got["gpt-oss:20b"].size_bytes == 13793441244 and got["gpt-oss:20b"].params == "20.9B"
+    assert got["old:1b"].size_bytes == 5 and got["old:1b"].params == "1B"
+    assert got["bare:latest"].size_bytes == 0 and got["bare:latest"].params == ""
+
+
+def test_capabilities_come_from_ollama_show_and_a_failed_lookup_is_left_out(monkeypatch):
+    import ollama
+
+    from core import llms
+
+    def show(name):
+        if name == "gone:1b":
+            raise RuntimeError("404")
+        if name == "old-daemon:1b":
+            return _Obj(capabilities=None)
+        return _Obj(capabilities=["embedding"] if "embed" in name else ["completion", "tools"])
+
+    monkeypatch.setattr(ollama, "show", show)
+    monkeypatch.setattr("trust.egress.ollama_is_local", lambda: True)
+    assert llms.model_capabilities(["a:1b", "x-embed:1b", "gone:1b", "old-daemon:1b"]) == {
+        "a:1b": ("completion", "tools"), "x-embed:1b": ("embedding",)}
+
+
+def test_capabilities_are_not_fetched_from_a_remote_daemon(monkeypatch):
+    """One request per model to an off-machine OLLAMA_HOST would be traffic the ledger never
+    saw; the page falls back to the model's name instead."""
+    import ollama
+
+    from core import llms
+
+    asked = []
+    monkeypatch.setattr(ollama, "show", lambda name: asked.append(name) or _Obj(capabilities=["tools"]))
+    monkeypatch.setattr("trust.egress.ollama_is_local", lambda: False)
+    assert llms.model_capabilities(["a:1b"]) == {} and asked == []
+
+
 def test_the_profile_is_probed_once_per_process_and_rescan_reprobes(monkeypatch):
     from core import hardware
 
@@ -366,9 +502,10 @@ def _ladder_cfg(active="4b", windows=_W, num_ctx=None, embedder="qwen3-embedding
 
 
 class _Local:
-    def __init__(self, name, size_bytes=0):
+    def __init__(self, name, size_bytes=0, params=""):
         self.name = name
         self.size_bytes = size_bytes
+        self.params = params
 
 
 @pytest.fixture
@@ -383,6 +520,10 @@ def env(monkeypatch, printed):
         "cfg": _ladder_cfg(),
         "profile": _profile(ram_gb=48.0),
         "pulled": ["qwen3.5:4b", "qwen3-embedding:8b"],
+        "sizes": {},         # model -> (GB on disk, parameter count) as `ollama list` reports
+        "caps": {},          # model -> what `ollama show` says it can do; absent = unknown
+        "caps_asked": [],
+        "prompts": [],
         "daemon": True,
         "tty": True,
         "pick": "",          # the row prompt: Enter = take the recommended tier
@@ -397,12 +538,26 @@ def env(monkeypatch, printed):
     monkeypatch.setattr("config.get_config", lambda: env["cfg"])
     monkeypatch.setattr(runtime, "_probe", lambda: env["profile"])
     # Like the real one: [] when the daemon is down (reachability is then probed separately).
-    monkeypatch.setattr("core.llms.list_local_models",
-                        lambda: [_Local(n) for n in env["pulled"]] if env["daemon"] else [])
+    def local():
+        if not env["daemon"]:
+            return []
+        out = []
+        for n in env["pulled"]:
+            gb, params = env["sizes"].get(n, (0, ""))
+            out.append(_Local(n, int(gb * 1e9), params))
+        return sorted(out, key=lambda m: m.name.lower())
+
+    def capabilities(names):
+        env["caps_asked"].append(list(names))
+        return {n: tuple(env["caps"][n]) for n in names if n in env["caps"]}
+
+    monkeypatch.setattr("core.llms.list_local_models", local)
+    monkeypatch.setattr("core.llms.model_capabilities", capabilities)
     monkeypatch.setattr("core.llms.ollama_reachable", lambda: env["daemon"])
     monkeypatch.setattr("core.llms.reset_models", lambda: env.__setitem__("reset", env["reset"] + 1))
     monkeypatch.setattr("commands._utils._stdin_is_tty", lambda: env["tty"])
     def ask(prompt, **_kw):
+        env["prompts"].append(prompt)
         if prompt.startswith("pull"):
             return env["answer"]
         if prompt.startswith("embedder:"):
@@ -752,6 +907,159 @@ def test_the_page_lists_the_daemon_once(env, printed, monkeypatch):
     monkeypatch.setattr("core.llms.ollama_reachable", lambda: calls.append(1) or True)
     _run("list")
     assert calls == []                                          # a non-empty list IS the probe
+
+
+# --- every other pulled model -------------------------------------------------------------------
+# Below the two ladders: whatever else `ollama list` holds, chat models and embedders apart
+# (Ollama's own capability list tells them apart), numbered on from the ladder rows.
+
+def _pull_others(env):
+    """Four models off the ladders. By name: deepseek-r1:70b (8), gpt-oss:20b (9) and
+    translategemma:4b (10) are chat rows, nomic-embed-text:v1.5 (11) the one embedder."""
+    env["pulled"] += ["gpt-oss:20b", "translategemma:4b", "nomic-embed-text:v1.5", "deepseek-r1:70b"]
+    env["sizes"].update({"gpt-oss:20b": (13.0, "20.9B"), "translategemma:4b": (3.1, "4.3B"),
+                         "nomic-embed-text:v1.5": (0.3, "137M"), "deepseek-r1:70b": (39.6, "70.6B")})
+    env["caps"].update({"gpt-oss:20b": ["completion", "tools", "thinking"],
+                        "translategemma:4b": ["completion", "vision"],
+                        "nomic-embed-text:v1.5": ["embedding"],
+                        "deepseek-r1:70b": ["tools", "thinking", "completion"]})
+
+
+def _index(printed, *needles):
+    return next(i for i, l in enumerate(printed) if all(n in l for n in needles))
+
+
+def test_other_pulled_models_are_listed_chat_models_and_embedders_apart(env, printed):
+    _pull_others(env)
+    _run("list")
+    chat, emb = _index(printed, "other chat models"), _index(printed, "other embedders")
+    assert chat < _index(printed, "gpt-oss:20b") < emb
+    assert chat < _index(printed, "translategemma:4b") < emb
+    assert emb < _index(printed, "nomic-embed-text:v1.5")
+    assert chat > _index(printed, "qwen3-embedding:8b")        # below both ladders
+
+
+def test_an_other_row_carries_its_size_and_parameter_count(env, printed):
+    _pull_others(env)
+    _run("list")
+    row = _row(printed, "gpt-oss:20b")
+    assert "13.0 GB" in row and "20.9B" in row and "✓" in row and "fits" in row
+
+
+def test_a_ladder_model_is_never_listed_twice(env, printed):
+    _run("list")
+    blob = "\n".join(printed)
+    assert "other chat models" not in blob and "other embedders" not in blob
+    assert env["caps_asked"] == []            # nothing off the ladders: the daemon is not asked
+    _pull_others(env)
+    printed.clear()
+    _run("list")
+    assert len([l for l in printed if "qwen3.5:4b" in l]) == 1
+    assert len([l for l in printed if "qwen3-embedding:8b" in l and "✓" in l]) == 1
+
+
+def test_only_models_off_the_ladders_are_asked_about(env, printed):
+    _pull_others(env)
+    _run("list")
+    assert env["caps_asked"] == [["deepseek-r1:70b", "gpt-oss:20b", "nomic-embed-text:v1.5",
+                                  "translategemma:4b"]]
+
+
+def test_the_model_a_rebound_tier_runs_stays_in_its_tier_row(env, printed):
+    _pull_others(env)
+    env["pulled"] += ["qwen3.5:9b"]
+    env["cfg"].get("tiers")["9b"]["model"] = "gpt-oss:20b"
+    _run("list")
+    assert len([l for l in printed if "gpt-oss:20b" in l]) == 1
+    assert "9b" in _row(printed, "gpt-oss:20b").split()        # the tier row, not an other row
+    # …and the ladder tag that tier no longer runs is now just another pulled model.
+    assert _index(printed, "qwen3.5:9b") > _index(printed, "other chat models")
+
+
+def test_other_rows_continue_the_numbering_and_the_prompt_names_the_range(env, printed):
+    _pull_others(env)
+    env["pick"] = "n"
+    _run()
+    for n, model in ((8, "deepseek-r1:70b"), (9, "gpt-oss:20b"), (10, "translategemma:4b"),
+                     (11, "nomic-embed-text:v1.5")):
+        assert _row(printed, model).split()[0] == str(n), model
+    assert any("1-11" in p for p in env["prompts"])
+
+
+def test_a_model_whose_capabilities_are_unknown_is_sorted_by_its_name(env, printed):
+    """`ollama show` failed for these two: "embed" in the name is the fallback, and a chat model
+    is not called tool-less on no evidence."""
+    env["pulled"] += ["mxbai-embed-large:latest", "llama3.1:8b"]
+    _run("list")
+    chat, emb = _index(printed, "other chat models"), _index(printed, "other embedders")
+    assert chat < _index(printed, "llama3.1:8b") < emb < _index(printed, "mxbai-embed-large:latest")
+    assert "no tool calling" not in _row(printed, "llama3.1:8b")
+
+
+def test_a_model_without_tool_calling_is_marked(env, printed):
+    _pull_others(env)
+    _run("list")
+    assert "no tool calling" in _row(printed, "translategemma:4b")
+    assert "no tool calling" not in _row(printed, "gpt-oss:20b")
+
+
+def test_an_other_model_too_big_for_the_budget_is_marked(env, printed):
+    _pull_others(env)                         # 39.6 GB of weights against a 36 GB budget
+    _run("list")
+    assert "too big" in _row(printed, "deepseek-r1:70b")
+
+
+def test_an_off_ladder_active_embedder_is_starred(env, printed):
+    _pull_others(env)
+    env["cfg"] = _ladder_cfg(embedder="nomic-embed-text:v1.5")
+    _run("list")
+    assert "* " in _row(printed, "nomic-embed-text:v1.5")
+    assert "* " not in _row(printed, "gpt-oss:20b")
+
+
+def test_picking_an_other_chat_row_binds_it_on_the_active_tier(env, printed):
+    _pull_others(env)
+    env["pick"] = "9"
+    _run()
+    assert env["cfg"].active_tier == "4b"
+    assert env["cfg"].chat_model == "gpt-oss:20b"
+    assert env["persisted"] == [("tiers.4b.model", "gpt-oss:20b")]
+    assert env["reset"] == 1
+
+
+def test_picking_an_other_embedder_row_sets_it_on_every_tier(env, printed):
+    _pull_others(env)
+    env["pick"] = "11"
+    _run()
+    assert all(env["cfg"].get("tiers")[k]["embedder"] == "nomic-embed-text:v1.5"
+               for k in model_family.classes())
+    assert env["cfg"].chat_model == "qwen3.5:4b"               # the chat model was not touched
+    assert env["resyncs"] == 1
+
+
+def test_picking_a_model_without_tool_calling_is_refused(env, printed):
+    _pull_others(env)
+    env["pick"] = "10"
+    _run()
+    assert env["cfg"].chat_model == "qwen3.5:4b"
+    assert env["persisted"] == [] and env["reset"] == 0
+    assert any("translategemma:4b" in l and "tool calling" in l for l in printed[-3:])
+
+
+def test_a_too_big_other_pick_is_honored_with_a_warning(env, printed):
+    _pull_others(env)
+    env["pick"] = "8"
+    _run()
+    assert env["cfg"].chat_model == "deepseek-r1:70b"
+    assert any("deepseek-r1:70b" in l and "36 GB budget" in l for l in printed)
+
+
+def test_a_number_past_the_other_rows_selects_nothing(env, printed):
+    _pull_others(env)
+    env["pick"] = "12"
+    _run()
+    assert env["persisted"] == []
+    assert any("not a valid selection" in l and "1-11" in l for l in printed)
 
 
 def test_cramped_machine_warns(env, printed):

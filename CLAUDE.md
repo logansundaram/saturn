@@ -264,7 +264,9 @@ vs `commands/policy.py` (front door).
 `tests/conftest.py` adds the repo root to `sys.path`; use the `isolated_paths` fixture whenever a test
 touches configured paths so it can never write to the real `database/`. Grant lifecycle in
 `trust/policy` is reset around every test automatically. LLM seams are monkeypatched at each node's
-namespace — no test may reach a model, the network, or the embedder. `tests/` and `benchmark.py` import
+namespace — no test may reach a model, the network, or the embedder; `conftest.py` also turns
+off the status bar's GPU / memory reader (`tui.ui.statusbar._read_usage` → `core/hardware.live`,
+ioreg + vm_stat). `tests/` and `benchmark.py` import
 compatibility names from `agent` (`from agent import build_agent, run_turn, …`); new code should import
 from `app/` directly.
 

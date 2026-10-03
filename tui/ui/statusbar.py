@@ -6,6 +6,7 @@ type-ahead preview stay private here; only the per-turn timing/plan state (in `_
 with the trace/plan/response renderers.
 """
 
+import threading
 import time
 
 from . import _base
@@ -24,6 +25,45 @@ _live = None
 # already queued. Fed by typeahead.InputQueue's on_change callback (set_input_preview); rendered in
 # the pinned status bar so queuing follow-ups while the agent works has live feedback.
 _input_state = {"buffer": "", "queued": 0}
+
+
+# Machine gauges: the last GPU / memory sample and when it was taken, as (LiveUsage, monotonic).
+# A background thread takes it while the bar is up (`_sample_loop`) — the readers spawn ioreg and
+# vm_stat, which must never run inside a repaint. A reading older than `_USAGE_FRESH_S` is not
+# drawn: the gauge shows a real, recent number or nothing.
+_usage = None
+_sampler_stop = None        # the running sampler's stop Event; None when no bar is up
+_SAMPLE_EVERY_S = 2.0
+_USAGE_FRESH_S = 6.0
+_MEM_FULL_PCT = 85
+
+
+def _read_usage():
+    """One GPU / memory sample (core.hardware.live), or None. The seam tests replace —
+    tests/conftest.py turns it off for the whole suite."""
+    from core import hardware
+
+    return hardware.live()
+
+
+def _sample_loop(reader, stop) -> None:
+    """Store a reading every `_SAMPLE_EVERY_S` until `stop` is set. A reader that fails clears
+    the gauge rather than leave the last number standing."""
+    global _usage
+    while True:
+        try:
+            reading = reader()
+        except Exception:
+            reading = None
+        _usage = (reading, time.monotonic()) if reading is not None else None
+        if stop.wait(_SAMPLE_EVERY_S):
+            return
+
+
+def _fresh_usage():
+    if _usage is None or time.monotonic() - _usage[1] > _USAGE_FRESH_S:
+        return None
+    return _usage[0]
 
 
 def set_input_preview(buffer: str, queued: int) -> None:
@@ -110,24 +150,45 @@ class _StatusBar:
             bar.append(f"{tps:.0f} tok/s", style="default")
 
         # ── session ── the turn-spanning gauges, one zone: context fill (it drives the agent, so
-        # it keeps its meter) and the egress counter (the live twin of /policy egress — the
-        # boundary, visible). Egress appears only once non-zero, so a fresh, fully-local session
-        # stays calm.
+        # it keeps its meter), the egress counter (the live twin of /policy egress — the
+        # boundary, visible), then the machine: GPU utilisation and unified memory in use.
+        # Egress appears only once non-zero, so a fresh, fully-local session stays calm; the
+        # machine gauges come last, the first of the zone a narrow terminal gives up.
         window = status["ctx_window"]
         try:
             from trust import egress as _eg
             _ne = _eg.count()
         except Exception:
             _ne = 0
-        if window or _ne:
+        usage = _fresh_usage()
+        if window or _ne or usage:
             zone()
+            first = True
+
+            def gauge():  # the dot between this zone's gauges, whichever of them are present
+                nonlocal first
+                if not first:
+                    dot()
+                first = False
+
             if window:
+                gauge()
                 _append_meter(bar, "ctx", status["ctx_used"] / window * 100, cells=4)
             if _ne:
-                if window:
-                    dot()
+                gauge()
                 bar.append("⇅ ", style=_DIM)
                 bar.append(f"{_ne} egress", style="default")
+            if usage and usage.gpu_pct is not None:
+                gauge()
+                bar.append("gpu ", style=_DIM)
+                bar.append(f"{usage.gpu_pct:.0f}%", style="default")
+            if usage and usage.mem_used_gb is not None:
+                gauge()
+                total = usage.mem_total_gb
+                full = total > 0 and usage.mem_used_gb / total * 100 >= _MEM_FULL_PCT
+                bar.append("mem ", style=_DIM)
+                bar.append(f"{usage.mem_used_gb:.1f}/{total:g} GB" if total
+                           else f"{usage.mem_used_gb:.1f} GB", style="yellow" if full else "default")
 
         # ── key legend ── the turn-time keys, taught ambiently while they're usable. Trails the
         # whole line ON PURPOSE: the bar trims from the right edge on a narrow terminal (no-wrap
@@ -151,20 +212,28 @@ def _live_start() -> None:
     """Pin a fresh status bar at the bottom. No-op if one is already running.
     `transient=True` erases the bar on stop (the scrolling trace stays); rich's default
     stdout/stderr redirect keeps node `print()`s flowing above the live region."""
-    global _live
+    global _live, _sampler_stop
     if _live is not None:
         return
     _live = Live(_StatusBar(), console=_console, transient=True,
                  auto_refresh=True, refresh_per_second=4)
     _live.start()
+    # The machine gauges' sampler lives exactly as long as the bar. The reader is handed over
+    # here, so a sampler that outlives a test keeps that test's stub.
+    _sampler_stop = threading.Event()
+    threading.Thread(target=_sample_loop, args=(_read_usage, _sampler_stop), daemon=True,
+                     name="saturn-usage").start()
 
 
 def _live_stop() -> None:
     """Tear the bar down (before any input()) so it never fights a blocking prompt."""
-    global _live
+    global _live, _sampler_stop
     if _live is not None:
         _live.stop()
         _live = None
+    if _sampler_stop is not None:
+        _sampler_stop.set()
+        _sampler_stop = None
 
 
 def _live_refresh() -> None:

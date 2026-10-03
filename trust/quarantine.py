@@ -124,6 +124,12 @@ _PATTERNS: list[tuple[str, "re.Pattern[str]"]] = [
     ("chat-markup", re.compile(
         r"<\|im_start\|>|\[/?INST\]|</?system>|^#{1,6}\s*system\s*:?\s*$",
         re.IGNORECASE | re.MULTILINE)),
+    # Terminal escape sequences (2026-10-01): an OSC / DCS / APC / PM string, or a CSI that
+    # moves the cursor, erases or switches modes. Matched raw (ESC, 8-bit CSI/OSC) and in the
+    # visible form nodes/tools.py writes (␛). Colour (SGR, `…m`) is excluded: harmless, removed
+    # at the source, and common in shell output.
+    ("terminal-escape", re.compile(
+        "[\x1b␛](?:[\\]PX^_]|\\[[0-9;?]*[A-HJKSTfhlsu])|[\x9b\x9d]")),
 ]
 
 # Fetched content naming Saturn's own GATED tools as calls is a coercion attempt, not data.

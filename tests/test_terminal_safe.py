@@ -180,3 +180,44 @@ def test_bang_attachment_is_neutralised_but_the_output_is_not_rewritten():
     block = bang.attachment("cat x", out, 0)
     assert no_raw_controls(block) and "␛[2K" in block
     assert out == "ok " + ERASE_UP  # the REPL still prints the user's own output as their shell would
+
+
+# ── Task 3: the quarantine finding ────────────────────────────────────────────────────────────
+
+@pytest.fixture
+def gate_mode(monkeypatch):
+    from config import get_config
+    from trust import quarantine
+
+    quarantine.reset_turn()
+    monkeypatch.setitem(get_config()._data.setdefault("runtime", {}), "quarantine", "gate")
+    yield
+    quarantine.reset_turn()
+
+
+@pytest.mark.parametrize("seq", [OSC52, OSC8, ERASE_UP, C1_CSI, ESC + "P1$r" + ESC + "\\"])
+def test_escape_sequences_in_untrusted_output_flag_and_arm_the_gate(monkeypatch, gate_mode, seq):
+    from trust import quarantine
+
+    delta = _run_fake_tool(monkeypatch, "web_extract", "article text " + seq)
+    assert "terminal-escape" in delta["tool_events"][0]["quarantine"]
+    assert "QUARANTINE WARNING" in delta["messages"][0].content
+    assert quarantine.gate_pending()
+
+
+def test_sgr_colour_in_shell_output_never_flags(monkeypatch, gate_mode):
+    from trust import quarantine
+
+    out = ESC + "[1;31mFAILED" + ESC + "[0m tests/test_x.py " + ESC + "[32m3 passed" + ESC + "[0m"
+    delta = _run_fake_tool(monkeypatch, "run_shell", out)
+    assert "quarantine" not in delta["tool_events"][0]
+    assert not quarantine.gate_pending()
+    assert delta["messages"][0].content == "FAILED tests/test_x.py 3 passed"
+
+
+def test_scan_matches_raw_and_visible_forms():
+    from trust import quarantine
+
+    assert {f.kind for f in quarantine.scan("x " + OSC52)} == {"terminal-escape"}
+    assert {f.kind for f in quarantine.scan("x ␛[2K")} == {"terminal-escape"}
+    assert quarantine.scan("x ␛[31m colour only") == []

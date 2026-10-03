@@ -7,8 +7,9 @@ empty thinking pass rerun) are diagnostics — useful when debugging, noise duri
 appended to a file under `logging/` (gitignored) and silent on the console by default. Set the
 env var `SATURN_DEBUG=1` to also echo them to stderr.
 
-No project imports, so this is safe to import from anywhere — which is why the data-home rule
-(`saturn_home`, `data_root`) lives here: config.py and env_keys.py read it from this leaf.
+It imports only `textutil`, itself a leaf, so this is safe to import from anywhere — which is
+why the data-home rule (`saturn_home`, `data_root`) lives here: config.py and env_keys.py read
+it from this leaf.
 The `logging/` directory at the repo root does NOT shadow the stdlib `logging` module here: it has
 no `__init__.py`, and a regular package (stdlib) always wins over a namespace-package directory.
 """
@@ -18,6 +19,16 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
+
+from textutil import visible_controls
+
+
+class _SafeFormatter(logging.Formatter):
+    """diag.log lines carry exception text and model output; `tail -f diag.log` and the
+    SATURN_DEBUG echo must not hand a terminal a live escape sequence."""
+
+    def format(self, record):
+        return visible_controls(super().format(record))
 
 
 def saturn_home() -> Path:
@@ -57,14 +68,14 @@ def _get() -> logging.Logger:
             try:
                 _LOG_DIR.mkdir(parents=True, exist_ok=True)
                 fh = logging.FileHandler(_LOG_DIR / "diag.log", encoding="utf-8")
-                fh.setFormatter(logging.Formatter("%(asctime)s %(message)s", "%H:%M:%S"))
+                fh.setFormatter(_SafeFormatter("%(asctime)s %(message)s", "%H:%M:%S"))
                 lg.addHandler(fh)
             except Exception:
                 # A log sink must never break the app; degrade to no file handler.
                 pass
             if os.getenv("SATURN_DEBUG"):
                 sh = logging.StreamHandler()
-                sh.setFormatter(logging.Formatter("%(message)s"))
+                sh.setFormatter(_SafeFormatter("%(message)s"))
                 lg.addHandler(sh)
         _logger = lg
     return _logger

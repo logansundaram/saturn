@@ -374,3 +374,56 @@ def test_answers_keep_rtl_and_zwj_text(capsys):
     response(text)
     out = capsys.readouterr().out
     assert "שלום" in out and "👨\u200d👩\u200d👧" in out and "U+200D" not in out
+
+
+# ── Task 7: headless, export, diag, memory, /copy ─────────────────────────────────────────────
+
+def test_headless_answer_and_progress_are_neutralised(capsys):
+    from app import headless
+
+    headless._stdout("answer " + OSC52)
+    assert no_raw_controls(capsys.readouterr().out.rstrip("\n"))
+    lines = []
+    on_progress = headless._q_progress(lines.append)
+    on_progress("tools", {"plan": [{"label": "read " + ERASE_UP, "status": "done"}]})
+    assert lines and all(no_raw_controls(ln) for ln in lines)
+
+
+def test_headless_approver_notes_are_neutralised(capsys, monkeypatch):
+    from app import headless
+    from trust import policy
+
+    monkeypatch.setattr(policy, "gate_off", lambda: False)
+    headless.headless_approver({"type": "approval_request", "notes": ["why " + OSC52],
+                                "tool_calls": [{"id": "1", "name": "write_file"}]})
+    assert no_raw_controls(capsys.readouterr().err.rstrip("\n"))
+
+
+def test_diag_formatter_neutralises():
+    import logging
+
+    import diag
+
+    rec = logging.LogRecord("saturn.diag", logging.INFO, __file__, 1, "bad " + OSC52, None, None)
+    assert no_raw_controls(diag._SafeFormatter("%(message)s").format(rec))
+
+
+def test_memory_facts_are_stored_neutralised(isolated_paths):
+    from stores import memory_registry as mr
+
+    mr.add_memory("likes tea " + OSC52, layer="user", by="user")
+    assert all(no_raw_controls(e["text"]) for e in mr.entries())
+
+
+def test_copy_puts_the_neutralised_answer_on_the_clipboard(monkeypatch):
+    from types import SimpleNamespace
+
+    from langchain.messages import AIMessage
+
+    from commands import conversation
+
+    copied = []
+    monkeypatch.setattr(conversation, "_pbcopy", lambda text: copied.append(text) or True)
+    ctx = SimpleNamespace(state={"messages": [AIMessage(content="done " + ESC + "[201~rm -rf ~")]})
+    conversation._copy(ctx, [])
+    assert copied and no_raw_controls(copied[0])

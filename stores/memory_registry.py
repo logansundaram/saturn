@@ -50,6 +50,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 from config import get_config
+from textutil import visible_controls
 
 LAYERS = ("user", "commitments", "memo", "agent", "entities", "negative")
 
@@ -322,7 +323,7 @@ def _clean_text(fact) -> str:
     # continuation lines the parser never sees. Collapsing ALL whitespace runs keeps dedup
     # comparing the same form a reflowed duplicate arrives in. A stray `{#…}` token inside the
     # text would be parsed back as metadata, so its braces are softened.
-    text = " ".join(str(fact or "").split())
+    text = " ".join(visible_controls(str(fact or "")).split())
     return text.replace("{#", "(#").replace("}", ")") if "{#" in text else text
 
 

@@ -17,6 +17,7 @@ from commands._session import (
     write_session_file,
 )
 from commands._utils import LIST_VERBS, REMOVE_VERBS
+from textutil import visible_controls
 
 
 # ── /clear ───────────────────────────────────────────────────────────────────────────────────
@@ -279,7 +280,7 @@ def _copy(ctx, args):
     if not answer:
         _print("  nothing to copy yet — there is no answer in this conversation.")
         return
-    if _pbcopy(answer):
+    if _pbcopy(visible_controls(answer)):
         _print(f"  copied the last answer ({len(answer)} characters) to the clipboard.")
     else:
         _print("  could not reach the clipboard (this needs macOS's pbcopy).")

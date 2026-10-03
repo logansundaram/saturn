@@ -11,7 +11,7 @@ from typing import Optional
 from app import __version__
 from commands._framework import command, _print
 from stores.trace import decode_json
-from textutil import clip as _clip, fmt_args, split_sources_footer
+from textutil import clip as _clip, fmt_args, json_terminal_safe, split_sources_footer
 
 
 @contextmanager
@@ -185,7 +185,7 @@ def export_run(
         dest = get_config().path("exports") / f"run_{run_id}.json"
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+        json_terminal_safe(json.dumps(payload, ensure_ascii=False, indent=2)), encoding="utf-8"
     )
     return dest, payload
 

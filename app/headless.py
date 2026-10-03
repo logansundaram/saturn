@@ -21,8 +21,14 @@ from app.session import _fresh_turn, _initial_state
 from app.startup import startup_load, _warn_flagged_attachments
 from app.turn import close_run, open_run, run_turn, _make_on_update, _trace_warning
 from core import mentions
-from textutil import fmt_args
+from textutil import fmt_args, json_terminal_safe, visible_controls
 from stores.trace import Tracer
+
+
+def _stdout(text: str) -> None:
+    """The plain-text answer on stdout: a pipe is read by programs and `cat`ted later, so
+    terminal controls in the model's text are made visible here too."""
+    print(visible_controls(text))
 
 
 def _q_progress(emit=None):
@@ -32,6 +38,8 @@ def _q_progress(emit=None):
     pipe-clean contract)."""
     if emit is None:
         emit = lambda line: print(line, file=sys.stderr)  # noqa: E731
+    raw_emit = emit
+    emit = lambda line: raw_emit(visible_controls(line))  # noqa: E731 — plan labels are model text
 
     def on_progress(node, delta):
         delta = delta if isinstance(delta, dict) else {}
@@ -89,25 +97,25 @@ def headless_approver(value):
             if not held and not sends and not urls:
                 return True
             if sends:
-                print(
+                print(visible_controls(
                     "denied: " + ", ".join(tc.get("name", "?") for tc in sends)
                     + " — sending to another person always needs a human to read it first, "
-                    "and headless mode has none (--yolo does not cover it).",
+                    "and headless mode has none (--yolo does not cover it)."),
                     file=sys.stderr,
                 )
             if held:
-                print(
+                print(visible_controls(
                     "denied under air-gap: " + ", ".join(tc.get("name", "?") for tc in held)
                     + " — a shell command, shortcut or MCP server may use the network, and "
-                    "headless mode has no human to check it; turn the air-gap off to allow them.",
+                    "headless mode has no human to check it; turn the air-gap off to allow them."),
                     file=sys.stderr,
                 )
             if urls:
-                print(
+                print(visible_controls(
                     "denied: " + ", ".join(tc.get("name", "?") for tc in urls)
                     + " — its address was not typed by you and may carry what the model read "
                     "(or points at a private service); a human must read it first, and headless "
-                    "mode has none (--yolo does not cover it).",
+                    "mode has none (--yolo does not cover it)."),
                     file=sys.stderr,
                 )
             return {"approved_ids": [tc.get("id") for tc in calls
@@ -130,17 +138,17 @@ def headless_approver(value):
         hint = ("re-run with --yolo to allow them." if not never
                 else "--yolo would not allow " + ", ".join(dict.fromkeys(never))
                 + (" either." if len(never) == len(calls) else "; it allows the rest."))
-        print(
+        print(visible_controls(
             f"denied gated tool call(s): {names}{why} — headless mode does not "
-            f"approve gated actions; {hint}",
+            f"approve gated actions; {hint}"),
             file=sys.stderr,
         )
         return False
     if isinstance(value, dict) and value.get("type") == "ask_user":
         # No human to ask headless: note the unanswered question on stderr; the bare True
         # resume makes the tool report "no answer" honestly (never a fabricated one).
-        print(
-            f"ask_user went unanswered (headless mode): {value.get('question')}",
+        print(visible_controls(
+            f"ask_user went unanswered (headless mode): {value.get('question')}"),
             file=sys.stderr,
         )
         return True
@@ -198,7 +206,7 @@ def run_headless(args) -> None:
     from core.state import summarize_gates
 
     def _emit_json(payload: dict) -> None:
-        print(_json.dumps(payload, ensure_ascii=False, default=str))
+        print(json_terminal_safe(_json.dumps(payload, ensure_ascii=False, default=str)))
 
     # -q rendering seams: the progress observer chained after the tracer's on_update, and a
     # first-token hook that announces "answering…" the moment the answer starts generating.
@@ -258,7 +266,7 @@ def run_headless(args) -> None:
                 }
             )
         else:
-            print(answer)
+            _stdout(answer)
     except Exception as exc:
         tracer.end_run(run_id, "error", str(exc))
         if (trace_note := _trace_warning(tracer)):
@@ -275,7 +283,7 @@ def run_headless(args) -> None:
                 }
             )
         else:
-            print(f"error: {exc}", file=sys.stderr)
+            print(visible_controls(f"error: {exc}"), file=sys.stderr)
         sys.exit(1)
     finally:
         close_run(graph, thread_id)  # headless never grants, but the task boundary is one seam

@@ -55,6 +55,17 @@ def human_approved() -> bool:
     return bool(_HUMAN_APPROVED.get())
 
 
+# Whether the call now executing skipped the gate because the user typed every word of it —
+# set by the tools node from core/auto_memory.qualifies (the same check the approval node
+# exempted the call on), read by `remember` to stamp the fact by=user src=said. False anywhere
+# else.
+_USER_STATED: contextvars.ContextVar = contextvars.ContextVar("user_stated", default=False)
+
+
+def user_stated() -> bool:
+    return bool(_USER_STATED.get())
+
+
 def register_tool(risk: str = "destructive", *, retrieval: bool = False, untrusted: bool = False):
     """Decorator: wrap a function as a LangChain tool AND register it (list + risk tier + retrieval
     flag + trust classification) in one place.

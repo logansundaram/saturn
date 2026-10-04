@@ -10,7 +10,7 @@ for searching a large memory or confirming a specific detail.
 """
 
 from textutil import doc_source_label
-from tools.toolspec import human_approved, register_tool
+from tools.toolspec import human_approved, register_tool, user_stated
 
 from stores.memory_registry import add_memory, search_memory
 
@@ -42,13 +42,16 @@ def search_knowledge_base(query: str):
 def remember(fact: str, category: str = "general", layer: str = "user", replaces: "str | int" = "",
              sensitivity: str = ""):
     """Save a durable fact to persistent memory so it is remembered in future sessions. Use this
-    when the user shares a lasting preference, a fact about themselves, or explicitly asks you to
-    remember something (e.g. "I prefer terse answers", "my timezone is PST"). `fact` is a single
-    concise statement. `category` is an optional label such as preference, identity, or project.
-    `layer` is where it belongs: "user" (preferences, identity, constraints — the default),
+    when the user shares a lasting preference, a fact about themselves or the people in their
+    life, a standing rule, or explicitly asks you to remember something (e.g. "I prefer terse
+    answers", "my timezone is PST"). `fact` is a single concise statement in the user's own
+    words — reuse the words they typed. `category` is an optional label such as preference,
+    identity, or project.
+    `layer` is where it belongs: "user" (preferences, identity, constraints and standing rules
+    such as "always…", "never…", "from now on…" — the default),
     "entities" (a person, project, place, document, or the user's shorthand for one),
-    "commitments" (a to-do, reminder, or deadline), "negative" (something the user does not
-    want done or asked again), "agent" (operating knowledge about this machine or its tools),
+    "commitments" (a to-do, reminder, or deadline), "negative" (an approach or suggestion not
+    to bring up again), "agent" (operating knowledge about this machine or its tools),
     "memo" (a dated note about what happened). `replaces` is the #id of an earlier fact this one
     supersedes (the ids are shown in your memory context, e.g. "#3") — use it when the user
     corrects a fact, so the old one is retired instead of contradicting the new one.
@@ -57,11 +60,17 @@ def remember(fact: str, category: str = "general", layer: str = "user", replaces
     conversation-specific details."""
     from stores.trace import current_run_id
 
-    # by=user is a person's yes to THIS fact (the gate). A call that ran because the tier was
+    from core.auto_memory import rule_layer
+
+    # by=user is a person's yes to THIS fact: the gate, or the user having typed every word of
+    # it (auto-learn — core/auto_memory, stamped src=said). A call that ran because the tier was
     # raised or the gate was open is the model's inference, and is recorded as one.
-    by = "user" if human_approved() else "inferred"
-    return add_memory(fact, category, layer=layer, replaces=replaces or None, by=by,
-                      run_id=current_run_id(), sensitivity=(sensitivity or "").strip() or None)
+    approved, said = human_approved(), user_stated()
+    by = "user" if approved or said else "inferred"
+    return add_memory(fact, category, layer=rule_layer(fact, layer), replaces=replaces or None,
+                      by=by, run_id=current_run_id(),
+                      sensitivity=(sensitivity or "").strip() or None,
+                      src="said" if said and not approved else None)
 
 
 @register_tool("read_only")

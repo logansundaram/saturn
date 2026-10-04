@@ -236,3 +236,42 @@ def test_a_restatement_keeps_the_first_src_and_graduates_an_inferred_fact(isolat
     assert (e["by"], e["src"], e["n"]) == ("user", "said", 2)
     mr.add_memory("I'm vegetarian", src="setup:diet")
     assert mr.entry(1)["src"] == "said"
+
+
+# ── the remember tool ──────────────────────────────────────────────────────────────────────
+
+
+def test_remember_stamps_said_only_for_a_user_stated_call(isolated_paths):
+    from stores import memory_registry as mr
+    from tools.knowledge import remember
+    from tools.toolspec import _HUMAN_APPROVED, _USER_STATED
+
+    token = _USER_STATED.set(True)
+    try:
+        remember.invoke({"fact": "I'm vegetarian"})
+        both = _HUMAN_APPROVED.set(True)
+        try:
+            remember.invoke({"fact": "I own a boat"})     # the gate's yes wins: no src
+        finally:
+            _HUMAN_APPROVED.reset(both)
+    finally:
+        _USER_STATED.reset(token)
+    remember.invoke({"fact": "I like tea"})               # neither: the model's inference
+    assert [(e["text"], e["by"], e["src"]) for e in mr.entries()] == [
+        ("I'm vegetarian", "user", "said"), ("I own a boat", "user", None),
+        ("I like tea", "inferred", None)]
+
+
+def test_a_rule_filed_as_negative_loads_for_an_unrelated_request(isolated_paths):
+    """The failure this prevents: a standing rule stored where it loads only by token match,
+    so "book the dentist" never sees "nothing before 10am" and the rule silently does not
+    apply. A rule lands in `user`, which loads every turn."""
+    from stores import memory_registry as mr
+    from tools.knowledge import remember
+
+    remember.invoke({"fact": "Never schedule anything before 10am", "layer": "negative"})
+    remember.invoke({"fact": "the Q3 deck is in Downloads", "layer": "entities"})
+    always, matched, _ids = mr.memory_context_split("book a dentist appointment on Friday")
+    assert "before 10am" in always
+    assert "Q3 deck" not in always + matched
+    assert mr.entries()[0]["layer"] == "user"

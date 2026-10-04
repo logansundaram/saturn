@@ -35,7 +35,6 @@ DECLINE_TEXT = (
 
 AIRGAP_NOTE = ("air-gap is on: Saturn cannot see inside a shell command, a shortcut or an MCP "
                "server — approve only if this will not use the network")
-SEND_NOTE = "this sends your words to another person; a send always asks, whatever the policy"
 
 
 def _can_act(name: str) -> bool:
@@ -264,7 +263,8 @@ def approval_node(state: AgentState) -> Command[Literal["tools", "agent"]]:
     notes = [f"{tc['name']}: {holds[tc['id']]}" for tc in gated if tc["id"] in holds]
     if any(policy.airgap_holds(tc["name"]) for tc in gated):
         notes.append(AIRGAP_NOTE)
-    notes += [f"{tc['name']}: {SEND_NOTE}" for tc in gated if policy.always_asks(tc["name"])]
+    notes += [f"{tc['name']}: {policy.always_asks_why(tc['name'])}"
+              for tc in gated if policy.always_asks(tc["name"])]
     notes += [n for n in (_handle_note(tc, state) for tc in gated) if n]
     decision = interrupt(
         {

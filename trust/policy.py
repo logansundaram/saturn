@@ -138,15 +138,25 @@ def set_gate_off(off: bool) -> None:
 # command, one of the user's Shortcuts — and every MCP server, by its reserved name prefix.
 _OPAQUE_TOOLS = frozenset({"run_shell", "run_shortcut"})
 
-# Tools that send the user's words to another person. They ALWAYS face the human: no tier, no
-# open gate, no `/policy risk` override and no always-allow lets one through, and a headless
-# run — which has no human — refuses them even with --yolo.
-ALWAYS_ASKS = frozenset({"send_message"})
+# Tools that ALWAYS face the human: no tier, no open gate, no `/policy risk` override and no
+# always-allow lets one through, and a headless run — which has no human — refuses them even
+# with --yolo. Two kinds of thing qualify: sending the user's words to another person, and
+# saving text Saturn will later follow as the user's own instructions (a skill —
+# tools/skills.py). Each entry is (WHAT the action is — "<what> always asks", the always-allow
+# note and the headless refusal; WHY — the gate's note).
+ALWAYS_ASKS: "dict[str, tuple[str, str]]" = {
+    "send_message": ("a send", "this sends your words to another person; a send always asks, "
+                               "whatever the policy"),
+    "create_skill": ("saving a skill", "this saves a procedure Saturn will follow as your own "
+                                       "words every time the skill runs; saving a skill always "
+                                       "asks, whatever the policy"),
+}
 
 # Tools the gate's `a(lways)` never drops to the auto-approved tier: one keypress must not
-# un-gate every future shell command, every shortcut, or every send. run_shell and run_shortcut
-# have their own narrow allowlists (/policy allow, /policy shortcut); a send has none.
-NO_BLANKET_GRANT = _OPAQUE_TOOLS | ALWAYS_ASKS
+# un-gate every future shell command, every shortcut, every send or every saved skill.
+# run_shell and run_shortcut have their own narrow allowlists (/policy allow, /policy
+# shortcut); a send and a skill save have none.
+NO_BLANKET_GRANT = _OPAQUE_TOOLS | frozenset(ALWAYS_ASKS)
 
 
 def airgap_holds(name: str) -> bool:
@@ -161,6 +171,16 @@ def airgap_holds(name: str) -> bool:
 def always_asks(name: str) -> bool:
     """Whether this tool faces the human on every call, whatever the policy says (ALWAYS_ASKS)."""
     return name in ALWAYS_ASKS
+
+
+def always_asks_what(name: str) -> str:
+    """What an always-asking tool does, as a noun phrase ("a send"); "" for any other tool."""
+    return ALWAYS_ASKS.get(name, ("", ""))[0]
+
+
+def always_asks_why(name: str) -> str:
+    """Why an always-asking tool is asking — the approval prompt's note; "" for any other tool."""
+    return ALWAYS_ASKS.get(name, ("", ""))[1]
 
 
 def approves(name: str, risk: str, args: "dict | None" = None) -> bool:

@@ -77,7 +77,7 @@ def headless_approver(value):
     '--yolo to allow them' a lie. Two things --yolo does not pre-approve: the
     air-gap — a call it holds (policy.airgap_holds — a shell command, a shortcut, an MCP
     server) needs a human to judge whether it touches the network, and there is none here —
-    a send to another person (policy.always_asks), which a human reads first, always — and
+    a send to another person or a saved skill (policy.always_asks), which a human reads first, always — and
     a web_extract whose URL the approval node held (`held_ids`: an address the model composed
     after external content, or a private one the user did not type), the exfiltration shape
     a human must read.
@@ -96,11 +96,11 @@ def headless_approver(value):
             urls = [tc for tc in calls if tc.get("id") in held_ids]
             if not held and not sends and not urls:
                 return True
-            if sends:
+            # `sends` is every always-asking call (policy.ALWAYS_ASKS): a send, a saved skill.
+            for name in dict.fromkeys(str(tc.get("name") or "?") for tc in sends):
                 print(visible_controls(
-                    "denied: " + ", ".join(tc.get("name", "?") for tc in sends)
-                    + " — sending to another person always needs a human to read it first, "
-                    "and headless mode has none (--yolo does not cover it)."),
+                    f"denied: {name} — {policy.always_asks_what(name)} always needs a human to "
+                    "read it first, and headless mode has none (--yolo does not cover it)."),
                     file=sys.stderr,
                 )
             if held:

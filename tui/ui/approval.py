@@ -533,7 +533,8 @@ def _always_allow(tool_calls: list, ask) -> dict:
                     "/policy shortcut <name>")
     for n in names:
         if policy.always_asks(n):
-            _grant_note(f"{n}: a send always asks — there is no always-allow for it")
+            _grant_note(f"{n}: {policy.always_asks_what(n)} always asks — there is no "
+                        "always-allow for it")
     if granted:
         listing = ", ".join(granted)
         _grant_note(f"always-allowing {_grant_lifetime()}: {listing}  "

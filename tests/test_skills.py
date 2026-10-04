@@ -515,3 +515,72 @@ def test_skills_lists_who_wrote_each_one(home, ctx, capsys):
     assert "global · you" in out and "global · saturn · #412" in out
     dispatch("/skills show drafted", ctx)
     assert "/trace why #412" in _flat(capsys.readouterr().out)
+
+
+# ── create_skill always asks ─────────────────────────────────────────────────────────────────
+
+from trust import policy  # noqa: E402
+
+
+@pytest.fixture
+def gate(isolated_paths, monkeypatch):
+    from config import get_config
+
+    runtime = get_config()._data.setdefault("runtime", {})
+    monkeypatch.setitem(runtime, "auto_approve", "read_only")
+    monkeypatch.setitem(runtime, "airgap", False)
+    monkeypatch.setattr(policy, "_tier_before_gate_off", None)
+    return get_config()
+
+
+def test_saving_a_skill_always_faces_the_human(gate):
+    prev = policy.tier()
+    try:
+        assert policy.always_asks("create_skill") and "create_skill" in policy.NO_BLANKET_GRANT
+        policy.set_gate_off(True)                                     # /policy open, --yolo
+        assert not policy.approves("create_skill", "side_effecting", {})
+        assert not policy.approves("create_skill", "read_only", {})   # a /policy risk override
+    finally:
+        policy.set_tier(prev)
+        policy._tier_before_gate_off = None
+
+
+def test_each_always_asking_tool_says_what_and_why():
+    assert policy.always_asks_what("send_message") == "a send"
+    assert policy.always_asks_why("send_message") == (
+        "this sends your words to another person; a send always asks, whatever the policy")
+    assert policy.always_asks_what("create_skill") == "saving a skill"
+    assert "your own words" in policy.always_asks_why("create_skill")
+    assert policy.always_asks_what("read_file") == "" == policy.always_asks_why("read_file")
+
+
+def test_always_allow_never_covers_saving_a_skill(gate, capsys):
+    from tui.ui import approval
+
+    decision = approval._always_allow(
+        [{"id": "c1", "name": "create_skill", "args": {"name": "x"}},
+         {"id": "c2", "name": "send_message", "args": {"to": "+1555", "text": "x"}}], lambda _p: "")
+    assert decision["tools"] == []
+    out = " ".join(capsys.readouterr().out.split())
+    assert "create_skill: saving a skill always asks — there is no always-allow for it" in out
+    assert "send_message: a send always asks — there is no always-allow for it" in out
+
+
+def test_headless_yolo_still_refuses_saving_a_skill(gate, capsys):
+    from app import headless
+
+    prev = policy.tier()
+    try:
+        policy.set_gate_off(True)
+        decision = headless.headless_approver({"type": "approval_request", "tool_calls": [
+            {"id": "c1", "name": "create_skill", "args": {"name": "x"}},
+            {"id": "c2", "name": "send_message", "args": {"to": "+1555", "text": "x"}},
+            {"id": "c3", "name": "create_note", "args": {"title": "t"}},
+        ]})
+        assert decision == {"approved_ids": ["c3"]}
+        err = " ".join(capsys.readouterr().err.split())
+        assert "denied: create_skill — saving a skill always needs a human to read it first" in err
+        assert "denied: send_message — a send always needs a human to read it first" in err
+    finally:
+        policy.set_tier(prev)
+        policy._tier_before_gate_off = None

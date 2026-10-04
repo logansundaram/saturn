@@ -93,9 +93,10 @@ def _norm_eol(text: str) -> str:
     return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
-def _unified_rows(old: str, new: str) -> "tuple[list, int]":
+def _unified_rows(old: str, new: str, cap: "int | None" = _MAX_DIFF_LINES) -> "tuple[list, int]":
     """Unified-diff rows between two texts: ([(kind, text), ...], hidden_count) with kind ∈
-    {add, del, hunk, ctx}, capped at _MAX_DIFF_LINES."""
+    {add, del, hunk, ctx}, capped at `cap` rows (None = every row: a skill draft, which the
+    human must be able to read whole)."""
     import difflib
 
     rows: list = []
@@ -109,8 +110,10 @@ def _unified_rows(old: str, new: str) -> "tuple[list, int]":
             rows.append(("del", line[1:]))
         else:
             rows.append(("ctx", line[1:] if line.startswith(" ") else line))
-    hidden = max(0, len(rows) - _MAX_DIFF_LINES)
-    return rows[:_MAX_DIFF_LINES], hidden
+    if cap is None:
+        return rows, 0
+    hidden = max(0, len(rows) - cap)
+    return rows[:cap], hidden
 
 
 def write_verdict(file_path: str, content: str, overwrite: bool) -> dict:
@@ -290,6 +293,35 @@ def _render_shell_command(args: dict) -> None:
                 "`git status`", _DIM))
 
 
+def _render_skill_draft(args: dict) -> None:
+    """A pending create_skill, WHOLE: the file it writes and every line of its text (a new
+    skill), or every row of the diff against the skill it replaces. Unlike the write_file
+    preview nothing is folded or cut — no row cap, and a long line is wrapped byte-faithfully
+    (`_wrap_exact`), never truncated: a saved skill is followed as the user's own instructions,
+    and a folded tail or a clipped line is where a planted step would sit. The text comes from
+    tools.skills.draft, the same function the tool writes with."""
+    try:
+        from core import workspace
+        from tools.skills import draft
+
+        target, text = draft(args)
+        old = target.read_text(encoding="utf-8", errors="replace") if target.is_file() else None
+    except Exception as exc:
+        _frame_note(f"⚠ this skill could not be previewed ({type(exc).__name__}) — do not "
+                    "approve what you cannot read")
+        return
+    rows, _hidden = _unified_rows(old or "", text, cap=None)
+    mode = "replace skill" if old is not None else "new skill"
+    _frame_row((f"    ↳ {mode} ", _DIM), (workspace.display(target), "default"))
+    width = max(20, _term_width() - 12)
+    for sign, line in rows:
+        for i, chunk in enumerate(_wrap_exact(line, width)):
+            _frame_row((f"      {_DIFF_SIGN[sign] if i == 0 else '↳'} ", _DIFF_STYLE[sign]),
+                       (chunk, _DIFF_STYLE[sign]))
+    _frame_note("a saved skill is followed as your own instructions every time it runs — "
+                "`y` saves this one; there is no always-allow", style=_DIM)
+
+
 # Tools with a bespoke full-surface renderer above. ONE table is the single source: which
 # argument keys the compact repr must SKIP (that arg IS the safety surface, shown in full by the
 # bespoke view) and which renderer draws it. Adding a bespoke-rendered tool is exactly one entry
@@ -298,6 +330,7 @@ _BESPOKE = {
     "write_file": (("content",), _render_write_diff),
     "edit_file": (("old_string", "new_string"), _render_edit_diff),
     "run_shell": (("command",), _render_shell_command),
+    "create_skill": (("description", "steps"), _render_skill_draft),
 }
 
 # Per-value cap for the full-width argument view: big enough to read a whole API payload, small

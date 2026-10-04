@@ -35,6 +35,8 @@ DECLINE_TEXT = (
 
 AIRGAP_NOTE = ("air-gap is on: Saturn cannot see inside a shell command, a shortcut or an MCP "
                "server — approve only if this will not use the network")
+SKILL_OUTSIDE_NOTE = ("external content entered this conversation before this skill was "
+                      "drafted — read each step as if a stranger wrote it")
 
 
 def _can_act(name: str) -> bool:
@@ -266,6 +268,11 @@ def approval_node(state: AgentState) -> Command[Literal["tools", "agent"]]:
     notes += [f"{tc['name']}: {policy.always_asks_why(tc['name'])}"
               for tc in gated if policy.always_asks(tc["name"])]
     notes += [n for n in (_handle_note(tc, state) for tc in gated) if n]
+    # A skill drafted after a web page, a file, an attachment or mail entered the conversation
+    # may carry that content's instructions. A note, not a refusal: "summarise this page and
+    # save the method as a skill" is a fair request — but the human should read it as untrusted.
+    if any(tc["name"] == "create_skill" for tc in gated) and provenance(state)[2]:
+        notes.append(f"create_skill: {SKILL_OUTSIDE_NOTE}")
     decision = interrupt(
         {
             "type": "approval_request",

@@ -16,9 +16,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
   `.saturn/skills`, which wins on a shared name. `/skills` lists them, `/skills show <name>`
   prints one, `/skills create <name>` writes a template to edit, `/skills delete <name>` moves
   one to the Trash. Every action a skill leads to
-  still asks for approval as usual; a skill never changes what asks first, and Saturn never
-  writes the skills folders itself. `saturn -p "/weekly-review"` runs one headless. A skill
+  still asks for approval as usual; a skill never changes what asks first, and Saturn's file
+  tools never write the skills folders. `saturn -p "/weekly-review"` runs one headless. A skill
   named like a built-in command never runs (startup and `/skills` say so).
+  Saturn can write one for you: "save that as a skill called weekly-review". It shows you the
+  complete skill first and saves it only when you say yes. That prompt always appears, whatever
+  `/policy` is set to; there is no always-allow for it, and `saturn -p` never saves a skill.
+  `/skills` shows which skills Saturn drafted, and `/undo` takes a save back. (Reliable on the
+  9b and up; the 4b tends to carry the steps out instead of saving them.)
 - **Every pulled model on `/models`.** Below the qwen ladders the page now lists whatever else
   Ollama holds, chat models and embedding models in separate sections, each with its size,
   parameter count and whether it fits this machine. The rows are numbered like the rest: pick a

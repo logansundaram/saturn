@@ -1,6 +1,8 @@
 # Skills — procedures the user or the agent writes as markdown
 
-Date: 2026-10-03. Status: **approved 2026-10-03 — nothing built.** Closes pivot #8.
+Date: 2026-10-03. Status: **implemented 2026-10-03** (core/skills.py, tools/skills.py,
+commands/skills.py, trust/policy.py, nodes/agent.py hygiene, nodes/approval.py, tui/ui/approval.py
+renderer; the model loading a skill by itself is still open). Closes pivot #8. See "As built".
 Plans: `../plans/2026-10-01-skills.md` (Phase 1, revised for
 `/skills create|delete`) and `../plans/2026-10-03-create-skill.md` (the agent's tool). It
 changes three decisions of the 2026-10-01 plan (below).
@@ -84,10 +86,12 @@ Changed:
 def create_skill(name: str, description: str, steps: str, replace: bool = False):
     """Creates a skill: a reusable procedure the user runs later by typing /name. Use ONLY when
     the user asks to create, save or change a skill ("save that as a skill called
-    weekly-review"). name: lowercase letters, digits and hyphens. description: one line saying
-    what it does and when to use it. steps: the procedure as a numbered markdown list, written
-    as instructions to yourself. To change a skill that exists, call with replace=true and the
-    COMPLETE new steps. The user reads the whole skill before it is saved."""
+    weekly-review"). Saving is the whole job: call this right away, and do NOT carry out the
+    steps or look anything up first. name: lowercase letters, digits and hyphens. description:
+    one line saying what it does and when to use it. steps: one string, the procedure as a
+    numbered markdown list with one step per line. To change a skill that exists, call with
+    replace=true and the COMPLETE new steps. The user reads the whole skill before it is
+    saved."""
 ```
 
 - **One renderer.** `core/skills.render(name, description, steps, origin) -> str` builds the
@@ -231,6 +235,37 @@ untrusted-content note); `nodes/agent.py` (`_hygiene`); `tui/ui/approval.py` (`_
 entry, `_grant_note`); `app/headless.py` (denial wording); `tools/registry.py` (import);
 `benchmark.py` (two tasks). Docs: `CHANGELOG.md`, `CLAUDE.md` (Trust stack: `ALWAYS_ASKS`;
 Tools: the skills folder's one writer), `docs/ARCHITECTURE.md`, `docs/pivot.md` #8.
+
+## As built (2026-10-03)
+
+What building, the whole-branch review and the measurement added to the design above:
+
+- **Saving is not running.** The first measurement failed `skill_create` on both tiers: a live
+  probe showed the 9b carrying out the quoted steps (reads, shell commands) before saving them,
+  and, when the save was declined, carrying them out afterwards for 17 passes. Two changes: the
+  tool's description says so (above), and a declined `create_skill` is answered with
+  `nodes/approval.SKILL_DECLINE_NOTE`. After them the 9b saves in two passes whether approved
+  or declined.
+- **The measurement** (three runs per tier, `logging/benchmarks/loop_base_*` vs
+  `loop_after2_*`). 9b: shared tasks 29/28/29 → 29/29/29, no stable pass lost, no
+  `wrong_tool:create_skill`, `skill_create` 3/3, `skill_chat` 3/3, chat mean passes 1.0 → 1.0:
+  **go**. 4b (reported, not gated): shared 21/21/21 → 22/22/22 (`robust_no_math_in_head` lost,
+  `multi_read_then_calc` gained), and it never calls the tool: it carries the steps out.
+- **A seventh problem in `draft_problem`:** characters a person cannot see even at the gate
+  (Unicode tag characters, word joiners, the soft hyphen, variation selectors other than the
+  emoji one, Hangul fillers, private-use characters, lone surrogates —
+  `textutil.unseen_chars`). Checked after the length caps.
+- **A linked skill is guarded where it really lives.** A skill symlinked into a skills folder
+  (a dotfiles folder, `~/.claude/skills`) is loaded through the link, so the file tools refuse
+  its real path too (`core.skills.linked_targets`).
+- **`/skills create` never writes over a file that is already there**, loadable or not (a
+  skill the loader skipped is still the user's text).
+- **A frontmatter value that is not one line of text is a problem**, never turned into a
+  string (a YAML alias bomb in a folder's skill would otherwise hang every prompt).
+- Open, from the review (minor): a lone surrogate's `.tmp`, a failed preview that is still
+  approvable, an upper-case folder on a case-insensitive disk, a phantom `/undo` entry after a
+  failed write, `ALWAYS_ASKS` as a mutable dict, a non-string description reaching the gate,
+  the origin date across midnight.
 
 ## Not in this spec
 

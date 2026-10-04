@@ -112,7 +112,7 @@ re-runs it; `runtime.brief: false` turns it off.
 my boss without asking"), merged under a folder's `SATURDAY.md`. Rename the per-folder file to
 `SATURN.md` too and keep reading the old name. `/init` drafts both.
 
-### 8. Skills: user-authored procedures as markdown (2–3 days) — shipped 2026-10-03 (typed `/<name>`; `/skills` lists, shows, creates and deletes; the agent writing one is `superpowers/plans/2026-10-03-create-skill.md`; the model loading one on its own is Phase 2 of `superpowers/plans/2026-10-01-skills.md`)
+### 8. Skills: user-authored procedures as markdown (2–3 days) — shipped 2026-10-03 (typed `/<name>`; `/skills` lists, shows, creates and deletes; the agent writes one through `create_skill`, always behind the gate — loop benchmark 2026-10-03, 3 runs per tier, `logging/benchmarks/loop_base_*` vs `loop_after2_*`: 9b shared tasks 29/28/29 → 29/29/29, `skill_create` 3/3, no `wrong_tool:create_skill`; 4b 21/21/21 → 22/22/22 but it never calls the tool (it carries the steps out instead); the model loading one on its own is Phase 2 of `superpowers/plans/2026-10-01-skills.md`)
 `~/.saturn/skills/<name>.md` with a one-line description and a body of steps the agent follows
 when the request matches (`/weekly-review`, `/expense`, `/travel-checklist`). The runbook idea
 from the v1 plan, in Claude Code's vocabulary and file format: no DSL, no parameters beyond the

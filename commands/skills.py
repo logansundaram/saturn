@@ -48,10 +48,12 @@ Where they live (a folder's own skill wins over a global one of the same name):
   ~/.saturn/skills/<name>/SKILL.md  or  ~/.saturn/skills/<name>.md
   <this folder>/.saturn/skills/<name>/SKILL.md
 
-Saturn never writes these folders itself; edit the files in your editor. A skill named like a
-built-in command (/help, /memory, …) never runs — rename its file. Keys other than name,
-description and disable-model-invocation (allowed-tools, …) are ignored: a skill never changes
-what asks first.
+Ask Saturn to save one ("save that as a skill called weekly-review"): it shows you the whole
+skill and asks before it writes, every time, whatever /policy says. Otherwise edit the files in
+your editor; Saturn's file tools never touch these folders. A skill named like a built-in
+command (/help, /memory, …) never runs — rename its file. Keys other than name, description,
+disable-model-invocation and origin (allowed-tools, …) are ignored: a skill never changes what
+asks first.
 
 Example — ~/.saturn/skills/weekly-review/SKILL.md:
 

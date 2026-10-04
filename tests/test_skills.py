@@ -1017,3 +1017,10 @@ def test_a_declined_skill_is_not_then_carried_out(home, gate, monkeypatch):
     assert replies["create_skill"].startswith(approval_mod.DECLINE_TEXT)
     assert "Do not carry out its steps" in replies["create_skill"]
     assert replies["write_file"] == approval_mod.DECLINE_TEXT
+
+
+def test_skills_help_says_saturn_can_save_one_and_asks_first(ctx, capsys):
+    dispatch("/skills --help", ctx)
+    out = _flat(capsys.readouterr().out)
+    assert "asks before it writes" in out and "origin" in out
+    assert "never writes these folders itself" not in out

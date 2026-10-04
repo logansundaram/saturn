@@ -167,9 +167,9 @@ accept). The benchmark's memory tasks and `tests/test_memory_*.py` pin this.
   Shell prefix matching is token-based and refuses metacharacters; the tail past a granted prefix
   is screened too (`arg_tail_rejects`: interpreters, capability flags, globs and `{}`, paths
   outside the workspace — bare or as a flag's value). `run_shortcut` has its own allowlist, one
-  shortcut by exact name (`/policy shortcut`). `ALWAYS_ASKS` (`send_message`) sits above every
-  lever: no tier, open gate, risk override or always-allow lets a send through, and headless
-  refuses it even with `--yolo`; the gate's `a` never drops the tier of a tool in
+  shortcut by exact name (`/policy shortcut`). `ALWAYS_ASKS` (`send_message`, `create_skill`;
+  `name -> (what, why)`) sits above every lever: no tier, open gate, risk override or
+  always-allow lets a send or a skill save through, and headless refuses them even with `--yolo`; the gate's `a` never drops the tier of a tool in
   `NO_BLANKET_GRANT`. Persisted in `database/permissions.json`.
 - `egress.py` — every outbound network op calls `check()` (air-gap) then `record()`. The complete list
   of egress chokepoints is `core/llms.py`, `tools/web.py`, `tools/mcp_client.py`, `tools/messages.py`
@@ -267,9 +267,21 @@ The user's procedures as markdown: `$SATURN_HOME/skills/<name>/SKILL.md` or `<na
 `/<name> [request]` (REPL `app/repl.py`, headless `-p`, both through
 `app/session.skill_for_line`) sets `state["skill"]`, which `nodes/ground.py` folds into the
 DYNAMIC half — no extra call, no prefix change, reset every turn. Built-in commands always win
-(`commands._framework.resolves`). The skills folders are control folders: the file tools refuse
-to write or move anything inside them (`tools/files._control_dirs`). A skill never changes the
-gate.
+(`commands._framework.resolves`). `/skills` lists, shows, creates (never over a file the loader
+skipped) and deletes (Trash, the user's alone). The skills folders are control folders: the file
+tools refuse to write, move or delete anything inside them, and a skill symlinked in is refused
+where it really lives too (`tools/files._control_dirs`, `core.skills.linked_targets`). A
+frontmatter value that is not one line of text is a problem, never expanded.
+
+The ONE agent writer is `create_skill` (`tools/skills.py`, global folder only, in
+`policy.ALWAYS_ASKS`, and it refuses unless `human_approved()`): `tools.skills.draft` builds
+the path and text that both the gate (`tui/ui/approval._render_skill_draft` — no fold, no cut
+line) and the tool use; `core.skills.draft_problem` is asked by the agent's hygiene
+(`nodes/agent._skill_hygiene`, before the gate) and again at the write, and refuses characters
+the gate would not show (`textutil.unseen_chars`); a draft over an existing skill without
+`replace` is answered with the current text, stamped `done`. Saving is not running: the tool's
+description says so, and a declined save carries `nodes/approval.SKILL_DECLINE_NOTE`. A skill
+never changes the gate. Spec: `docs/superpowers/specs/2026-10-03-user-skills-design.md`.
 
 ### Same name, different file
 
@@ -298,4 +310,4 @@ product goal since 2026-09-27 and the ranked work that closes the distance to it
 user would try. `docs/advantages.md` — why the pivot items matter. `docs/OPTIMIZATIONS.md` — latency
 techniques with the numbers behind them. `docs/research.md` — everything still open in pivot /
 engine / advantages, ranked, with plans for the top items and an outside survey.
-`docs/superpowers/` — specs and plans (of the plans dated 2026-10-01 only `terminal-escape-sanitising` is built). `CHANGELOG.md` — user-visible history.
+`docs/superpowers/` — specs and plans (of the plans dated 2026-10-01 only `terminal-escape-sanitising` and Phase 1 of `skills` are built; `2026-10-03-create-skill` is built too). `CHANGELOG.md` — user-visible history.

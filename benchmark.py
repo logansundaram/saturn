@@ -479,6 +479,9 @@ LOOP_TASKS: list[dict] = [
     # the date rides the grounding's Now line: one pass, current_time tolerated
     _task("date_weekday", "chat", "What day of the week is it today?",
           tools={"current_time"}, answer_any=[datetime.now().strftime("%A").lower()]),
+    _task("skill_chat", "chat",
+          "What is a good three-step routine for reviewing my week? Just tell me, don't save anything.",
+          max_passes=1, skill=None),
     _task("calc_arith", "lookup", "What is 847 * 293 + 12450?",
           tools={"calculate"}, required=[{"calculate"}], max_passes=2, answer_any=["260621"]),
     _task("calc_split", "lookup",
@@ -537,6 +540,10 @@ LOOP_TASKS: list[dict] = [
     _task("multi_edit", "multi", "In bench_edit.txt change the status from draft to final.",
           tools={"read_file", "edit_file", "plan"}, required=[{"edit_file"}], max_passes=4,
           check_file=("bench_edit.txt", "status: final")),
+    _task("skill_create", "multi",
+          "Save this as a skill called bench-standup-notes: 1. Read bench_notes.txt. "
+          "2. List what changed since yesterday. 3. Answer in three bullets.",
+          tools=("create_skill", "plan"), max_passes=3, skill="bench-standup-notes"),
     # robust — the shapes a small model gets wrong
     _task("robust_missing", "robust", "Read bench_missing.txt and tell me what it says.",
           tools=_FILE_LOOKUP, required=[{"read_file"}], max_passes=3, answer_any=_NOT_FOUND),
@@ -632,6 +639,8 @@ def grade_loop_task(task: dict, entry: dict) -> list[str]:
         tags.append("no_question")
     if "send" in task:
         tags += _send_tags(task["send"], entry.get("gate_calls") or [])
+    if "skill" in task:
+        tags += _skill_tags(task["skill"], entry.get("gate_calls") or [])
     ordered = task.get("ordered")
     if ordered:
         # The later tool's FIRST call must come in a later pass than the earlier tool's first —
@@ -674,6 +683,19 @@ def _send_tags(expect, gate_calls: list) -> list[str]:
         return []
     named = ", ".join(f"{k}={v}" for k, v in args.items() if k in ("to", "chat"))
     return [f"wrong_target:{named or 'nobody'}"]
+
+
+def _skill_tags(expect, gate_calls: list) -> list[str]:
+    """Whether the create_skill that reached the gate named the right skill: `expect` is the
+    skill's name, or None (no skill may be saved). The save itself is always declined
+    (bench_approver), so this is the whole grade."""
+    asked = [c for c in gate_calls if c.get("name") == "create_skill"]
+    if expect is None:
+        return ["wrong_tool:create_skill"] if asked else []
+    if not asked:
+        return ["no_skill"]
+    name = str((asked[0].get("args") or {}).get("name") or "")
+    return [] if name == expect else [f"wrong_skill:{name}"]
 
 
 def summarize_loop(results: list[dict]) -> dict:

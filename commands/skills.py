@@ -94,7 +94,8 @@ def _list(skills, workspace, ui) -> None:
         if skill.manual_only:
             notes.append("only when you type it")
         text = skill.description + (f"  ({'; '.join(notes)})" if notes else "")
-        rows.append(("/" + name, (text, "dim"), (skill.scope, "dim")))
+        rows.append(("/" + name, (text, "dim"),
+                     (f"{skill.scope} · {skills.written_by(skill)}", "dim")))
     if rows:
         ui.table(rows)
     else:
@@ -113,6 +114,10 @@ def _show(skills, workspace, name: str) -> None:
         return
     _print(f"  /{skill.name} · {workspace.display(skill.path)} ({skill.scope})")
     _print(f"  {skill.description}")
+    if skill.origin:
+        run = skills.written_by(skill).partition("#")[2]
+        _print(f"  drafted by Saturn ({skill.origin})"
+               + (f" — /trace why #{run} shows the turn" if run else ""))
     if resolves(skill.name):
         _print(f"  typing /{skill.name} runs the built-in command, not this skill — rename the file")
     if skill.manual_only:

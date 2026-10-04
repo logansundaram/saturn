@@ -29,10 +29,12 @@ SKILL_FILE = "SKILL.md"
 BODY_CAP = 6000          # the same budget as a SATURN.md (nodes/ground._INSTRUCTIONS_CAP)
 DESCRIPTION_CAP = 200
 MANIFEST_CAP = 1500      # Phase 2: the stable-grounding list of skills the model may load
+DRAFT_CAP = 3000         # steps Saturn itself saves (tools/skills.create_skill): what a person
+                         # will read, whole, at the approval prompt — refused beyond, never cut
 
 _NAME = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 _FRONTMATTER = re.compile(r"\A---[ \t]*\n(.*?)\n---[ \t]*(?:\n|\Z)", re.DOTALL)
-_KNOWN_KEYS = {"name", "description", "disable-model-invocation"}
+_KNOWN_KEYS = {"name", "description", "disable-model-invocation", "origin"}
 
 
 @dataclass(frozen=True)
@@ -44,6 +46,7 @@ class Skill:
     scope: str               # "global" ($SATURN_HOME/skills) | "workspace" (<root>/.saturn/skills)
     manual_only: bool        # disable-model-invocation: true
     extra_keys: tuple        # frontmatter keys Saturn ignores (allowed-tools, model, …)
+    origin: str = ""         # "saturn run=<id> <date>" when create_skill wrote it; "" = the user
 
 
 def global_dir() -> Path:
@@ -131,7 +134,7 @@ def _parse(path: Path, scope: str) -> "tuple[Skill | None, str | None]":
     extra = tuple(sorted(k for k in map(str, meta) if k not in _KNOWN_KEYS))
     return Skill(name=name, description=clip(description, DESCRIPTION_CAP), body=body, path=path,
                  scope=scope, manual_only=meta.get("disable-model-invocation") is True,
-                 extra_keys=extra), problem
+                 extra_keys=extra, origin=" ".join(str(meta.get("origin") or "").split())), problem
 
 
 def _candidates(folder: Path) -> "list[Path]":
@@ -210,3 +213,120 @@ def block(skill: Skill, how: str = "typed") -> str:
             + _HOW[how].format(name=skill.name)
             + " Follow its steps in order; every action still asks for approval as usual.\n\n"
             + skill.body)
+
+
+# ── a skill Saturn drafts (tools/skills.create_skill) ────────────────────────────────────────
+# Pure: nothing here writes. The tool writes exactly what `render` returns, the approval gate
+# shows exactly what `render` returns, and `draft_problem` is asked twice — by the agent's
+# hygiene before the gate, and by the tool at the write.
+
+_ORIGIN_RUN = re.compile(r"\brun=(\w+)")
+_NUMBERED = re.compile(r"\d+[.)]\s")
+
+
+def written_by(skill: Skill) -> str:
+    """Who wrote a skill, for /skills: `you`, or `saturn · #<run>` (`/trace why #<run>` shows
+    the turn). Read from the `origin` key — a pointer, not a security claim: a hand edit may
+    keep or drop it."""
+    if not skill.origin.startswith("saturn"):
+        return "you"
+    m = _ORIGIN_RUN.search(skill.origin)
+    return f"saturn · #{m.group(1)}" if m else "saturn"
+
+
+def draft_name(name) -> str:
+    """A drafted name as the file name it becomes: `/Weekly Review` -> `weekly-review`. Applied
+    before the gate, so the human reads the name that will be written."""
+    return re.sub(r"[\s_]+", "-", str(name or "").strip().lstrip("/").strip().lower())
+
+
+def steps_text(steps) -> str:
+    """Drafted steps as the markdown the file holds. A small model sometimes sends a JSON list
+    where the schema says a string: each item becomes a numbered line."""
+    if isinstance(steps, (list, tuple)):
+        items = [str(s).strip() for s in steps if str(s).strip()]
+        return "\n".join(s if _NUMBERED.match(s) else f"{i}. {s}" for i, s in enumerate(items, 1))
+    return str(steps or "").strip()
+
+
+def render(name: str, description: str, steps, origin: str = "") -> str:
+    """The exact text of a skill file. The frontmatter goes through yaml.safe_dump, so a colon,
+    a quote or a leading dash in the description cannot break it; terminal controls are made
+    visible, so a saved skill holds no live escape. `_parse(render(...))` gives the same name,
+    description and body back (tests/test_skills.py pins it)."""
+    import yaml
+
+    from textutil import visible_controls
+
+    meta = {"name": str(name), "description": " ".join(visible_controls(description).split())}
+    if origin:
+        meta["origin"] = str(origin)
+    front = yaml.safe_dump(meta, sort_keys=False, allow_unicode=True, default_flow_style=False,
+                           width=10_000)
+    return f"---\n{front}---\n\n{visible_controls(steps_text(steps))}\n"
+
+
+def in_scope(scope: str) -> "dict[str, Skill]":
+    """ONE folder's loadable skills by name, unmerged: "global" or "workspace". `discover()`
+    merges the two (the workspace one wins); a draft needs them apart, because Saturn writes
+    only the global folder. Launched from ~ the two are one folder, listed as "global"."""
+    found: dict = {}
+    for s, folder in _folders():
+        if s != scope:
+            continue
+        for path in _candidates(folder):
+            skill, _problem = _parse(path, s)
+            if skill is not None:
+                found.setdefault(skill.name, skill)   # SKILL.md before a flat file, as in _scan
+    return found
+
+
+def target_path(name: str) -> Path:
+    """The file a draft named `name` is written to: the global skill of that name where it
+    already is (folder or flat), else `<global>/<name>/SKILL.md`."""
+    current = in_scope("global").get(name)
+    return current.path if current is not None else global_dir() / name / SKILL_FILE
+
+
+def existing_text(skill: Skill) -> str:
+    """What the model is told when it drafts over a skill without `replace`: the current text,
+    which it has no other way to read, and how to change it."""
+    return (f"/{skill.name} already exists ({skill.path}); nothing was changed. Its current "
+            f"text:\n\ndescription: {skill.description}\n\n{skill.body}\n\n"
+            "To change it, call create_skill again with replace=true and the COMPLETE new steps.")
+
+
+def draft_problem(name, description, steps, replace: bool = False,
+                  builtin: "Callable[[str], bool]" = lambda key: False) -> "str | None":
+    """Why a drafted skill cannot be saved — one sentence for the model — or None. Checked in
+    this order: the name, a built-in command's name, the description, the steps, a workspace
+    skill of that name, a global skill of that name without `replace`. Nothing is truncated to
+    fit: what the user is shown is what is saved."""
+    name = str(name or "")
+    if not valid_name(name):
+        return (f"{name!r} is not a skill name: use lowercase letters, digits and hyphens, up "
+                "to 64 characters, starting with a letter or digit (e.g. weekly-review).")
+    if builtin(name):
+        return (f"/{name} is a built-in command, so a skill by that name would never run. "
+                "Pick another name.")
+    description = " ".join(str(description or "").split())
+    if not description:
+        return "The skill needs a one-line description: what it does and when to use it."
+    if len(description) > DESCRIPTION_CAP:
+        return (f"The description is {len(description)} characters; keep it to one line of at "
+                f"most {DESCRIPTION_CAP} characters.")
+    steps = steps_text(steps)
+    if not steps:
+        return "The skill needs its steps: the procedure as a numbered markdown list."
+    if len(steps) > DRAFT_CAP:
+        return (f"The steps are {len(steps)} characters; a skill Saturn saves is at most "
+                f"{DRAFT_CAP} characters, so the user can read all of it before approving. "
+                "Shorten the steps.")
+    local = in_scope("workspace").get(name)
+    if local is not None:
+        return (f"/{name} is this folder's own skill ({local.path}); Saturn saves skills only in "
+                f"{global_dir()}. Ask the user to edit that file by hand, or pick another name.")
+    current = in_scope("global").get(name)
+    if current is not None and not replace:
+        return existing_text(current)
+    return None

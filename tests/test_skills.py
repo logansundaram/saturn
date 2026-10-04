@@ -411,3 +411,107 @@ def test_skills_delete_an_unknown_name_or_two_names(home, ctx, capsys, monkeypat
     out = _flat(capsys.readouterr().out)
     assert "no skill named nope" in out and "usage: /skills" in out
     assert skills.get("weekly-review") is not None and not trash.exists()
+
+
+# ── create_skill: the draft (docs/superpowers/plans/2026-10-03-create-skill.md) ──────────────
+
+
+def test_origin_is_a_known_key_and_names_who_wrote_it(home):
+    _skill(home / "skills", "mine", "---\ndescription: d\n---\n1. x\n")
+    _skill(home / "skills", "drafted",
+           "---\ndescription: d\norigin: saturn run=412 2026-10-03\n---\n1. x\n")
+    _skill(home / "skills", "undated", "---\ndescription: d\norigin: saturn\n---\n1. x\n")
+    mine, drafted = skills.get("mine"), skills.get("drafted")
+    assert mine.origin == "" and skills.written_by(mine) == "you"
+    assert drafted.origin == "saturn run=412 2026-10-03" and drafted.extra_keys == ()
+    assert skills.written_by(drafted) == "saturn · #412"
+    assert skills.written_by(skills.get("undated")) == "saturn"
+
+
+def test_draft_name_and_steps_text_forgive_a_small_models_slips():
+    assert skills.draft_name(" /Weekly Review_notes ") == "weekly-review-notes"
+    assert skills.draft_name(None) == ""
+    assert skills.steps_text("  1. a\n2. b \n") == "1. a\n2. b"
+    assert skills.steps_text(["Read it.", " 2) File it. ", ""]) == "1. Read it.\n2) File it."
+    assert skills.steps_text(None) == ""
+
+
+@pytest.mark.parametrize("description", [
+    "Friday review: what got done, what slipped",
+    'He said "ship it" # not a comment',
+    "- starts like a list item",
+    "true",
+    "two\nlines become one",
+])
+def test_render_round_trips_through_the_loader(home, description):
+    steps = "1. List what got done.\n2. List what slipped.\n\n---\n\nA rule in the body is fine."
+    text = skills.render("weekly-review", description, steps, origin="saturn run=7 2026-10-03")
+    assert text.startswith("---\nname: weekly-review\n")
+    _skill(home / "skills", "weekly-review", text)
+    skill = skills.get("weekly-review")
+    assert skills.problems() == []
+    assert skill.description == " ".join(description.split())
+    assert skill.body == steps and skill.origin == "saturn run=7 2026-10-03"
+
+
+def test_render_holds_no_live_escape():
+    text = skills.render("x", "d\x1b]0;title\x07", "1. clear \x1b[2J the screen")
+    assert "\x1b" not in text and "\x07" not in text
+
+
+def test_draft_problem_names_each_problem_in_order(home):
+    assert skills.draft_problem("weekly-review", "Friday review", "1. List what got done.") is None
+    is_builtin = lambda key: key == "help"  # noqa: E731
+    cases = [
+        (("Weekly Review", "", ""), "not a skill name"),          # the name is checked first
+        (("help", "", ""), "built-in command"),
+        (("weekly-review", "  ", ""), "needs a one-line description"),
+        (("weekly-review", "d" * 201, "1. x"), "200 characters"),
+        (("weekly-review", "d", " \n"), "needs its steps"),
+        (("weekly-review", "d", "x" * (skills.DRAFT_CAP + 1)), "3000 characters"),
+    ]
+    for args, words in cases:
+        assert words in skills.draft_problem(*args, builtin=is_builtin), args
+
+
+def test_draft_problem_knows_what_already_exists(home):
+    _skill(home / "skills", "weekly-review", WEEKLY)
+    _skill(workspace.root() / ".saturn" / "skills", "deploy", "1. Only here.\n", flat=True)
+    draft = ("d", "1. x")
+    assert "replace=true" in skills.draft_problem("weekly-review", *draft)
+    assert skills.draft_problem("weekly-review", *draft, replace=True) is None
+    assert skills.draft_problem("brand-new", *draft, replace=True) is None   # replace may create
+    for replace in (False, True):               # a folder's own skill is never the agent's
+        assert "this folder's own skill" in skills.draft_problem("deploy", *draft, replace=replace)
+
+
+def test_target_path_and_existing_text(home):
+    assert skills.target_path("brand-new") == skills.global_dir() / "brand-new" / "SKILL.md"
+    flat = _skill(home / "skills", "expense",
+                  "---\ndescription: File a receipt\n---\n1. Read it.\n", flat=True)
+    assert skills.target_path("expense").samefile(flat)   # a replace rewrites the file where it is
+    text = skills.existing_text(skills.get("expense"))
+    assert "/expense already exists" in text and "File a receipt" in text
+    assert "1. Read it." in text and "replace=true" in text
+
+
+def test_launched_from_home_a_draft_sees_one_folder(tmp_path, monkeypatch, isolated_paths):
+    root = tmp_path / "me"
+    root.mkdir()
+    monkeypatch.setenv("SATURN_HOME", str(root / ".saturn"))
+    workspace.set_root(root)
+    existing = _skill(root / ".saturn" / "skills", "weekly-review", WEEKLY)
+    assert skills.in_scope("workspace") == {}
+    assert skills.draft_problem("weekly-review", "d", "1. x", replace=True) is None
+    assert skills.target_path("weekly-review").samefile(existing)
+
+
+def test_skills_lists_who_wrote_each_one(home, ctx, capsys):
+    _skill(home / "skills", "mine", "---\ndescription: d\n---\n1. x\n")
+    _skill(home / "skills", "drafted",
+           "---\ndescription: d\norigin: saturn run=412 2026-10-03\n---\n1. x\n")
+    dispatch("/skills", ctx)
+    out = _flat(capsys.readouterr().out)
+    assert "global · you" in out and "global · saturn · #412" in out
+    dispatch("/skills show drafted", ctx)
+    assert "/trace why #412" in _flat(capsys.readouterr().out)

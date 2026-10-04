@@ -50,6 +50,11 @@ def _auto_memory_notes(state) -> list:
         if replaced:
             line += f" (replaced #{replaced.group(1)})"
         out.append(f"{line} — you said it · /memory forget {fid} undoes it")
+        near = [e for e in ev.get("auto_memory_similar") or [] if isinstance(e, dict)]
+        if near:
+            from core.auto_memory import similar_note
+
+            out.append(f"  {similar_note(near)}")
     return out
 
 

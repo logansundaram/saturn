@@ -241,7 +241,21 @@ def tool_node(state: AgentState):
         # A fact remembered without the gate: the REPL's after-answer note reads this
         # (app/repl._auto_memory_notes), and the trace keeps it with the event.
         if ok and tool_call["id"] in user_stated_ids and tool_call["id"] not in approved_ids:
-            event["auto_memory"] = auto_memory.fact_id(observation)
+            fid = auto_memory.fact_id(observation)
+            event["auto_memory"] = fid
+            # ...and the stored facts it landed beside (auto_memory.similar): no prompt showed
+            # them, so the note after the answer does. Best-effort — the fact is already saved.
+            try:
+                from stores.memory_registry import entry as _fact
+
+                saved = _fact(fid) if fid else None
+                near = (auto_memory.similar(saved["text"], saved["layer"], exclude={fid})
+                        if saved else [])
+            except Exception as exc:
+                diag.log(f"tool_node : similar-fact lookup failed: {exc}")
+                near = []
+            if near:
+                event["auto_memory_similar"] = [{"id": e["id"], "text": e["text"]} for e in near]
         # The per-call egress slice (computed above), rendered live as a rail leaf and persisted
         # with the event for /trace replays.
         if sent:

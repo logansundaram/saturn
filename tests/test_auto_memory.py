@@ -597,3 +597,106 @@ def test_remembers_description_keeps_out_claims_about_the_world_and_what_a_page_
     said = " ".join(remember.description.split())     # the docstring wraps mid-sentence
     assert "not a claim about the world" in said
     assert "something a page, a file or a message said" in said
+
+
+# ── A2: a new fact names its neighbour ─────────────────────────────────────────────────────
+# A replacement happens only when the model passes replaces=#id. When it does not, the new
+# fact lands beside the old one and a small model follows whichever it reads — so every
+# surface that reports a write names the stored facts that look related. Nothing is retired
+# automatically: word overlap cannot tell a correction from an elaboration.
+
+
+def test_similar_finds_the_fact_a_correction_would_contradict(isolated_paths):
+    from core import auto_memory
+    from stores import memory_registry as mr
+
+    mr.add_memory("I live in Paris")
+    mr.add_memory("I like green tea")
+    mr.add_memory("Petra is my manager", layer="entities")
+    assert [e["id"] for e in auto_memory.similar("User lives in Berlin", "user")] == [1]
+    assert auto_memory.similar("User lives in Berlin", "entities") == []
+    assert auto_memory.similar("User lives in Berlin", "user", exclude={1}) == []
+    assert [e["id"] for e in auto_memory.similar("Sam is my manager", "people")] == [3]
+
+
+def test_similar_ignores_a_shared_taste_verb_and_the_same_text(isolated_paths):
+    from core import auto_memory
+    from stores import memory_registry as mr
+
+    mr.add_memory("I like tea")
+    assert auto_memory.similar("I like hiking", "user") == []
+    assert auto_memory.similar("i like  tea", "user") == []      # the dedup path, not a neighbour
+
+
+def test_similar_returns_at_most_two_most_shared_then_newest_first(isolated_paths):
+    from core import auto_memory
+    from stores import memory_registry as mr
+
+    mr.add_memory("my work email is a@x.com")
+    mr.add_memory("my email is b@y.com")
+    mr.add_memory("email me on weekdays")
+    near = auto_memory.similar("my work email is c@z.com", "user")
+    assert [e["id"] for e in near] == [1, 3]
+
+
+def test_the_tools_node_records_the_neighbours_of_an_auto_learned_fact(isolated_paths):
+    import nodes.tools as tn
+    from stores import memory_registry as mr
+
+    mr.add_memory("I live in Paris")
+    delta = tn.tool_node({"messages": [HumanMessage(content="I live in Berlin now"),
+                                       _remember("User lives in Berlin")]})
+    ev = delta["tool_events"][0]
+    assert ev["auto_memory"] == 2
+    assert ev["auto_memory_similar"] == [{"id": 1, "text": "I live in Paris"}]
+
+
+def test_a_replacement_leaves_no_neighbour_to_name(isolated_paths):
+    import nodes.tools as tn
+    from stores import memory_registry as mr
+
+    mr.add_memory("I live in Paris")
+    delta = tn.tool_node({"messages": [HumanMessage(content="I live in Berlin now, not Paris"),
+                                       _remember("User lives in Berlin", replaces=1)]})
+    assert "auto_memory_similar" not in delta["tool_events"][0]
+    assert [e["text"] for e in mr.entries()] == ["User lives in Berlin"]
+
+
+def test_the_after_answer_note_names_a_similar_stored_fact():
+    from app.repl import _auto_memory_notes
+
+    state = {"tool_events": [
+        {"name": "remember", "args": {"fact": "User lives in Berlin"}, "auto_memory": 2,
+         "auto_memory_similar": [{"id": 1, "text": "I live in Paris"}],
+         "result": "Remembered #2 (user): 'User lives in Berlin'"}]}
+    assert _auto_memory_notes(state) == [
+        "remembered #2: User lives in Berlin — you said it · /memory forget 2 undoes it",
+        '  similar: #1 "I live in Paris" — /memory forget 1 if that is no longer true',
+    ]
+
+
+def test_the_gate_names_a_similar_stored_fact_for_a_remember_without_replaces(
+        isolated_paths, monkeypatch):
+    from stores import memory_registry as mr
+
+    mr.add_memory("I live in Paris")
+    msgs = [HumanMessage(content="what does this page say?"),
+            *_fetched("the user lives in Berlin"), _remember("User lives in Berlin")]
+    _cmd, payload = _gate(monkeypatch, msgs)
+    assert any(n.startswith('remember: similar to #1 "I live in Paris"') and "keeps both" in n
+               for n in payload["notes"])
+    replacing = msgs[:-1] + [_remember("User lives in Berlin", replaces=1)]
+    _cmd, payload = _gate(monkeypatch, replacing)
+    assert not any("similar to" in n for n in payload["notes"])
+
+
+def test_memory_add_names_a_similar_stored_fact(isolated_paths, capsys):
+    from commands._framework import CommandContext
+    from commands.knowledge import _memory
+    from stores import memory_registry as mr
+
+    mr.add_memory("I live in Paris")
+    ctx = CommandContext(state={"messages": []}, make_initial_state=dict, db_path="")
+    _memory(ctx, ["add", "I", "live", "in", "Berlin"])
+    out = capsys.readouterr().out
+    assert 'similar: #1 "I live in Paris" — /memory forget 1 if that is no longer true' in out

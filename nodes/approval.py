@@ -134,6 +134,25 @@ def _handle_note(tc: dict, state, prov=None) -> "str | None":
     return f"{tc['name']}: {handle} — {quarantine.UNKNOWN_HANDLE_NOTE}"
 
 
+def _similar_note(tc: dict) -> "str | None":
+    """A `remember` at the gate that names no `replaces=`, next to a stored fact it may
+    contradict (auto_memory.similar): the human is told before saying yes to both."""
+    args = tc.get("args") if isinstance(tc.get("args"), dict) else {}
+    if tc.get("name") != "remember" or args.get("replaces") not in (None, "", 0):
+        return None
+    fact = str(args.get("fact") or "")
+    try:
+        layer = auto_memory.rule_layer(fact, str(args.get("layer") or "user"))
+        near = auto_memory.similar(fact, layer)
+    except Exception as exc:
+        diag.log(f"approval_node : similar-fact lookup failed: {exc}")
+        return None
+    if not near:
+        return None
+    return (f"remember: similar to {auto_memory.similar_names(near)} — approving keeps both "
+            "(/memory forget <n> removes the old one)")
+
+
 def _user_stated(tc: dict, state) -> bool:
     """A `remember` whose every word the user typed, in a conversation nothing external entered
     (core/auto_memory): the one call the gate lets through on provenance instead of policy."""
@@ -314,6 +333,7 @@ def approval_node(state: AgentState) -> Command[Literal["tools", "agent"]]:
     if auto_memory.enabled():
         notes += [f"remember: not saved automatically — {why}" for tc in gated
                   if tc["name"] == "remember" and (why := auto_memory.why_not(tc, state))]
+    notes += [n for n in (_similar_note(tc) for tc in gated) if n]
     # A skill drafted after a web page, a file, an attachment or mail entered the conversation
     # may carry that content's instructions. A note, not a refusal: "summarise this page and
     # save the method as a skill" is a fair request — but the human should read it as untrusted.

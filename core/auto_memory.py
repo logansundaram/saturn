@@ -27,6 +27,14 @@ talk into "the user said…":
                          `negative` loads only by token match, so "nothing before 10am" would
                          not load for "book the dentist" and the rule would silently not apply.
   fact_id(report)        the #id in add_memory's report, for the after-answer note.
+  similar(fact, layer)   the stored facts a new one may contradict — same layer, sharing at
+                         least half of the smaller fact's content words. A replacement happens
+                         only when the model passes `replaces=#id`; when it does not, "I live
+                         in Berlin" lands beside "I live in Paris" and a small model follows
+                         whichever it reads. So every surface that reports a write names the
+                         neighbours (the after-answer note, the gate, /memory add) and the user
+                         resolves it. Nothing is retired automatically: word overlap cannot
+                         tell a correction from an elaboration.
 
 Glue words (pronouns, articles, "user", "is") need not be typed; meaning-bearing words do —
 including polarity ("not", "never", "always") and sentiment ("likes", "hates"), so a restatement
@@ -60,6 +68,11 @@ _TOKEN_RE = re.compile(r"[^\W_]+(?:['.@+:/_-][^\W_]+)*")
 _RULE_RE = re.compile(r"\b(?:always|never|from now on|do not|don't|dont|every time|whenever)\b",
                       re.IGNORECASE)
 _REPORT_ID_RE = re.compile(r"^(?:Remembered|Already remembered as) #(\d+)")
+# Verbs that take many values at once ("I like tea", "I like hiking"): sharing only one of
+# these says nothing about whether two facts are about the same thing. (Stems, as _stem cuts.)
+_MANY_VALUED = frozenset(
+    "like lik love lov hate hat prefer enjoy want need use dislike dislik".split())
+SIMILAR_MAX = 2
 
 # A message this long, or with this many lines, is treated as pasted, not typed — the same
 # thresholds at which the prompt compacts a paste into a [paste #N] chip (tui/ui/prompt.py).
@@ -167,6 +180,45 @@ def rule_layer(fact: str, layer: str) -> str:
     if normalize_layer(layer) == "negative" and _RULE_RE.search(str(fact or "")):
         return "user"
     return layer
+
+
+def similar(fact: str, layer: str = "user", *, exclude=()) -> list:
+    """The stored facts in `layer` that a new `fact` may contradict or repeat: they share at
+    least half of the smaller fact's content words, and not only a many-valued verb. Most
+    shared first, then newest; at most SIMILAR_MAX. The same text is the dedup path
+    (add_memory), not a neighbour."""
+    from stores.memory_registry import entries, normalize_layer
+
+    new = set(content_words(fact))
+    if not new:
+        return []
+    text = " ".join(str(fact or "").split()).lower()
+    skip = {int(i) for i in exclude if i}
+    found = []
+    for e in entries(normalize_layer(layer)):
+        if e.get("id") in skip or e["text"].lower() == text:
+            continue
+        old = set(content_words(e["text"]))
+        shared = new & old
+        if shared - _MANY_VALUED and len(shared) * 2 >= min(len(new), len(old)):
+            found.append((len(shared), e.get("id") or 0, e))
+    found.sort(key=lambda t: (-t[0], -t[1]))
+    return [e for _n, _id, e in found[:SIMILAR_MAX]]
+
+
+def similar_names(near) -> str:
+    """`#1 "I live in Paris", #5 "…"` — the neighbours as every surface names them."""
+    from textutil import clip
+
+    return ", ".join(f'#{e["id"]} "{clip(str(e["text"]), 60)}"' for e in near)
+
+
+def similar_note(near) -> str:
+    """The line under a write that landed beside a related fact, with the way to resolve it."""
+    ids = [e["id"] for e in near]
+    tail = (f"/memory forget {ids[0]} if that is no longer true" if len(ids) == 1
+            else "/memory forget <n> if one is no longer true")
+    return f"similar: {similar_names(near)} — {tail}"
 
 
 def fact_id(report: str) -> "int | None":

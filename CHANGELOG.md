@@ -9,6 +9,22 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
 
 ### Added
 
+- **Saturn remembers what you tell it, without asking.** Say "I'm vegetarian", "Petra is my
+  manager" or "never book anything before 10am" and it is kept — no approval prompt — with one
+  line after the answer: `remembered #12: … · /memory forget 12 undoes it`. This happens only
+  when every word of the fact is one you typed and nothing from outside (a web page, mail, a
+  file, an attachment) is in the conversation; otherwise the prompt still appears and says why
+  ("'evil@x.com' is not in anything you typed"). A rule you give ("never…", "from now on…") is
+  kept where it applies to every request. `/memory` marks these facts `said`; `/memory why`
+  explains. Turn it off with `memory.auto_learn: false`; `saturn -p` / `-q` never do it.
+- **A new fact names the one it may contradict.** When "I live in Berlin" lands beside a stored
+  "I live in Paris", the line after the answer, the approval prompt and `/memory add` say so
+  (`similar: #3 "I live in Paris" — /memory forget 3 if that is no longer true`). Nothing is
+  removed for you.
+- **Secrets are never saved to memory.** A card number, a Social Security number, a password, a
+  PIN, an API key or a private key is refused wherever a fact is written — by the model, at a
+  review, with `/memory add` or `/memory edit` — and Saturn says why.
+
 - **`/think` — how much Saturn reasons before it answers.** Three levels: `fast` (never
   thinks), `auto` (thinks before it acts) and `deep` (thinks on every pass). `/think` shows
   the level, what each kind of pass does and what the last turn's passes did; `/think deep`
@@ -254,6 +270,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
   (after a failed tool call) is kept in the run's record and shown under that pass.
 
 ### Changed
+
+- **Saturn sees when you told it each thing.** Every remembered fact now reaches the model with
+  the day it was saved, and one it concluded by itself (and you accepted) is marked. When two
+  facts disagree the later one wins, and what you say in the conversation outranks both.
+- **The session review reads only your words and Saturn's answers.** The pass that proposes
+  facts at `/memory review` and `/quit` no longer reads web pages, mail, files or tool output,
+  so nothing a page said can be proposed as a fact about you. A proposal from a session that
+  read outside content says so on the review screen.
 
 - **The think levels are named `fast`, `auto` and `deep`** (`runtime.think`). The old `off`,
   `adaptive` and `on` still work. `runtime.think_budget` now defaults to 1024 (was 4096) and

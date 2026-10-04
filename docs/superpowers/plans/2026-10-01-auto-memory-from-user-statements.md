@@ -10,6 +10,8 @@
 
 **Spec:** `docs/pivot.md` item 4 ("Learn from what the user *says*, without the click"), `docs/advantages.md` §4, `docs/research.md` (Part 2, "What the research changes in the seven plans") and the Design section below.
 
+**Executed 2026-10-04** (Tasks 1–10, commits `a91cbc4`…; Task 11, the measurement on a running model, is NOT run). The tree had moved since the dry run, so three anchors differ from the text below: `core/provenance.of` keeps the 2026-10-03 review semantics of `nodes/approval.provenance` (the model's own messages and a failed call's text are not `seen`), the approval function is the public `provenance`, and the prompt bullet sits after the `delete_file` sentence. The amendments of `../specs/2026-10-04-know-the-user-design.md` (A1–A4, R1–R2) were built on top; that spec's "As built" lists them.
+
 **Dry-run status:** every code block in this plan was applied to a scratch copy of the tree as of commit `7055b57` plus the uncommitted 2026-10-01 working tree. The full suite went from 1301 to 1347 passing, the 46 new tests included. Line numbers drift; every edit quotes the exact text it replaces.
 
 ---

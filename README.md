@@ -124,8 +124,10 @@ would look for it)
 - **Memory that grows** — a layered store that persists across sessions: what you told it
   (`remember` / `recall`), open commitments, dated notes, what it learned about this machine, the
   people and projects in your life, and what not to do again. Loaded selectively each turn under
-  one cap, every fact carries the run it came from, and it learns through a review screen —
-  nothing is written without your accept (`/memory review`).
+  one cap, every fact carries the run it came from. What you tell it in your own words is kept
+  without a prompt (a `remembered #n` line after the answer; `/memory forget n` undoes it); a fact
+  whose words came from a web page, a mail or a file still asks, and what it infers waits for a
+  review screen (`/memory review`). A password, a card number or a key is never saved.
 - **Standing instructions** — `~/.saturn/SATURN.md` loads every turn (your tone, your rules);
   a `SATURN.md` in the working folder adds that folder's own. `/init` surveys the folder and
   drafts one.

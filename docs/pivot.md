@@ -49,7 +49,7 @@ _Table updated 2026-10-03 against the tree; the ranked list below keeps each ite
 
 | Goal leg | Today | Gap |
 |---|---|---|
-| Know the user | Six memory layers exist; every fact still needs a user action (a review accept, a gated `remember`, `/memory add`); the agent reads Notes / Calendar / Mail / Contacts / Reminders / Messages; first run asks for a model tier, not for you | The agent starts every session knowing almost nothing and learns slowly (auto-memory, the interview and the brief are planned, not built) |
+| Know the user | Six memory layers exist; a fact you state in your own words is kept without a click (auto-learn, 2026-10-04), anything else needs a review accept, a gated `remember` or `/memory add`; the agent reads Notes / Calendar / Mail / Contacts / Reminders / Messages; first run asks for a model tier, not for you | The agent starts every session knowing almost nothing and learns from what it is told (the interview and the brief are planned, not built; auto-learn is unmeasured on the 4b and 9b) |
 | Yours to shape | `~/.saturn/SATURN.md` global plus `SATURN.md` per folder; hooks in `~/.saturn/hooks.yaml`; any of your Shortcuts as a tool (`run_shortcut`); MCP config in YAML with zero servers enabled; `/policy` for the gate | No script-file tools (skills shipped 2026-10-03: `~/.saturn/skills`, `/skills`) |
 | Visible + gated | Done and true; bare `/help` lists five commands, the other fourteen sit behind `/help --all` | A trace vocabulary built for auditors, not for someone asking about their Thursday; the macOS permission dialogs name the terminal, not Saturn (`superpowers/specs/2026-10-02-macos-app-identity.md`, undecided) |
 | Works where you are | File tools work in the launch folder plus `/add-dir` folders; `read_file` reads PDF / .docx / .xlsx directly; `search_files` asks Spotlight | No always-listed roots: "the PDF on my desktop" from another folder needs `/add-dir ~/Desktop` first |
@@ -85,7 +85,7 @@ Two more AppleScript readers beside Notes / Calendar / Mail — `search_contacts
 (the natural home for "remind me to…", replacing the launchd notification for anything with a
 due date). Readers `untrusted=True` as today.
 
-### 4. Learn from what the user *says*, without the click (2–3 days) — open; plan written 2026-10-01 (`superpowers/plans/2026-10-01-auto-memory-from-user-statements.md`)
+### 4. Learn from what the user *says*, without the click (2–3 days) — shipped 2026-10-04 (`core/auto_memory.py`: a `remember` whose every word you typed skips the gate, by=user src=said; rules land in `user`; headless off; with the amendments of `superpowers/specs/2026-10-04-know-the-user-design.md`: dated facts, the similar-fact note, the never-save screen, the narrowed review). Not yet measured on a model (the plan's Task 11).
 Provenance-gated auto-memory. A fact the user states in their own words ("I'm vegetarian",
 "Petra is my manager", "my lease ends in March") is written by the trusted principal and lands
 directly in the `user` / `entities` / `commitments` layer with `by=user`; the rail shows a one-line

@@ -182,13 +182,24 @@ turn, the last five `memo` entries too, `agent` / `entities` / `negative` (and a
 heading a hand edit or `layer=` introduced) only by token match against the request — all under
 `memory.context_cap`, with a trailer naming what didn't load. `sens=` facts are withheld from
 both the block and `recall` when inference is not local.
-Every bullet ends in a `{#id by=user|inferred run=N used=DATE n=K sens=… due=…}` metadata token;
+Every bullet ends in a `{#id by=user|inferred run=N used=DATE n=K sens=… due=… src=…}` metadata token;
 ids come from the `<!-- next-id -->` high-water mark and are never reused (`replaces=#id`
 supersedes; `/memory why <n>` points at `/trace why #run`). Learning is gated: `core/memory_review`
 queues candidates from each turn's state and from compaction summaries into
 `database/memory/pending_review.json`; `/memory review` (also `/quit`) accepts them one at a
-time. Never write a fact without a user action (a gated `remember`, `/memory add`, or a review
-accept). The benchmark's memory tasks and `tests/test_memory_*.py` pin this.
+time. Never write a fact without a user action: a gated `remember`; a `remember` whose every
+content word the user TYPED in a conversation no external content entered (auto-learn,
+`core/auto_memory.why_not` — deterministic, never a model's judgement; stamped `src=said`, noted
+after the answer, off headless); `/memory add`; or a review accept. A standing rule ("never…")
+lands in `user`, which loads every turn (`auto_memory.rule_layer`). Never write a credential:
+`memory_registry.secret_problem` is asked by the two writers of fact text (`add_memory`,
+`edit_memory` raise `SecretRefused`), so a new write path inherits it. A write that lands beside a
+related fact names it (`auto_memory.similar` — the after-answer note, the gate, `/memory add`);
+nothing is retired without `replaces=`. The model reads each fact with its day and `[inferred]`
+(`_context_line`), under a header that says what outranks it. The review's model pass reads
+`memory_review.own_words` — what the user typed and what Saturn answered, never a tool result or
+a summary. Spec: `docs/superpowers/specs/2026-10-04-know-the-user-design.md`. The benchmark's
+memory tasks, `tests/test_memory_*.py` and `tests/test_auto_memory.py` pin this.
 
 ### Trust stack (`trust/`)
 
@@ -218,7 +229,8 @@ accept). The benchmark's memory tasks and `tests/test_memory_*.py` pin this.
   number or address found in nothing the user typed and no tool result never reaches the gate; for
   one that does, the gate prompt names the contact it belongs to (`nodes/approval._handle_note`).
   `chat_hold` (`CHAT_ARGS`) is the same check for a group chat ref (`chat=`), and the gate names
-  every member of the group, resolved from Messages at approval.
+  every member of the group, resolved from Messages at approval. `core/provenance.of` is the one
+  typed / seen / untrusted reading the holds, auto-learn and the memory review share.
 - Terminal safety — text from outside Saturn never reaches the terminal as a live escape
   sequence. `textutil.visible_controls` is the one rule (SGR and `ESC[K` removed, CR → LF, every other
   control → its picture `␛`); `nodes/tools.py` applies it to every observation before the clamp
@@ -342,4 +354,4 @@ product goal since 2026-09-27 and the ranked work that closes the distance to it
 user would try. `docs/advantages.md` — why the pivot items matter. `docs/OPTIMIZATIONS.md` — latency
 techniques with the numbers behind them. `docs/research.md` — everything still open in pivot /
 engine / advantages, ranked, with plans for the top items and an outside survey.
-`docs/superpowers/` — specs and plans (of the plans dated 2026-10-01 only `terminal-escape-sanitising` and Phase 1 of `skills` are built; `2026-10-03-create-skill` is built too, and `2026-10-04-adaptive-thinking` except its sampling experiment). `CHANGELOG.md` — user-visible history.
+`docs/superpowers/` — specs and plans (of the plans dated 2026-10-01 `terminal-escape-sanitising`, Phase 1 of `skills` and `auto-memory-from-user-statements` — with the know-the-user spec's amendments — are built; `2026-10-03-create-skill` is built too, and `2026-10-04-adaptive-thinking` except its sampling experiment). `CHANGELOG.md` — user-visible history.

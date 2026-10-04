@@ -1,6 +1,8 @@
 # Knowing the user — how facts about the user arrive, are stored and are read
 
-Date: 2026-10-04. Status: **draft for review — nothing built.** This is the one design above
+Date: 2026-10-04. Status: **§1 and §3 built 2026-10-04, not yet measured on a model** (read "As
+built" at the end: it overrides the design where they differ); §2 the interview, §4 incognito
+and the memory receipt, §5 `/memory import` are not built. This is the one design above
 three plans that were written before it (2026-10-01): `../plans/2026-10-01-auto-memory-from-user-statements.md`
 (pivot #4), `../plans/2026-10-01-first-run-interview.md` (pivot #5) and
 `../plans/2026-10-01-launch-brief.md` (pivot #6). Each plan keeps its own design section; this
@@ -257,3 +259,32 @@ without touching the rest.
 - Whether a 4b or 9b calls `remember` for a stated fact, or passes `replaces=` for a
   correction. Nothing in this spec has been run.
 - How the launch offer reads on a first launch that is still pulling a model.
+
+## As built (2026-10-04)
+
+The auto-memory plan's Tasks 1–10, then the amendments, on branch `v2`. `tests/test_auto_memory.py`
+pins all of it (84 tests); the suite is 1,832 green. Nothing here has been run against a model.
+
+| Piece | Where | What differs from the design above |
+|---|---|---|
+| The provenance reading | `core/provenance.py` (`of`, `is_typed`) | It kept the holds' 2026-10-03 semantics: the model's own messages and a failed call's text are not `seen`; a failed untrusted call still marks the conversation `untrusted`. |
+| The check, the gate, the stamp | `core/auto_memory.py`, `nodes/approval.py`, `nodes/tools.py`, `tools/knowledge.py` | As the plan wrote them. |
+| A1 dated facts, the header | `memory_registry._context_line`, `nodes/ground.stable_grounding` | A hand-written bullet with no date reads as written today until the next write gives it one. |
+| A2 the similar-fact line | `auto_memory.similar`, `similar_names`, `similar_note` | It lives in `core/auto_memory`, not in `add_memory`'s report (it needs the glue list and stemming). The tools node puts the neighbours on the tool event (`auto_memory_similar`). A pair that shares only a many-valued verb ("I like tea" / "I like hiking") is not similar — the half-of-the-smaller rule alone flagged every pair of taste facts. |
+| A3 the never-save screen | `memory_registry.secret_problem`, `SecretRefused` | Enforced inside the two writers of fact text (`add_memory`, `edit_memory`), so every path inherits it, `/memory edit` included. The pending-review file refuses a secret too (`add_pending`). |
+| A4 the description sentence | `tools/knowledge.remember` | — |
+| A5 the probes | `benchmark.py` (`statement`) | No `correction` probe was added: the benchmark's existing `supersession` task already grades superseded / duplicated, and the 80% rule applies to it. |
+| R1 the review transcript | `memory_review.own_words` | — |
+| R2 the label | `memory_review.render_line`, `_SOURCE_LABEL` | Only model proposals carry `this session read outside content`; steer and gate candidates are records of the user's own actions. Compaction candidates say "the model's summary, not your words". |
+
+**Open after this build**
+
+1. **Measure** (the plan's Task 11): `statement` and `supersession` on the 4b and the 9b, three
+   runs each, on mains power. Under 80% on `statement` → build the deterministic catch into the
+   review queue.
+2. **The prefix changed three times in one upgrade** (the `remember` description, one system
+   prompt bullet, the memory block header and line format). One re-prime; the loop benchmark
+   should confirm chat-shape passes did not move.
+3. **`memory.context_cap`**: a dated line costs 13 more characters. A store near the cap now
+   omits a fact or two it used to load; the trailer says so.
+4. **The similar-fact rule is a guess at a threshold.** It has unit tests and no field data.

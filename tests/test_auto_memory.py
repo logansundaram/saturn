@@ -586,3 +586,13 @@ def test_the_memory_block_says_what_outranks_a_stored_fact(isolated_paths):
     assert "the day" in header and "a later day outranks an earlier one" in header
     assert "what the user says in this conversation" in header and "[inferred]" in header
     assert "replaces=<id>" in header
+
+
+# ── A4: remember says what it is for ───────────────────────────────────────────────────────
+
+
+def test_remembers_description_keeps_out_claims_about_the_world_and_what_a_page_said():
+    from tools.knowledge import remember
+
+    assert "not a claim about the world" in remember.description
+    assert "something a page, a file or a message said" in remember.description

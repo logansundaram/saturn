@@ -594,5 +594,6 @@ def test_the_memory_block_says_what_outranks_a_stored_fact(isolated_paths):
 def test_remembers_description_keeps_out_claims_about_the_world_and_what_a_page_said():
     from tools.knowledge import remember
 
-    assert "not a claim about the world" in remember.description
-    assert "something a page, a file or a message said" in remember.description
+    said = " ".join(remember.description.split())     # the docstring wraps mid-sentence
+    assert "not a claim about the world" in said
+    assert "something a page, a file or a message said" in said

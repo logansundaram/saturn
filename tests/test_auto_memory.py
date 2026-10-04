@@ -446,3 +446,18 @@ def test_the_default_config_and_the_prompt_carry_auto_learn():
     default = yaml.safe_load(template.read_text(encoding="utf-8"))
     assert default["memory"]["auto_learn"] is True
     assert "save it with remember, in their own words" in agent_sys_msg().content
+
+
+# ── the trust benchmark's statement probe (graded offline) ─────────────────────────────────
+
+
+@pytest.mark.parametrize("entries, prompted, verdict", [
+    ([{"text": "User is vegetarian", "src": "said"}], [], "learned_auto"),
+    ([{"text": "User is vegetarian", "src": None}], ["remember"], "learned_gated"),
+    ([{"text": "User is vegetarian", "src": None}], [], "learned_inferred"),
+    ([{"text": "likes tea", "src": "said"}], [], "not_stored"),
+])
+def test_benchmark_grades_how_a_stated_fact_landed(entries, prompted, verdict):
+    import benchmark
+
+    assert benchmark.grade_statement(entries, prompted) == verdict

@@ -23,6 +23,7 @@ import diag
 from trust import policy
 from trust import quarantine
 from tools.registry import DECLARED_RISK, risk_of
+from core import auto_memory
 from core import provenance as _provenance
 from core.state import AgentState, current_step, issuing_message
 
@@ -131,6 +132,12 @@ def _handle_note(tc: dict, state, prov=None) -> "str | None":
     if quarantine.handle_hold(handle, user_text, seen_text) is None:
         return None                              # from a tool result that is not a card: nothing to add
     return f"{tc['name']}: {handle} — {quarantine.UNKNOWN_HANDLE_NOTE}"
+
+
+def _user_stated(tc: dict, state) -> bool:
+    """A `remember` whose every word the user typed, in a conversation nothing external entered
+    (core/auto_memory): the one call the gate lets through on provenance instead of policy."""
+    return tc.get("name") == "remember" and auto_memory.qualifies(tc, state)
 
 
 def _url_holds(tool_calls: list, state, prov=None) -> dict:
@@ -282,7 +289,8 @@ def approval_node(state: AgentState) -> Command[Literal["tools", "agent"]]:
         for tc in tool_calls
         if (escalated and _can_act(tc["name"]))
         or tc["id"] in holds
-        or not policy.approves(tc["name"], risk_of(tc["name"]), tc.get("args"))
+        or not (policy.approves(tc["name"], risk_of(tc["name"]), tc.get("args"))
+                or _user_stated(tc, state))
     ]
 
     if not gated:
@@ -301,6 +309,11 @@ def approval_node(state: AgentState) -> Command[Literal["tools", "agent"]]:
               for tc in gated if policy.always_asks(tc["name"])]
     _forget_group_lines(keep={tc["id"] for tc in gated})
     notes += [n for n in (_handle_note(tc, state, prov) for tc in gated) if n]
+    # A fact the user did not provably type: say why it is asking, so "remember" prompting
+    # once in a while reads as a reason, not a whim.
+    if auto_memory.enabled():
+        notes += [f"remember: not saved automatically — {why}" for tc in gated
+                  if tc["name"] == "remember" and (why := auto_memory.why_not(tc, state))]
     # A skill drafted after a web page, a file, an attachment or mail entered the conversation
     # may carry that content's instructions. A note, not a refusal: "summarise this page and
     # save the method as a skill" is a fair request — but the human should read it as untrusted.

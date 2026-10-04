@@ -176,6 +176,8 @@ def _initial_state() -> AgentState:
         "skill": "",
         "plan": [],
         "iteration": 0,
+        "think": [],
+        "think_level": "",
         "tools_called": [],
         "tool_results": [],
         "documents_retrieved": [],
@@ -196,6 +198,29 @@ def skill_for_line(line: str):
     from core import skills
 
     return skills.invocation(line, builtin=resolves)
+
+
+def think_for_line(line: str) -> "str | None":
+    """The request of a `/think <request>` line — one turn at `deep` (core/think) — or None:
+    not a /think line, or one the command itself handles (bare, a level word on its own,
+    --help). Shared by the REPL and headless -p, like skill_for_line. The rule: exactly one
+    level word (plus persist flags) sets the level; anything else is a request, so
+    `/think deep dive into the logs` asks about the logs."""
+    text = str(line or "").strip()
+    parts = text.split()
+    if not parts or parts[0].lower() != "/think":
+        return None
+    from commands._framework import _HELP_FLAGS
+    from commands._utils import split_persist_flags
+    from core import think
+
+    args = parts[1:]
+    if not args or args[0].lower() in _HELP_FLAGS or args[-1].lower() in _HELP_FLAGS:
+        return None
+    words, _session, _save = split_persist_flags(args)
+    if not words or (len(words) == 1 and think.is_level_word(words[0])):
+        return None
+    return text[len(parts[0]):].strip()
 
 
 def skill_completions() -> "list[tuple[str, str]]":

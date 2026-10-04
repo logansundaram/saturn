@@ -724,7 +724,66 @@ def summarize_loop(results: list[dict]) -> dict:
         "phantom": tags.get("phantom", 0),
         "hygiene": sum(int(r.get("hygiene") or 0) for r in results),
         "capped": sum(1 for r in results if r.get("capped")),
+        "thinking": summarize_thinking(results),
     }
+
+
+def summarize_thinking(results: list[dict]) -> dict:
+    """What thinking cost and what came of it across the suite, off each task's per-pass think
+    records (core/think.entry): passes in all, passes that thought, drafts discarded for a
+    thought, thoughts that came back empty or were cut, the seconds spent thinking, and the
+    prompt-eval seconds of the passes (whether a thinking pass keeps the daemon's cached
+    prefix shows here)."""
+    entries = [e for r in results for e in (r.get("think") or []) if isinstance(e, dict)]
+    asked = [e for e in entries if e.get("asked")]
+    return {
+        "passes": len(entries),
+        "thought": len(asked),
+        "drafts": sum(1 for e in entries if e.get("draft")),
+        "empty": sum(1 for e in asked if e.get("outcome") == "empty"),
+        "cut": sum(1 for e in asked if str(e.get("outcome") or "").startswith("cut-")),
+        "seconds": round(sum(float(e.get("seconds") or 0.0) for e in asked), 2),
+        "prompt_seconds": round(sum(float(e.get("prompt_s") or 0.0) for e in entries), 2),
+    }
+
+
+# `--think`: a level (fast | auto | deep), or `recover` — auto under the rule it replaced
+# (think only after an error), the baseline a change to auto is compared against. In memory
+# only — config.yaml is never written by a benchmark run.
+def apply_think(mode: str) -> str:
+    """Set the think mode for this process from a --think value; returns the label the report
+    is named with. A policy name (`recover`, `act`) means `auto` under that policy."""
+    from core import think
+
+    mode = str(mode or "").strip().lower()
+    cfg = get_config()
+    runtime = cfg._data.setdefault("runtime", {})
+    if mode in think.POLICIES:
+        runtime["think"] = "auto"
+        return think.set_policy(mode)
+    if not think.is_level_word(mode):
+        raise SystemExit(f"--think: {mode!r} is not one of "
+                         f"{' | '.join(think.LEVELS + think.POLICIES)}")
+    runtime["think"] = think.normalise(mode)[0]
+    return runtime["think"] if runtime["think"] != "auto" else think.policy()
+
+
+def think_label() -> str:
+    """The think mode a run is under, for the report: fast, deep, or auto's policy."""
+    from core import think
+
+    level = think.level()
+    return level if level != "auto" else think.policy()
+
+
+def apply_tier(tier: str) -> str:
+    """Point this process at another tier (`--tier 9b`), in memory only."""
+    cfg = get_config()
+    if tier not in (cfg._data.get("tiers") or {}):
+        raise SystemExit(f"--tier: no tier {tier!r} in config.yaml "
+                         f"(have: {', '.join(cfg._data.get('tiers') or {})})")
+    cfg._data["active_tier"] = tier
+    return tier
 
 
 class _loop_fixtures:
@@ -748,7 +807,11 @@ class _loop_fixtures:
         return self
 
     def __exit__(self, *exc):
-        for name in list(LOOP_FIXTURES) + list(LOOP_OUTPUTS):
+        # Every bench_* FILE here was made by this run: __enter__ refused to start over any.
+        # Removing them all (not only the names the tasks expect) keeps a model that wrote
+        # `bench_summary.txt` from aborting the next run of a `--runs N` batch.
+        leftovers = [p.name for p in self.workspace.glob("bench_*") if p.is_file()]
+        for name in set(list(LOOP_FIXTURES) + list(LOOP_OUTPUTS) + leftovers):
             try:
                 (self.workspace / name).unlink()
             except FileNotFoundError:
@@ -844,6 +907,7 @@ def run_loop_benchmark(graph) -> dict:
                 "capped": entry.get("capped", False),
                 "latency_s": entry.get("latency_s"),
                 "context_tokens": entry.get("context_tokens"),
+                "think": entry.get("think", []),
                 "response": str(entry.get("response") or entry.get("error") or "")[:400],
             }
             results.append(result)
@@ -854,25 +918,41 @@ def run_loop_benchmark(graph) -> dict:
     return {"results": results, "summary": summarize_loop(results)}
 
 
-def run_loop(output_path: Path | None = None) -> "tuple[Path, dict]":
-    """`--loop`: the loop benchmark, written to loop_<timestamp>.json."""
+def loop_report_path(tier: str, label: str, run: int = 0, runs: int = 1) -> Path:
+    """logging/benchmarks/loop_<tier>_<think>_<timestamp>[_<n>].json — the tier and the think
+    mode are in the name, so a comparison across modes is a directory listing."""
+    suffix = f"_{run}" if runs > 1 else ""
+    return _log_dir() / f"loop_{tier}_{label}_{datetime.now().strftime('%Y%m%d_%H%M%S')}{suffix}.json"
+
+
+def run_loop(output_path: Path | None = None, runs: int = 1) -> "tuple[Path, dict]":
+    """`--loop`: the loop benchmark, written to loop_<tier>_<think>_<timestamp>.json. `runs`
+    repeats the suite on one loaded model (a pass-rate delta of 1 is noise: docs/engine.md
+    item 13), one report per run."""
     graph = _build_graph()
-    print(f"Running the loop benchmark: {len(LOOP_TASKS)} tasks\n")
-    out = run_loop_benchmark(graph)
-    s = out["summary"]
-    print(f"\n{s['passed']}/{s['total']} passed · phantom {s['phantom']} · "
-          f"hygiene bounces {s['hygiene']} · capped {s['capped']}")
-    for shape, v in s["by_shape"].items():
-        print(f"  {shape:<7} {v['passed']}/{v['n']}  mean passes {v['mean_passes']}  "
-              f"mean latency {v['mean_latency_s']}s")
-    if output_path is None:
-        output_path = _log_dir() / f"loop_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-    payload = {"timestamp": datetime.now().isoformat(),
-               "model": str(get_config().get("active_tier", "")),
-               "loop_summary": s, "loop": out["results"]}
-    output_path.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
-    print(f"Loop benchmark report written to {output_path}")
-    return output_path, s
+    tier, label = str(get_config().get("active_tier", "")), think_label()
+    runs = max(1, int(runs or 1))
+    for run in range(1, runs + 1):
+        print(f"Running the loop benchmark: {len(LOOP_TASKS)} tasks · tier {tier} · think {label}"
+              + (f" · run {run}/{runs}" if runs > 1 else "") + "\n")
+        out = run_loop_benchmark(graph)
+        s = out["summary"]
+        th = s["thinking"]
+        print(f"\n{s['passed']}/{s['total']} passed · phantom {s['phantom']} · "
+              f"hygiene bounces {s['hygiene']} · capped {s['capped']}")
+        print(f"thinking: {th['thought']} of {th['passes']} passes thought ({th['seconds']}s) · "
+              f"{th['drafts']} drafts rethought · {th['empty']} empty · {th['cut']} cut")
+        for shape, v in s["by_shape"].items():
+            print(f"  {shape:<7} {v['passed']}/{v['n']}  mean passes {v['mean_passes']}  "
+                  f"mean latency {v['mean_latency_s']}s")
+        path = output_path if (output_path is not None and runs == 1) else (
+            output_path.with_name(f"{output_path.stem}_{run}{output_path.suffix}")
+            if output_path is not None else loop_report_path(tier, label, run, runs))
+        payload = {"timestamp": datetime.now().isoformat(), "model": tier, "think": label,
+                   "loop_summary": s, "loop": out["results"]}
+        path.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
+        print(f"Loop benchmark report written to {path}")
+    return path, s
 
 
 def _prune_checkpoints(graph, thread_id: str) -> None:
@@ -957,6 +1037,8 @@ def run_query(graph, query: str) -> dict:
             "hygiene": hygiene,
             "capped": iterations > get_config().max_iterations,
             "context_tokens": result.get("context_tokens"),
+            # One record per agent pass: the kind of step, whether it thought, what came of it.
+            "think": result.get("think") or [],
             "plan": [
                 {"label": s["label"], "status": s["status"]} for s in plan
             ],
@@ -1120,10 +1202,37 @@ def main():
              "tool choice, phantom actions, stubs, hygiene bounces and capped turns. A "
              "measurement, not a --strict gate; report at logging/benchmarks/loop_<ts>.json.",
     )
+    parser.add_argument(
+        "--think",
+        default=None,
+        metavar="MODE",
+        help="Run under this think mode instead of the configured one: a level (fast | auto | "
+             "deep), or `recover` — auto under the rule it replaced, the baseline. In memory "
+             "only; config.yaml is not written.",
+    )
+    parser.add_argument(
+        "--tier",
+        default=None,
+        metavar="TIER",
+        help="Run on this tier (a key under `tiers:` in config.yaml) instead of active_tier. "
+             "In memory only.",
+    )
+    parser.add_argument(
+        "--runs",
+        type=int,
+        default=1,
+        metavar="N",
+        help="With --loop: repeat the suite N times on the loaded model, one report per run.",
+    )
     args = parser.parse_args()
 
+    if args.tier:
+        apply_tier(args.tier)
+    if args.think:
+        apply_think(args.think)
+
     if args.loop:
-        run_loop(Path(args.output) if args.output else None)
+        run_loop(Path(args.output) if args.output else None, runs=args.runs)
         return
 
     _path, trust_summary = run_trust(Path(args.output) if args.output else None)

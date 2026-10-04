@@ -19,7 +19,7 @@ from tui import ui
 
 
 def run_turn(graph, payload, config, approver, on_update=None, pause=None, on_token=None,
-             on_retract=None):
+             on_retract=None, on_thinking=None):
     """Drive one turn to completion, streaming node updates and pausing at an interrupt.
 
     `approver(interrupt_value) -> decision` resolves each interrupt (the approval gate, the pause
@@ -31,7 +31,9 @@ def run_turn(graph, payload, config, approver, on_update=None, pause=None, on_to
     so it can capture type-ahead + the Esc pause without ever stealing the prompt's keystrokes (the
     queued lines themselves are drained by the REPL loop, not here). `on_retract()`, if given, is
     called when the agent node takes back what it streamed (a malformed attempt about to be
-    retried — `nodes.agent.RETRACT` on the custom stream). Returns the final state.
+    retried — `nodes.agent.RETRACT` on the custom stream). `on_thinking(bool)`, if given, is told
+    when a thought begins and ends (the status bar's `thinking 3s · esc stops`). Returns the
+    final state.
 
     Streams three modes at once: "updates" drives the trace/plan and carries the interrupt marker
     (pause/resume is decided by get_state below); "messages" carries the per-token answer stream;
@@ -59,6 +61,8 @@ def run_turn(graph, payload, config, approver, on_update=None, pause=None, on_to
                 if mode == "custom":
                     if on_retract and isinstance(data, dict) and data.get("type") == "retract":
                         on_retract()
+                    if on_thinking and isinstance(data, dict) and data.get("type") == "thinking":
+                        on_thinking(data.get("phase") == "start")
                     continue
                 if mode == "messages":
                     # (message_chunk, metadata) — stream only the agent node's tokens. Filters:

@@ -54,9 +54,14 @@ def test_think_flag_rides_invoke_kwargs_with_its_budget(monkeypatch):
 
 
 def _think_cfg(monkeypatch, **runtime):
+    """runtime.* for one test, with `auto` pinned to `recover` — the rule these tests were
+    written for (think only after an error; shipped 2026-09-29), kept as the loop benchmark's
+    baseline. What `auto` does today (`act`: think before acting) is tests/test_think.py."""
     from config import get_config
+    from core import think
     cfg = get_config()
     monkeypatch.setattr(cfg, "_data", {**cfg._data, "runtime": {**cfg._data.get("runtime", {}), **runtime}})
+    monkeypatch.setattr(think, "_POLICY", "recover")
 
 
 def test_first_pass_never_thinks(monkeypatch):
@@ -69,9 +74,9 @@ def test_first_pass_never_thinks(monkeypatch):
 
 
 def test_think_follows_an_error_in_the_latest_round(monkeypatch):
-    """Thinking is spent on evidence, not on pass count (2026-09-29): a pass thinks only when
-    the tool round just before it had an error (a tool failure or a hygiene refusal), because
-    that is where the model needs a new approach. A clean round, a plan, a declined or blocked
+    """The `recover` baseline (2026-09-29): thinking is spent on evidence, not on pass count —
+    a pass thinks only when the tool round just before it had an error (a tool failure or a
+    hygiene refusal), because that is where the model needs a new approach. A clean round, a plan, a declined or blocked
     call (whose next move is already known: say it was not done), a high pass count, or an
     error further back in the turn all leave the pass think-off."""
     from nodes import agent

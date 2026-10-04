@@ -69,8 +69,8 @@ ground → agent ─(no tool calls)─→ END
 - `ground` assembles `state["context"]` in two halves (the working folder, `~/.saturn/SATURN.md` then the workspace `SATURN.md`, the knowledge-base manifest, the always-loaded
   memory layers = stable; the `### Now` date line + memory matches + attachments = dynamic). No model call.
 - `agent` (`nodes/agent.py`) makes ONE native tool-calling call per pass (`get_model()`,
-  `bind_tools(registry)`, streamed; think is adaptive — `runtime.think`: a pass thinks only right after a
-  tool round with an error, an empty thinking pass is rerun think-off, the capped pass never thinks). Prompt order is prefix-cache order:
+  `bind_tools(registry)`, streamed; whether the pass THINKS is `core/think.py`'s decision — see
+  "Thinking" below). Prompt order is prefix-cache order:
   `[system][stable grounding][history…][dynamic + request][turn messages…]`; the bound tool
   schemas render into the chat template's system section, so the catalog is part of the prefix
   `core/prime.py` caches. The checks around the call are deterministic, in this order, and each
@@ -105,6 +105,37 @@ There is no synthesize node, no judge, no planner: the model's last message is t
 streams under `── response` as it generates (`app/turn.py` filters LangGraph messages mode to the
 `agent` node; a text preamble before a tool call is discarded from the response region by
 `_make_on_update` and shown as the rail's agent leaf instead).
+
+### Thinking (`core/think.py`, `commands/think.py`)
+
+Whether a pass reasons before it answers is decided by the harness (Qwen3.5 has no in-model
+switch), from the KIND OF STEP the pass is — a pure function of the turn's messages, never the
+request text, no model call. `step_kind` (first match wins): `capped` · `recovery` (an `error`
+stamp in the latest round; `ASK_ALONE_TEXT` is not evidence) · `steered` · `first` · `wrap-up`
+(every completed call was an action — `tools/registry.is_action`, the Sources rule — or nothing
+completed) · `information`. `decide(level, kind, policy)`: `runtime.think` is `fast | auto |
+deep` (the old `off | adaptive | on` and YAML booleans read through `think.normalise`; anything
+else runs as `auto` and warns at startup). `auto` is ONE rule, not a setting: **think before a
+pass acts, never before a text answer** (`act`) — every deciding pass (`first`, `information`,
+`wrap-up`) is DRAFTED think-off; a text answer stands at no cost, a tool call is retracted and
+the pass rethought; `recovery` and `steered` think outright. It was picked by measurement
+(2026-10-04: 29.5 of 34 loop tasks on the 4b against 23.5 for the rule before it, 31 against 30
+on the 9b, no empty thoughts; `docs/engine.md` item 11). The rule before it (`recover`: think
+only after an error) survives as the benchmark's baseline (`benchmark.py --think recover`,
+`think.set_policy`) — there is no `runtime.think_policy`.
+`nodes/agent._run_pass` holds the one bound: **at most two model calls per pass because of
+thinking** — a thought that is empty, past `runtime.think_budget` (`_generate` counts reasoning
+chunks and closes the stream) or stopped by Esc (a pending pause; the pause itself stays
+pending) is dropped and the pass answers without it; a drafted call stands when its rethink
+came to nothing. A model that rejects the think flag never thinks and gets no widened
+`num_predict`. One `think.entry` per pass lands in `state["think"]` (never the prompt): the
+rail row and leaf, the status bar's `thinking 3s · esc stops thinking` (`thinking` events on
+the custom stream → `run_turn(on_thinking=)`), the receipt, `/think`, `/trace why` and the
+loop benchmark (`--think`, `--tier`, `--runs`) all read it; `llm_calls.output.think` is what
+each call was sent with. `/think <request>` is one turn at `deep`
+(`app/session.think_for_line` → `state["think_level"]`). Spec:
+`docs/superpowers/specs/2026-10-04-adaptive-thinking-design.md`. `tests/test_think.py` and
+`tests/test_think_command.py` pin all of it.
 
 ### The plan is the model's checklist (`tools/planning.py`, `core/state.py`)
 
@@ -202,7 +233,7 @@ accept). The benchmark's memory tasks and `tests/test_memory_*.py` pin this.
 Define a tool in its own module under `tools/` with `@register_tool(risk=...)` from `tools/toolspec.py`;
 `tools/registry.py` imports the modules to trigger registration — nothing else to edit. A call that
 did not do its job RAISES `toolspec.ToolError` (never returns an error string): the tools node
-stamps it `error`, which wakes the adaptive think and puts it in the answer's incidents note.
+stamps it `error`, which makes the next pass a `recovery` step (core/think) and puts it in the answer's incidents note.
 Only a call that completed and gathered something is a source (`tool_results` /
 `documents_retrieved`): failed or blocked calls and `side_effecting` tools are not cited.
 `toolspec.human_approved()` tells a tool whether a person approved THIS call at the gate
@@ -289,7 +320,7 @@ never changes the gate. Spec: `docs/superpowers/specs/2026-10-03-user-skills-des
 `tools/` (implementations) vs `nodes/tools.py` (execution node) · `trace`: `stores/trace.py` records,
 `tui/ui/trace.py` renders the rail, `commands/trace.py` is `/trace` · `plan`: `tools/planning.py` (the tool),
 `tui/ui/plan.py` (the panel) · `config.py` (loader) vs `commands/config.py` (`/config`) · `trust/policy.py` (mechanism)
-vs `commands/policy.py` (front door).
+vs `commands/policy.py` (front door) · `think`: `core/think.py` (the decision), `commands/think.py` (`/think`).
 
 ### Tests
 
@@ -311,4 +342,4 @@ product goal since 2026-09-27 and the ranked work that closes the distance to it
 user would try. `docs/advantages.md` — why the pivot items matter. `docs/OPTIMIZATIONS.md` — latency
 techniques with the numbers behind them. `docs/research.md` — everything still open in pivot /
 engine / advantages, ranked, with plans for the top items and an outside survey.
-`docs/superpowers/` — specs and plans (of the plans dated 2026-10-01 only `terminal-escape-sanitising` and Phase 1 of `skills` are built; `2026-10-03-create-skill` is built too). `CHANGELOG.md` — user-visible history.
+`docs/superpowers/` — specs and plans (of the plans dated 2026-10-01 only `terminal-escape-sanitising` and Phase 1 of `skills` are built; `2026-10-03-create-skill` is built too, and `2026-10-04-adaptive-thinking` except its sampling experiment). `CHANGELOG.md` — user-visible history.

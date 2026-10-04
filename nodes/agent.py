@@ -13,12 +13,14 @@ deterministic, in this order, and each costs the common case nothing:
                 routed back for the answer. A model that answers the refusal with more calls
                 is rerun once with tools UNBOUND and a budget note — a real answer, never a
                 stub (unbinding re-prefills the whole prompt, so it is the fallback only);
-  4. generate   the call (the `_generate` seam the tests replace). Adaptive thinking
-                (`runtime.think`): a pass thinks, under
-                `runtime.think_budget`, only when the tool round just before it had an error —
-                the one place the model needs a new approach. Pass one, a clean round, a
-                declined or blocked call and the capped passes stay think-off. A thinking pass
-                that returns neither text nor a call is rerun once think-off;
+  4. generate   the call (the `_generate` seam the tests replace). Whether it THINKS is
+                core/think.py's decision, from the kind of step this pass is (first move,
+                new information, after an error, steered, wrap-up, capped) and the user's
+                level (`runtime.think`: fast | auto | deep). `auto` thinks before a pass
+                ACTS: the pass is drafted think-off, a text answer stands, a tool call is
+                retracted and rethought. A thought is bounded (`runtime.think_budget`) and
+                Esc stops it; one that comes back empty, cut or stopped is dropped and the
+                pass answers without it. At most two model calls per pass because of thinking;
   5. hygiene    on each emitted call: unknown tool, missing arguments (core/tool_args),
                 a repeat of a call the user DECLINED this turn, or a third identical call
                 with nothing changed since the first — each answered with an error ToolMessage
@@ -51,6 +53,7 @@ from pydantic import ValidationError
 from core.llms import (extract_prompt_tokens, extract_tok_per_sec, generate, get_model,
                        invoke_kwargs, model_tag)
 from core.llms import stream as llm_stream
+from core import think as _think
 from core.messages import agent_sys_msg
 from core.pause import get_pause_controller
 from core.state import (STEER_PREFIX, AgentState, grounding_parts, is_steer_message,
@@ -191,21 +194,75 @@ def _calls_of(ai) -> "tuple[list, set]":
 # ── the call ──────────────────────────────────────────────────────────────────────────────────
 
 
+# The custom-stream event that tells the UI a thought began or ended (app/turn.run_turn →
+# on_thinking → the status bar's `thinking 3s · esc stops`).
+def _emit_thinking(phase: str) -> None:
+    try:
+        get_stream_writer()({"type": "thinking", "phase": phase})
+    except Exception:  # outside a graph run (a test calling the node directly)
+        pass
+
+
+# Where `_generate` reports the pass's thought on the message it returns; `_take_thought` pops
+# it again, so it never rides the conversation's AIMessage.
+THOUGHT_KEY = "saturn_thought"
+
+
 def _generate(llm_input: list, *, tools: bool, think: bool = False) -> AIMessage:
     """ONE streamed call (the test seam). Tokens reach the UI through LangGraph's messages
     mode (app/turn.py filters this node); the chunks are folded into one AIMessage here so
     state/trace/autosave see exactly what the model produced. `tools=False` is the cap's hard
-    stop: no bind, so the model can only answer. `think=True` is an adaptive thinking pass:
-    the reasoning rides the chunks' `reasoning_content`, never `content`, so the response
-    stream stays the answer."""
+    stop: no bind, so the model can only answer. `think=True` is a thinking pass: the
+    reasoning rides the chunks' `reasoning_content`, never `content`, so the response stream
+    stays the answer.
+
+    The thought is BOUNDED here, while it streams: past `runtime.think_budget` reasoning
+    tokens (one per chunk from Ollama — close enough for a circuit breaker), or when the user
+    presses Esc (a pause is pending on core.pause), the stream is closed and the message comes
+    back with nothing but the report. The pause itself is left pending: the node handles it at
+    the next pass boundary, as ever. The report — `response_metadata[THOUGHT_KEY]` =
+    {seconds, tokens, text, cut: None | "budget" | "esc"} — is present when the pass
+    reasoned (langchain-ollama surfaces `reasoning_content` only on a call sent with the
+    think flag on)."""
     from tools.registry import tool as registered
 
     model = get_model()
     runnable = model.bind_tools(list(registered)) if tools else model
     kwargs = invoke_kwargs(None, 0.0, task="agent", think=think)
+    budget = _think.budget() if think else 0
+    controller = get_pause_controller()
+    thought = {"seconds": 0.0, "tokens": 0, "text": "", "cut": None}
+    began = None    # when the first reasoning chunk arrived
+    over = False    # the thought ended: the answer or a call began
     full = None
-    for chunk in llm_stream(runnable, llm_input, tag=model_tag(), **kwargs):
-        full = chunk if full is None else full + chunk
+    chunks = llm_stream(runnable, llm_input, tag=model_tag(), **kwargs)
+    try:
+        for chunk in chunks:
+            full = chunk if full is None else full + chunk
+            reasoning = (getattr(chunk, "additional_kwargs", None) or {}).get("reasoning_content")
+            answering = bool(chunk.content) or bool(getattr(chunk, "tool_call_chunks", None))
+            if reasoning and not answering and not over:
+                if began is None:
+                    began = time.perf_counter()
+                    _emit_thinking("start")
+                thought["tokens"] += 1
+                if think and budget and thought["tokens"] >= budget:
+                    thought["cut"] = "budget"
+                elif think and controller.pending():
+                    thought["cut"] = "esc"
+                if thought["cut"]:
+                    break
+            elif began is not None and not over:
+                over = True
+                thought["seconds"] = time.perf_counter() - began
+                _emit_thinking("end")
+    finally:
+        if began is not None and not over:
+            thought["seconds"] = time.perf_counter() - began
+            _emit_thinking("end")
+        close = getattr(chunks, "close", None)
+        if close:
+            close()  # a cut thought must stop generating, not run on unread
     if full is None:  # a model that streamed nothing — blocking fallback
         full = generate(runnable, llm_input, tag=model_tag(), **kwargs)
     content = full.content if isinstance(full.content, str) else str(full.content)
@@ -215,8 +272,14 @@ def _generate(llm_input: list, *, tools: bool, think: bool = False) -> AIMessage
                       "id": tc.get("id") or f"call_{uuid.uuid4().hex[:12]}",
                       "type": "tool_call"})
     kw = {"response_metadata": dict(getattr(full, "response_metadata", None) or {})}
+    if began is not None:
+        thought["text"] = str((getattr(full, "additional_kwargs", None) or {})
+                              .get("reasoning_content") or "")
+        kw["response_metadata"][THOUGHT_KEY] = thought
     if getattr(full, "usage_metadata", None):
         kw["usage_metadata"] = full.usage_metadata
+    if thought["cut"]:  # nothing but the report: the pass is rerun without thinking
+        return AIMessage(content="", **kw)
     return AIMessage(content=content, tool_calls=calls,
                      invalid_tool_calls=list(getattr(full, "invalid_tool_calls", None) or []),
                      **kw)
@@ -265,42 +328,70 @@ def _generate_or_retry(llm_input: list, *, tools: bool, think: bool = False) -> 
         return None
 
 
-# ── adaptive thinking ─────────────────────────────────────────────────────────────────────────
-
-# Evidence that the next move needs a new approach: a call in the latest round failed — a tool
-# error or a hygiene refusal. A declined ("skipped") or air-gapped ("blocked") call is NOT
-# evidence: its next move is already known (say it was not done), and a thinking pass whose
-# right move is a short answer is exactly the shape that comes back empty (below).
-_EVIDENCE_STATUS = "error"
+# ── thinking: one pass, at most two calls ─────────────────────────────────────────────────────
 
 
-def _latest_round(this_turn: list) -> list:
-    """The ToolMessages answering the last tool-calling message this turn — the round the
-    coming pass reacts to. A steer note the user typed after it is skipped, not a boundary."""
-    out = []
-    for m in reversed(this_turn):
-        if isinstance(m, ToolMessage):
-            out.append(m)
-        elif isinstance(m, HumanMessage) and is_steer_message(m):
-            continue
-        else:
-            break
-    return out
+def _take_thought(ai) -> dict:
+    """Pop the thought report off a generated message (it must not ride the conversation's
+    AIMessage); {} when the pass did not reason."""
+    meta = getattr(ai, "response_metadata", None)
+    return (meta.pop(THOUGHT_KEY, None) or {}) if isinstance(meta, dict) else {}
 
 
-def _wants_think(this_turn: list, capped: bool) -> bool:
-    """Whether THIS pass thinks (`runtime.think`). `adaptive` thinks only on the pass right
-    after a round with an error, so a chat question, a clean lookup and every wrap-up answer
-    cost nothing, and the thinking lands on the one decision that proved hard. Not sticky: a
-    later clean round turns it off again. `on` thinks on every uncapped pass; `off` never
-    does; the capped pass never does."""
-    mode = str(get_config().get("runtime.think", "adaptive") or "off").strip().lower()
-    if capped or mode == "off":
-        return False
-    if mode == "on":
-        return True
-    return any((getattr(m, "additional_kwargs", None) or {}).get("saturn_status") == _EVIDENCE_STATUS
-               for m in _latest_round(this_turn))
+def _thought_outcome(ai, thought: dict) -> str:
+    """What came of a thinking call (core.think.OUTCOMES): a model the daemon turned out not
+    to let think (`unsupported` — the call ran think-off, so it stands), a thought cut at the
+    budget or by Esc, a thinking call whose output was malformed twice, one that returned
+    neither text nor a call (`empty` — on a pass whose right move is a short answer, qwen3.5
+    writes the answer inside its reasoning; seen on the 4b and 9b), or a thought the pass
+    used."""
+    if not _think.supported():
+        return "unsupported"
+    if thought.get("cut"):
+        return f"cut-{thought['cut']}"
+    if ai is None:
+        return "malformed"  # its output could not be parsed, twice (_generate_or_retry)
+    if _is_empty(ai):
+        return "empty"
+    return "thought"
+
+
+def _run_pass(llm_input: list, decision) -> "tuple[AIMessage | None, dict]":
+    """The pass's model call(s) under `decision` (core.think.Decision), and what the think
+    record needs: {outcome, draft, thought}. THE bound: at most two calls because of thinking.
+
+      no thought    one think-off call.
+      think         the thinking call; empty, cut or stopped → rerun once think-off.
+      draft         the think-off call first. A text answer stands (a chat turn pays nothing).
+                    A tool call is retracted and the pass rethought; if that thought is
+                    empty, cut or stopped, the DRAFT stands — never a third call.
+
+    None means the model's output was malformed twice (the caller answers honestly)."""
+    if decision.draft:
+        draft = _generate_or_retry(llm_input, tools=True, think=False)
+        if draft is None or not _calls_of(draft)[0]:
+            return draft, {"outcome": "none", "thought": _take_thought(draft)}
+        _take_thought(draft)
+        _retract_stream()  # the draft's preamble is not the answer
+        ai = _generate_or_retry(llm_input, tools=True, think=True)
+        thought = _take_thought(ai)
+        outcome = _thought_outcome(ai, thought)
+        if ai is not None and outcome in ("thought", "unsupported"):
+            return ai, {"outcome": outcome, "draft": outcome == "thought", "thought": thought}
+        diag.log(f"agent_node : the rethink came back {outcome} — the drafted call stands")
+        return draft, {"outcome": outcome, "thought": thought}
+    ai = _generate_or_retry(llm_input, tools=True, think=decision.think)
+    thought = _take_thought(ai)
+    if not decision.think:
+        return ai, {"outcome": "none", "thought": thought}
+    outcome = _thought_outcome(ai, thought)
+    if ai is None or outcome in ("thought", "unsupported"):
+        return ai, {"outcome": outcome, "thought": thought}
+    # The same pass think-off answers; its prefix is already cached, so the rerun is cheap.
+    diag.log(f"agent_node : thinking pass came back {outcome} — rerunning think-off")
+    ai = _generate_or_retry(llm_input, tools=True, think=False)
+    _take_thought(ai)
+    return ai, {"outcome": outcome, "thought": thought}
 
 
 def _is_empty(ai: AIMessage) -> bool:
@@ -527,16 +618,10 @@ def agent_node(state: AgentState):
     # 4. generate — a malformed model output is retried once, then answered honestly; any
     # other failure propagates (the REPL reports "Turn failed").
     this_turn = _this_turn(messages + new)
-    think = _wants_think(this_turn, capped)
+    kind = _think.step_kind(this_turn, capped, mechanical=(ASK_ALONE_TEXT,))
+    decision = _think.decide(_think.level(state), kind, _think.policy(), _think.supported())
     llm_input = _llm_input(state, messages + new)
-    ai = _generate_or_retry(llm_input, tools=True, think=think)
-    if think and ai is not None and _is_empty(ai):
-        # On a pass whose right move is a short answer, a thinking model can write the answer
-        # inside its reasoning and emit nothing (seen on qwen3.5 4b and 9b). The same
-        # pass think-off answers; its prefix is already cached, so the rerun is cheap.
-        diag.log("agent_node : thinking pass returned nothing — rerunning think-off")
-        think = False
-        ai = _generate_or_retry(llm_input, tools=True, think=False)
+    ai, thinking = _run_pass(llm_input, decision)
     if ai is not None and iteration > cap and _calls_of(ai)[0]:
         # The hard stop: the model was told its calls will not run and called again. Take the
         # tools away — the one pass that pays a full re-prefill (the system section changes),
@@ -546,6 +631,15 @@ def agent_node(state: AgentState):
         _retract_stream()
         ai = _generate_or_retry(_llm_input(state, messages + new, [HumanMessage(content=BUDGET_NOTE)]),
                                 tools=False, think=False)
+        _take_thought(ai)
+    # One think record per pass (core.think.entry): what kind of step it was, whether it
+    # thought and what came of it — the rail, /think, /trace why and the benchmark read it.
+    meta = (getattr(ai, "response_metadata", None) or {}) if ai is not None else {}
+    updates["think"] = [_think.entry(
+        n=iteration, kind=kind, decision=decision, outcome=thinking["outcome"],
+        draft=thinking.get("draft", False), thought=thinking.get("thought"),
+        prompt_s=(meta.get("prompt_eval_duration") or 0) / 1e9)]
+    thought_note = f", thought: {thinking['outcome']}" if thinking["outcome"] != "none" else ""
     if ai is None:
         updates["messages"] = new + [AIMessage(content=_with_trailers(MALFORMED_TEXT, state, this_turn))]
         diag.log(f"agent_node : {time.perf_counter() - start:.4f}s (malformed output twice)")
@@ -563,7 +657,7 @@ def agent_node(state: AgentState):
                           usage_metadata=ai.usage_metadata)
         updates["messages"] = new + [final]
         diag.log(f"agent_node : {time.perf_counter() - start:.4f}s (answer, iter {iteration}"
-                 f"{', think' if think else ''})")
+                 f"{thought_note})")
         return updates
 
     # 5. hygiene
@@ -596,7 +690,7 @@ def agent_node(state: AgentState):
     updates["messages"] = new + [ai] + answered
     diag.log(f"agent_node : {time.perf_counter() - start:.4f}s -> "
              f"{', '.join(str(c.get('name')) for c in kept)} ({len(answered)} answered here"
-             f"{', think' if think else ''})")
+             f"{thought_note})")
     return updates
 
 

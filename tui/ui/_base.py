@@ -132,7 +132,10 @@ _turn_start = None
 # and must not render with a completion glyph.
 _NODE_STARTING = "starting"
 _status = {"node": "", "iteration": 0, "tools": 0, "tok_per_sec": 0.0,
-           "ctx_used": 0, "ctx_window": 0, "gates": 0}
+           "ctx_used": 0, "ctx_window": 0, "gates": 0,
+           # `thinking`: when the thought in flight began (None otherwise); `thought_s`: the
+           # turn's total seconds spent thinking, echoed on the receipt.
+           "thinking": None, "thought_s": 0.0}
 
 
 # ── metric formatting (shared by the status bar and the readout commands) ─────

@@ -407,8 +407,12 @@ def persist(dotted_key: str) -> Path:
     # translation keeps the per-line eol capture honest and the diff to the single edited line.
     with open(_CONFIG_PATH, "r", encoding="utf-8", newline="") as fh:
         text = fh.read()
+    # The edit is computed BEFORE the file is opened for writing: _set_yaml_scalar raises for a
+    # key the file does not hold (or a container), and opening with "w" first would leave
+    # config.yaml empty when it did.
+    edited = _set_yaml_scalar(text, dotted_key, value)
     with open(_CONFIG_PATH, "w", encoding="utf-8", newline="") as fh:
-        fh.write(_set_yaml_scalar(text, dotted_key, value))
+        fh.write(edited)
     return _CONFIG_PATH
 
 

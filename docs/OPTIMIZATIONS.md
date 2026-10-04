@@ -66,11 +66,19 @@ everything that changed sits after such a checkpoint. The agent's prompt is buil
   mechanically. There is no judge and no answer rewrite: the model's last message is the answer.
   The plan engine's rewrite had cost ~10 s of decode per single-step turn (run 45 in the v1 trace DB: the step
   wrote 452 tokens, synthesize rewrote them in 414).
-- **[have] Adaptive thinking** (`runtime.think`, since 2026-09-29). Every pass runs think-off
-  except the one right after a tool round with an error, bounded by `runtime.think_budget`
-  (4096); a thinking pass that returns nothing is rerun think-off. On the plan engine the
-  planner's thinking was the largest fixed cost on every turn (12.4 s average for 63 output
-  tokens). Whether thinking earns its latency per tier is `docs/engine.md` item 11.
+- **[have] Think before acting** (`core/think.py`; `runtime.think` since 2026-09-29, the
+  step kinds and the `auto` rule since 2026-10-04). Under `auto` a pass is drafted think-off;
+  a text answer stands and a tool call is rethought, so a chat turn and every final answer pay
+  nothing for thinking. A thought is cut in the stream at `runtime.think_budget` (1024
+  reasoning tokens) or by Esc, and a thought that is cut or empty is dropped: at most two
+  model calls per pass. Measured 2026-10-04 (loop benchmark, `docs/engine.md` item 11):
+  against the old after-an-error rule, 29.5 of 34 tasks instead of 23.5 on the 4b for +54%
+  suite time, 31 instead of 30 on the 9b for +18%; chat 3.4 → 3.7 s, a lookup 3.5 → 6.3 s on
+  the 4b. A thought is 91 tokens at the median, 509 at most. The rethink after a discarded
+  draft re-prefills almost nothing (0.03 s of prompt eval): the two prompts differ only at the
+  tail, so the cached prefix holds. Thinking before the final answer was the waste: on the 9b
+  it produced 12–22 empty thoughts a run, each one rerun. On the plan engine the planner's
+  thinking was the largest fixed cost on every turn (12.4 s average for 63 output tokens).
 - **[next] Structural observation shaping.** Clamp tool output by shape, not just length:
   first N rows of a CSV, matched lines with a little context for search, a diff after an edit
   instead of the whole file. The loop's versions are `docs/engine.md` item 4 (a

@@ -415,8 +415,10 @@ def invoke_kwargs(fmt: "dict | None", temp: float, task: "str | None" = None, *,
     its ~2048 default and front-truncate long prompts. A task also carries its `num_predict`
     bound, and `reasoning` (think) is set EXPLICITLY OFF — never the model's default — unless
     the daemon already rejected the flag for this tag (`_NO_THINK_SUPPORT`). `think=True` is
-    the agent's adaptive thinking pass (nodes/agent.py): the flag goes ON and the task's
-    `num_predict` widens by `runtime.think_budget`, since thinking tokens count against it."""
+    a thinking pass (core/think.py decides which): the flag goes ON and the task's
+    `num_predict` widens by `runtime.think_budget`, since thinking tokens count against it.
+    A tag that rejects the flag gets neither: it cannot think, so there is nothing to make
+    room for."""
     options: dict = {"temperature": temp}
     tag = model_tag()
     try:
@@ -426,8 +428,10 @@ def invoke_kwargs(fmt: "dict | None", temp: float, task: "str | None" = None, *,
         pass
     if task is not None:
         options["num_predict"] = NUM_PREDICT.get(task, 512)
-        if think:
-            options["num_predict"] += max(0, int(get_config().get("runtime.think_budget", 4096) or 0))
+        if think and tag not in _NO_THINK_SUPPORT:
+            from core import think as _think  # lazy: core.think reads this module's tag set
+
+            options["num_predict"] += _think.budget()
     kwargs: dict = {"options": options}
     if task is not None and tag not in _NO_THINK_SUPPORT:
         kwargs["reasoning"] = bool(think)

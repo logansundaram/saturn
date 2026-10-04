@@ -66,6 +66,15 @@ def _fresh_usage():
     return _usage[0]
 
 
+def set_thinking(on: bool) -> None:
+    """A thought began (True) or ended (False) — nodes/agent._generate's `thinking` events,
+    through app/turn.run_turn. While one is in flight the bar's progress zone leads with
+    `thinking 3s` on its own clock and the key legend says Esc stops it: a thinking pass streams
+    nothing into the response region, and silence must not read as a stalled model."""
+    _base._status["thinking"] = time.perf_counter() if on else None
+    _live_refresh()
+
+
 def set_input_preview(buffer: str, queued: int) -> None:
     """Update the status bar's type-ahead readout (current in-progress line + queue depth) and
     repaint the bar immediately so typing feels live, not capped at the bar's idle refresh rate.
@@ -133,6 +142,10 @@ class _StatusBar:
         # when the node COMPLETES (app/turn.py), so this is the last node that FINISHED — not the
         # one running now. There is no active-node signal to render, so it says what it knows.
         zone()
+        thinking = status.get("thinking")
+        if thinking:
+            bar.append(f"thinking {_fmt_dur(time.perf_counter() - thinking).strip()}", style=_ACCENT)
+            dot()
         if status["node"] == _NODE_STARTING:
             bar.append(_NODE_STARTING, style=_DIM)
             dot()
@@ -194,7 +207,10 @@ class _StatusBar:
         # whole line ON PURPOSE: the bar trims from the right edge on a narrow terminal (no-wrap
         # + ellipsis), so the hint is the first thing sacrificed — never the posture or progress.
         zone()
-        bar.append("esc pause · ctrl-c cancel", style=_DIM)
+        # Esc on an EMPTY line is the pause that stops a thought; with text typed it is a steer,
+        # which does not (tui/typeahead) — so the legend only promises it for an empty line.
+        bar.append(("esc stops thinking" if thinking and not buf else "esc pause")
+                   + " · ctrl-c cancel", style=_DIM)
         return bar
 
 
@@ -254,7 +270,7 @@ def reset_turn() -> None:
     # there is no finished node to name and an empty zone would read as a stalled bar.
     _base._status = {"node": _NODE_STARTING, "iteration": 0, "tools": 0, "tok_per_sec": 0.0,
                      "ctx_used": _base._status.get("ctx_used", 0), "ctx_window": _active_ctx_window(),
-                     "gates": 0}
+                     "gates": 0, "thinking": None, "thought_s": 0.0}
     # Mark the egress ledger so the trust receipt can summarize exactly this turn's slice.
     # receipt.py owns the mark (receipt-domain state, not UI state); on failure the mark keeps
     # its previous value rather than being forced to 0 — readers treat 0 as "unknown", and a

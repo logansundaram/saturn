@@ -1,5 +1,5 @@
 """A tool call that did not do its job is stamped `error` on its ToolMessage — the stamp the
-adaptive think (`nodes.agent._wants_think`) and the answer's incidents note read. Tools report
+think decision (`core.think.step_kind`) and the answer's incidents note read. Tools report
 failure by RAISING (read_file's not-found convention); a failure returned as a plain string used
 to be stamped `done`, so the user was never told the edit or the event did not happen."""
 

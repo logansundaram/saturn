@@ -30,16 +30,18 @@ runtime:
   # Agent passes per turn (one pass = one model call, which may issue several tool calls). From this pass on no tool call runs: a call is refused and the model answers from
   # what it has, saying what is undone.
   max_iterations: 16
-  # Adaptive thinking, on evidence. A pass thinks, with a bounded budget, only when the tool
-  # round just before it had an error (a tool failure or a refused call) — the one place the
-  # model needs a new approach. Every other pass runs think-OFF: a chat question, a clean
-  # lookup, the answer after a declined call, and the capped last pass (past max_iterations).
-  # A thinking pass that returns nothing is rerun once think-off.
-  # One of: off (never think) | adaptive (the above) | on (every pass but the capped one).
-  think: adaptive
-  # Extra output tokens a thinking pass may spend on its reasoning (thinking tokens count
-  # against the generation bound; the answer must still fit after them).
-  think_budget: 4096
+  # Thinking — whether the model reasons before it answers. `/think` shows what each pass did
+  # and sets the level; `/think <request>` runs one request at deep.
+  #   fast   never think
+  #   auto   think before acting: a pass that is about to call a tool is thought through
+  #          first; a plain answer never waits on a thought. Also after an error or a steer.
+  #   deep   think on every pass but the capped last one
+  # (the old names off | adaptive | on still work.) A thought that comes back empty, runs past
+  # think_budget, or is stopped with Esc is dropped and the pass answers without it.
+  think: auto
+  # The most tokens one thought may spend before it is cut (also the extra output room a
+  # thinking pass gets, so the answer still fits after the thought).
+  think_budget: 1024
   # Tools AT OR BELOW this risk tier run without prompting; anything riskier hits the
   # approval gate. One of: read_only | side_effecting | destructive.
   auto_approve: read_only

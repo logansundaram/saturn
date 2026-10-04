@@ -9,6 +9,26 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
 
 ### Added
 
+- **`/think` — how much Saturn reasons before it answers.** Three levels: `fast` (never
+  thinks), `auto` (thinks before it acts) and `deep` (thinks on every pass). `/think` shows
+  the level, what each kind of pass does and what the last turn's passes did; `/think deep`
+  sets it; `/think <your request>` runs that one request at `deep`, in the terminal or with
+  `saturn -p`.
+- **`auto` now thinks before it acts.** When Saturn is about to use a tool it thinks the move
+  through first; a plain answer never waits on a thought. It also thinks after a tool error
+  and after you steer. Before, it thought only after an error. On the benchmark of everyday
+  requests the small model (4b) completes about six more of 34 tasks this way and the 9b is
+  unchanged; turns that use tools take longer (a simple lookup on the 4b about 6 s instead of
+  3.5 s), chat does not. `/think fast` turns thinking off.
+- **You can see a thought, and stop it.** While the model thinks the status bar says
+  `thinking 3s` and Esc stops the thought; the pass then answers without it. A thought is also
+  cut at `runtime.think_budget` tokens (1024). Afterwards the trace line shows `thought 1.8s`
+  with the reason and the opening of the thought, the receipt shows the turn's thinking time,
+  and `/trace why` lists when each pass thought.
+- **`benchmark.py --loop --think <mode> --tier <tier> --runs N`** runs the loop benchmark
+  under a think mode without touching `config.yaml`, and the report records every pass's
+  thinking.
+
 - **Skills — your own procedures.** Write a procedure once in markdown and run it by typing its
   name: `/weekly-review`, or `/weekly-review focus on work` to point it at something. A skill
   is `~/.saturn/skills/<name>/SKILL.md` (or `<name>.md`) — the same file shape Claude Code
@@ -151,6 +171,20 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
 
 ### Fixed
 
+- **Saving a setting can no longer empty `config.yaml`.** Saving a key the file has no line
+  for (`/config <key> --save` after a session-only set, on a config written before the key
+  existed) opened the file for writing before finding the line, and left it empty when the
+  line was not there. The file is now untouched and the command says what to add.
+- **`think: on` in `config.yaml` now means what it says.** YAML reads a bare `on` as a boolean,
+  and Saturn then ran it as `adaptive` without a word. Booleans and the old names are read
+  correctly, and a value that is not a level runs as `auto` with a warning at startup.
+- **A model without a thinking mode is no longer asked twice.** A model that rejects the think
+  flag got a doubled output limit on a "thinking" pass and, if it came back empty, the
+  identical call again. It now runs every pass once, without thinking.
+- **Answering Saturn's question no longer triggers a thought.** When the model asked a question
+  and tried to act in the same breath, the action was told to wait, and that wait was counted
+  as an error for the next pass to think about.
+
 - **The Full Disk Access remedy names the right app.** It now says which app to grant it to
   (Terminal, iTerm, Visual Studio Code…) and that it is not Messages; a model had told the user
   to grant it to Messages.
@@ -220,6 +254,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
   (after a failed tool call) is kept in the run's record and shown under that pass.
 
 ### Changed
+
+- **The think levels are named `fast`, `auto` and `deep`** (`runtime.think`). The old `off`,
+  `adaptive` and `on` still work. `runtime.think_budget` now defaults to 1024 (was 4096) and
+  is the point where a thought is cut, not only extra output room.
 
 - **A failed tool call is no longer a memory candidate.** The review at `/quit` used to offer
   one line per failed call ("Tool call failed: read_messages(…) — Error: …"): a missing

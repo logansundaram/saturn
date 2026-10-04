@@ -35,7 +35,19 @@ def _metric_parts(delta: dict) -> list[str]:
     tps = delta.get("tok_per_sec") or 0.0
     if tps > 0:
         parts.append(f"{tps:.0f} tok/s")
+    thought = _think_entry(delta)
+    if thought.get("outcome") == "thought":
+        parts.append(f"thought {float(thought.get('seconds') or 0.0):.1f}s")
+    elif thought.get("asked"):
+        parts.append("thought dropped")
     return parts
+
+
+def _think_entry(delta: dict) -> dict:
+    """This pass's think record (core/think.entry) off an agent delta; {} when it has none."""
+    entries = (delta or {}).get("think") or []
+    last = entries[-1] if entries else None
+    return last if isinstance(last, dict) else {}
 
 
 def _node_line(node: str, dur: float, delta: dict) -> "Text":
@@ -105,6 +117,12 @@ def show_node(node: str, delta: dict | None = None) -> None:
     if used > 0:
         _base._status["ctx_used"] = used
     _base._status["node"] = node
+    if node == "agent":
+        _base._status["thinking"] = None  # the pass is over, whatever its last event said
+        thought = _think_entry(delta)
+        if thought.get("asked"):
+            _base._status["thought_s"] = (_base._status.get("thought_s") or 0.0) + float(
+                thought.get("seconds") or 0.0)
 
     # Per-node trace row: `│ ✓ node  elapsed  metrics` (metrics dim). The metric annotations are
     # built from the delta by the shared _node_line helper (the live trace + the /trace replay
@@ -124,6 +142,7 @@ def show_node(node: str, delta: dict | None = None) -> None:
     # `e(xplain)` shows) renders as a dim leaf under the agent rail line — the "why" of the
     # calls. The answer pass streams under `── response` instead, never here.
     if node == "agent" and not _is_answer(delta):
+        _render_think_leaf(_think_entry(delta))
         _render_agent_thought(delta.get("messages") or [])
 
     if delta.get("tool_events"):
@@ -154,6 +173,23 @@ def _node_leaf(text: str, style: str) -> None:
     """One wrapped `└ …` annotation leaf directly under a node's rail line — the shared shape for
     the agent's reasoning preview and the gate-decision echo."""
     _leaf(f"  {_TREE_LEAF} ", "    ", text, style, reserve=2)
+
+
+def _render_think_leaf(entry: dict) -> None:
+    """The pass's THOUGHT as a dim leaf under its rail row: why it thought and the opening of
+    what it thought — `thought (first move): …`. A thought that came to nothing says so
+    (`after an error · thought cut at 1024 tokens — answered without it`). Nothing for a pass
+    that was not asked to think."""
+    if not entry.get("asked"):
+        return
+    from core import think
+
+    if entry.get("outcome") == "thought":
+        text = clip(str(entry.get("text") or ""), _REASONING_CAP)
+        _node_leaf(f"thought ({entry.get('why')}): {text}" if text
+                   else f"thought ({entry.get('why')})", _DIM)
+    else:
+        _node_leaf(think.describe(entry), _DIM)
 
 
 def _render_agent_thought(messages: list) -> None:

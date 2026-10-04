@@ -438,6 +438,9 @@ class LLMTraceHandler(BaseCallbackHandler):
                 "node": node,
                 "model": model,
                 "input": [_msg_to_dict(m) for m in flat],
+                # What the call was SENT with (core/llms.invoke_kwargs' `reasoning`), so a
+                # thinking call that produced no reasoning is still told from a think-off one.
+                "think": bool((kwargs.get("invocation_params") or {}).get("reasoning")),
             }
         except Exception as exc:
             import diag
@@ -449,6 +452,7 @@ class LLMTraceHandler(BaseCallbackHandler):
             return
         try:
             out, ptok, otok = _llm_output(response)
+            out["think"] = bool(rec.get("think"))
             self._tracer.log_llm_call(
                 self._run_id, rec["node"], rec["model"], perf_counter() - rec["start"],
                 ptok, otok, json.dumps(rec["input"], default=str), json.dumps(out, default=str), "ok",
@@ -469,10 +473,20 @@ class LLMTraceHandler(BaseCallbackHandler):
             # every cancelled turn as a failed model call.
             cancelled = isinstance(error, GeneratorExit)
             note = "stream closed before completion (freeze/cancel)" if cancelled else str(error)
+            out = {"content": "", "tool_calls": [], "error": note, "think": bool(rec.get("think"))}
+            if cancelled and rec.get("think"):
+                # A thought cut at its budget or by Esc (nodes/agent._generate closes the
+                # stream): keep what it had reasoned — langchain hands the partial generation.
+                note = out["error"] = "stream closed before completion (a thought was cut, or the turn cancelled)"
+                try:
+                    partial = _llm_output(kwargs.get("response"))[0].get("reasoning")
+                except Exception:
+                    partial = None
+                if partial:
+                    out["reasoning"] = partial
             self._tracer.log_llm_call(
                 self._run_id, rec["node"], rec["model"], perf_counter() - rec["start"],
-                0, 0, json.dumps(rec["input"], default=str),
-                json.dumps({"content": "", "tool_calls": [], "error": note}),
+                0, 0, json.dumps(rec["input"], default=str), json.dumps(out, default=str),
                 "cancelled" if cancelled else "error",
             )
         except Exception as exc:

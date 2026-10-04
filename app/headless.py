@@ -17,7 +17,7 @@ from pathlib import Path
 from app import __version__
 from app.cli import _read_piped_stdin
 from app.graph import DB_PATH
-from app.session import _fresh_turn, _initial_state, skill_for_line
+from app.session import _fresh_turn, _initial_state, skill_for_line, think_for_line
 from app.startup import startup_load, _warn_flagged_attachments
 from app.turn import close_run, open_run, run_turn, _make_on_update, _trace_warning
 from core import mentions
@@ -163,6 +163,10 @@ def run_headless(args) -> None:
     stderr progress + the `recorded:` receipt; engine, approver, and trace are shared."""
     query = args.prompt if args.prompt is not None else args.query
     q_mode = args.prompt is None
+    # `saturn -p "/think <request>"` runs that request at `deep`, as typing it in the REPL does.
+    deep_request = think_for_line(query)
+    if deep_request is not None:
+        query = deep_request
     graph, ingest_warning = startup_load(interactive=False)
     if ingest_warning:
         print(ingest_warning, file=sys.stderr)
@@ -173,9 +177,16 @@ def run_headless(args) -> None:
 
     if _policy.load_problem():
         print(f"warning: {_policy.load_problem()}", file=sys.stderr)
+    from core import think as _think
+
+    for problem in _think.problems():
+        print(f"warning: {problem}", file=sys.stderr)
     tracer = Tracer(DB_PATH)
     state = _initial_state()
     state = _fresh_turn(state, query)
+    if deep_request is not None:
+        state["think_level"] = "deep"
+        print("thinking: deep for this run", file=sys.stderr)
     # `saturn -p "/weekly-review"` runs the user's skill exactly as typing it in the REPL does
     # (app/session.skill_for_line — a built-in command's name never resolves to a skill).
     invoked = skill_for_line(query)

@@ -57,8 +57,8 @@ The whole product is one loop. Reading it end to end explains 80% of the repo:
      schemas the chat template renders are inside it — between turns so the daemon's prompt
      cache resumes there (see `docs/OPTIMIZATIONS.md`, "the prefix cache").
    - `nodes/agent.py` makes ONE native tool-calling call per pass (`bind_tools` over the
-     registry, streamed, think adaptive: on only for the pass right after a tool round with an error, never
-     on the capped pass, and an empty thinking pass is rerun think-off — `runtime.think`) over `[system][stable][history…][dynamic + request][turn…]`.
+     registry, streamed; whether the pass thinks is `core/think.py`'s decision from the kind of step —
+     `runtime.think` fast | auto | deep, at most two calls per pass because of thinking) over `[system][stable][history…][dynamic + request][turn…]`.
      Around the call, deterministic checks in a fixed order: a pause (Esc) `interrupt()`s for
      the pause prompt (continue / steer / abort); a steer (Esc + text) lands as a
      `STEER_PREFIX` message, drained only past the pause so a resumed interrupt cannot lose it;
@@ -113,6 +113,7 @@ The whole product is one loop. Reading it end to end explains 80% of the repo:
 | `doctext.py` | Text out of PDF / .docx / .xlsx (`extract`) for `read_file` and `@file` attachments, and the PDF / Word loaders the knowledge base shares. A leaf; the format libraries load lazily. |
 | `sources.py` | `build_sources` — the answer's source numbering, shared by the Sources footer and `/trace source`. |
 | `pause.py` | The `PauseController`: the Esc pause / steer latch the agent node consults at the top of every pass. |
+| `think.py` | Which passes think: `step_kind` (what the pass is reacting to) and `decide(level, kind)` — `runtime.think` fast / auto / deep, where `auto` is one rule: think before a pass acts (the pass is drafted think-off and rethought only if it calls a tool), and after an error or a steer. Plus the per-pass record (`entry`, `describe`) the rail, `/think`, `/trace why` and the loop benchmark read. Pure: no model call, never the request text. |
 | `prime.py` | The idle prefix prime: between turns (and once after the weights load) the agent's `[system][stable grounding]` prefix is re-sent through the bound model with one predicted token so the next turn's call resumes from that checkpoint. Off under tests and `runtime.prime: false`. |
 | `tool_args.py` | Tool-argument recovery: alias coercion onto real schemas (required and optional arguments), the foreign-arguments check (`tool_for_args`: `recall(fact=…)` is `remember`'s call), and the schema hint the agent sends back on a rejected call (small-model tolerance). |
 | `compaction.py` | The heavier LLM compaction (automatic past threshold) folding old turns into a summary message. |
@@ -178,7 +179,8 @@ every check in the agent node. Note: `nodes/tools.py` is the *tool-execution nod
 modules: `conversation.py` (/clear /resume /copy), `knowledge.py` (/docs
 /memory /init /undo), `runtime.py` (/tools /models /mcp), `system.py` (/help /quit
 /update), `config.py` (/config), `notify.py` (/notify — pending notifications and the menu bar
-icon), `workspace_dirs.py` (/add-dir /rm-dir), `policy.py` (/policy — the gate's levers plus the egress
+icon), `workspace_dirs.py` (/add-dir /rm-dir), `think.py` (/think — the think level, what
+each kind of pass does, the last turn pass by pass; `/think <request>` is one turn at deep), `policy.py` (/policy — the gate's levers plus the egress
 ledger and air-gap, /privacy merged in 2026-09-30), `trace.py` (/trace — incl. the `source`
 subview; `context` is an alias of `invoke --full` — + export/replay engine). A cut spelling
 prints a `_RENAMED` pointer for one release. Convention: one file owns every view of a

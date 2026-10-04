@@ -97,6 +97,20 @@ def refresh_trust_classifications() -> None:
 refresh_trust_classifications()
 
 
+def is_action(name: str) -> bool:
+    """Whether a completed call to `name` is an ACTION — it changed something and returned a
+    confirmation, not material: a tool declared side_effecting, or a destructive one whose
+    output is not external (a send, a delete; run_shell and MCP tools return output to read).
+    One rule, two readers: the Sources receipt (nodes/tools.py — an action is never cited) and
+    the think decision (core/think.step_kind — the pass after a round of actions is the
+    wrap-up)."""
+    from trust import quarantine
+
+    declared = DECLARED_RISK.get(name)
+    return declared == "side_effecting" or (
+        declared == "destructive" and not quarantine.is_untrusted(name))
+
+
 # Risk tiers drive the approval gate (see nodes/approval.py):
 #   read_only      — no side effects; runs freely, never prompts
 #   side_effecting — writes/external actions; prompts for approval

@@ -149,6 +149,14 @@ class AgentState(TypedDict):
     # Agent passes this turn, bounded by runtime.max_iterations (nodes/agent.py).
     iteration: int
 
+    # One record per agent pass this turn (core/think.entry): the kind of step, whether the
+    # pass thought, and what came of the thought. Read by the rail, /think, /trace why and the
+    # loop benchmark; never part of the prompt.
+    think: Annotated[List[dict], operator.add]
+
+    # This turn's own think level (`/think <request>` sets "deep"); empty = runtime.think.
+    think_level: str
+
     # Flat, append-only mirrors of the ToolMessages, reset to [] per turn: `tools_called` names
     # every executed call; `tool_results` / `documents_retrieved` hold what the answer could
     # draw on (the Sources receipt, /trace source).

@@ -17,7 +17,7 @@ import diag
 from app import bang
 from app.graph import DB_PATH
 from app.session import (_fresh_turn, _initial_state, _maybe_autocompact, skill_completions,
-                         skill_for_line)
+                         skill_for_line, think_for_line)
 from app.startup import startup_load, start_warm_up, _warn_flagged_attachments
 from core import prime
 from app.turn import close_run, open_run, run_turn, _make_on_update, _trace_warning
@@ -81,6 +81,12 @@ def run_repl() -> None:
         ui.warn(f"skill {problem}")
     for name in sorted(n for n in _skills.discover() if commands.resolves(n)):
         ui.warn(f"skill /{name}: the built-in /{name} wins, so it never runs — rename its file")
+    # A think setting that is not one of its values runs as its default — and says so, rather
+    # than silently meaning something else (a bare YAML `on` used to run as adaptive).
+    from core import think as _think
+
+    for problem in _think.problems():
+        ui.warn(problem)
 
     # Startup header — tier/model / tool count / corpus size, like a tool's first line.
     from core.llms import model_id, check_models
@@ -253,6 +259,13 @@ def run_repl() -> None:
                 ui.note(f"{label} will be attached to your next message.")
                 continue
 
+        # `/think <request>` is that request, run for one turn at `deep` (core/think): the
+        # prefix comes off here and the rest goes down the ordinary path. Bare `/think` and
+        # `/think <level>` are the command's own and fall through to dispatch.
+        deep_request = think_for_line(user_input) if not dropped else None
+        if deep_request is not None:
+            user_input = deep_request
+
         # `/`-prefixed lines are REPL meta-commands, not agent turns — intercept them here.
         # `not dropped` keeps the drag-and-drop promise: a POSIX absolute path ("/home/…")
         # whose owner chose "[Enter] send as-is" must run as a message, not fall through to
@@ -275,6 +288,9 @@ def run_repl() -> None:
             continue
 
         state = _fresh_turn(state, user_input)
+        if deep_request is not None:
+            state["think_level"] = "deep"
+            ui.note("thinking deep for this turn")
         if invoked is not None:
             state["skill"] = skills.block(invoked[0])
             ui.note(f"running your skill /{invoked[0].name} · {mentions.display(invoked[0].path)}")
@@ -327,6 +343,7 @@ def run_repl() -> None:
                 pause=input_queue,
                 on_token=answer.feed,
                 on_retract=answer.discard,
+                on_thinking=ui.set_thinking,
             )
             tracer.end_run(run_id, "ok", state["messages"][-1].content)
             # The daemon is idle now: re-plant every lineage's prefix checkpoint for the next
@@ -422,6 +439,11 @@ def run_repl() -> None:
                 "your steering correction arrived after the turn had finished — it could not be "
                 "applied mid-turn, so it will run as your next message instead."
             )
+        elif late_pause and any(e.get("outcome") == "cut-esc" for e in state.get("think") or []):
+            # The Esc did its job: it stopped a thought, and the pass that answered without it
+            # was the turn's last — there was no later pass to pause before.
+            ui.note("Esc stopped the thought; the turn finished on the next answer, so there "
+                    "was nothing left to pause.")
         elif late_pause:
             ui.note("your pause request arrived after the turn had finished — nothing left to "
                     "pause this turn.")

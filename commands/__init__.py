@@ -34,6 +34,7 @@ _COMMAND_MODULES = [
     "runtime",       # /tools, /models, /mcp
     "skills",        # /skills — the user's own procedures (core/skills)
     "system",        # /help, /quit, /update
+    "think",         # /think — how much Saturn reasons: the readout, the level, one turn at deep
     "trace",         # /trace (incl. the why/source provenance subviews)
     "workspace_dirs",  # /add-dir, /rm-dir — folders beyond the launch folder
 ]

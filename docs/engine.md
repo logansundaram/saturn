@@ -62,11 +62,19 @@ each costing a chat turn nothing):
    the refusal, not a note, is the mechanism.
 4. **generate** — `_generate`, the one seam tests replace: `bind_tools(registry)`, streamed,
    chunks folded into one AIMessage. Options ride `core/llms.invoke_kwargs` (num_ctx,
-   `num_predict` 4096 for the agent task, `reasoning` explicitly off). Thinking is adaptive
-   (`runtime.think: adaptive`): a pass thinks, under `think_budget` (4096), only when the tool
-   round just before it had an error; a thinking pass that returns nothing is rerun think-off
-   (the 4b/9b write the answer inside the reasoning and emit no content). A thinking pass's
-   reasoning is recorded in `llm_calls` (shown by `/trace why`), never on the message. A model
+   `num_predict` 4096 for the agent task, `reasoning` explicitly off). Whether the pass thinks
+   is `core/think.py`'s decision (since 2026-10-04; spec
+   `superpowers/specs/2026-10-04-adaptive-thinking-design.md`): `step_kind` reads what the pass
+   is reacting to (first move · new information · after an error · steered · wrap-up · capped)
+   and `decide` applies the level (`runtime.think`: fast | auto | deep). `auto` thinks before a
+   pass ACTS: every deciding pass is drafted think-off, a text answer stands, a tool call is
+   retracted and the pass rethought; after an error or a steer the pass thinks outright.
+   `_run_pass` bounds it: at most two model calls per pass because of thinking. A thought that
+   comes back empty (the 4b/9b write the answer inside the reasoning and emit no content), runs
+   past `think_budget` (1024 reasoning tokens, counted in the stream) or is stopped by Esc is
+   dropped — the pass reruns think-off, or its draft stands. One
+   record per pass lands in `state["think"]`; the reasoning itself is recorded in `llm_calls`
+   (shown by `/trace why`), never on the message. A model
    reply whose tool arguments were not valid JSON is retried once with a corrective note;
    what the failed attempt streamed is retracted first (`RETRACT` on LangGraph's custom
    stream, which `app/turn.run_turn` hands to `on_retract` — the REPL's `answer.discard`).
@@ -215,9 +223,45 @@ nothing — each guard fires only on its failure shape.
 
 ### Measurement
 
-11. **Thinking on/off as a benchmark flag.** The adaptive think fires after a tool error and
-    the 4b's thinking passes often produce nothing. A `--think off` run of the loop benchmark
-    says whether thinking earns its latency per tier.
+11. **Pick `auto`'s policy by measurement** — done 2026-10-04; `auto` is `act` (think before
+    acting). Loop benchmark, tasks passed of 34 and suite seconds; the 4b figures for
+    `recover`, `first`, `act` and `decide-draft` are the mean of two confirmation runs (their
+    screening runs agreed within one task), everything else one run:
+
+    | mode | what thinks | 4b | 9b | 9b empty thoughts |
+    |---|---|---|---|---|
+    | `fast` | nothing | 24 · 147 s | 29 · 367 s | 0 |
+    | `recover` | the pass after an error | 23.5 · 160 s | 30 · 385 s | 0 |
+    | `first` | the first move, if it acts | 26 · 227 s | 31 · 425 s | 0 |
+    | **`act`** | any pass, if it acts | **29.5 · 247 s** | **31 · 455 s** | 0 |
+    | `decide-draft` | first move if it acts; every pass after information | 29.5 · 250 s | 28 · 455 s | 12 |
+    | `decide` | every deciding pass | 29 · 240 s | 29 · 467 s | 12 |
+    | `deep` | every pass | 30 · 234 s | 29 · 472 s | 22 |
+
+    What it showed. Thinking is worth about six tasks on the 4b and nothing measurable on the
+    9b. Every empty thought on the 9b was a turn's final answer after an information round, so
+    a policy that never thinks before a text answer has none. `act` matches the best 4b score
+    with fewer thoughts (48 against 64) and is the only high scorer that does not cost the 9b
+    tasks. Its price: suite time +54% on the 4b and +18% on the 9b; chat is barely touched
+    (3.4 → 3.7 s on the 4b) but a lookup goes 3.5 → 6.3 s. By the rule written in the spec
+    beforehand `act` does NOT qualify (the 9b gain is under two tasks, the 4b time over +40%);
+    Logan chose it on these numbers and cut the three-run confirmation short, so the 9b side
+    rests on one run. The other candidates were deleted; `recover` stays as the baseline
+    (`benchmark.py --loop --think recover`). Reports: `logging/benchmarks/*_20261004_*`.
+
+    Open from it: `file_read` and `multi_compare` fail under every policy that thinks on the
+    first move — the thought adds a cautious extra lookup (does the file exist?) and the turn
+    goes over its pass limit with the right answer. Worth a prompt line and a re-run.
+
+11a. **Other ways to decide — to explore later (Logan, 2026-10-04).** `act` is a hand-written
+    rule. Candidates for a better one, none built: a lightweight neural classifier that marks
+    a request complex or simple, trained on Saturn's own runs (every pass now records its
+    kind, whether it thought and what came of it, and the benchmark grades the turn — that is
+    the training data); a learned per-step router in the shape of ARES
+    (arxiv.org/html/2603.07915: matches always-high effort with 35% fewer reasoning tokens);
+    and a `think` tool the model calls when it wants to reason (Anthropic's think tool). The
+    bar any of them has to clear is `act` on both tiers, on tasks passed and on lookup latency.
+
 12. **Grade the recorded reasoning.** It is in `llm_calls` now; the loop benchmark can check
     that a thinking pass's thought names the failed tool — what the pass exists for.
 13. **Three runs per change.** The 4b at temperature 0 is close to deterministic per task, but

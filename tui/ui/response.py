@@ -30,6 +30,8 @@ def _stats_parts() -> list[str]:
              f"{n} tool{'' if n == 1 else 's'}"]
     if status["tok_per_sec"] > 0:
         parts.append(f"{status['tok_per_sec']:.0f} tok/s")
+    if (status.get("thought_s") or 0.0) > 0:
+        parts.append(f"thought {status['thought_s']:.1f}s")
     return parts
 
 

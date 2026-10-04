@@ -62,7 +62,7 @@ finding that a model at ~61% single-run success drops to ~25% across eight runs
 | A wall-clock budget | engine 10 | Stays declined; the hygiene budget in plan 5 removes its main cause. |
 | A phantom-action guard | pivot loop 5 | No. The benchmark shows zero phantoms on both tiers. |
 | Compress oversize observations with a model call | pivot loop 6 | No — replaced by plan 6. A compressor is a second reader of injected text, and summaries did not beat masking where it was measured. |
-| Thinking on/off flag; grade the recorded reasoning | engine 11–12 | An afternoon each, after the three-run default. |
+| Pick `auto`'s think policy; grade the recorded reasoning | engine 11–12 | Done 2026-10-04: `auto` thinks before acting (`act`), picked on the loop benchmark over six other modes. Open: item 12, the two tasks first-move thinking breaks, and the avenues in engine 11a (a small trained classifier of simple vs complex requests, a learned per-step router, a think tool). |
 
 ---
 

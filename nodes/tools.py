@@ -14,7 +14,7 @@ from langgraph.errors import GraphInterrupt
 
 from trust import egress
 from trust import quarantine
-from tools.registry import DECLARED_RISK, tools_by_name, RETRIEVAL_TOOLS
+from tools.registry import RETRIEVAL_TOOLS, is_action, tools_by_name
 from tools.planning import PLAN_TOOL, to_plan
 from tools.toolspec import _HUMAN_APPROVED, ToolError
 from core.state import AgentState, issuing_message
@@ -208,9 +208,7 @@ def tool_node(state: AgentState):
         # (run_shell, run_shortcut, an MCP tool: the tools declared untrusted). Retrieval
         # results go to documents_retrieved, every other tool's to tool_results paired with
         # its call — keeping retrieval OUT of tool_results keeps a passage from being cited twice.
-        declared = DECLARED_RISK.get(name)
-        action = declared == "side_effecting" or (
-            declared == "destructive" and not quarantine.is_untrusted(name))
+        action = is_action(name)
         if call_status != "done" or action:
             pass
         elif name in RETRIEVAL_TOOLS:

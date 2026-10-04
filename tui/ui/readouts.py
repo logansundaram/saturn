@@ -3,6 +3,7 @@ The one-off log lines (notes, warnings, steering/pause acknowledgements, queued-
 rendered in the trace-rail style. None of these touch per-turn state.
 """
 
+from . import _base
 from ._base import Text, _console, _ACCENT, _DIM, _truncate
 
 
@@ -41,7 +42,11 @@ def pause_note() -> None:
     next pass (nodes/agent.py), which on a local model can be a long wait — this is the immediate
     feedback that the keypress registered, printed above the live status bar exactly like
     steer_note's steering acknowledgement."""
-    _glyph_line("  ⏸ ", f"bold {_ACCENT}", "pausing at the next pass…", _ACCENT)
+    # While a thought is in flight the same keypress stops it (nodes/agent._generate), and the
+    # pass answers without it — say that, not only the pause that follows.
+    text = ("stopping the thought — pausing at the next pass…" if _base._status.get("thinking")
+            else "pausing at the next pass…")
+    _glyph_line("  ⏸ ", f"bold {_ACCENT}", text, _ACCENT)
 
 
 def echo_queued(line: str) -> None:

@@ -25,7 +25,7 @@ by screen concern: `_base` (console/palette/shared state/primitives), `statusbar
 from ._base import set_verbosity, verbosity
 
 # Status bar + per-turn reset.
-from .statusbar import set_input_preview, reset_turn
+from .statusbar import set_input_preview, set_thinking, reset_turn
 
 # Startup splash.
 from .art import splash
@@ -56,7 +56,7 @@ from .listing import section, table, risk_style, status_glyph
 
 __all__ = [
     "set_verbosity", "verbosity",
-    "set_input_preview", "reset_turn",
+    "set_input_preview", "set_thinking", "reset_turn",
     "splash",
     "prompt", "banner", "ask", "answer_question", "pause_prompt", "posture_line",
     "show_node", "show_run", "show_llm_calls",

@@ -369,6 +369,46 @@ def _final_plan(events) -> list:
     return plan
 
 
+def _call_names(tcs) -> str:
+    return ", ".join(f"{c.get('name')}({_fmt_call_args(c.get('args'))})" for c in tcs)
+
+
+def _group_passes(rows: list, entries: list) -> "list | None":
+    """Pair the agent's recorded model calls with its passes: [(pass number, the call that
+    STANDS, the pass's other call or None)]. A pass is one call unless thinking made it two
+    (core/think.entry): a discarded draft then its rethink (`draft`), or a thought that came
+    to nothing beside the think-off call that stands — the rerun after it, or the draft
+    before it. None when the records do not line up (no think records: an older run; extra
+    calls from a malformed-output retry or the unbound hard stop), so the caller falls back
+    to one line per call rather than guess."""
+    if not entries:
+        return None
+    out, i = [], 0
+    for e in entries:
+        two = bool(e.get("draft")) or (bool(e.get("asked")) and e.get("outcome") != "thought")
+        chunk = rows[i:i + (2 if two else 1)]
+        i += len(chunk)
+        if len(chunk) != (2 if two else 1):
+            return None
+        if not two:
+            out.append((e.get("pass"), chunk[0], None))
+        elif e.get("draft") or chunk[0].get("think"):
+            out.append((e.get("pass"), chunk[1], chunk[0]))  # the later call stands
+        else:
+            out.append((e.get("pass"), chunk[0], chunk[1]))  # the draft stands
+    return out if i == len(rows) else None
+
+
+def _think_entries(events) -> list:
+    """Every agent pass's think record this run, in order (the `think` key of agent deltas)."""
+    out = []
+    for _seq, node, _summary, data in events:
+        if node != "agent":
+            continue
+        out.extend(e for e in (decode_json(data, {}).get("think") or []) if isinstance(e, dict))
+    return out
+
+
 def _collect_tools(events):
     """Flatten tools_called + tool_results across the run, in order."""
     results = []
@@ -402,21 +442,20 @@ def _render_why(ui, run, events, calls):
         _print("")
 
     # How it reasoned — every agent pass, from the recorded LLM I/O: the pre-call thought and the
-    # calls it chose, or the answer.
-    step = 0
-    printed_header = False
-    for _seq, node, output in calls:
-        if node != "agent":
-            continue
-        out = decode_json(output, {})
-        step += 1
+    # calls it chose, or the answer. A pass can hold two model calls because of thinking (a
+    # thought that was dropped and the rerun; a think-off draft and its rethink): the think
+    # records say which call STANDS, so a call the model drafted and never issued is shown as
+    # that, not as a choice it made.
+    rows = [decode_json(output, {}) for _seq, node, output in calls if node == "agent"]
+    grouped = _group_passes(rows, _think_entries(events))
+    if grouped is None:  # an older run, or a pass with retries the records cannot place
+        grouped = [(i, row, None) for i, row in enumerate(rows, 1)]
+    if grouped:
+        _print("  how it reasoned")
+    for step, out, other in grouped:
         content = _clip(out.get("content", ""), 240)
         tcs = out.get("tool_calls") or []
-        if not printed_header:
-            _print("  how it reasoned")
-            printed_header = True
         if tcs:
-            names = ", ".join(f"{c.get('name')}({_fmt_call_args(c.get('args'))})" for c in tcs)
             _print(f"    pass {step}: {content or '(no preamble)'}")
         else:
             _print(f"    pass {step}: answered" + (f" — {content}" if content else ""))
@@ -424,9 +463,29 @@ def _render_why(ui, run, events, calls):
         reasoning = " ".join(str(out.get("reasoning") or "").split())
         if reasoning:
             _print(f"      thought: {_clip(reasoning, 400)}")
+        if other is not None:
+            dropped = " ".join(str(other.get("reasoning") or "").split())
+            if other.get("think"):
+                _print("      a thought was dropped (empty, cut or stopped)"
+                       + (f": {_clip(dropped, 200)}" if dropped else ""))
+            elif other.get("tool_calls"):
+                _print(f"      drafted without thinking, then rethought — not issued: "
+                       f"{_call_names(other['tool_calls'])}")
         if tcs:
-            _print(f"      → chose to call: {names}")
-    if printed_header:
+            _print(f"      → chose to call: {_call_names(tcs)}")
+    if grouped:
+        _print("")
+
+    # When it thought — one line per agent pass (core/think.entry, off the agent's events):
+    # the kind of step each pass was and what came of its thought. Shown only for a turn where
+    # thinking came up at all; a turn of plain passes has nothing to explain.
+    passes = _think_entries(events)
+    if any(e.get("outcome") not in (None, "none") for e in passes):
+        from core import think
+
+        _print("  when it thought")
+        for e in passes:
+            _print(f"    pass {e.get('pass')}: {think.describe(e)}")
         _print("")
 
     # What it relied on — the evidence the answer was built from.

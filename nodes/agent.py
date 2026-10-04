@@ -327,6 +327,33 @@ def _repeats_since_change(key: str, rounds: list) -> int:
     return n
 
 
+def _skill_hygiene(args: dict) -> "tuple[dict, tuple[str, str] | None]":
+    """create_skill before any gate: the corrected arguments, and the (text, status) that
+    answers the call instead of running it. create_skill always faces the human
+    (policy.ALWAYS_ASKS), so a draft that cannot be saved is refused HERE — the person never
+    reads a prompt for a save that would fail. The slips a small model makes are corrected
+    first (a list of steps, `/Weekly Review` for a name, "true" for a flag), so the gate shows
+    the call that will run. A draft over a skill that exists, without `replace`, is answered
+    with that skill's current text and stamped `done`: the model had no other way to read it,
+    and a read is not an incident."""
+    from commands._framework import resolves
+    from core import skills
+
+    replace = args.get("replace")
+    args = {**args,
+            "name": skills.draft_name(args.get("name")),
+            "steps": skills.steps_text(args.get("steps")),
+            "replace": replace is True or str(replace).strip().lower() == "true"}
+    problem = skills.draft_problem(args["name"], args.get("description"), args["steps"],
+                                   replace=True, builtin=resolves)
+    if problem:
+        return args, ("Error: " + problem, "error")
+    current = None if args["replace"] else skills.in_scope("global").get(args["name"])
+    if current is not None:
+        return args, (skills.existing_text(current), "done")
+    return args, None
+
+
 def _hygiene(call: dict, rounds: list, malformed: bool = False,
              provenance: "tuple | None" = None) -> "tuple[dict, ToolMessage | None]":
     """The corrected call, or the ToolMessage that answers it instead of running it.
@@ -364,6 +391,10 @@ def _hygiene(call: dict, rounds: list, malformed: bool = False,
     args, problem = route_target(name, args)
     if problem:
         return refuse("Error: " + problem)
+    if name == "create_skill":
+        args, answer = _skill_hygiene(args)
+        if answer is not None:
+            return refuse(*answer)
     handle_arg = quarantine.HANDLE_ARGS.get(name)
     if handle_arg and provenance is not None:
         handle = str(args.get(handle_arg) or "").strip()

@@ -738,3 +738,70 @@ def test_the_benchmark_never_saves_a_skill():
     decision = benchmark.bench_approver({"type": "approval_request", "tool_calls": [
         {"id": "c1", "name": "create_skill", "args": dict(DRAFT)}]}, prompted)
     assert decision == {"approved_ids": []} and prompted == ["create_skill"]
+
+
+# ── create_skill: the agent's hygiene ────────────────────────────────────────────────────────
+
+from langchain.messages import AIMessage, ToolMessage  # noqa: E402
+
+
+def _call(name, args, cid="c1"):
+    return {"name": name, "args": args, "id": cid, "type": "tool_call"}
+
+
+def _loop_state(msgs, **kw):
+    s = {"messages": msgs, "current_query": str(msgs[0].content) if msgs else "", "context": "",
+         "plan": [], "iteration": 0, "tools_called": [], "tool_results": [],
+         "documents_retrieved": [], "tool_events": [], "gate_events": []}
+    s.update(kw)
+    return s
+
+
+def _agent_reply(monkeypatch, args):
+    """Run the agent node once with a model that emits one create_skill call."""
+    from core.pause import get_pause_controller
+    from nodes import agent
+
+    get_pause_controller().reset()
+    monkeypatch.setattr(agent, "_generate", lambda i, *, tools, think=False: AIMessage(
+        content="", tool_calls=[_call("create_skill", args)]))
+    out = agent.agent_node(_loop_state([HumanMessage(content="save that as a skill")]))
+    return agent, out
+
+
+def test_hygiene_answers_a_bad_draft_before_any_gate(home, monkeypatch):
+    agent, out = _agent_reply(monkeypatch, {**DRAFT, "name": "help"})
+    reply = out["messages"][-1]
+    assert isinstance(reply, ToolMessage) and reply.additional_kwargs["saturn_status"] == "error"
+    assert "built-in command" in reply.content
+    assert agent.route_after_agent({"messages": out["messages"]}) == "agent"
+
+
+def test_hygiene_hands_back_an_existing_skill_without_an_incident(home, monkeypatch):
+    _skill(home / "skills", "standup", OLD_STANDUP)
+    agent, out = _agent_reply(monkeypatch, dict(DRAFT))
+    reply = out["messages"][-1]
+    assert isinstance(reply, ToolMessage) and reply.additional_kwargs["saturn_status"] == "done"
+    assert "1. old step" in reply.content and "replace=true" in reply.content
+    assert agent.route_after_agent({"messages": out["messages"]}) == "agent"
+    assert agent.incidents(out["messages"]) == []
+
+
+def test_hygiene_normalises_a_draft_and_sends_it_to_the_gate(home, monkeypatch):
+    agent, out = _agent_reply(monkeypatch, {"name": "/Morning Standup", "description": "d",
+                                            "steps": ["Read notes.md.", "List what changed."],
+                                            "replace": "false"})
+    issued = out["messages"][-1]
+    assert isinstance(issued, AIMessage)
+    assert issued.tool_calls[0]["args"] == {
+        "name": "morning-standup", "description": "d",
+        "steps": "1. Read notes.md.\n2. List what changed.", "replace": False}
+    assert agent.route_after_agent({"messages": out["messages"]}) == "approval"
+
+
+def test_hygiene_lets_a_replace_of_an_existing_skill_through(home, monkeypatch):
+    _skill(home / "skills", "standup", OLD_STANDUP)
+    agent, out = _agent_reply(monkeypatch, {**DRAFT, "replace": "true"})
+    issued = out["messages"][-1]
+    assert isinstance(issued, AIMessage) and issued.tool_calls[0]["args"]["replace"] is True
+    assert agent.route_after_agent({"messages": out["messages"]}) == "approval"

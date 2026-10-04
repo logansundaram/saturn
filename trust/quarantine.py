@@ -126,10 +126,11 @@ _PATTERNS: list[tuple[str, "re.Pattern[str]"]] = [
         re.IGNORECASE | re.MULTILINE)),
     # Terminal escape sequences (2026-10-01): an OSC / DCS / APC / PM string, or a CSI that
     # moves the cursor, erases or switches modes. Matched raw (ESC, 8-bit CSI/OSC) and in the
-    # visible form nodes/tools.py writes (␛). Colour (SGR, `…m`) is excluded: harmless, removed
-    # at the source, and common in shell output.
+    # visible form nodes/tools.py writes (␛). Colour (SGR, `…m`) and erase-to-end-of-line
+    # (`[K` / `[0K`, which grep and GCC write after each colour code) are excluded: harmless,
+    # removed at the source, and common in shell output.
     ("terminal-escape", re.compile(
-        "[\x1b␛](?:[\\]PX^_]|\\[[0-9;?]*[A-HJKSTfhlsu])|[\x9b\x9d]")),
+        "[\x1b␛](?:[\\]PX^_]|\\[(?!0?K)[0-9;?]*[A-HJKSTfhlsu])|[\x9b\x9d]")),
 ]
 
 # Fetched content naming Saturn's own GATED tools as calls is a coercion attempt, not data.
@@ -269,6 +270,7 @@ UNKNOWN_HANDLE_NOTE = ("this number or address appears in nothing you typed and 
 _PHONE_RUN = re.compile(r"\+?\d[\d\s().-]{5,}\d")
 _EMAIL_RUN = re.compile(r"[^@\s'\"]+@[^@\s'\"]+\.[^@\s'\",;)\]}]+")
 _MIN_DIGITS = 7
+_MAX_DIGITS = 15       # E.164
 
 
 def _digits(text: str) -> str:
@@ -283,7 +285,22 @@ def _same_number(a: str, b: str) -> bool:
 
 
 def _numbers_in(text: str) -> "list[str]":
-    return [d for d in (_digits(m) for m in _PHONE_RUN.findall(text or "")) if len(d) >= _MIN_DIGITS]
+    """Every digit string in `text` that may be a phone number. The pattern runs across spaces
+    ("305 555 0100"), so "+13055550100 10 minutes late" is ONE run to it, ending in digits
+    that are no part of the number: besides the whole run, every stretch of adjacent
+    space-separated pieces is a candidate — up to the first that is longer than any number."""
+    out: list = []
+    for run in _PHONE_RUN.findall(text or ""):
+        pieces = [d for d in (_digits(p) for p in run.split()) if d]
+        out.append("".join(pieces))
+        for i in range(len(pieces)):
+            joined = ""
+            for piece in pieces[i:]:
+                joined += piece
+                out.append(joined)
+                if len(joined) > _MAX_DIGITS:
+                    break
+    return [d for d in out if len(d) >= _MIN_DIGITS]
 
 
 def same_handle(a: str, b: str) -> bool:
@@ -320,14 +337,14 @@ def handle_hold(handle: str, user_text: str, seen_text: str) -> "str | None":
 CHAT_ARGS = {"send_message": "chat", "read_messages": "chat"}
 UNKNOWN_CHAT_NOTE = ("this group chat ref appears in nothing you typed and nothing a tool "
                      "returned — the model composed it")
-_CHAT_REF = re.compile(r"g[0-9a-f]{5,40}")
+CHAT_REF = re.compile(r"g[0-9a-f]{5,40}")     # the one pattern; tools/messages reads refs by it
 
 
 def chat_hold(ref: str, user_text: str, seen_text: str) -> "str | None":
     """Why a call naming group chat `ref` must not run, or None. Something that is not a ref
     at all is left to the tool's own argument check."""
     ref = str(ref or "").strip()
-    if not _CHAT_REF.fullmatch(ref):
+    if not CHAT_REF.fullmatch(ref):
         return None
     text = (user_text or "") + "\n" + (seen_text or "")
     if re.search(rf"(?<![0-9a-z]){re.escape(ref)}(?![0-9a-z])", text):

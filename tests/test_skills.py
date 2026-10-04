@@ -1024,3 +1024,58 @@ def test_skills_help_says_saturn_can_save_one_and_asks_first(ctx, capsys):
     out = _flat(capsys.readouterr().out)
     assert "asks before it writes" in out and "origin" in out
     assert "never writes these folders itself" not in out
+
+
+# ── review 2026-10-03 (second pass): the tool is held to what /skills create is held to ──────
+
+@pytest.mark.parametrize("replace", [False, True])
+def test_create_skill_never_writes_over_a_file_the_loader_skipped(home, approved, replace):
+    """A hand-written skill with an unclosed frontmatter is not a loadable skill, so the draft
+    check saw no skill of that name and the save went over the user's text as "Replaced"."""
+    mine = "---\ndescription: never closed\n1. my own steps\n"
+    broken = _skill(home / "skills", "standup", mine)
+    flat = _skill(home / "skills", "expense", "---\nname: [bad\n---\n1. mine too\n", flat=True)
+    for name, path in (("standup", broken), ("expense", flat)):
+        problem = skills.draft_problem(name, "d", "1. x", replace)
+        assert problem and "did not load" in problem and str(path) in problem
+        with pytest.raises(ToolError, match="did not load"):
+            _create(name=name, replace=replace)
+    assert broken.read_text(encoding="utf-8") == mine
+    assert "1. mine too" in flat.read_text(encoding="utf-8")
+    assert not (home / "skills" / "expense" / "SKILL.md").exists()
+
+
+def test_create_skill_sees_a_folder_spelled_in_another_case(home, approved):
+    mine = _skill(home / "skills", "Weekly-Review", "1. my own steps\n")
+    if not (home / "skills" / "weekly-review").exists():
+        pytest.skip("this disk tells Weekly-Review and weekly-review apart: nothing to overwrite")
+    with pytest.raises(ToolError, match="did not load"):
+        _create(name="weekly-review")
+    assert mine.read_text(encoding="utf-8") == "1. my own steps\n"
+
+
+def test_a_loadable_skill_beside_a_broken_one_of_the_same_name_is_still_replaced(home, approved):
+    # the flat file is the skill that runs; the broken folder is not what a replace writes
+    flat = _skill(home / "skills", "standup", OLD_STANDUP, flat=True)
+    broken = _skill(home / "skills", "standup", "---\ndescription: never closed\n")
+    _create(replace=True)
+    assert DRAFT["steps"] in flat.read_text(encoding="utf-8")
+    assert broken.read_text(encoding="utf-8") == "---\ndescription: never closed\n"
+
+
+@pytest.mark.parametrize("flat", [True, False])
+def test_replacing_a_linked_skill_writes_the_file_it_points_to(home, approved, tmp_path, flat):
+    """A skill symlinked in from a dotfiles folder: os.replace onto the link swapped the link
+    for a plain file, and the versioned source silently stopped being the skill that runs."""
+    from tools.skills import draft
+
+    dotfiles = tmp_path / "dotfiles"
+    real = _skill(dotfiles, "standup", OLD_STANDUP, flat=flat)
+    link = home / "skills" / ("standup.md" if flat else "standup")
+    link.symlink_to(real if flat else real.parent, target_is_directory=not flat)
+    target, text = draft(dict(DRAFT))
+    assert target == real.resolve()                 # the gate names the file that is written
+    out = _create(replace=True)
+    assert link.is_symlink() and real.read_text(encoding="utf-8") == text
+    assert str(real.resolve()) in out
+    assert skills.get("standup").body == DRAFT["steps"]

@@ -38,7 +38,7 @@ from langchain.messages import HumanMessage
 import diag
 from core.state import STEER_PREFIX, this_turn
 from stores.memory_registry import _atomic_write, normalize_layer
-from textutil import clip
+from textutil import clip, visible_text
 
 # Candidate sources, in the order the review lists them.
 SOURCES = ("steer", "gate", "compaction", "model")
@@ -61,7 +61,9 @@ INTERRUPT = "\x03"
 
 def _candidate(layer: str, text: str, source: str, run_id=None, *, due=None,
                category: str = "general") -> dict | None:
-    text = " ".join(str(text or "").split())
+    # Cleaned as the write boundary cleans it (memory_registry._clean_text), so the line the
+    # user says yes to is the text that is stored.
+    text = " ".join(visible_text(str(text or "")).split())
     if not text:
         return None
     return {

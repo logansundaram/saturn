@@ -50,7 +50,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 from config import get_config
-from textutil import visible_controls
+from textutil import visible_text
 
 LAYERS = ("user", "commitments", "memo", "agent", "entities", "negative")
 
@@ -322,16 +322,21 @@ def _clean_text(fact) -> str:
     # is one fact per bullet: a model-supplied multi-line fact written verbatim would leave
     # continuation lines the parser never sees. Collapsing ALL whitespace runs keeps dedup
     # comparing the same form a reflowed duplicate arrives in. A stray `{#…}` token inside the
-    # text would be parsed back as metadata, so its braces are softened.
-    text = " ".join(visible_controls(str(fact or "")).split())
+    # text would be parsed back as metadata, so its braces are softened. The fact is stored as
+    # the approval gate would show it (`textutil.visible_text`): /memory add and the review
+    # screen print it on a console that shows controls but not a tag, zero-width or bidi
+    # character, and text nobody saw must not ride every later turn's context.
+    text = " ".join(visible_text(str(fact or "")).split())
     return text.replace("{#", "(#").replace("}", ")") if "{#" in text else text
 
 
 def _clean_category(category) -> str:
     # The category rides inside the bullet's "[category] " prefix: a newline breaks the bullet
-    # line and a "]" would end the tag early. A category that sanitizes to
-    # nothing falls back to the untagged default.
-    return " ".join(str(category or "").split()).replace("]", "").strip() or "general"
+    # line and a "]" would end the tag early. Terminal controls and unseen characters become
+    # symbols, as in the fact itself (`_clean_text`). A category that sanitizes to nothing
+    # falls back to the untagged default.
+    return (" ".join(visible_text(str(category or "")).split()).replace("]", "").strip()
+            or "general")
 
 
 def add_memory(fact: str, category: str = "general", *, layer: str = "user", replaces=None,

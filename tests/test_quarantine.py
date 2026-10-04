@@ -546,3 +546,23 @@ def test_a_chat_ref_that_entered_the_conversation_is_not_held(ref, user_text, se
 ])
 def test_a_chat_ref_from_nowhere_is_held(ref, user_text, seen_text):
     assert quarantine.chat_hold(ref, user_text, seen_text) == quarantine.UNKNOWN_CHAT_NOTE
+
+
+# --- review 2026-10-03: a number followed by more digits is still the number -------------------
+
+@pytest.mark.parametrize("handle, user_text", [
+    ("+13055550100", "text +13055550100 10 minutes late"),
+    ("5551234567", "tell 555-123-4567 2pm works"),
+    ("+13055550100", "text +1 (305) 555-0100 3 times if needed"),
+    ("+13055550100", "at 9 30 text 305 555 0100"),
+])
+def test_a_typed_number_next_to_other_digits_is_not_held(handle, user_text):
+    assert quarantine.handle_hold(handle, user_text, "") is None
+
+
+def test_digits_that_never_stood_together_are_still_held():
+    # the pieces are all there, but not next to one another: this number was composed
+    assert (quarantine.handle_hold("+13055550100", "room 305, extension 555, code 0100", "")
+            == quarantine.UNKNOWN_HANDLE_NOTE)
+    assert (quarantine.handle_hold("+13055550199", "text +13055550100 10 minutes late", "")
+            == quarantine.UNKNOWN_HANDLE_NOTE)

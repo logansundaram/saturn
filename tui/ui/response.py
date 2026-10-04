@@ -136,8 +136,10 @@ def _print_markdown_body(body: str) -> None:
     width = min(_term_width(), _BODY_WIDTH)
     try:
         # Markdown parses markdown, not Rich console markup, so bracketed tokens like
-        # `list[str]` or citations `[1]` are safe literal text here.
-        _console.print(Padding(Markdown(body), (0, 0, 0, 2)), width=width)
+        # `list[str]` or citations `[1]` are safe literal text here. hyperlinks=False: a link
+        # prints as `text (address)` — a terminal hyperlink (OSC 8) would show the text and
+        # open the address, which the answer's author chooses and the reader never sees.
+        _console.print(Padding(Markdown(body, hyperlinks=False), (0, 0, 0, 2)), width=width)
     except Exception:
         _console.print(Padding(Text(body), (0, 0, 0, 2)), width=width)
 

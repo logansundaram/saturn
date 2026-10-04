@@ -208,13 +208,15 @@ def safe_stem(name, fallback: str) -> str:
 # output, the model, an old recorded run — passes through `visible_controls` before it can
 # reach a terminal (docs/superpowers/plans/2026-10-01-terminal-escape-sanitising.md):
 #   - complete SGR sequences (colour, bold) are removed: they cannot move anything, and removing
-#     them only makes text more visible;
+#     them only makes text more visible. So is erase-to-end-of-line (`ESC[K`, which grep and GCC
+#     write after each colour code): with carriage returns and cursor moves inert, the cursor
+#     is always at the end of what was written and there is nothing for it to erase;
 #   - CR LF and a lone CR become LF, so an overwrite shows both texts;
 #   - every other C0 control but TAB and LF becomes its control picture (ESC -> ␛), DEL -> ␡,
 #     and a C1 control becomes ␛ plus its 7-bit form (U+009B CSI -> ␛[).
 # Text with no control character comes back as the same object; the result never contains a
 # character this rewrites, so it is idempotent.
-_SGR = re.compile(r"\x1b\[[0-9;:]*m|\x9b[0-9;:]*m")
+_SGR = re.compile(r"(?:\x1b\[|\x9b)(?:[0-9;:]*m|0?K)")
 _CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
 
 
@@ -254,27 +256,36 @@ def is_control_picture(ch: str) -> bool:
 
 # Bidi overrides and isolates, zero-width characters and the BOM: legitimate inside an answer
 # (RTL scripts, emoji ZWJ sequences), but at the approval gate they can make a command or an
-# address display in a different order, or hide a character. The gate shows them by code point.
+# address display in a different order, or hide a character. The gate shows them by code point,
+# with every other character that prints as nothing (`visible_format_chars`).
 _FORMAT = re.compile("[\u061c\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]")
+# What `str.isprintable()` accepts and a terminal still draws as nothing, or as an empty cell:
+# Unicode's Default_Ignorable_Code_Point set outside the format category (the combining
+# grapheme joiner, the Hangul fillers, the Khmer inherent vowels, the Mongolian and the
+# general variation selectors with their supplement) and the blank braille pattern. No Unicode
+# category separates these from letters and marks, so this is a list — the ONE list, read by
+# both `unseen_chars` and `visible_format_chars`. U+FE0F is left out: it is the emoji selector
+# ("⚠️"), and one repeatable character spells nothing.
+_BLANK = re.compile("[\u034f\u115f\u1160\u17b4\u17b5\u180b-\u180d\u180f\u2800\u3164"
+                    "\ufe00-\ufe0e\uffa0\U000e0100-\U000e01ef]")
 
 
 def unseen_chars(text) -> "list[str]":
-    """The characters in `text` a person cannot see even at the approval gate, as `U+XXXX` labels
-    (each once, in order): format characters outside the set `visible_format_chars` shows by
-    code point (Unicode tag characters, word joiners, the soft hyphen), private-use characters,
-    lone surrogates, variation selectors other than the emoji one (U+FE0F) and the Hangul
-    fillers. They print as nothing, so text spelled in them would be saved, and later read by
-    the model, without the person who approved it ever seeing it."""
+    """The characters in `text` that print as nothing and have no place in text a person must
+    read in full, as `U+XXXX` labels (each once, in order): format characters other than the
+    bidi and zero-width set above (Unicode tag characters, word joiners, the soft hyphen),
+    private-use characters, lone surrogates, and the printable characters that draw as nothing
+    (`_BLANK`: variation selectors other than the emoji one, the Hangul fillers, …). Text
+    spelled in them would be saved, and later read by the model, without the person who
+    approved it ever seeing it in the saved file."""
     import unicodedata
 
     found: list = []
     for ch in "" if text is None else str(text):
         o = ord(ch)
         if _FORMAT.match(ch):
-            continue                     # shown at the gate as its code point
-        if (unicodedata.category(ch) in ("Cf", "Co", "Cs")
-                or 0xFE00 <= o <= 0xFE0E or 0xE0100 <= o <= 0xE01EF
-                or o in (0x115F, 0x1160, 0x3164, 0xFFA0)):
+            continue                     # ordinary in RTL text and emoji; the gate shows it
+        if unicodedata.category(ch) in ("Cf", "Co", "Cs") or _BLANK.match(ch):
             label = f"U+{o:04X}"
             if label not in found:
                 found.append(label)
@@ -282,11 +293,42 @@ def unseen_chars(text) -> "list[str]":
 
 
 def visible_format_chars(text) -> str:
-    """`text` with bidi and zero-width characters shown as `⟨U+202E⟩` — for the gate only."""
+    """`text` as the approval gate shows it — nothing a call holds may vanish. Every character
+    that prints as nothing is shown as `⟨U+202E⟩`: bidi and zero-width characters, and any other
+    format, private-use or unassigned character, lone surrogate or line separator (by Unicode
+    category, not a list an attacker can step around) — and the characters Python calls
+    printable that draw as nothing all the same (`_BLANK`: variation selectors, Hangul
+    fillers, …). ESC becomes `␛` here, so the console — which removes colour codes — has none
+    left to remove. Spaces that occupy a cell (NBSP) and the other controls are left as they
+    are: the console pictures the controls."""
     s = "" if text is None else str(text)
-    if not _FORMAT.search(s):
+    if s.isprintable() and not _BLANK.search(s):
         return s
-    return _FORMAT.sub(lambda m: f"⟨U+{ord(m.group()):04X}⟩", s)
+    import unicodedata
+
+    out, changed = [], False
+    for ch in s:
+        if _BLANK.match(ch):
+            out.append(f"⟨U+{ord(ch):04X}⟩")
+            changed = True
+        elif ch.isprintable():
+            out.append(ch)
+        elif ch in "\x1b\x9b":
+            out.append("␛" if ch == "\x1b" else "␛[")
+            changed = True
+        elif unicodedata.category(ch) in ("Cc", "Zs"):
+            out.append(ch)
+        else:
+            out.append(f"⟨U+{ord(ch):04X}⟩")
+            changed = True
+    return "".join(out) if changed else s
+
+
+def visible_text(text) -> str:
+    """`text` as it may be STORED where a person accepts it by reading it on the console (a
+    memory fact, a review candidate): controls made inert, then everything that prints as
+    nothing shown by code point — what the approval gate would have shown."""
+    return visible_format_chars(visible_controls(text))
 
 
 # json.dumps(ensure_ascii=False) escapes C0 but writes DEL, C1 and the two Unicode line

@@ -17,6 +17,7 @@ instruction text, so the file tools refuse to write into these folders (tools/fi
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -312,9 +313,29 @@ def in_scope(scope: str) -> "dict[str, Skill]":
 
 def target_path(name: str) -> Path:
     """The file a draft named `name` is written to: the global skill of that name where it
-    already is (folder or flat), else `<global>/<name>/SKILL.md`."""
+    already is (folder or flat), else `<global>/<name>/SKILL.md`. A skill LINKED into the
+    folder is written where it really lives — the gate names that file, and the link (a
+    dotfiles checkout, say) keeps pointing at the text that runs."""
     current = in_scope("global").get(name)
-    return current.path if current is not None else global_dir() / name / SKILL_FILE
+    if current is None:
+        return global_dir() / name / SKILL_FILE
+    try:
+        real = current.path.resolve()
+        plain = global_dir().resolve() / current.path.relative_to(global_dir())
+    except (OSError, ValueError):
+        return current.path
+    return current.path if real == plain else real
+
+
+def unloaded_file(name: str) -> "Path | None":
+    """A file sitting where the global skill `name` would be written that did NOT load as that
+    skill (unclosed frontmatter, a folder spelled Weekly-Review on a disk that ignores case, a
+    dangling link), or None. It is still the user's text: nothing Saturn does — /skills create
+    or a create_skill draft, `replace` or not — writes over it."""
+    if name in in_scope("global"):
+        return None
+    return next((p for p in (global_dir() / name / SKILL_FILE, global_dir() / f"{name}.md")
+                 if os.path.lexists(p)), None)
 
 
 def existing_text(skill: Skill) -> str:
@@ -329,8 +350,8 @@ def draft_problem(name, description, steps, replace: bool = False,
                   builtin: "Callable[[str], bool]" = lambda key: False) -> "str | None":
     """Why a drafted skill cannot be saved — one sentence for the model — or None. Checked in
     this order: the name, a built-in command's name, the description, the steps, a workspace
-    skill of that name, a global skill of that name without `replace`. Nothing is truncated to
-    fit: what the user is shown is what is saved."""
+    skill of that name, a file of that name the loader skipped, a global skill of that name
+    without `replace`. Nothing is truncated to fit: what the user is shown is what is saved."""
     name = str(name or "")
     if not valid_name(name):
         return (f"{name!r} is not a skill name: use lowercase letters, digits and hyphens, up "
@@ -360,6 +381,11 @@ def draft_problem(name, description, steps, replace: bool = False,
     if local is not None:
         return (f"/{name} is this folder's own skill ({local.path}); Saturn saves skills only in "
                 f"{global_dir()}. Ask the user to edit that file by hand, or pick another name.")
+    taken = unloaded_file(name)
+    if taken is not None:
+        return (f"{taken} is already there but did not load as a skill, so it cannot be "
+                "replaced from here; nothing was changed. Tell the user: /skills says why it "
+                "did not load, and they fix or remove that file by hand — or pick another name.")
     current = in_scope("global").get(name)
     if current is not None and not replace:
         return existing_text(current)

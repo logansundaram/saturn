@@ -189,12 +189,13 @@ accept). The benchmark's memory tasks and `tests/test_memory_*.py` pin this.
   `chat_hold` (`CHAT_ARGS`) is the same check for a group chat ref (`chat=`), and the gate names
   every member of the group, resolved from Messages at approval.
 - Terminal safety — text from outside Saturn never reaches the terminal as a live escape
-  sequence. `textutil.visible_controls` is the one rule (SGR removed, CR → LF, every other
+  sequence. `textutil.visible_controls` is the one rule (SGR and `ESC[K` removed, CR → LF, every other
   control → its picture `␛`); `nodes/tools.py` applies it to every observation before the clamp
   and quarantine (also `@file`/`@clipboard` and `!cmd` attachments), and the sink applies it
   again: `tui/ui/_base.SafeConsole` (all TUI output), `commands/_framework._print`, headless
-  stdout/stderr, `diag.log`. The gate shows bidi/zero-width characters as `⟨U+202E⟩`
-  (`visible_format_chars`). Never print model or tool text with a bare `print()`.
+  stdout/stderr, `diag.log`. The gate shows bidi and every unprintable character as `⟨U+202E⟩`
+  and ESC as `␛` — nothing is removed there (`visible_format_chars`); an answer's Markdown
+  links print as `text (address)`, never as terminal hyperlinks. Never print model or tool text with a bare `print()`.
 
 ### Tools
 

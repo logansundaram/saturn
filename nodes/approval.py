@@ -58,7 +58,11 @@ def provenance(state) -> "tuple[str, str, bool]":
     two are what quarantine.handle_hold reads, from the agent's hygiene).
     The model's own messages are skipped: they are what the hold checks, so a URL the model
     wrote in a preamble (the issuing message is already in state) or an earlier answer must not
-    vouch for itself. Only the user, a tool result, an attachment or the grounding can."""
+    vouch for itself. Only the user, a tool result, an attachment or the grounding can — and a
+    tool result only when the call COMPLETED (`saturn_status` done): a refusal, a decline or an
+    error is text about the model's own arguments, and usually repeats them ("+1305… appears
+    nowhere in this conversation"), so counting it let one retry of an invented number through
+    (review 2026-10-03). A failed call still counts as outside content having entered."""
     user, seen = [], [str(state.get("attachments") or ""), str(state.get("context") or "")]
     untrusted = bool(state.get("attachments"))
     for m in state.get("messages") or []:
@@ -68,13 +72,54 @@ def provenance(state) -> "tuple[str, str, bool]":
             continue
         if isinstance(m, AIMessage):
             continue
+        if isinstance(m, ToolMessage):
+            if quarantine.is_untrusted(str(m.name or "")):
+                untrusted = True
+            if ((getattr(m, "additional_kwargs", None) or {}).get("saturn_status") or "done") != "done":
+                continue
         seen.append(text)
-        if isinstance(m, ToolMessage) and quarantine.is_untrusted(str(m.name or "")):
-            untrusted = True
     return "\n".join(user), "\n".join(seen), untrusted
 
 
-def _handle_note(tc: dict, state) -> "str | None":
+def _once(state):
+    """`provenance(state)` as a callable that reads the conversation at most once per node
+    pass, and only if something asks: the URL hold, each handle note and the skill note all
+    read the same three facts."""
+    box: list = []
+
+    def get():
+        if not box:
+            box.append(provenance(state))
+        return box[0]
+    return get
+
+
+# LangGraph re-runs approval_node from the top when the human answers, so whatever the prompt
+# needed is computed a second time. A group's member line is a bulk Apple event over every
+# Messages chat (0.2-0.8 s, and its answer can change between the two runs): it is resolved
+# once per gated call and kept until that prompt is answered, so the line the human read is
+# the line the re-run carries. The send itself still resolves the group afresh
+# (tools.messages._send_to_group) — that lookup is the one that decides who is reached.
+_GROUP_LINES: dict = {}      # {(call id, chat ref): line}
+
+
+def _group_line(call_id, ref: str) -> str:
+    from tools.messages import describe_group
+
+    key = (call_id, ref)
+    if key not in _GROUP_LINES:
+        _GROUP_LINES[key] = describe_group(ref)
+    return _GROUP_LINES[key]
+
+
+def _forget_group_lines(keep=()) -> None:
+    """Drop every kept line but those of the calls in `keep` (a prompt nobody answered — an
+    aborted turn — must not leave its lines behind)."""
+    for key in [k for k in _GROUP_LINES if k[0] not in keep]:
+        del _GROUP_LINES[key]
+
+
+def _handle_note(tc: dict, state, prov=None) -> "str | None":
     """Whose number or address a gated call names, for the prompt: the contact card that
     produced it, the user's own typing, or — past the agent's hygiene this should not happen —
     nowhere. A group chat is named with every member (tools.messages.describe_group). A bare +13057108702 at the gate (run 51, 2026-10-02) is not something a person
@@ -85,9 +130,8 @@ def _handle_note(tc: dict, state) -> "str | None":
     chat_arg = quarantine.CHAT_ARGS.get(tc.get("name"))
     ref = str((args or {}).get(chat_arg) or "").strip() if chat_arg else ""
     if ref:
-        # A group reaches everyone in it: name them all, resolved from Messages now.
-        from tools.messages import describe_group
-        return f"{tc['name']}: {describe_group(ref)}"
+        # A group reaches everyone in it: name them all, resolved from Messages for this prompt.
+        return f"{tc['name']}: {_group_line(tc.get('id'), ref)}"
     arg = quarantine.HANDLE_ARGS.get(tc.get("name"))
     handle = str((args or {}).get(arg) or "").strip() if arg else ""
     if not handle:
@@ -99,7 +143,7 @@ def _handle_note(tc: dict, state) -> "str | None":
             if found:
                 name, label = found
                 return f"{tc['name']}: {handle} is {name}'s {label + ' ' if label else ''}{kind} (from search_contacts)"
-    user_text, seen_text, _ = provenance(state)
+    user_text, seen_text, _ = (prov or _once(state))()
     if quarantine.handle_hold(handle, user_text, "") is None:
         return f"{tc['name']}: {handle} — you typed it"
     if quarantine.handle_hold(handle, user_text, seen_text) is None:
@@ -107,12 +151,12 @@ def _handle_note(tc: dict, state) -> "str | None":
     return f"{tc['name']}: {handle} — {quarantine.UNKNOWN_HANDLE_NOTE}"
 
 
-def _url_holds(tool_calls: list, state) -> dict:
+def _url_holds(tool_calls: list, state, prov=None) -> dict:
     """{call id: reason} for the web_extract calls whose URL must face the human."""
     fetches = [tc for tc in tool_calls if tc.get("name") == "web_extract"]
     if not fetches:
         return {}
-    prov = provenance(state)
+    prov = (prov or _once(state))()
     out = {}
     for tc in fetches:
         args = tc.get("args")
@@ -248,7 +292,8 @@ def approval_node(state: AgentState) -> Command[Literal["tools", "agent"]]:
     # the prompt can say why a normally-silent call is suddenly asking.
     escalated = quarantine.gate_pending() and any(_can_act(tc["name"]) for tc in tool_calls)
     # The URL hold: a read_only fetch still sends its URL (quarantine.url_hold).
-    holds = _url_holds(tool_calls, state)
+    prov = _once(state)
+    holds = _url_holds(tool_calls, state, prov)
 
     gated = [
         tc
@@ -272,11 +317,12 @@ def approval_node(state: AgentState) -> Command[Literal["tools", "agent"]]:
         notes.append(AIRGAP_NOTE)
     notes += [f"{tc['name']}: {policy.always_asks_why(tc['name'])}"
               for tc in gated if policy.always_asks(tc["name"])]
-    notes += [n for n in (_handle_note(tc, state) for tc in gated) if n]
+    _forget_group_lines(keep={tc["id"] for tc in gated})
+    notes += [n for n in (_handle_note(tc, state, prov) for tc in gated) if n]
     # A skill drafted after a web page, a file, an attachment or mail entered the conversation
     # may carry that content's instructions. A note, not a refusal: "summarise this page and
     # save the method as a skill" is a fair request — but the human should read it as untrusted.
-    if any(tc["name"] == "create_skill" for tc in gated) and provenance(state)[2]:
+    if any(tc["name"] == "create_skill" for tc in gated) and prov()[2]:
         notes.append(f"create_skill: {SKILL_OUTSIDE_NOTE}")
     decision = interrupt(
         {
@@ -298,6 +344,8 @@ def approval_node(state: AgentState) -> Command[Literal["tools", "agent"]]:
             "held_ids": [tc["id"] for tc in gated if tc["id"] in holds],
         }
     )
+
+    _forget_group_lines()    # past the interrupt: this prompt is answered
 
     # Resolve the decision into the set of approved gated-call ids. Two dict shapes: the per-call
     # select ({"approved_ids": [...]}) and the always-allow decision ({"approved": True,

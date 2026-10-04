@@ -52,6 +52,7 @@ from tools import applescript
 from tools.applescript import AS_FS, AS_GS, AS_RS, AS_US, FS, GS, AppleScriptError, quote, records
 from tools.toolspec import ToolError, register_tool
 from trust import egress
+from trust.quarantine import CHAT_REF as _REF, same_handle
 
 _SEND_TIMEOUT = 60.0
 
@@ -89,8 +90,7 @@ def _handle(to: str) -> "str | None":
 
 # ── group chats ──────────────────────────────────────────────────────────────────────────────
 
-_REF_LEN = 5
-_REF = re.compile(r"g[0-9a-f]{5,40}")
+_REF_LEN = 5       # a ref's form is trust.quarantine.CHAT_REF: the chat hold reads the same one
 
 
 def _digest(ident: str) -> str:
@@ -456,18 +456,16 @@ def _when(raw) -> str:
 
 
 def _same_person(contact: str, *handles) -> bool:
-    """Whether `contact` names one of `handles`: emails compare case-insensitively, phone
-    numbers by their last ten digits, however either side is punctuated."""
-    want = contact.strip().lower()
-    digits = re.sub(r"\D", "", want)
+    """Whether `contact` names one of `handles`, by `trust.quarantine.same_handle` — the ONE
+    definition of "the same number" (an email case-insensitively; a number by its digits, the
+    national form a tail of the international one), which the handle hold that let `contact`
+    through also uses. Only a value that IS a handle is compared that way: a group's
+    `chat8237…` identifier is not a number. An identical spelling is the same person whatever
+    its length (a five-digit short code)."""
+    want = str(contact or "").strip().lower()
     for h in handles:
-        h = str(h or "").lower()
-        if not h:
-            continue
-        if "@" in want:
-            if want == h:
-                return True
-        elif len(digits) >= 7 and re.sub(r"\D", "", h)[-10:] == digits[-10:]:
+        h = str(h or "").strip()
+        if h and (h.lower() == want or (_handle(h) is not None and same_handle(want, h))):
             return True
     return False
 
@@ -537,20 +535,14 @@ def _history_members(db, rowids: set) -> dict:
     return out
 
 
-def _key(handle: str) -> str:
-    h = str(handle or "").strip().lower()
-    return h if "@" in h else re.sub(r"\D", "", h)[-10:]
-
-
-def _app_names() -> "tuple[dict, dict]":
-    """({ref: group}, {handle key: name}) from the Messages app — the names a group's rows are
-    shown with. Soft: a Messages app that cannot be asked leaves the handles as they are."""
+def _app_names() -> "tuple[dict, list]":
+    """({ref: group}, [(handle, name), …]) from the Messages app — the names a group's rows
+    are shown with. Soft: a Messages app that cannot be asked leaves the handles as they are."""
     try:
         groups = _groups()
     except ToolError:
-        return {}, {}
-    names = {_key(p["handle"]): p["name"] for g in groups for p in g["people"]}
-    return {g["ref"]: g for g in groups}, names
+        return {}, []
+    return {g["ref"]: g for g in groups}, [(p["handle"], p["name"]) for g in groups for p in g["people"]]
 
 
 @register_tool("read_only", untrusted=True)
@@ -583,8 +575,8 @@ def read_messages(contact: str = "", query: str = "", limit: int = 20, chat: str
             elif ref:
                 found = _chat_filter(db, ref, refs)
                 if found is None:
-                    return (f"No group chat {ref} in the Messages history — find the group with "
-                            "find_group_chats and use the chat ref it returns.")
+                    raise ToolError(f"there is no group chat {ref} in the Messages history — find "
+                                    "the group with find_group_chats and use the chat ref it returns")
                 where, ids = found
             rows = db.execute(_QUERY.format(where=where), (*ids, scan)).fetchall()
             guid_rowid = {guid: rowid for rowid, guid in db.execute("SELECT ROWID, guid FROM chat")}
@@ -600,7 +592,15 @@ def read_messages(contact: str = "", query: str = "", limit: int = 20, chat: str
                 "— Full Disk Access under System Settings > Privacy & Security > Full Disk "
                 f"Access, then restart {app} and ask again") from exc
         raise ToolError(f"the Messages history could not be read: {exc}") from exc
-    by_ref, names = _app_names() if group_rows else ({}, {})
+    by_ref, names = _app_names() if group_rows else ({}, [])
+    known: dict = {}
+
+    def named(handle: str) -> str:
+        """The name Messages has for a handle, however each source writes the number."""
+        if handle not in known:
+            known[handle] = next((n for h, n in names if _same_person(handle, h)), handle)
+        return known[handle]
+
     out = []
     for text, blob, date, mine, handle, chat_id, chat_name, guid in rows:
         body = (text or "").strip() or _attributed_text(blob).strip()
@@ -616,8 +616,8 @@ def read_messages(contact: str = "", query: str = "", limit: int = 20, chat: str
             gref = refs.get(rowid) or chat_ref(guid)
             app_group = by_ref.get(gref)
             people = (app_group["people"] if app_group
-                      else [names.get(_key(h), h) for h in members.get(rowid, [])])
-            sender = "me" if mine else names.get(_key(handle), handle or "unknown")
+                      else [named(h) for h in members.get(rowid, [])])
+            sender = "me" if mine else (named(handle) if handle else "unknown")
             out.append({"when": _when(date), "from": sender,
                         "chat": f"{gref} · {_label(chat_name or '', people)}", "group": True,
                         "text": body})

@@ -8,6 +8,7 @@ import sys
 
 from app import __version__
 from core import mentions
+from textutil import visible_controls
 
 # How long a headless turn waits for piped stdin to have something to read. A pipe nobody
 # writes to and nobody closes (a background job, a subprocess that inherits a pipe) never
@@ -128,7 +129,7 @@ def _read_piped_stdin() -> str:
     would then silently drop the whole pipe. A genuine OS read failure may still return "", but
     a decode can never empty the input. Clamped to the same per-attachment budget as an @file
     mention (mentions._MAX_FILE_CHARS — the one cap an attachment block honors), with the same
-    head-only truncation marker."""
+    head-only truncation marker. Terminal controls become visible symbols, as in an @file."""
     try:
         stdin = sys.stdin
         if stdin is None or stdin.closed or stdin.isatty():
@@ -142,17 +143,24 @@ def _read_piped_stdin() -> str:
             # +1 past the budget detects truncation; ×4 because the budget is CHARS and UTF-8
             # spends up to 4 bytes per char — reading only budget+1 BYTES could under-read a
             # multi-byte stream and drop its tail without the truncation marker.
-            raw = buffer.read((mentions._MAX_FILE_CHARS + 1) * 4)
+            limit = (mentions._MAX_FILE_CHARS + 1) * 4
+            raw = buffer.read(limit + 1)     # one byte past the bound: more was waiting
+            cut = len(raw) > limit
             data = raw.decode("utf-8", errors="replace")
         else:
             # A replaced stdin with no byte layer (embedders, tests): already-decoded text,
             # so there is no strict-decode hazard left to guard.
             data = stdin.read(mentions._MAX_FILE_CHARS + 1)
+            cut = len(data) > mentions._MAX_FILE_CHARS
     except (OSError, ValueError, AttributeError):
         return ""
     if not data.strip():
         return ""
-    if len(data) > mentions._MAX_FILE_CHARS:
+    # `cut` is a fact about the READ (it stopped at its bound with more behind it), taken
+    # before the colour codes are removed: cleaning can bring a cut stream back under the cap,
+    # and the model must still be told it saw only the head.
+    data = visible_controls(data)
+    if cut or len(data) > mentions._MAX_FILE_CHARS:
         data = data[: mentions._MAX_FILE_CHARS] + (
             f"\n… [truncated — piped stdin exceeds {mentions._MAX_FILE_CHARS} chars]"
         )

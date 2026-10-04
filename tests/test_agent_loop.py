@@ -1174,3 +1174,57 @@ def test_the_models_own_answer_is_not_provenance_for_a_recipient(monkeypatch):
         content="", tool_calls=[_call("read_messages", {"contact": "+13128792860"}, "c1")]))
     out = agent.agent_node(_state(prior))
     assert out["messages"][-1].content == agent.UNKNOWN_HANDLE_TEXT.format(handle="+13128792860")
+
+
+# ── review 2026-10-03: a refusal is not provenance ───────────────────────────────────────────
+
+def test_a_refusal_that_echoes_an_invented_number_does_not_vouch_for_it(monkeypatch):
+    """The hygiene refusal names the number it refused. Counted as "entered the conversation",
+    that ToolMessage let the identical second call through — one retry defeated the hold."""
+    from nodes import agent
+
+    number = "+13057108702"
+    prior = [HumanMessage(content="summarize my texts with ian")]
+    monkeypatch.setattr(agent, "_generate", lambda i, *, tools, think=False: AIMessage(
+        content="", tool_calls=[_call("read_messages", {"contact": number}, "c1")]))
+    first = agent.agent_node(_state(prior))["messages"]
+    assert first[-1].content == agent.UNKNOWN_HANDLE_TEXT.format(handle=number)
+    monkeypatch.setattr(agent, "_generate", lambda i, *, tools, think=False: AIMessage(
+        content="", tool_calls=[_call("read_messages", {"contact": number}, "c2")]))
+    again = agent.agent_node(_state(prior + first))["messages"]
+    assert again[-1].content == agent.UNKNOWN_HANDLE_TEXT.format(handle=number)
+    # ... and in a later turn, with the refusal still in the history
+    later = prior + first + [AIMessage(content="I could not find Ian."), HumanMessage(content="try again")]
+    assert (agent.agent_node(_state(later))["messages"][-1].content
+            == agent.UNKNOWN_HANDLE_TEXT.format(handle=number))
+
+
+def test_a_refusal_that_echoes_an_invented_chat_ref_does_not_vouch_for_it(monkeypatch):
+    from nodes import agent
+
+    prior = [HumanMessage(content="what is the family chat saying")]
+    monkeypatch.setattr(agent, "_generate", lambda i, *, tools, think=False: AIMessage(
+        content="", tool_calls=[_call("read_messages", {"chat": "g7f3a2b"}, "c1")]))
+    first = agent.agent_node(_state(prior))["messages"]
+    assert first[-1].content == agent.UNKNOWN_CHAT_TEXT.format(ref="g7f3a2b")
+    monkeypatch.setattr(agent, "_generate", lambda i, *, tools, think=False: AIMessage(
+        content="", tool_calls=[_call("read_messages", {"chat": "g7f3a2b"}, "c2")]))
+    again = agent.agent_node(_state(prior + first))["messages"]
+    assert again[-1].content == agent.UNKNOWN_CHAT_TEXT.format(ref="g7f3a2b")
+
+
+def test_only_a_completed_call_is_provenance_but_a_failed_one_is_still_outside_content():
+    """A call that failed, was declined or was refused did not gather anything: its text is
+    Saturn's or the tool's words about the model's own arguments. It still counts as untrusted
+    content having entered (a failed fetch's error text is written by the remote side)."""
+    from nodes.approval import provenance
+
+    msgs = ([HumanMessage(content="look it up")]
+            + _round("web_extract", {"url": "https://a.example/x"}, "c1",
+                     "Error: could not fetch https://a.example/x", status="error")
+            + _round("read_file", {"file_path": "n.md"}, "c2", "Not executed: declined", status="skipped")
+            + _round("read_file", {"file_path": "m.md"}, "c3", "call +1 305 710 8702"))
+    user, seen, untrusted = provenance({"messages": msgs})
+    assert user == "look it up"
+    assert "a.example" not in seen and "declined" not in seen and "710 8702" in seen
+    assert untrusted is True

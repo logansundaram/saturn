@@ -755,8 +755,10 @@ def test_read_messages_keeps_handles_when_messages_cannot_name_anyone(history, m
 
 
 def test_read_messages_with_an_unknown_chat_points_at_find_group_chats(history):
-    out = _tool("read_messages").invoke({"chat": "g000000"})
-    assert isinstance(out, str) and "g000000" in out and "find_group_chats" in out
+    # a call that did not do its job raises: stamped `error`, it wakes the adaptive think, is
+    # in the incidents note, is never a source — and is not provenance for the ref it names
+    out = _err("read_messages", {"chat": "g000000"})
+    assert "g000000" in out and "find_group_chats" in out
 
 
 def test_read_messages_refuses_a_contact_and_a_chat_together(history):
@@ -766,3 +768,86 @@ def test_read_messages_refuses_a_contact_and_a_chat_together(history):
 def test_a_contact_filter_still_finds_their_group_messages_labelled(group_history):
     out = _tool("read_messages").invoke({"contact": "jonah@example.com"})
     assert out[0]["chat"] == f"{group_history} · Dinner club" and out[0]["group"] is True
+
+
+# ── review 2026-10-03: one definition of "the same number", one group lookup per prompt ──────
+
+def test_read_messages_finds_a_person_by_the_short_form_the_hold_accepts(history):
+    """`555-0100` passed the handle hold (trust.quarantine.same_handle: a 7+ digit tail) and
+    then matched nobody, because the tool compared the last TEN digits."""
+    assert quarantine.same_handle("010-2000", "+15550102000")
+    out = _tool("read_messages").invoke({"contact": "010-2000"})
+    assert [m["text"] for m in out] == ["Yes — the Thai place", "Dinner at 7?"]
+
+
+def test_a_group_chat_identifier_is_never_mistaken_for_a_phone_number(history):
+    # chat99… is a group's identifier, not a handle: its digits must not match a contact
+    db = sqlite3.connect(history)
+    db.execute("UPDATE chat SET chat_identifier = 'chat9915550103333' WHERE ROWID = 2")
+    db.commit()
+    db.close()
+    assert _tool("read_messages").invoke({"contact": "+15550103333"}) == \
+        "No messages with +15550103333 in the history."
+
+
+def test_group_rows_are_named_however_the_two_sources_write_a_number(history, monkeypatch):
+    from tools import messages
+
+    db = sqlite3.connect(history)
+    db.execute("UPDATE message SET handle_id = 1 WHERE ROWID = 4")       # Sam, in the group
+    db.commit()
+    db.close()
+    dinner = ("any;+;chat99", "Dinner club", [("(555) 010-2000", "Sam Lee")])
+    monkeypatch.setattr(messages, "_groups", lambda: messages._parse_groups(_as_groups(dinner)))
+    out = _tool("read_messages").invoke({"chat": _ref("chat99"), "limit": 1})
+    assert out[0]["from"] == "Sam Lee"
+
+
+def test_the_chat_hold_and_the_tool_read_a_ref_by_one_pattern():
+    from tools import messages
+
+    assert messages._REF is quarantine.CHAT_REF
+
+
+def test_a_group_is_looked_up_once_for_the_prompt_not_again_when_the_human_answers(gate, mac, monkeypatch):
+    """LangGraph re-runs the approval node from the top on resume: the bulk Messages listing
+    behind the gate's member line ran before the prompt AND again after the answer — a second
+    Apple event for nothing, and a second answer that could differ from the one shown."""
+    from langchain.messages import AIMessage, HumanMessage, ToolMessage
+
+    from nodes import approval as approval_mod
+    from tools import messages
+
+    lookups = []
+    real = messages._groups
+    monkeypatch.setattr(messages, "_groups", lambda: lookups.append(1) or real())
+    mac.reply(_as_groups(*GROUPS))
+    ref = _ref(FAMILY[0])
+    send = {"id": "c2", "name": "send_message", "args": {"chat": ref, "text": "hi"}}
+    msgs = [HumanMessage(content="tell the family chat hi"),
+            AIMessage(content="", tool_calls=[{"id": "c1", "name": "find_group_chats", "args": {"query": "family"}}]),
+            ToolMessage(content=f"[{{'chat': '{ref}', 'name': 'Family'}}]", tool_call_id="c1", name="find_group_chats"),
+            AIMessage(content="", tool_calls=[send])]
+    state = {"messages": msgs, "plan": [], "context": ""}
+
+    class Paused(Exception):
+        pass
+
+    shown = []
+
+    def pause(payload):
+        shown.append(payload["notes"])
+        raise Paused
+
+    quarantine.reset_turn()
+    monkeypatch.setattr(approval_mod, "interrupt", pause)
+    with pytest.raises(Paused):
+        approval_mod.approval_node(state)                       # the prompt goes up
+    monkeypatch.setattr(approval_mod, "interrupt", lambda payload: shown.append(payload["notes"]) or True)
+    assert approval_mod.approval_node(state).goto == "tools"    # the human answers: the node re-runs
+    assert len(lookups) == 1 and shown[0] == shown[1]
+    assert any("3 people" in n for n in shown[0])
+    # the answer ends that prompt: the next gated send is resolved afresh
+    msgs[-1] = AIMessage(content="", tool_calls=[{**send, "id": "c3"}])
+    approval_mod.approval_node(state)
+    assert len(lookups) == 2

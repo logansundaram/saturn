@@ -49,9 +49,10 @@ def _show_preamble_if_due() -> None:
 
 def _frame_row(*spans: "tuple[str, str]") -> None:
     """One row inside the approval frame: the bold `┃` gutter, then each `(text, style)` span.
-    Bidi overrides and zero-width characters are shown by code point — the rows ARE what the
-    human approves, and an RTL override can make a command display in another order
-    (textutil.visible_format_chars). Terminal controls are handled by the console itself."""
+    Bidi overrides and every character that prints as nothing are shown by code point, and ESC
+    as `␛` — the rows ARE what the human approves: an RTL override can make a command display
+    in another order, and the console would remove a colour code without a trace
+    (textutil.visible_format_chars). The other terminal controls are handled by the console."""
     row = Text()
     row.append("  ┃ ", style="bold")
     for text, style in spans:

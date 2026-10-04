@@ -829,3 +829,20 @@ def test_headless_yolo_still_refuses_a_held_url(capsys):
     finally:
         policy.set_tier(prev)
         policy._tier_before_gate_off = None
+
+
+def test_piped_stdin_cut_by_the_read_is_marked_even_when_colour_codes_shrink_it(monkeypatch):
+    """`grep --color=always … | saturn -p`: the bounded read stops mid-stream, removing the
+    colour codes brings what was read back under the cap, and the cut went unmarked (review
+    2026-10-03). Truncation is a fact about the read, not about the cleaned text."""
+    line = b"\x1b[35m\x1b[Ka.py\x1b[m\x1b[K:\x1b[01;31m\x1b[KTODO\x1b[m\x1b[K\n"     # 10 visible chars
+    monkeypatch.setattr(agent.sys, "stdin", _BytesPipe(line * 20_000))
+    out = agent._read_piped_stdin()
+    assert "\x1b" not in out and out.startswith("a.py:TODO\n")
+    assert out.rstrip().endswith("chars]") and "truncated" in out.splitlines()[-1]
+
+
+def test_piped_stdin_that_was_read_whole_is_not_marked_truncated(monkeypatch):
+    # 13,000 bytes on the wire, 1,000 visible characters: all of it arrived, nothing was cut
+    monkeypatch.setattr(agent.sys, "stdin", _BytesPipe(b"\x1b[1;31mx\x1b[0m" * 1_000))
+    assert agent._read_piped_stdin() == "x" * 1_000

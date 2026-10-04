@@ -6,8 +6,6 @@ one, delete one. Running one is typing its name — `/weekly-review` in the REPL
 
 from __future__ import annotations
 
-import os
-
 from commands._framework import command, resolves, _print
 
 # `create` is the spelling in --help; `new` and `add` are accepted so neither habit errors.
@@ -156,7 +154,7 @@ def _create(skills, workspace, name: str) -> None:
     # A file the loader skipped (unclosed frontmatter, a folder spelled Weekly-Review on a disk
     # that ignores case) is not in skills.get(), but it is still the user's text — and the
     # startup warning sends them straight here. Never write over it.
-    taken = next((p for p in (path, skills.global_dir() / f"{key}.md") if os.path.lexists(p)), None)
+    taken = skills.unloaded_file(key)
     if taken is not None:
         _print(f"  {workspace.display(taken)} is already there but did not load as a skill "
                "(/skills says why) — fix or remove that file first; nothing was written")

@@ -998,3 +998,22 @@ def test_a_frontmatter_value_that_is_not_text_is_skipped_not_expanded(home):
     assert list(skills.discover()) == ["weekly-review"]
     problems = "\n".join(skills.problems())
     assert "bomb.md" in problems and "named.md" in problems and "one line of text" in problems
+
+
+def test_a_declined_skill_is_not_then_carried_out(home, gate, monkeypatch):
+    """Live probe on the 9b, 2026-10-03: declined at the gate, the model read the steps quoted
+    in the request as work still to do and ran them for 17 passes. The decline says that saving
+    was the whole request; every other tool's decline is unchanged."""
+    from nodes import approval as approval_mod
+    from trust import quarantine
+
+    quarantine.reset_turn()
+    monkeypatch.setattr(approval_mod, "interrupt", lambda payload: False)
+    calls = [_call("create_skill", dict(DRAFT), "s1"),
+             _call("write_file", {"file_path": "a.txt", "content": "x"}, "w1")]
+    msgs = [HumanMessage(content="save that as a skill"), AIMessage(content="", tool_calls=calls)]
+    cmd = approval_mod.approval_node({"messages": msgs, "plan": [], "context": ""})
+    replies = {m.name: m.content for m in cmd.update["messages"]}
+    assert replies["create_skill"].startswith(approval_mod.DECLINE_TEXT)
+    assert "Do not carry out its steps" in replies["create_skill"]
+    assert replies["write_file"] == approval_mod.DECLINE_TEXT

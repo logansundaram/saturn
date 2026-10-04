@@ -50,7 +50,7 @@ def draft(args: dict) -> "tuple[Path, str]":
 
 @register_tool("side_effecting")
 def create_skill(name: str, description: str, steps: str, replace: bool = False):
-    """Creates a skill: a reusable procedure the user runs later by typing /name. Use ONLY when the user asks to create, save or change a skill ("save that as a skill called weekly-review"). name: lowercase letters, digits and hyphens. description: one line saying what it does and when to use it. steps: the procedure as a numbered markdown list, written as instructions to yourself. To change a skill that exists, call with replace=true and the COMPLETE new steps. The user reads the whole skill before it is saved."""
+    """Creates a skill: a reusable procedure the user runs later by typing /name. Use ONLY when the user asks to create, save or change a skill ("save that as a skill called weekly-review"). Saving is the whole job: call this right away, and do NOT carry out the steps or look anything up first. name: lowercase letters, digits and hyphens. description: one line saying what it does and when to use it. steps: one string, the procedure as a numbered markdown list with one step per line. To change a skill that exists, call with replace=true and the COMPLETE new steps. The user reads the whole skill before it is saved."""
     if not human_approved():
         raise ToolError("A skill is saved only after the user reads it and approves this exact "
                         "call at the prompt; nothing was saved.")

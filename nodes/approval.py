@@ -16,14 +16,15 @@ of the turn (a guarded action is reported, never retried or substituted).
 
 from typing import Literal
 
-from langchain.messages import AIMessage, ToolMessage
+from langchain.messages import ToolMessage
 from langgraph.types import interrupt, Command
 
 import diag
 from trust import policy
 from trust import quarantine
 from tools.registry import DECLARED_RISK, risk_of
-from core.state import AgentState, current_step, is_steer_message, is_turn_start, issuing_message
+from core import provenance as _provenance
+from core.state import AgentState, current_step, issuing_message
 
 # The decline observation a rejected call gets. The structural `saturn_status: skipped` stamp on
 # the ToolMessage is what readers key on (nodes/agent.py's declined-repeat guard + incidents).
@@ -54,31 +55,12 @@ def _can_act(name: str) -> bool:
 
 def provenance(state) -> "tuple[str, str, bool]":
     """(what the user typed, everything else that ENTERED the conversation, whether any of that
-    came from an untrusted tool or an attachment) — the three facts quarantine.url_hold reads (the first
-    two are what quarantine.handle_hold reads, from the agent's hygiene).
-    The model's own messages are skipped: they are what the hold checks, so a URL the model
-    wrote in a preamble (the issuing message is already in state) or an earlier answer must not
-    vouch for itself. Only the user, a tool result, an attachment or the grounding can — and a
-    tool result only when the call COMPLETED (`saturn_status` done): a refusal, a decline or an
-    error is text about the model's own arguments, and usually repeats them ("+1305… appears
-    nowhere in this conversation"), so counting it let one retry of an invented number through
-    (review 2026-10-03). A failed call still counts as outside content having entered."""
-    user, seen = [], [str(state.get("attachments") or ""), str(state.get("context") or "")]
-    untrusted = bool(state.get("attachments"))
-    for m in state.get("messages") or []:
-        text = str(getattr(m, "content", "") or "")
-        if is_turn_start(m) or is_steer_message(m):
-            user.append(text)
-            continue
-        if isinstance(m, AIMessage):
-            continue
-        if isinstance(m, ToolMessage):
-            if quarantine.is_untrusted(str(m.name or "")):
-                untrusted = True
-            if ((getattr(m, "additional_kwargs", None) or {}).get("saturn_status") or "done") != "done":
-                continue
-        seen.append(text)
-    return "\n".join(user), "\n".join(seen), untrusted
+    came from an untrusted tool or an attachment) — the three facts quarantine.url_hold reads (the
+    first two are what quarantine.handle_hold reads, from the agent's hygiene). The reading itself
+    — what counts as typed, why the model's own words and a failed call's text vouch for nothing —
+    is core/provenance.of, shared with auto-learn."""
+    p = _provenance.of(state)
+    return "\n".join(p.typed), p.seen, p.untrusted
 
 
 def _once(state):

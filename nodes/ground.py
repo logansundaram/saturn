@@ -135,8 +135,10 @@ def stable_grounding(memory_always: "str | None" = None) -> str:
     always = memory_context_split("")[0] if memory_always is None else memory_always
     if always:
         sections.append(
-            "### Persistent memory (what the user asked me to remember and what I learned; "
-            "#id lets `remember(..., replaces=<id>)` correct a fact)\n" + always
+            "### Persistent memory (what the user told me and the day they said it; a later "
+            "day outranks an earlier one, and what the user says in this conversation or a "
+            "tool returns now outranks all of it; [inferred] = my conclusion, which the user "
+            "accepted; #id lets `remember(..., replaces=<id>)` correct a fact)\n" + always
         )
     return "\n\n".join(sections)
 

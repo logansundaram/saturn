@@ -690,13 +690,18 @@ def select_for_context(query: str = "", *, cap: int | None = None,
 
 def _context_line(e: dict) -> str:
     """One fact as the model sees it: the id (so `remember(..., replaces=<id>)` can supersede
-    it), a date where recency matters (memo, commitments), the due date of a commitment, and the
-    layer tag for the by-match facts (so a `negative` fact reads as a prohibition)."""
+    it), the day it was written (the one deterministic signal for which of two facts is
+    current — a small model otherwise follows whichever stored value it reads; spec
+    2026-10-04-know-the-user A1), the layer tag for the by-match facts (so a `negative` fact
+    reads as a prohibition), `[inferred]` on a fact the user accepted but did not state, and the
+    due date of a commitment."""
     bits = [f"- #{e['id'] or '?'}"]
-    if e["layer"] in ("memo", "commitments"):
+    if e.get("date"):
         bits.append(f"({e['date']})")
     if e["layer"] not in ("user",):
         bits.append(f"[{e['layer']}]")
+    if e.get("by") == "inferred":
+        bits.append("[inferred]")
     bits.append(e["text"])
     if e.get("due"):
         bits.append(f"(due {e['due']})")

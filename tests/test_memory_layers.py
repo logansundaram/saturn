@@ -238,8 +238,9 @@ def test_grounding_injects_selected_memory_and_stamps_use(mem, monkeypatch):
     state = {"messages": [HumanMessage("summarize the deck")], "current_query": "summarize the deck"}
     context = ground.grounding_node(state)["context"]
     assert "### Persistent memory" in context
-    assert "#1 I prefer terse answers" in context
-    assert "#2 [entities] 'the deck' means Q3_investor_update.pptx" in context
+    today = date.today()   # every fact carries its day (spec 2026-10-04-know-the-user A1)
+    assert f"#1 ({today}) I prefer terse answers" in context
+    assert f"#2 ({today}) [entities] 'the deck' means Q3_investor_update.pptx" in context
     assert stamped == [2]
 
     state = {"messages": [HumanMessage("hello")], "current_query": "hello"}

@@ -546,3 +546,43 @@ def test_memory_add_and_edit_say_why_a_secret_is_refused(isolated_paths, capsys)
     out = capsys.readouterr().out
     assert out.count("not saved") == 2 and "PIN" in out and "password" in out
     assert [e["text"] for e in mr.entries()] == ["likes tea"]
+
+
+# ── A1: the memory block shows each fact's day and says what outranks it ───────────────────
+
+
+def test_every_fact_the_model_reads_carries_its_day_and_an_inferred_one_says_so(isolated_paths):
+    from datetime import date
+
+    from stores import memory_registry as mr
+
+    mr.add_memory("I'm vegetarian")
+    mr.add_memory("User likes tea", by="inferred")
+    mr.add_memory("Petra is my manager", layer="entities")
+    today = date.today()
+    always, matched, _ids = mr.memory_context_split("what does Petra want")
+    assert always.splitlines() == [f"- #1 ({today}) I'm vegetarian",
+                                   f"- #2 ({today}) [inferred] User likes tea"]
+    assert matched.splitlines()[0] == f"- #3 ({today}) [entities] Petra is my manager"
+
+
+def test_a_hand_written_bullet_without_a_day_reads_as_written_today(isolated_paths):
+    from datetime import date
+
+    from stores import memory_registry as mr
+
+    mr._memory_path().parent.mkdir(parents=True, exist_ok=True)
+    mr._memory_path().write_text("## user\n- likes tea\n", encoding="utf-8")
+    assert mr.memory_context_split("")[0] == f"- #1 ({date.today()}) likes tea"
+
+
+def test_the_memory_block_says_what_outranks_a_stored_fact(isolated_paths):
+    from nodes.ground import stable_grounding
+    from stores import memory_registry as mr
+
+    mr.add_memory("I live in Paris")
+    block = stable_grounding()
+    header = next(line for line in block.splitlines() if line.startswith("### Persistent memory"))
+    assert "the day" in header and "a later day outranks an earlier one" in header
+    assert "what the user says in this conversation" in header and "[inferred]" in header
+    assert "replaces=<id>" in header

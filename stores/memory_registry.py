@@ -21,11 +21,13 @@ file count:
   negative      approaches rejected, questions not to re-ask  by match
 
 Every fact carries a metadata token `{#id by=user|inferred run=<run_id> used=<date> n=<count>
-sens=<mark> due=<date>}` at the end of its bullet: learned-on (the date prefix), the run it came
-from (provenance to /trace why), whether the user said it or the review inferred it, last-used
-(the expiry signal for never-matched facts), confirmed-count (an inferred fact graduates to
-trusted when the user re-states it), a sensitivity mark (a sensitive fact is withheld from a
-prompt bound for a remote inference host), and a due date for commitments. Missing tokens are
+sens=<mark> due=<date> src=<how>}` at the end of its bullet: learned-on (the date prefix), the
+run it came from (provenance to /trace why), whether the user said it or the review inferred
+it, last-used (the expiry signal for never-matched facts), confirmed-count (an inferred fact
+graduates to trusted when the user re-states it), a sensitivity mark (a sensitive fact is
+withheld from a prompt bound for a remote inference host), a due date for commitments, and how
+a by=user fact arrived without a prompt (src=said for auto-learn, src=setup:<question> for the
+first-run interview). Missing tokens are
 tolerated — a hand-written bullet is a user-layer fact with defaults — and the next write fills
 them in. A file written before the layers existed (bullets, no `## layer` headings) reads as the
 user layer and is migrated on its next write.
@@ -34,7 +36,8 @@ The `remember` / `recall` tools and `/memory` are thin wrappers over `add_memory
 `search_memory` / `edit_memory` / `remove_memory`; the grounding node calls `memory_context_split`
 with the current request so selection stays auditable (`/trace context` shows exactly what
 loaded). No FACT is written without a caller that the user drove (a tool call that faced the
-gate, a slash command, or the review screen's accept); the one read-path write is `mark_used`,
+gate or whose every word the user typed — core/auto_memory — a slash command, the first-run
+interview, or the review screen's accept); the one read-path write is `mark_used`,
 which stamps last-used on the facts a turn loaded and changes nothing else.
 
 Hand-editing: bullets and `## layer` headings are the file. Prose outside them (the header, a
@@ -143,7 +146,7 @@ _NEXT_ID_RE = re.compile(r"^<!--\s*next-id:\s*(\d+)\s*-->\s*$")
 
 
 def _new_entry(text: str, *, layer: str = "user", category: str = "general", by: str = "user",
-               run_id=None, sensitivity=None, due=None, day: str | None = None) -> dict:
+               run_id=None, sensitivity=None, due=None, src=None, day: str | None = None) -> dict:
     return {
         "id": None,
         "layer": layer,
@@ -156,6 +159,7 @@ def _new_entry(text: str, *, layer: str = "user", category: str = "general", by:
         "n": 1,
         "sens": sensitivity or None,
         "due": due or None,
+        "src": src or None,
     }
 
 
@@ -181,6 +185,8 @@ def _parse_bullet(line: str, layer: str) -> dict | None:
                 entry["sens"] = v
             elif k == "due":
                 entry["due"] = v
+            elif k == "src":
+                entry["src"] = v
         body = body[: m.start()].rstrip()
     d = _DATE_RE.match(body)
     if d:
@@ -266,6 +272,8 @@ def _meta_token(e: dict) -> str:
         parts.append(f"sens={_token_safe(e['sens'])}")
     if e.get("due"):
         parts.append(f"due={_token_safe(e['due'])}")
+    if e.get("src"):
+        parts.append(f"src={_token_safe(e['src'])}")
     return "{" + " ".join(parts) + "}"
 
 
@@ -340,11 +348,14 @@ def _clean_category(category) -> str:
 
 
 def add_memory(fact: str, category: str = "general", *, layer: str = "user", replaces=None,
-               by: str = "user", run_id=None, sensitivity=None, due=None) -> str:
+               by: str = "user", run_id=None, sensitivity=None, due=None, src=None) -> str:
     """Append a durable fact to `layer`. A fact already stored (same text, any layer) is not
     duplicated — its confirmed-count rises, and an inferred fact the user now states outright
     graduates to trusted. `replaces=<id>` supersedes an earlier fact instead of sitting beside it
-    ("I moved to Berlin" replaces "I live in Paris"). Returns a one-line report."""
+    ("I moved to Berlin" replaces "I live in Paris"). `src` says how a by=user fact arrived
+    without a prompt — `said` (auto-learn: the user typed it in conversation, core/auto_memory)
+    or `setup:<question>` (the first-run interview); None for the gate, /memory add and the
+    review. Returns a one-line report."""
     fact = _clean_text(fact)
     if not fact:
         return "Nothing to remember — the fact was empty."
@@ -382,12 +393,14 @@ def add_memory(fact: str, category: str = "general", *, layer: str = "user", rep
                 e["by"] = "user"
             if sensitivity and not e.get("sens"):
                 e["sens"] = sensitivity
+            if src and not e.get("src"):
+                e["src"] = src
             _write(entries, next_id)
             note = " — now confirmed by you" if graduated else f" (confirmed ×{e['n']})"
             return f"Already remembered as #{e['id']}{note}: {fact!r}{replaced_note}"
 
     new = _new_entry(fact, layer=layer, category=category, by=by, run_id=run_id,
-                     sensitivity=sensitivity, due=due)
+                     sensitivity=sensitivity, due=due, src=src)
     if replaced is not None and replaced["layer"] != "user" and layer == "user":
         new["layer"] = replaced["layer"]  # a replacement stays in the layer it corrects
     entries.append(new)

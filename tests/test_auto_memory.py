@@ -209,3 +209,30 @@ def test_fact_id_reads_add_memory_reports(isolated_paths):
     assert auto_memory.fact_id(mr.add_memory("I like tea")) == 1
     assert auto_memory.fact_id(mr.add_memory("I like tea")) == 1   # "Already remembered as #1"
     assert auto_memory.fact_id("Nothing to remember — the fact was empty.") is None
+
+
+# ── the registry records how a by=user fact arrived ────────────────────────────────────────
+
+
+def test_src_round_trips_through_the_file_and_survives_a_rewrite(isolated_paths):
+    from stores import memory_registry as mr
+
+    mr.add_memory("I'm vegetarian", src="said")
+    mr.add_memory("call me Logan", src="setup:name")
+    mr.add_memory("no source")
+    raw = mr._read_raw()
+    assert "src=said}" in raw and "src=setup:name}" in raw
+    mr.add_memory("another fact")                     # a rewrite keeps every token
+    assert [e["src"] for e in mr.entries()] == ["said", "setup:name", None, None]
+
+
+def test_a_restatement_keeps_the_first_src_and_graduates_an_inferred_fact(isolated_paths):
+    from stores import memory_registry as mr
+
+    mr.add_memory("I'm vegetarian", by="inferred")
+    report = mr.add_memory("I'm vegetarian", by="user", src="said")
+    assert "now confirmed by you" in report
+    e = mr.entry(1)
+    assert (e["by"], e["src"], e["n"]) == ("user", "said", 2)
+    mr.add_memory("I'm vegetarian", src="setup:diet")
+    assert mr.entry(1)["src"] == "said"

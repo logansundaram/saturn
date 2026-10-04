@@ -31,6 +31,28 @@ from tui import ui
 from tui.typeahead import InputQueue
 
 
+def _auto_memory_notes(state) -> list:
+    """One line per fact this turn remembered without the gate (nodes/tools.py marks the event
+    `auto_memory` with the fact's id): what was kept, and the way back. Said after the answer,
+    because there was no prompt to see it at."""
+    import re
+
+    from textutil import clip
+
+    out = []
+    for ev in state.get("tool_events") or []:
+        fid = ev.get("auto_memory") if isinstance(ev, dict) else None
+        if not fid:
+            continue
+        args = ev.get("args") if isinstance(ev.get("args"), dict) else {}
+        line = f"remembered #{fid}: {clip(' '.join(str(args.get('fact') or '').split()), 80)}"
+        replaced = re.search(r"replaces #(\d+)", str(ev.get("result") or ""))
+        if replaced:
+            line += f" (replaced #{replaced.group(1)})"
+        out.append(f"{line} — you said it · /memory forget {fid} undoes it")
+    return out
+
+
 def run_repl() -> None:
     """The interactive session: load under the splash, print the startup readouts, then loop —
     prompt (or drained type-ahead) → slash command or agent turn → streamed answer — until
@@ -434,6 +456,8 @@ def run_repl() -> None:
                     "tool may still be auto-approved; check /policy and reset with "
                     "/policy risk <tool> reset ("
                     + "; ".join(expired_grants["failed"]) + ")")
+        for line in _auto_memory_notes(state):
+            ui.note(line)
         if late_steer:
             ui.note(
                 "your steering correction arrived after the turn had finished — it could not be "

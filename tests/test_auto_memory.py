@@ -375,3 +375,48 @@ def test_tool_node_an_auto_approved_unproven_fact_stays_inferred(isolated_paths)
                                        _remember("User prefers dark mode")]})
     assert (mr.entries()[0]["by"], mr.entries()[0]["src"]) == ("inferred", None)
     assert "auto_memory" not in delta["tool_events"][0]
+
+
+# ── what the user sees ─────────────────────────────────────────────────────────────────────
+
+
+def test_the_after_answer_note_names_each_auto_learned_fact_and_the_undo():
+    from app.repl import _auto_memory_notes
+
+    state = {"tool_events": [
+        {"name": "read_file", "args": {}, "ok": True},
+        {"name": "remember", "args": {"fact": "User is vegetarian"}, "auto_memory": 7,
+         "result": "Remembered #7 (user): 'User is vegetarian'"},
+        {"name": "remember", "args": {"fact": "User lives in Berlin"}, "auto_memory": 9,
+         "result": "Remembered #9 (user): 'User lives in Berlin' — replaces #2 'User lives in Paris'"},
+        {"name": "remember", "args": {"fact": "gated one"}, "ok": True},
+    ]}
+    assert _auto_memory_notes(state) == [
+        "remembered #7: User is vegetarian — you said it · /memory forget 7 undoes it",
+        "remembered #9: User lives in Berlin (replaced #2) — you said it · /memory forget 9 undoes it",
+    ]
+    assert _auto_memory_notes({}) == []
+
+
+def test_memory_why_and_the_listing_say_how_a_fact_arrived(isolated_paths):
+    from commands import knowledge
+    from stores import memory_registry as mr
+
+    mr.add_memory("I'm vegetarian", src="said")
+    mr.add_memory("call me Logan", src="setup:name")
+    mr.add_memory("tea", by="inferred")
+    mr.add_memory("typed with /memory add")
+    assert [knowledge._how(e) for e in mr.entries()] == ["said", "setup", "inferred", ""]
+
+    rows = []
+
+    class FakeUI:
+        def section(self, *a, **k):
+            pass
+
+        def table(self, r, *a, **k):
+            rows.extend(r)
+
+    knowledge._why(mr, FakeUI(), 1)
+    said_by = dict((k[0], v) for k, v in rows)["said by"]
+    assert "without a prompt" in said_by

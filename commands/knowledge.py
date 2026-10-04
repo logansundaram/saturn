@@ -370,12 +370,27 @@ def _list_memory(mr, ui, layer_filter=None):
         ui.table([
             (
                 (f"#{e['id']}", "accent"),
-                ("inferred" if e.get("by") == "inferred" else "", "dim"),
+                (_how(e), "dim"),
                 ("stale" if mr.is_stale(e) else "", "dim"),
                 _display_entry(e),
             )
             for e in rows
         ])
+
+
+def _how(e: dict) -> str:
+    """The listing's provenance column: `inferred` (accepted at a review, or a remember nobody
+    confirmed), `said` (auto-learn: you typed it in conversation), `setup` (the first-run
+    interview), or blank (the gate, /memory add, a hand edit)."""
+    if e.get("by") == "inferred":
+        return "inferred"
+    return str(e.get("src") or "").split(":", 1)[0]
+
+
+_SAID_BY = {
+    "said": "you said it — saved without a prompt because you typed every word of it",
+    "setup": "you said it — your answer in the first-run interview",
+}
 
 
 def _why(mr, ui, fact_id: int):
@@ -384,8 +399,8 @@ def _why(mr, ui, fact_id: int):
         _print(f"  no fact #{fact_id} — /memory lists the ids.")
         return
     ui.section(f"memory · #{fact_id}", _display_entry(e))
-    who = ("you said it" if e.get("by") == "user"
-           else "inferred (proposed at a review, accepted by you)")
+    who = ("inferred (proposed at a review, accepted by you)" if e.get("by") == "inferred"
+           else _SAID_BY.get(_how(e), "you said it"))
     rows = [
         ("layer", e["layer"]),
         ("learned", e["date"]),

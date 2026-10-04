@@ -87,7 +87,11 @@ def _control_dirs() -> "dict[Path, str]":
     user never wrote — refused like hooks.yaml, even approved."""
     from core import skills
 
-    return {folder: "holds the user's skills" for folder in skills.control_dirs()}
+    out = {folder: "holds the user's skills" for folder in skills.control_dirs()}
+    # A skill symlinked into one of those folders is loaded from where it really lives.
+    out.update({real: "is one of the user's skills (linked into a skills folder)"
+                for real in skills.linked_targets()})
+    return out
 
 
 def _touches(target: Path, control: Path) -> bool:
@@ -113,7 +117,8 @@ def _refuse_control_file(target_path) -> None:
         inside = next((d for d in folders if _ws._inside(target, d)
                        or Path(str(target).casefold()).is_relative_to(str(d).casefold())), None)
         if inside is not None:
-            raise PermissionError(f"{target} is inside {inside}, which {folders[inside]}; Saturn "
+            where = "" if target == inside else f"is inside {inside}, which "
+            raise PermissionError(f"{target} {where}{folders[inside]}; Saturn "
                                   "never writes there with the file tools. To save or change a "
                                   "skill call create_skill; the user deletes one with "
                                   "/skills delete <name>.")

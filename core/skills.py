@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from textutil import clip
+from textutil import clip, unseen_chars
 
 SKILLS_DIR = "skills"
 SKILL_FILE = "SKILL.md"
@@ -83,6 +83,29 @@ def control_dirs() -> "list[Path]":
     return [folder for _scope, folder in _folders()]
 
 
+def linked_targets() -> "list[Path]":
+    """Where skills that are symlinked INTO a skills folder really live (a dotfiles folder, a
+    ~/.claude/skills entry): the real folder of a linked `<name>/`, the real file of a linked
+    `SKILL.md` or `<name>.md`. The loader follows those links, so the file tools must refuse
+    the real paths too (tools/files) — else a write to `dotfiles/standup/SKILL.md` rewrites a
+    skill without ever naming the skills folder."""
+    out: list = []
+    for _scope, folder in _folders():
+        try:
+            base = folder.resolve()
+        except OSError:
+            continue
+        for path in _candidates(folder):
+            for entry in ((path.parent, path) if path.name == SKILL_FILE else (path,)):
+                try:
+                    real = entry.resolve()
+                except OSError:
+                    continue
+                if not real.is_relative_to(base) and real not in out:
+                    out.append(real)
+    return out
+
+
 def valid_name(name: str) -> bool:
     return bool(_NAME.match(str(name or "")))
 
@@ -118,6 +141,12 @@ def _parse(path: Path, scope: str) -> "tuple[Skill | None, str | None]":
                 raise ValueError("expected key: value lines")
         except Exception as exc:
             return None, f"{path}: frontmatter unreadable, skipped ({' '.join(str(exc).split())})"
+        # YAML aliases let a few hundred bytes stand for billions of items; a value is only
+        # ever used as one line of text, so anything else is refused BEFORE it is turned into
+        # a string (a workspace skill arrives with a folder, and this runs at every prompt).
+        for key in ("name", "description", "origin"):
+            if not isinstance(meta.get(key), (str, int, float, bool, type(None))):
+                return None, f"{path}: frontmatter `{key}` must be one line of text, skipped"
         body = text[m.end():]
     elif text.startswith("---"):
         return None, f"{path}: frontmatter has no closing --- line, skipped"
@@ -322,6 +351,11 @@ def draft_problem(name, description, steps, replace: bool = False,
         return (f"The steps are {len(steps)} characters; a skill Saturn saves is at most "
                 f"{DRAFT_CAP} characters, so the user can read all of it before approving. "
                 "Shorten the steps.")
+    unseen = unseen_chars(f"{description}\n{steps}")
+    if unseen:
+        return ("The skill holds characters a person cannot see at the approval prompt "
+                f"({', '.join(unseen[:5])}); remove them — a skill is saved only as text the "
+                "user can read in full.")
     local = in_scope("workspace").get(name)
     if local is not None:
         return (f"/{name} is this folder's own skill ({local.path}); Saturn saves skills only in "

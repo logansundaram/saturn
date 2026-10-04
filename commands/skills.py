@@ -6,6 +6,8 @@ one, delete one. Running one is typing its name — `/weekly-review` in the REPL
 
 from __future__ import annotations
 
+import os
+
 from commands._framework import command, resolves, _print
 
 # `create` is the spelling in --help; `new` and `add` are accepted so neither habit errors.
@@ -149,8 +151,21 @@ def _create(skills, workspace, name: str) -> None:
         _print(f"  /{key} already exists: {workspace.display(existing.path)} — edit it there")
         return
     path = skills.global_dir() / key / skills.SKILL_FILE
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(TEMPLATE.format(name=key), encoding="utf-8")
+    # A file the loader skipped (unclosed frontmatter, a folder spelled Weekly-Review on a disk
+    # that ignores case) is not in skills.get(), but it is still the user's text — and the
+    # startup warning sends them straight here. Never write over it.
+    taken = next((p for p in (path, skills.global_dir() / f"{key}.md") if os.path.lexists(p)), None)
+    if taken is not None:
+        _print(f"  {workspace.display(taken)} is already there but did not load as a skill "
+               "(/skills says why) — fix or remove that file first; nothing was written")
+        return
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "x", encoding="utf-8") as f:    # "x": create, never replace
+            f.write(TEMPLATE.format(name=key))
+    except OSError as exc:
+        _print(f"  could not write {workspace.display(path)}: {exc} — nothing was written")
+        return
     _print(f"  wrote {workspace.display(path)} — open it in your editor and replace the steps; "
            f"/{key} runs it")
 

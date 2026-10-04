@@ -258,6 +258,29 @@ def is_control_picture(ch: str) -> bool:
 _FORMAT = re.compile("[\u061c\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]")
 
 
+def unseen_chars(text) -> "list[str]":
+    """The characters in `text` a person cannot see even at the approval gate, as `U+XXXX` labels
+    (each once, in order): format characters outside the set `visible_format_chars` shows by
+    code point (Unicode tag characters, word joiners, the soft hyphen), private-use characters,
+    lone surrogates, variation selectors other than the emoji one (U+FE0F) and the Hangul
+    fillers. They print as nothing, so text spelled in them would be saved, and later read by
+    the model, without the person who approved it ever seeing it."""
+    import unicodedata
+
+    found: list = []
+    for ch in "" if text is None else str(text):
+        o = ord(ch)
+        if _FORMAT.match(ch):
+            continue                     # shown at the gate as its code point
+        if (unicodedata.category(ch) in ("Cf", "Co", "Cs")
+                or 0xFE00 <= o <= 0xFE0E or 0xE0100 <= o <= 0xE01EF
+                or o in (0x115F, 0x1160, 0x3164, 0xFFA0)):
+            label = f"U+{o:04X}"
+            if label not in found:
+                found.append(label)
+    return found
+
+
 def visible_format_chars(text) -> str:
     """`text` with bidi and zero-width characters shown as `⟨U+202E⟩` — for the gate only."""
     s = "" if text is None else str(text)

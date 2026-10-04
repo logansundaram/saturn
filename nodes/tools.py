@@ -16,7 +16,8 @@ from trust import egress
 from trust import quarantine
 from tools.registry import RETRIEVAL_TOOLS, is_action, tools_by_name
 from tools.planning import PLAN_TOOL, to_plan
-from tools.toolspec import _HUMAN_APPROVED, ToolError
+from tools.toolspec import _HUMAN_APPROVED, _USER_STATED, ToolError
+from core import auto_memory
 from core.state import AgentState, issuing_message
 from textutil import CALL_RESULT_SEP, clip, fmt_call, head_tail, visible_controls_n
 
@@ -107,6 +108,11 @@ def tool_node(state: AgentState):
         for c in ev.get("calls") or [] if isinstance(c, dict) and c.get("approved")
     }
 
+    # The remember calls the approval node let through because the user typed every word of
+    # them (core/auto_memory) — recomputed from the same state, so the stamp matches the gate.
+    user_stated_ids = {tc["id"] for tc in pending_calls
+                       if tc["name"] == "remember" and auto_memory.qualifies(tc, state)}
+
     tool_messages = []
     tools_called = []
     tool_results = []
@@ -127,6 +133,7 @@ def tool_node(state: AgentState):
             ok = False
         else:
             approved_token = _HUMAN_APPROVED.set(tool_call["id"] in approved_ids)
+            stated_token = _USER_STATED.set(tool_call["id"] in user_stated_ids)
             try:
                 observation = selected.invoke(args)
             except GraphInterrupt:
@@ -144,6 +151,7 @@ def tool_node(state: AgentState):
                 ok = False
             finally:
                 _HUMAN_APPROVED.reset(approved_token)
+                _USER_STATED.reset(stated_token)
         dur = time.perf_counter() - start
         if name == PLAN_TOOL and ok:
             # The checklist is state, not an observation: the rail, the gate's step context and
@@ -230,6 +238,10 @@ def tool_node(state: AgentState):
         }
         if q_kinds:
             event["quarantine"] = q_kinds
+        # A fact remembered without the gate: the REPL's after-answer note reads this
+        # (app/repl._auto_memory_notes), and the trace keeps it with the event.
+        if ok and tool_call["id"] in user_stated_ids and tool_call["id"] not in approved_ids:
+            event["auto_memory"] = auto_memory.fact_id(observation)
         # The per-call egress slice (computed above), rendered live as a rail leaf and persisted
         # with the event for /trace replays.
         if sent:

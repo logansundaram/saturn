@@ -335,3 +335,43 @@ def test_only_the_remember_call_skips_the_gate_in_a_mixed_batch(isolated_paths, 
     _cmd, payload = _gate(monkeypatch, [HumanMessage(content="I'm vegetarian, note it in x.txt"),
                                         msg])
     assert [tc["name"] for tc in payload["tool_calls"]] == ["write_file"]
+
+
+# ── the tools node ─────────────────────────────────────────────────────────────────────────
+
+
+def test_tool_node_stamps_a_user_stated_fact_and_marks_the_event(isolated_paths):
+    import nodes.tools as tn
+    from stores import memory_registry as mr
+
+    delta = tn.tool_node({"messages": [HumanMessage(content="Petra is my manager"),
+                                       _remember("Petra is the user's manager", layer="entities")]})
+    e = mr.entries()[0]
+    assert (e["text"], e["layer"], e["by"], e["src"]) == (
+        "Petra is the user's manager", "entities", "user", "said")
+    assert delta["tool_events"][0]["auto_memory"] == e["id"]
+
+
+def test_tool_node_a_gate_approved_fact_is_by_user_without_the_auto_mark(isolated_paths):
+    import nodes.tools as tn
+    from stores import memory_registry as mr
+
+    approved = [{"calls": [{"id": "m1", "name": "remember", "approved": True}],
+                 "decision": "approved", "quarantine": False, "step": None}]
+    msgs = [HumanMessage(content="what does this page say about me?"),
+            *_fetched("the user is vegetarian"), _remember("User is vegetarian")]
+    delta = tn.tool_node({"messages": msgs, "gate_events": approved})
+    e = mr.entries()[0]
+    assert (e["by"], e["src"]) == ("user", None)
+    assert "auto_memory" not in delta["tool_events"][0]
+
+
+def test_tool_node_an_auto_approved_unproven_fact_stays_inferred(isolated_paths):
+    """The tier was raised (no gate, no yes) and the words are not the user's: inferred."""
+    import nodes.tools as tn
+    from stores import memory_registry as mr
+
+    delta = tn.tool_node({"messages": [HumanMessage(content="hi"),
+                                       _remember("User prefers dark mode")]})
+    assert (mr.entries()[0]["by"], mr.entries()[0]["src"]) == ("inferred", None)
+    assert "auto_memory" not in delta["tool_events"][0]

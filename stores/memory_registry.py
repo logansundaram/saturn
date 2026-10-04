@@ -347,6 +347,70 @@ def _clean_category(category) -> str:
             or "general")
 
 
+# ── secrets are never saved ───────────────────────────────────────────────────────────────────
+# The memory file is plain text, is read into every prompt, and leaves the machine under a
+# remote OLLAMA_HOST. So no Saturn path writes a credential into it — not the model's
+# `remember`, not a review accept, not /memory add or /memory edit (add_memory and edit_memory
+# are the two writers of fact text, and both ask here). Deterministic shapes only; health and
+# money are the user's own facts and are handled by `sens=`, not refused. Editing the file by
+# hand is the user's business.
+_CARD_RE = re.compile(r"(?<![\w-])\d(?:[ -]?\d){12,18}(?![\w-])")
+_SSN_RE = re.compile(r"(?<![\d-])\d{3}-\d{2}-\d{4}(?![\d-])")
+_PRIVATE_KEY_RE = re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")
+_API_KEY_RE = re.compile(r"(?<![A-Za-z0-9])(?:sk-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{30,}"
+                         r"|AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]{10,})")
+_PASSWORD_RE = re.compile(r"\b(?:password|passcode|passphrase)\b\s*(?:is|was|:|=)\s*[\"']?"
+                          r"([^\s\"']+)", re.IGNORECASE)
+_PIN_RE = re.compile(r"\bpin\b(?:\s+code)?\s*(?:is|was|:|=)?\s*\d{4,8}\b", re.IGNORECASE)
+# What may follow "the password is …" without being the password itself.
+_NOT_A_PASSWORD = frozenset("""
+in on at the a an my our stored saved kept written not same different too weak strong long
+short there here what where with for under inside changed expired wrong correct unknown
+""".split())
+
+
+class SecretRefused(ValueError):
+    """A fact was refused because it holds a credential. `str(exc)` is the sentence to show."""
+
+
+def _luhn(digits: str) -> bool:
+    total = 0
+    for i, ch in enumerate(reversed(digits)):
+        d = int(ch)
+        if i % 2:
+            d = d * 2 - 9 if d > 4 else d * 2
+        total += d
+    return total % 10 == 0
+
+
+def secret_problem(text) -> "str | None":
+    """What kind of credential `text` holds ("a card number", "a password", …), or None."""
+    text = str(text or "")
+    if _PRIVATE_KEY_RE.search(text):
+        return "a private key"
+    if _API_KEY_RE.search(text):
+        return "an API key"
+    for m in _CARD_RE.finditer(text):
+        if _luhn(re.sub(r"\D", "", m.group(0))):
+            return "a card number"
+    if _SSN_RE.search(text):
+        return "a Social Security number"
+    if _PIN_RE.search(text):
+        return "a PIN"
+    for m in _PASSWORD_RE.finditer(text):
+        if m.group(1).lower().strip(".,;") not in _NOT_A_PASSWORD:
+            return "a password"
+    return None
+
+
+def _refuse_secret(text: str) -> None:
+    what = secret_problem(text)
+    if what:
+        raise SecretRefused(f"not saved — this looks like it holds {what}. Saturn never writes "
+                            "a secret to memory: the file is plain text and is read into every "
+                            "prompt.")
+
+
 def add_memory(fact: str, category: str = "general", *, layer: str = "user", replaces=None,
                by: str = "user", run_id=None, sensitivity=None, due=None, src=None) -> str:
     """Append a durable fact to `layer`. A fact already stored (same text, any layer) is not
@@ -359,6 +423,7 @@ def add_memory(fact: str, category: str = "general", *, layer: str = "user", rep
     fact = _clean_text(fact)
     if not fact:
         return "Nothing to remember — the fact was empty."
+    _refuse_secret(fact)
     category = _clean_category(category)
     layer = normalize_layer(layer)
 
@@ -414,6 +479,7 @@ def edit_memory(fact_id: int, new_text: str) -> str | None:
     text = _clean_text(new_text)
     if not text:
         return None
+    _refuse_secret(text)
     entries, next_id = _read_state()
     for e in entries:
         if e.get("id") == fact_id:

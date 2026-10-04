@@ -461,3 +461,88 @@ def test_benchmark_grades_how_a_stated_fact_landed(entries, prompted, verdict):
     import benchmark
 
     assert benchmark.grade_statement(entries, prompted) == verdict
+
+
+# ══ spec 2026-10-04 (know-the-user) — the amendments ═══════════════════════════════════════
+# ── A3: a secret is never saved, by any Saturn path ────────────────────────────────────────
+
+
+@pytest.mark.parametrize("fact, what", [
+    ("my card is 4111 1111 1111 1111", "card number"),
+    ("card 4111-1111-1111-1111 exp 04/29", "card number"),
+    ("SSN 078-05-1120", "Social Security"),
+    ("the wifi password is hunter2", "password"),
+    ("Password: correct-horse", "password"),
+    ("my PIN is 4921", "PIN"),
+    ("the key is sk-abcdefghijklmnopqrstuvwxyz123456", "API key"),
+    ("token ghp_abcdefghijklmnopqrstuvwxyz0123456789", "API key"),
+    ("aws AKIAIOSFODNN7EXAMPLE", "API key"),
+    ("-----BEGIN OPENSSH PRIVATE KEY-----", "private key"),
+])
+def test_a_secret_is_recognised_and_named(fact, what):
+    from stores import memory_registry as mr
+
+    assert what in mr.secret_problem(fact)
+
+
+@pytest.mark.parametrize("fact", [
+    "my phone number is +1 305 555 0142",
+    "my PIN is on the fridge",
+    "the password is stored in 1Password",
+    "order 4111111111111112 arrived",            # 16 digits that fail the Luhn check
+    "I was born on 1990-04-12",
+    "Never schedule anything before 10am",
+    "Petra is my manager; her extension is 4921",
+])
+def test_an_ordinary_fact_is_not_a_secret(fact):
+    from stores import memory_registry as mr
+
+    assert mr.secret_problem(fact) is None
+
+
+def test_the_registry_refuses_a_secret_on_add_and_on_edit(isolated_paths):
+    from stores import memory_registry as mr
+
+    with pytest.raises(mr.SecretRefused, match="card number"):
+        mr.add_memory("my card is 4111 1111 1111 1111")
+    mr.add_memory("likes tea")
+    with pytest.raises(mr.SecretRefused, match="password"):
+        mr.edit_memory(1, "the password is hunter2")
+    assert [e["text"] for e in mr.entries()] == ["likes tea"]
+    assert "4111" not in mr._read_raw() and "hunter2" not in mr._read_raw()
+
+
+def test_remember_answers_a_secret_with_a_tool_error(isolated_paths):
+    from stores import memory_registry as mr
+    from tools.knowledge import remember
+    from tools.toolspec import ToolError
+
+    with pytest.raises(ToolError, match="card number"):
+        remember.invoke({"fact": "my card is 4111 1111 1111 1111"})
+    assert mr.entries() == []
+
+
+def test_the_review_queue_never_holds_or_accepts_a_secret(isolated_paths):
+    from core import memory_review as rv
+    from stores import memory_registry as mr
+
+    secret = rv._candidate("user", "the wifi password is hunter2", "model")
+    assert rv.add_pending([secret]) == 0 and rv.load_pending() == []
+    said = []
+    out = rv.run_review([secret], ask=lambda _p: "y", emit=said.append)
+    assert not out["accepted"] and not out["remaining"] and len(out["rejected"]) == 1
+    assert mr.entries() == [] and any("password" in line for line in said)
+
+
+def test_memory_add_and_edit_say_why_a_secret_is_refused(isolated_paths, capsys):
+    from commands._framework import CommandContext
+    from commands.knowledge import _memory
+    from stores import memory_registry as mr
+
+    ctx = CommandContext(state={"messages": []}, make_initial_state=dict, db_path="")
+    _memory(ctx, ["add", "my", "PIN", "is", "4921"])
+    mr.add_memory("likes tea")
+    _memory(ctx, ["edit", "1", "the", "password", "is", "hunter2"])
+    out = capsys.readouterr().out
+    assert out.count("not saved") == 2 and "PIN" in out and "password" in out
+    assert [e["text"] for e in mr.entries()] == ["likes tea"]

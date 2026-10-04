@@ -273,14 +273,21 @@ def _memory(ctx, args):
         if not fact:
             _print("  usage: /memory add [--layer <layer>] [--replaces <n>] [--sens <mark>] <fact>")
             return
-        _print(f"  {mr.add_memory(fact, layer=layer, replaces=replaces, sensitivity=sens)}")
+        try:
+            _print(f"  {mr.add_memory(fact, layer=layer, replaces=replaces, sensitivity=sens)}")
+        except mr.SecretRefused as exc:
+            _print(f"  {exc}")
         return
 
     if sub == "edit":
         if len(args) < 3 or not _fact_id(args[1]):
             _print("  usage: /memory edit <n> <new text>   (the #id shown by /memory)")
             return
-        old = mr.edit_memory(_fact_id(args[1]), " ".join(args[2:]))
+        try:
+            old = mr.edit_memory(_fact_id(args[1]), " ".join(args[2:]))
+        except mr.SecretRefused as exc:
+            _print(f"  {exc}")
+            return
         if old is None:
             _print(f"  no fact #{args[1]} (or empty text) — /memory lists the ids.")
         else:

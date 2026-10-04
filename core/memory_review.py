@@ -184,8 +184,12 @@ def save_pending(candidates: list[dict]) -> None:
 
 def add_pending(candidates: list[dict]) -> int:
     """Append candidates to the queue, skipping ones already pending or already remembered
-    (same text, case-insensitive). Returns how many were added. Best-effort."""
-    new = [c for c in (candidates or []) if c and c.get("text")]
+    (same text, case-insensitive) and any that holds a credential (the queue is a plain-text
+    file too — memory_registry.secret_problem). Returns how many were added. Best-effort."""
+    from stores.memory_registry import secret_problem
+
+    new = [c for c in (candidates or [])
+           if c and c.get("text") and not secret_problem(c["text"])]
     if not new:
         return 0
     try:
@@ -298,7 +302,7 @@ def run_review(candidates: list[dict], *, ask, emit=print) -> dict:
     add_memory (by=inferred, with the source run id and, for commitments, the due date); the
     return value is `{"accepted": [...], "rejected": [...], "remaining": [...]}` — the caller
     persists `remaining` as the new pending queue."""
-    from stores.memory_registry import add_memory
+    from stores.memory_registry import SecretRefused, add_memory
 
     accepted: list[dict] = []
     rejected: list[dict] = []
@@ -340,6 +344,10 @@ def run_review(candidates: list[dict], *, ask, emit=print) -> dict:
                 report = add_memory(text, c.get("category") or "general",
                                     layer=c.get("layer") or "user", by="inferred",
                                     run_id=c.get("run"), due=c.get("due"))
+            except SecretRefused as exc:  # never stored, and never left waiting in the queue
+                rejected.append(c)
+                emit(f"    {exc}")
+                continue
             except Exception as exc:
                 report = f"could not store: {exc}"
                 remaining.append(c)

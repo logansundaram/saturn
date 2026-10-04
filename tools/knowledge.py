@@ -10,9 +10,9 @@ for searching a large memory or confirming a specific detail.
 """
 
 from textutil import doc_source_label
-from tools.toolspec import human_approved, register_tool, user_stated
+from tools.toolspec import ToolError, human_approved, register_tool, user_stated
 
-from stores.memory_registry import add_memory, search_memory
+from stores.memory_registry import SecretRefused, add_memory, search_memory
 
 
 # untrusted=True: the corpus may hold DOWNLOADED documents — retrieved chunks are external
@@ -67,10 +67,13 @@ def remember(fact: str, category: str = "general", layer: str = "user", replaces
     # raised or the gate was open is the model's inference, and is recorded as one.
     approved, said = human_approved(), user_stated()
     by = "user" if approved or said else "inferred"
-    return add_memory(fact, category, layer=rule_layer(fact, layer), replaces=replaces or None,
-                      by=by, run_id=current_run_id(),
-                      sensitivity=(sensitivity or "").strip() or None,
-                      src="said" if said and not approved else None)
+    try:
+        return add_memory(fact, category, layer=rule_layer(fact, layer),
+                          replaces=replaces or None, by=by, run_id=current_run_id(),
+                          sensitivity=(sensitivity or "").strip() or None,
+                          src="said" if said and not approved else None)
+    except SecretRefused as exc:  # a credential is never written (memory_registry.secret_problem)
+        raise ToolError(str(exc)) from None
 
 
 @register_tool("read_only")

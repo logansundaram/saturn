@@ -41,13 +41,19 @@ class Provenance:
     untrusted: bool
 
 
+def is_typed(m) -> bool:
+    """Whether the user typed this message: a turn's request or a mid-turn steer note. A
+    compaction summary is a HumanMessage too, and is not."""
+    return is_turn_start(m) or is_steer_message(m)
+
+
 def of(state) -> Provenance:
     typed: list[str] = []
     seen = [str(state.get("attachments") or ""), str(state.get("context") or "")]
     untrusted = bool(state.get("attachments"))
     for m in state.get("messages") or []:
         text = str(getattr(m, "content", "") or "")
-        if is_turn_start(m) or is_steer_message(m):
+        if is_typed(m):
             typed.append(text)
             continue
         if isinstance(m, AIMessage):

@@ -14,8 +14,11 @@ memory file — and puts every one in front of the user before anything is writt
   note_compaction(summary, run)   when auto-compaction fires: the summary's bullets as memo
                                   candidates (the summary itself is persisted beside the
                                   memory file as last_summary.md — the record, not a fact).
-  llm_candidates(messages)        optional: the model proposes facts from the session
-                                  transcript (memory.review_llm). Same pending queue, same gate.
+  llm_candidates(messages)        optional: the model proposes facts from the session's own
+                                  words — what the user typed and what Saturn answered, never
+                                  a tool result or a summary (memory.review_llm). Same pending
+                                  queue, same gate; a session that read outside content says
+                                  so on each proposal.
   run_review(candidates, ask, …)  the screen: each candidate rendered as a `+` diff line
                                   against the memory file, accepted one at a time (y / n / e to
                                   edit / a for all / q to stop; Ctrl-C or Ctrl-D = q). Accepted facts land through
@@ -45,7 +48,7 @@ SOURCES = ("steer", "gate", "compaction", "model")
 _SOURCE_LABEL = {
     "steer": "you corrected the agent mid-task",
     "gate": "you declined a tool at the gate",
-    "compaction": "from the compacted conversation",
+    "compaction": "from the compacted conversation — the model's summary, not your words",
     "model": "proposed by the model from this session",
 }
 
@@ -60,7 +63,7 @@ INTERRUPT = "\x03"
 
 
 def _candidate(layer: str, text: str, source: str, run_id=None, *, due=None,
-               category: str = "general") -> dict | None:
+               category: str = "general", outside: bool = False) -> dict | None:
     # Cleaned as the write boundary cleans it (memory_registry._clean_text), so the line the
     # user says yes to is the text that is stored.
     text = " ".join(visible_text(str(text or "")).split())
@@ -73,6 +76,9 @@ def _candidate(layer: str, text: str, source: str, run_id=None, *, due=None,
         "run": int(run_id) if isinstance(run_id, int) and run_id > 0 else None,
         "due": due or None,
         "category": category or "general",
+        # The session it came from read content from outside the trust boundary (a web page,
+        # mail, a file): said on the review screen, so a yes is given knowing it.
+        "outside": bool(outside),
     }
 
 
@@ -240,7 +246,8 @@ def llm_enabled() -> bool:
 
 
 def llm_candidates(messages: list, run_id=None) -> list[dict]:
-    """Ask the model for durable facts worth keeping from this session's transcript.
+    """Ask the model for durable facts worth keeping from this session — from `own_words`:
+    what the user typed and what Saturn answered, never a tool result or a summary.
     Proposals only — every one still faces the review screen. ONE constrained call (a flat JSON
     schema for the decoder plus the shape hint as a trailing HumanMessage — never a
     SystemMessage, which Ollama rejects mid-conversation for qwen3.8 models); the outermost
@@ -252,7 +259,7 @@ def llm_candidates(messages: list, run_id=None) -> list[dict]:
         from langchain.messages import HumanMessage
         from pydantic import BaseModel
 
-        from core.compaction import _transcript
+        from core import provenance
         from core.llms import generate, get_model, invoke_kwargs, model_tag
         from core.messages import MEMORY_REVIEW_FORMAT, MEMORY_REVIEW_PROMPT, MEMORY_REVIEW_SHAPE
 
@@ -263,9 +270,10 @@ def llm_candidates(messages: list, run_id=None) -> list[dict]:
         class _Proposal(BaseModel):
             facts: list[_Item] = []
 
-        transcript = _transcript(messages)
+        transcript = own_words(messages)
         if not transcript.strip():
             return []
+        outside = provenance.of({"messages": messages}).untrusted
         messages = [HumanMessage(content=MEMORY_REVIEW_PROMPT + transcript),
                     HumanMessage(content=MEMORY_REVIEW_SHAPE)]
         resp = generate(get_model(), messages, tag=model_tag(),
@@ -278,7 +286,7 @@ def llm_candidates(messages: list, run_id=None) -> list[dict]:
         return []
     cands = []
     for item in (out.facts or [])[:_MAX_PER_TURN]:
-        c = _candidate(item.layer, item.text, "model", run_id)
+        c = _candidate(item.layer, item.text, "model", run_id, outside=outside)
         if c:
             cands.append(c)
     return cands
@@ -287,10 +295,33 @@ def llm_candidates(messages: list, run_id=None) -> list[dict]:
 # ── the review screen ─────────────────────────────────────────────────────────────────────────
 
 def render_line(c: dict) -> str:
-    """One candidate as a diff line against the memory file: `+ [layer] text  (source · run)`."""
+    """One candidate as a diff line against the memory file: `+ [layer] text  (source · run)`,
+    and whether the session that produced it read outside content."""
     src = _SOURCE_LABEL.get(c.get("source"), c.get("source") or "")
     run = f" · run #{c['run']}" if c.get("run") else ""
-    return f"+ [{c.get('layer', 'user')}] {c.get('text', '')}  ({src}{run})"
+    outside = " · this session read outside content" if c.get("outside") else ""
+    return f"+ [{c.get('layer', 'user')}] {c.get('text', '')}  ({src}{run}{outside})"
+
+
+def own_words(messages) -> str:
+    """The transcript the model pass reads: what the user typed (core/provenance.is_typed —
+    requests and steer notes) and what Saturn answered, nothing else. No tool result, no
+    compaction summary, no tool-calling preamble: text Saturn fetched or wrote for itself is
+    where a planted "the user is…" lives, and extracting from what was injected is how a memory
+    fills with junk (spec 2026-10-04-know-the-user R1). "" when the user typed nothing."""
+    from langchain.messages import AIMessage
+
+    from core.compaction import _text
+    from core.provenance import is_typed
+
+    lines, typed = [], False
+    for m in messages or []:
+        if is_typed(m):
+            typed = True
+            lines.append(f"User: {_text(m)}")
+        elif isinstance(m, AIMessage) and not getattr(m, "tool_calls", None) and _text(m):
+            lines.append(f"Assistant: {_text(m)}")
+    return "\n".join(lines) if typed else ""
 
 
 _HELP = "y = keep · n = drop · e = edit then keep · a = keep all · q = stop (rest stay pending)"

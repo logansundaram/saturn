@@ -59,6 +59,11 @@ _ARG_ALIASES: dict[str, dict[str, list[str]]] = {
     "remember": {
         "fact": ["fact", "text", "note", "content", "memory"],
     },
+    "create_skill": {
+        "name": ["name", "skill", "skill_name", "title"],
+        "description": ["description", "summary", "desc", "about"],
+        "steps": ["steps", "body", "content", "instructions", "procedure", "text"],
+    },
     "recall": {},  # query is optional (empty returns everything)
     "ask_user": {
         "question": ["question", "prompt", "query", "q", "text", "message", "ask"],
@@ -89,6 +94,7 @@ _OPTIONAL: dict[str, list] = {
     "write_file": ["overwrite"],
     "edit_file": ["replace_all"],
     "remember": ["category", "layer", "replaces", "sensitivity"],
+    "create_skill": ["replace"],
     "recall": [["query", "q", "text", "search", "keywords", "keyword"]],
     "schedule_notification": [
         ["body", "detail", "details", "description", "message", "text", "note", "content"],
@@ -98,6 +104,9 @@ _OPTIONAL: dict[str, list] = {
 
 # The exact call shape quoted back at the model when its attempt was rejected.
 _SCHEMA_SHAPES: dict[str, str] = {
+    "create_skill": "create_skill(name=<lowercase-hyphenated name>, description=<one line>, "
+    "steps=<the procedure as a numbered markdown list>, replace=<true to change an existing "
+    "skill, optional>)",
     "read_file": "read_file(file_path=<workspace-relative file path>)",
     "list_directory": "list_directory(directory=<workspace-relative directory, '.' for the root>)",
     "find_files": "find_files(pattern=<filename or glob like *.csv>)",

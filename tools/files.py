@@ -114,9 +114,9 @@ def _refuse_control_file(target_path) -> None:
                        or Path(str(target).casefold()).is_relative_to(str(d).casefold())), None)
         if inside is not None:
             raise PermissionError(f"{target} is inside {inside}, which {folders[inside]}; Saturn "
-                                  "never writes there. Ask the user to edit it by hand "
-                                  "(/skills create <name> starts one, /skills delete <name> "
-                                  "removes one).")
+                                  "never writes there with the file tools. To save or change a "
+                                  "skill call create_skill; the user deletes one with "
+                                  "/skills delete <name>.")
         protected.update(folders)  # a folder that HOLDS a control folder is refused like one
     hit = next((p for p in protected if target is not None and _touches(target, p)), None)
     if hit is not None:

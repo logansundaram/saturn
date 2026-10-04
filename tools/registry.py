@@ -29,6 +29,7 @@ import tools.reminders  # noqa: E402,F401  (list_reminders / create_reminder / c
 import tools.shortcuts  # noqa: E402,F401  (list_shortcuts / run_shortcut — the user's Shortcuts, macOS; runs recorded UNTRACKED)
 import tools.desktop  # noqa: E402,F401  (read_browser_tab / finder_selection — what the user is pointing at, macOS)
 import tools.messages  # noqa: E402,F401  (send_message — an egress chokepoint that always asks, to one person or one group chat; read_messages — chat.db, needs Full Disk Access; find_group_chats)
+import tools.skills  # noqa: E402,F401  (create_skill — saves one of the user's skills; always asks)
 
 # Remote MCP tools: connect the servers declared under `mcp.servers` in config.yaml
 # and register each remote tool through toolspec.register_tool_object, so they land in the same

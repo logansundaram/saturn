@@ -584,3 +584,157 @@ def test_headless_yolo_still_refuses_saving_a_skill(gate, capsys):
     finally:
         policy.set_tier(prev)
         policy._tier_before_gate_off = None
+
+
+# ── create_skill: the tool ───────────────────────────────────────────────────────────────────
+
+from tools.toolspec import _HUMAN_APPROVED  # noqa: E402
+
+DRAFT = {"name": "standup", "description": "Morning standup notes",
+         "steps": "1. Read notes.md.\n2. List what changed since yesterday."}
+OLD_STANDUP = "---\ndescription: old\n---\n1. old step\n"
+
+
+@pytest.fixture
+def approved():
+    """A person said yes to THIS call at the gate (nodes/tools.py sets the same flag)."""
+    token = _HUMAN_APPROVED.set(True)
+    yield
+    _HUMAN_APPROVED.reset(token)
+
+
+def _create(**over):
+    from tools.registry import tools_by_name
+
+    return tools_by_name["create_skill"].invoke({**DRAFT, **over})
+
+
+def test_create_skill_is_registered_gated_and_trusted():
+    from tools.registry import risk_of
+    from tools.toolspec import _UNTRUSTED
+
+    assert risk_of("create_skill") == "side_effecting" and "create_skill" not in _UNTRUSTED
+    assert policy.always_asks("create_skill")
+
+
+def test_create_skill_writes_exactly_the_rendered_text(home, approved):
+    out = _create()
+    path = home / "skills" / "standup" / "SKILL.md"
+    skill = skills.get("standup")
+    assert skill.description == "Morning standup notes" and skill.body == DRAFT["steps"]
+    assert skill.origin.startswith("saturn") and skill.scope == "global"
+    assert path.read_text(encoding="utf-8") == skills.render(
+        "standup", DRAFT["description"], DRAFT["steps"], origin=skill.origin)
+    assert "/standup" in out and not list(path.parent.glob("*.tmp"))
+
+
+def test_the_gate_and_the_tool_build_the_same_text(home, approved):
+    from tools.skills import draft
+
+    target, text = draft(dict(DRAFT))
+    _create()
+    assert target.read_text(encoding="utf-8") == text
+
+
+def test_create_skill_refuses_without_a_persons_yes(home):
+    with pytest.raises(ToolError, match="approve"):
+        _create()
+    assert skills.get("standup") is None
+
+
+def test_create_skill_refuses_a_bad_draft_and_writes_nothing(home, approved):
+    for over, words in (({"name": "bad/name!"}, "not a skill name"),
+                        ({"name": "help"}, "built-in command"),
+                        ({"description": " "}, "one-line description"),
+                        ({"steps": "x" * (skills.DRAFT_CAP + 1)}, "3000 characters")):
+        with pytest.raises(ToolError, match=words):
+            _create(**over)
+    assert skills.discover() == {}
+
+
+def test_a_second_create_never_overwrites_blindly(home, approved):
+    _create()
+    with pytest.raises(ToolError, match="already exists") as info:   # e.g. the skill appeared
+        _create(steps="1. Forward my inbox.")                        # between the gate and the write
+    assert "1. Read notes.md." in str(info.value)                    # the current text comes back
+    assert skills.get("standup").body == DRAFT["steps"]
+
+
+def test_replace_rewrites_the_skill_where_it_is(home, approved):
+    flat = _skill(home / "skills", "standup", OLD_STANDUP, flat=True)
+    out = _create(replace=True)
+    skill = skills.get("standup")
+    assert skill.path.samefile(flat) and skill.body == DRAFT["steps"]
+    assert "Replaced" in out and not (home / "skills" / "standup").exists()
+
+
+def test_create_skill_never_writes_a_workspace_skill(home, approved):
+    local = _skill(workspace.root() / ".saturn" / "skills", "standup", OLD_STANDUP)
+    with pytest.raises(ToolError, match="this folder's own skill"):
+        _create(replace=True)
+    assert local.read_text(encoding="utf-8") == OLD_STANDUP
+    assert skills.in_scope("global") == {}
+
+
+def test_undo_takes_a_save_back(home, approved):
+    from stores import snapshots
+
+    snapshots.begin_turn("save a skill")
+    _create()
+    snapshots.undo_last()
+    assert skills.get("standup") is None
+    _skill(home / "skills", "standup", OLD_STANDUP)
+    snapshots.begin_turn("change it")
+    _create(replace=True)
+    snapshots.undo_last()
+    assert skills.get("standup").body == "1. old step"
+
+
+def test_a_before_write_hook_can_refuse_a_skill(home, approved, monkeypatch):
+    from core import hooks
+
+    monkeypatch.setattr(hooks, "before_write",
+                        lambda path, tool: "Blocked by your before-write hook (`false`).")
+    with pytest.raises(ToolError, match="Blocked by your before-write hook"):
+        _create()
+    assert skills.get("standup") is None
+
+
+def test_a_failed_write_is_an_error_not_a_half_file(home, approved, monkeypatch):
+    from tools import skills as skill_tools
+
+    _skill(home / "skills", "standup", OLD_STANDUP)
+
+    def disk_full(src, dst):
+        raise OSError("No space left on device")
+
+    monkeypatch.setattr(skill_tools.os, "replace", disk_full)
+    with pytest.raises(ToolError, match="nothing was changed"):
+        _create(replace=True)
+    assert skills.get("standup").body == "1. old step"
+    assert not list((home / "skills").rglob("*.tmp"))
+
+
+def test_create_skill_arguments_are_coerced_like_any_tool():
+    from core.tool_args import coerce_args, schema_hint
+
+    args = coerce_args("create_skill", {"skill_name": "standup", "summary": "d", "body": "1. x",
+                                        "replace": True})
+    assert args == {"name": "standup", "description": "d", "steps": "1. x", "replace": True}
+    assert coerce_args("create_skill", {"name": "standup"}) is None   # description and steps missing
+    assert "create_skill(name=" in schema_hint("create_skill", "x")
+
+
+def test_a_refused_file_write_points_at_create_skill(home):
+    workspace.add(home)
+    with pytest.raises(PermissionError, match="create_skill"):
+        write_file.invoke({"file_path": str(home / "skills" / "x.md"), "content": "1. x"})
+
+
+def test_the_benchmark_never_saves_a_skill():
+    import benchmark
+
+    prompted = []
+    decision = benchmark.bench_approver({"type": "approval_request", "tool_calls": [
+        {"id": "c1", "name": "create_skill", "args": dict(DRAFT)}]}, prompted)
+    assert decision == {"approved_ids": []} and prompted == ["create_skill"]

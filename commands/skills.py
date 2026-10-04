@@ -100,7 +100,7 @@ def _list(skills, workspace, ui) -> None:
         ui.table(rows)
     else:
         ui.note("no skills yet — /skills create <name> writes one in "
-                + workspace.display(skills.global_dir()))
+                + workspace.display(skills.global_dir()) + ", or ask Saturn to save one")
     _print(f"  folders: {workspace.display(skills.global_dir())} · "
            f"{workspace.display(skills.workspace_dir())} (this folder's; wins on a shared name)")
     for problem in skills.problems():

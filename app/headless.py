@@ -155,6 +155,16 @@ def headless_approver(value):
     return True
 
 
+def _session_settings() -> None:
+    """What a headless run turns off for its own session (cfg.set — never persisted).
+    Auto-learn: nobody reads an after-answer `remembered #n` note on stdout, so a fact would
+    land unseen. A `remember` here faces the gate like any side-effecting call — denied unless
+    --yolo, which stores it by=inferred, as before auto-learn existed."""
+    from config import get_config
+
+    get_config().set("memory.auto_learn", False)
+
+
 def run_headless(args) -> None:
     """Run one query headlessly (the -p and -q paths): load, run the turn, print the answer
     (or the -p --json object) to stdout, write the export record (-p: on --export; -q:
@@ -168,6 +178,7 @@ def run_headless(args) -> None:
     if deep_request is not None:
         query = deep_request
     graph, ingest_warning = startup_load(interactive=False)
+    _session_settings()
     if ingest_warning:
         print(ingest_warning, file=sys.stderr)
     # The gate posture warning the interactive startup block prints — same fact, stderr:

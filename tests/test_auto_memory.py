@@ -420,3 +420,29 @@ def test_memory_why_and_the_listing_say_how_a_fact_arrived(isolated_paths):
     knowledge._why(mr, FakeUI(), 1)
     said_by = dict((k[0], v) for k, v in rows)["said by"]
     assert "without a prompt" in said_by
+
+
+# ── switches ───────────────────────────────────────────────────────────────────────────────
+
+
+def test_headless_turns_auto_learn_off_for_its_session(monkeypatch):
+    from app import headless
+    from config import get_config
+    from core import auto_memory
+
+    monkeypatch.setitem(get_config()._data.setdefault("memory", {}), "auto_learn", True)
+    headless._session_settings()
+    assert auto_memory.enabled() is False
+
+
+def test_the_default_config_and_the_prompt_carry_auto_learn():
+    from pathlib import Path
+
+    import yaml
+
+    from core.messages import agent_sys_msg
+
+    template = Path(__file__).resolve().parent.parent / "config.default.yaml"
+    default = yaml.safe_load(template.read_text(encoding="utf-8"))
+    assert default["memory"]["auto_learn"] is True
+    assert "save it with remember, in their own words" in agent_sys_msg().content

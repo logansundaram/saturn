@@ -204,7 +204,7 @@ def _sync(*, force: bool) -> None:
     "See, add, edit, and review the agent's persistent memory (the layered remember/recall store).",
     aliases=("mem",),
     usage="/memory [list [layer] | add [--layer L] [--replaces n] [--sens mark] <fact> | "
-          "edit <n> <text> | remove <n> | why <n> | review [--no-llm] | stale]",
+          "edit <n> <text> | remove <n> | why <n> | setup | review [--no-llm] | stale]",
     details="""
 The transparency surface for durable memory. What is stored here quietly shapes every answer:
 the user layer and open commitments load into the agent's context EVERY turn, the recent memo
@@ -228,6 +228,12 @@ Layers:  user (identity, preferences, constraints) · commitments (open items, w
   /memory why <n>            provenance: when it was learned, who said it (you, or inferred
                              at a review), the run it came from (→ /trace why #run), last use,
                              confirmations
+  /memory setup              the five-question interview the first launch runs: what to call
+                             you, what you do, your people, what you want help with, what I
+                             should never do. Each answer is saved as you give it (Enter keeps
+                             or skips, q stops); a re-run shows the current answers and a new
+                             one replaces it (people and rules are added to). Answers are not
+                             marked sensitive — /memory add --sens <mark> <fact> for that.
   /memory review             the learning step: candidates this session queued — your mid-task
                              corrections, gate denials, the compaction summary —
                              plus the model's own proposals from the transcript,
@@ -249,7 +255,7 @@ def _memory(ctx, args):
     from tui import ui
 
     usage = ("  usage: /memory [list [layer] | add [--layer L] [--replaces n] [--sens mark] <fact> "
-             "| edit <n> <text> | remove <n> | why <n> | review [--no-llm] | stale]")
+             "| edit <n> <text> | remove <n> | why <n> | setup | review [--no-llm] | stale]")
 
     if not args or is_list_verb(args[0]):
         _list_memory(mr, ui, args[1] if len(args) > 1 else None)
@@ -320,6 +326,20 @@ def _memory(ctx, args):
             _print("  usage: /memory why <n>")
             return
         _why(mr, ui, _fact_id(args[1]))
+        return
+
+    if sub in ("setup", "interview"):
+        from commands._utils import _stdin_is_tty
+        from core import memory_setup
+
+        if not _stdin_is_tty():
+            _print("  /memory setup asks five questions — run it in an interactive terminal.")
+            return
+        memory_setup.run_interview(
+            ask=lambda p: ui.ask(p, on_interrupt=memory_setup.INTERRUPT),
+            emit=_print, default_name=memory_setup.system_first_name(),
+        )
+        memory_setup.mark_done()
         return
 
     if sub == "review":

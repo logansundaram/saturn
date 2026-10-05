@@ -270,3 +270,36 @@ def test_repl_offers_the_interview_after_models():
     assert "memory_setup.offer_at_launch(" in src
     assert src.index('commands.dispatch("/models", cmd_ctx)') < src.index(
         "memory_setup.offer_at_launch(")
+
+
+_TTY = type("T", (), {"isatty": staticmethod(lambda: True)})()
+_NOT_TTY = type("T", (), {"isatty": staticmethod(lambda: False)})()
+
+
+def test_memory_setup_needs_a_terminal(isolated_paths, ctx, monkeypatch, capsys):
+    import commands
+
+    monkeypatch.setattr("sys.stdin", _NOT_TTY)
+    commands.dispatch("/memory setup", ctx)
+    assert "interactive terminal" in capsys.readouterr().out
+    assert mr.entries() == []
+
+
+def test_memory_setup_runs_the_interview(isolated_paths, ctx, monkeypatch, capsys):
+    import commands
+    from tui import ui
+
+    monkeypatch.setattr("sys.stdin", _TTY)
+    monkeypatch.setattr(ms, "system_first_name", lambda: None)
+    monkeypatch.setattr(ui, "ask", _scripted(["Logan"]))
+    commands.dispatch("/memory setup", ctx)
+    assert [e["text"] for e in mr.entries()] == ["Call me Logan"]
+    assert ms.marker_path().exists()  # a later launch does not offer it again
+    assert "Remembered #1" in capsys.readouterr().out
+
+
+def test_memory_help_lists_setup(ctx, capsys):
+    import commands
+
+    commands.dispatch("/memory --help", ctx)
+    assert "/memory setup" in capsys.readouterr().out

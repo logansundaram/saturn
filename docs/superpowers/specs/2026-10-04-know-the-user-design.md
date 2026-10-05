@@ -262,29 +262,97 @@ without touching the rest.
 
 ## As built (2026-10-04)
 
-The auto-memory plan's Tasks 1–10, then the amendments, on branch `v2`. `tests/test_auto_memory.py`
-pins all of it (84 tests); the suite is 1,832 green. Nothing here has been run against a model.
+The auto-memory plan's Tasks 1–10, then the amendments, then one fresh-context review of the
+whole change and its fix pass, on branch `v2`. `tests/test_auto_memory.py` pins it (139 tests);
+the suite is 1,887 green. **Nothing here has been run against a model.**
 
 | Piece | Where | What differs from the design above |
 |---|---|---|
-| The provenance reading | `core/provenance.py` (`of`, `is_typed`) | It kept the holds' 2026-10-03 semantics: the model's own messages and a failed call's text are not `seen`; a failed untrusted call still marks the conversation `untrusted`. |
-| The check, the gate, the stamp | `core/auto_memory.py`, `nodes/approval.py`, `nodes/tools.py`, `tools/knowledge.py` | As the plan wrote them. |
-| A1 dated facts, the header | `memory_registry._context_line`, `nodes/ground.stable_grounding` | A hand-written bullet with no date reads as written today until the next write gives it one. |
-| A2 the similar-fact line | `auto_memory.similar`, `similar_names`, `similar_note` | It lives in `core/auto_memory`, not in `add_memory`'s report (it needs the glue list and stemming). The tools node puts the neighbours on the tool event (`auto_memory_similar`). A pair that shares only a many-valued verb ("I like tea" / "I like hiking") is not similar — the half-of-the-smaller rule alone flagged every pair of taste facts. |
-| A3 the never-save screen | `memory_registry.secret_problem`, `SecretRefused` | Enforced inside the two writers of fact text (`add_memory`, `edit_memory`), so every path inherits it, `/memory edit` included. The pending-review file refuses a secret too (`add_pending`). |
+| The provenance reading | `core/provenance.py` (`of`, `is_typed`) | It kept the holds' 2026-10-03 semantics: the model's own messages and a failed call's text are not `seen`. `untrusted` also reads `state["outside_seen"]`, and a call the human declined does not count. |
+| "Nothing from outside", for the whole conversation | `state["outside_seen"]` (`core/state.py`, carried in `app/session._CARRY_ACROSS_TURNS`) | New. Set by the tools node when an untrusted tool runs and by the grounding node when a turn has an attachment; `/clear` resets it; a session restored by `/resume` starts with it set. Without it the rule lapsed one turn after an attachment and two after a tool read. |
+| The check | `core/auto_memory.why_not` | Stricter than the plan. Every word that is not glue must be typed, whatever its length, and at least one must exist; the words must come from ONE SENTENCE the user stated (not asked, not supposed), with its negation where the user put it; `layer` must be one of memory's own and a non-generic `sensitivity` is checked like the category; a replacement must name every word it drops except a negation or a taste verb. Word forms are matched without dropping a final "e" (`_lemmas`), so "hats" no longer meets "hates". |
+| The gate hands over its decision | `state["user_stated"]` (`nodes/approval.py` → `nodes/tools.py`) | The plan recomputed `qualifies` in the tools node; the gate's own decline messages could change the answer and the fact was then stored as inferred with no line. |
+| A1 dated facts, the header | `memory_registry._context_line`, `nodes/ground.stable_grounding` | A hand-written bullet with no date shows none until a write gives it one. |
+| A2 the similar-fact line | `auto_memory.similar`, `similar_names`, `similar_note` | It lives in `core/auto_memory`, not in `add_memory`'s report. The tools node puts the neighbours on the tool event (`auto_memory_similar`, sensitive facts left out). A pair that shares only a taste verb ("I like tea" / "I like hiking") is not similar. |
+| The line after the answer | `app/repl._auto_memory_notes`, `nodes/tools._auto_memory_marks` | A replacement shows the fact it removed and says "removes the new fact" (forgetting it does not restore the old one). A fact that was already stored says `already remembered as #n` and offers no undo. |
+| A3 the never-save screen | `memory_registry.secret_problem`, `SecretRefused` | Enforced inside the two writers of fact text (`add_memory`, `edit_memory`), category included, so every path inherits it. The pending-review file refuses a secret too. It is a net for recognisable shapes, not a guarantee. |
 | A4 the description sentence | `tools/knowledge.remember` | — |
-| A5 the probes | `benchmark.py` (`statement`) | No `correction` probe was added: the benchmark's existing `supersession` task already grades superseded / duplicated, and the 80% rule applies to it. |
-| R1 the review transcript | `memory_review.own_words` | — |
-| R2 the label | `memory_review.render_line`, `_SOURCE_LABEL` | Only model proposals carry `this session read outside content`; steer and gate candidates are records of the user's own actions. Compaction candidates say "the model's summary, not your words". |
+| A5 the probes | `benchmark.py` (`statement`, `correction`, `grade_supersession`) | `correction` is "I've started a new job at Globex" after "Remember that I work at Acme": no "remember", the old fact not named. |
+| R1 the review transcript | `memory_review.own_words` | An answer of Saturn's that quoted a page is still read; that is what R2's label is for. |
+| R2 the label | `memory_review.render_line`, `llm_candidates(outside=)` | It comes from `provenance.of(state)`, so it survives the scratchpad being compacted. Only model proposals carry it. Compaction candidates say "the model's summary, not your words". |
+
+### Notes for review
+
+**Decisions I made that are yours to reverse**
+
+1. **`memory.auto_learn` ships `true`**, as the plan says. The reviewer's verdict on the first
+   build was "not safe on by default"; its conditions (the findings below) are fixed and
+   tested, but the fixes have not had a second independent review and the feature has not met
+   a model. One line in `config.default.yaml` turns it off.
+2. **One sentence, not one message.** The reviewer suggested the words come from one typed
+   message; I required one sentence, which also stops "I hate cilantro. My sister loves
+   sushi." becoming "User loves cilantro". The cost: when the model merges two sentences into
+   one fact ("Petra is my manager. We meet on Thursdays."), the gate asks, with the reason.
+3. **A restored conversation asks every time** until `/clear`, because a session file cannot
+   say what its conversation read.
+4. **Five glue words were removed** (`would`, `should`, `please`, `remember`, `just`) so a
+   fact cannot give an instruction with glue alone. A restatement that adds one now asks.
+5. **Three questions vs five, the interview as an offer, 80% as the line** — the spec's own
+   "Decisions made without asking" above; none of that is built yet.
+
+**What the check still does not prove.** That the user typed the words in one stated
+sentence — not that the fact means what they meant. Inside one sentence a restatement can
+reorder: "I hate cilantro but my sister loves sushi" → "User loves cilantro" passes. The
+control for that is the line after the answer. Whether a 4b or 9b ever does it is unmeasured.
+
+**What the review found and what happened to it**
+
+| Finding | Outcome |
+|---|---|
+| Critical — a fact made of glue or two-letter chunks skipped the gate with nothing typed | Fixed. |
+| "Nothing from outside" expired after one or two turns | Fixed (`outside_seen`). |
+| The approval and tools nodes could disagree; the fact was stored silently as inferred | Fixed (`user_stated`). |
+| Meaning flipped by omission, by a question, or by assembling words across messages | Fixed, except reordering inside one sentence (above). |
+| `replaces=` could retire an unrelated fact on one shared word; the note could omit it | Fixed. |
+| `diag` was not imported in `nodes/tools.py`: a failed lookup killed the turn | Fixed. |
+| The review label was computed from compacted messages | Fixed. |
+| The secret screen missed the category and common phrasings | Fixed for the cases found; documented as a net. |
+| `layer` and `sensitivity` were unchecked free text | Fixed. |
+| Paste thresholds were off by one | Fixed. |
+| A repeated fact was announced as new, with an undo that would delete the original | Fixed. |
+| An undated bullet read as "today" every day and churned the cached prefix | Fixed. |
+| My ruling that the `supersession` task could stand in for the `correction` probe | Reversed; the probe is built. |
+
+**Left as they are (minor)**
+
+- A hygiene-refused call named for an untrusted tool still marks the conversation as having
+  seen outside content, so the next `remember` asks with a reason that is not quite true.
+- Rules: under a full `memory.context_cap` the newest always-loaded facts are the ones
+  dropped, so a rule learned into a full store may not load; `rule_layer` reroutes only
+  `negative`; a `replaces=` of a non-user fact pulls the new fact into that layer.
+- `[inferred] = my conclusion, which the user accepted` and `/memory why`'s "accepted by you"
+  are not true of a `remember` that ran under a raised tier, an open gate or `--yolo`.
+- `similar` ignores the subject: "My sister lives in Rome" names "I live in Paris".
+- An answer to `ask_user` is not "typed", so a fact from it asks.
+- The matched-facts header carries no legend for the date and `[inferred]` when no
+  always-loaded fact is present.
+- A review accept shows no similar-fact line.
+- `test_headless_turns_auto_learn_off_for_its_session` tests the function, not that
+  `run_headless` calls it.
 
 **Open after this build**
 
-1. **Measure** (the plan's Task 11): `statement` and `supersession` on the 4b and the 9b, three
-   runs each, on mains power. Under 80% on `statement` → build the deterministic catch into the
-   review queue.
+1. **Measure** (the plan's Task 11): `statement`, `correction` and `supersession` on the 4b
+   and the 9b, three runs each, on mains power. Under 80% on `statement` → build the
+   deterministic catch into the review queue. Watch how often the one-sentence rule sends a
+   plain statement to the gate.
 2. **The prefix changed three times in one upgrade** (the `remember` description, one system
    prompt bullet, the memory block header and line format). One re-prime; the loop benchmark
    should confirm chat-shape passes did not move.
 3. **`memory.context_cap`**: a dated line costs 13 more characters. A store near the cap now
    omits a fact or two it used to load; the trailer says so.
 4. **The similar-fact rule is a guess at a threshold.** It has unit tests and no field data.
+5. **Things the reviewer saw outside this change:** a typed secret still reaches
+   `last_summary.md` and the trace DB; loop-benchmark runs outside `_isolated_memory` can
+   write the real memory file (`bench_approver` approves `remember`); a workspace `SATURN.md`
+   in a cloned repo is a trusted instruction channel.

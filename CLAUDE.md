@@ -187,13 +187,17 @@ ids come from the `<!-- next-id -->` high-water mark and are never reused (`repl
 supersedes; `/memory why <n>` points at `/trace why #run`). Learning is gated: `core/memory_review`
 queues candidates from each turn's state and from compaction summaries into
 `database/memory/pending_review.json`; `/memory review` (also `/quit`) accepts them one at a
-time. Never write a fact without a user action: a gated `remember`; a `remember` whose every
-content word the user TYPED in a conversation no external content entered (auto-learn,
-`core/auto_memory.why_not` — deterministic, never a model's judgement; stamped `src=said`, noted
-after the answer, off headless); `/memory add`; or a review accept. A standing rule ("never…")
-lands in `user`, which loads every turn (`auto_memory.rule_layer`). Never write a credential:
-`memory_registry.secret_problem` is asked by the two writers of fact text (`add_memory`,
-`edit_memory` raise `SecretRefused`), so a new write path inherits it. A write that lands beside a
+time. Never write a fact without a user action: a gated `remember`; a `remember` whose words
+the user TYPED and STATED in one sentence, in a conversation no external content has ever
+entered (auto-learn, `core/auto_memory.why_not` — deterministic, never a model's judgement;
+stamped `src=said`, noted after the answer, off headless); `/memory add`; or a review accept.
+"Ever" is `state["outside_seen"]`, carried across turns and set by the tools node (an untrusted
+tool ran) and the grounding node (an attachment); `/resume` starts with it set. The approval
+node decides and hands the ids to the tools node (`state["user_stated"]`) — never recompute
+`qualifies` after the gate. A standing rule ("never…") lands in `user`, which loads every turn
+(`auto_memory.rule_layer`). `memory_registry.secret_problem` refuses the recognisable shapes of
+a credential in the two writers of fact text (`add_memory`, `edit_memory` raise
+`SecretRefused`), so a new write path inherits it. A write that lands beside a
 related fact names it (`auto_memory.similar` — the after-answer note, the gate, `/memory add`);
 nothing is retired without `replaces=`. The model reads each fact with its day and `[inferred]`
 (`_context_line`), under a header that says what outranks it. The review's model pass reads

@@ -159,6 +159,30 @@ def _similar_note(tc: dict) -> "str | None":
             "(/memory remove <n> removes the old one)")
 
 
+def _document_note(tc: dict) -> "str | None":
+    """An `add_document` at the gate whose file holds instruction-shaped text (rag.screen_file —
+    the same admission screen `/docs add` asks about): an added document re-presents its text
+    on every search that matches it, so the human is told before saying yes."""
+    if tc.get("name") != "add_document":
+        return None
+    args = tc.get("args") if isinstance(tc.get("args"), dict) else {}
+    try:
+        from stores.rag import screen_file
+        from tools.knowledge import _source
+
+        source, problem = _source(args.get("file_path"))
+        findings = [] if problem else screen_file(str(source))
+    except Exception as exc:
+        diag.log(f"approval_node : document screen failed: {exc}")
+        return None
+    if not findings:
+        return None
+    kinds = ", ".join(sorted({f.kind for f in findings}))
+    return (f"add_document: {source.name} contains instruction-shaped content ({kinds}) — its "
+            "search results are quarantined as untrusted, but the text will reach the model "
+            "on every search that matches it")
+
+
 def _url_holds(tool_calls: list, state, prov=None) -> dict:
     """{call id: reason} for the web_extract calls whose URL must face the human."""
     fetches = [tc for tc in tool_calls if tc.get("name") == "web_extract"]
@@ -349,6 +373,7 @@ def approval_node(state: AgentState) -> Command[Literal["tools", "agent"]]:
         notes += [f"remember: not saved automatically — {unstated[tc['id']]}" for tc in gated
                   if unstated.get(tc["id"])]
     notes += [n for n in (_similar_note(tc) for tc in gated) if n]
+    notes += [n for n in (_document_note(tc) for tc in gated) if n]
     # A skill drafted after a web page, a file, an attachment or mail entered the conversation
     # may carry that content's instructions. A note, not a refusal: "summarise this page and
     # save the method as a skill" is a fair request — but the human should read it as untrusted.

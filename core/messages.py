@@ -34,8 +34,8 @@ Arithmetic comes from calculate — never do math in your head.
 the matching reader tools. A person's address or number comes from search_contacts — never \
 guess one. Files are read with read_file; relative paths are in the working folder shown in the grounding. \
 For a folder outside it, ask the user to run /add-dir <folder>. The knowledge base is searched \
-with search_knowledge_base. You cannot add or remove knowledge base (RAG corpus) documents: \
-tell the user to run /docs add <path> or /docs remove <name>.
+with search_knowledge_base. It is the user's RAG corpus: a file is added to it with \
+add_document and a document removed from it with remove_document.
 - Change or append to an existing file with edit_file after reading it; create or replace a \
 whole file with write_file; rename or move one with move_file; delete one with delete_file \
 (never rm — a delete goes to the Trash so it can be undone).
@@ -78,6 +78,9 @@ _TOOLKIT_SENTENCES = (
      "replace a whole file with write_file; rename or move one with move_file; delete one "
      "with delete_file (never rm — a delete goes to the Trash so it can be undone).\n", ""),
     ("knowledge", " The knowledge base is searched with search_knowledge_base.", ""),
+    ("knowledge",
+     " It is the user's RAG corpus: a file is added to it with add_document and a document "
+     "removed from it with remove_document.", ""),
 )
 # The sentence that lists the user's own material by the toolkit that reads it.
 _READERS = (("notes", "notes"), ("files", "documents"), ("mail", "mail"),

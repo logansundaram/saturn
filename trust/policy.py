@@ -150,6 +150,12 @@ ALWAYS_ASKS: "dict[str, tuple[str, str]]" = {
     "create_skill": ("saving a skill", "this saves a procedure Saturn will follow as your own "
                                        "words every time the skill runs; saving a skill always "
                                        "asks, whatever the policy"),
+    "add_document": ("adding a document to the knowledge base",
+                     "this puts a file's text where Saturn reads it on every search that "
+                     "matches it; adding a document always asks, whatever the policy"),
+    "remove_document": ("removing a document from the knowledge base",
+                        "this takes a document out of what Saturn can search; removing one "
+                        "always asks, whatever the policy"),
 }
 
 # Tools the gate's `a(lways)` never drops to the auto-approved tier: one keypress must not

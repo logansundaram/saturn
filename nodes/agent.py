@@ -558,6 +558,15 @@ def _hygiene(call: dict, rounds: list, malformed: bool = False,
         args, answer = _skill_hygiene(args)
         if answer is not None:
             return refuse(*answer)
+    # The corpus's writers always face the human too: a call that cannot work — a file that is
+    # not there, a document the knowledge base does not hold — is answered here, so the person
+    # never reads a prompt for it.
+    if name in ("add_document", "remove_document"):
+        from tools import knowledge
+        problem = (knowledge.add_problem(args.get("file_path")) if name == "add_document"
+                   else knowledge.remove_problem(args.get("name")))
+        if problem:
+            return refuse("Error: " + problem)
     handle_arg = quarantine.HANDLE_ARGS.get(name)
     if handle_arg and provenance is not None:
         handle = str(args.get(handle_arg) or "").strip()

@@ -199,7 +199,7 @@ toolkits:
   files: true           # read, write, edit, move, delete and search files
   web: true             # search the web, read a page
   shell: true           # run a shell command
-  knowledge: true       # search the documents added with /docs
+  knowledge: true       # search your documents (the RAG corpus), add and remove them
   notes: true           # Apple Notes: search, read, create, append
   calendar: true        # Apple Calendar: list, create, update, delete events
   mail: true            # Apple Mail: list, search, read, draft, reply, file

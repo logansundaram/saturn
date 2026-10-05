@@ -52,7 +52,7 @@ TOOLKITS: "dict[str, Toolkit]" = {
     "files": Toolkit("Files", "read, write, edit, move, delete and search files"),
     "web": Toolkit("Web", "search the web, read a page"),
     "shell": Toolkit("Shell", "run a shell command"),
-    "knowledge": Toolkit("Knowledge base", "search the documents added with /docs"),
+    "knowledge": Toolkit("Knowledge base", "search your documents (the RAG corpus), add and remove them"),
     "notes": Toolkit("Notes", "Apple Notes: search, read, create, append"),
     "calendar": Toolkit("Calendar", "Apple Calendar: list, create, update, delete events"),
     "mail": Toolkit("Mail", "Apple Mail: list, search, read, draft, reply, file"),

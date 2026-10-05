@@ -583,19 +583,37 @@ def ingest_file(src_path: str) -> dict:
     return sync(verbose=False)
 
 
+def name_clash(src_path) -> bool:
+    """Whether adding this file would meet a DIFFERENT document of the same name already in the
+    corpus (documents are keyed by basename) — the case ingest_file refuses."""
+    p = Path(src_path).expanduser()
+    dest = documents_dir() / p.name
+    try:
+        return (dest.exists() and p.resolve() != dest.resolve()
+                and dest.read_bytes() != p.read_bytes())
+    except OSError:
+        return False
+
+
+def find_document(name: str) -> "Path | None":
+    """The corpus file a document name refers to — its relative source, or its basename — or
+    None. The corpus is the jail: `root / "../secret.txt"` never resolves to a file outside it.
+    The guard belongs in this primitive, not in the callers that happen to be careful."""
+    if not str(name or "").strip():
+        return None
+    root = documents_dir().resolve()
+    target = (root / str(name)).resolve()
+    if target.is_relative_to(root) and target.is_file() and target != root:
+        return target
+    return next((p for p in iter_documents() if p.name == Path(str(name)).name), None)
+
+
 def forget_document(name: str) -> bool:
     """Remove a document from the corpus by relative source or basename. `sync()` then drops its
     vectors + manifest entry. Returns False if no matching file exists."""
-    root = documents_dir().resolve()
-    target = (root / name).resolve()
-    # The corpus is the jail: `root / "../secret.txt"` must never resolve outside and be
-    # unlinked. /docs remove basenames its input first, but the guard belongs in the primitive,
-    # not in the one caller that happens to be careful.
-    if not target.is_relative_to(root) or not target.exists():
-        matches = [p for p in iter_documents() if p.name == Path(str(name)).name]
-        if not matches:
-            return False
-        target = matches[0]
+    target = find_document(name)
+    if target is None:
+        return False
     target.unlink()
     sync(verbose=False)
     return True

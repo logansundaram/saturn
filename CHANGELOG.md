@@ -21,6 +21,17 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
   on. The core — the checklist, questions, memory, the calculator and clock — is always on,
   and turning a toolkit on never changes what the approval gate asks about. MCP servers are
   listed as toolkits and still managed with `/mcp`.
+- **Saturn can add a file to your knowledge base, and remove one.** "Add notes.md to my RAG
+  corpus" now does it: the file is copied in and embedded, and it is searchable straight away.
+  "Remove notes.md from my knowledge base" moves the knowledge base's copy to the Trash. Both
+  always ask first — no policy setting, open gate or always-allow skips the prompt, and
+  headless runs refuse them — because a document's text reaches the model on every later
+  search that matches it; the prompt warns when the file contains text that reads like
+  instructions. Only files in a folder Saturn can reach can be added. A request that cannot
+  work (no such file, an unsupported type, a different document of the same name) is answered
+  without a prompt. Both tools are part of the knowledge toolkit (`/tools off knowledge`).
+- **"What is in my knowledge base?" gets the list.** A search with no query now returns the
+  documents the knowledge base holds, instead of an error.
 - **`benchmark.py --off <toolkits>`** runs either benchmark with toolkits turned off, to
   measure a smaller catalog. A loop task that needs one of them is skipped and counted apart.
 
@@ -33,9 +44,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
   looking for (`/tools`, `/models`, `/docs`, `/config`); bare `/help` is now the full listing by
   theme. `/help --all` still works and prints the same thing.
 - **Saturn names the command when the thing you asked for is yours to do.** It cannot delete a
-  remembered fact or change what is in the knowledge base, and used to answer "I can't" — or
-  ask which RAG framework you use. Now it says what to type: `/memory remove 1`, `/docs add
-  <path>`, `/docs remove <name>`.
+  remembered fact, and used to answer "I can't". Now it says what to type: `/memory remove 1`.
 - **`/memory remove <n>`** is the documented way to delete a fact, beside `/memory add` — the
   same pair `/docs` uses. Every hint Saturn prints says `remove` (`remembered #12: … ·
   /memory remove 12 undoes it`), and the confirmation reads `removed:`. `/memory forget <n>`

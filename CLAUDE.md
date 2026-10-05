@@ -238,9 +238,9 @@ memory tasks, `tests/test_memory_*.py` and `tests/test_auto_memory.py` pin this.
   Shell prefix matching is token-based and refuses metacharacters; the tail past a granted prefix
   is screened too (`arg_tail_rejects`: interpreters, capability flags, globs and `{}`, paths
   outside the workspace — bare or as a flag's value). `run_shortcut` has its own allowlist, one
-  shortcut by exact name (`/policy shortcut`). `ALWAYS_ASKS` (`send_message`, `create_skill`;
-  `name -> (what, why)`) sits above every lever: no tier, open gate, risk override or
-  always-allow lets a send or a skill save through, and headless refuses them even with `--yolo`; the gate's `a` never drops the tier of a tool in
+  shortcut by exact name (`/policy shortcut`). `ALWAYS_ASKS` (`send_message`, `create_skill`,
+  `add_document`, `remove_document`; `name -> (what, why)`) sits above every lever: no tier, open gate, risk override or
+  always-allow lets a send, a skill save or a knowledge-base change through, and headless refuses them even with `--yolo`; the gate's `a` never drops the tier of a tool in
   `NO_BLANKET_GRANT`. Persisted in `database/permissions.json`.
 - `egress.py` — every outbound network op calls `check()` (air-gap) then `record()`. The complete list
   of egress chokepoints is `core/llms.py`, `tools/web.py`, `tools/mcp_client.py`, `tools/messages.py`
@@ -342,6 +342,18 @@ shortcut: the bound schemas are the cached prefix). There is no clipboard tool o
 `@clipboard` (`core/mentions.py`) or `/copy`. Probe findings and what is still unverified:
 `docs/superpowers/specs/2026-09-06-macos-apps.md`. `benchmark.py`'s approver (`bench_approver`) declines
 every gated call into these modules: a benchmark run must never act on the user's real world.
+
+The knowledge base (the RAG corpus, `stores/rag.py`) has two agent writers in
+`tools/knowledge.py`, both in `policy.ALWAYS_ASKS` and both refusing unless `human_approved()`:
+`add_document(file_path)` copies a file from a reachable folder (`tools/files._resolve`) into
+the corpus and embeds it — a failed add takes its copy back out — and `remove_document(name)`
+moves the corpus's copy to the Trash, then syncs. `knowledge.add_problem` / `remove_problem`
+are asked by the agent's hygiene before the gate and again by the tool; the gate adds a note
+when the file holds instruction-shaped text (`nodes/approval._document_note`, the same
+`rag.screen_file` `/docs add` asks about). There is no list tool: the manifest is in the
+grounding every turn, and an EMPTY `search_knowledge_base` query returns the listing
+(`core/tool_args._EMPTY_OK`). `tool_args._NEVER_THE_OTHER_TOOL` keeps the wrong-arguments
+redirect from pointing at either writer. `tests/test_corpus_tools.py`.
 
 ### Slash commands
 

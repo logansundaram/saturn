@@ -40,8 +40,14 @@ _ARG_ALIASES: dict[str, dict[str, list[str]]] = {
         "file_path": ["file_path", "path", "file", "filename", "filepath"],
         "content": ["content", "text", "contents", "data", "body", "value", "string"],
     },
-    "search_knowledge_base": {
+    "search_knowledge_base": {   # an EMPTY query is a call too: it lists the documents (_EMPTY_OK)
         "query": ["query", "q", "search", "text", "question", "keywords"],
+    },
+    "add_document": {
+        "file_path": ["file_path", "path", "file", "filename", "filepath", "document"],
+    },
+    "remove_document": {
+        "name": ["name", "document", "document_name", "filename", "file_name", "file", "doc"],
     },
     "calculate": {
         "expression": ["expression", "expr", "equation", "formula", "calc", "input"],
@@ -76,10 +82,12 @@ _ARG_ALIASES: dict[str, dict[str, list[str]]] = {
 
 # Required args for which the EMPTY STRING is a legitimate value — deleting text via
 # edit_file(new_string="") or creating an empty file via write_file(content="") — so "" must
-# count as present for these, not as a missing value to retry.
+# count as present for these, not as a missing value to retry. An empty knowledge-base search
+# is how a model asks what the corpus holds (2026-10-05, run 69): it lists the documents.
 _EMPTY_OK: dict[str, set[str]] = {
     "edit_file": {"new_string"},
     "write_file": {"content"},
+    "search_knowledge_base": {"query"},
 }
 
 # Optional args passed through when present — never required, never invented. A bare name is
@@ -114,7 +122,10 @@ _SCHEMA_SHAPES: dict[str, str] = {
     "edit_file": "edit_file(file_path=<file path>, old_string=<existing text copied "
     "verbatim, appearing exactly once>, new_string=<replacement text>)",
     "write_file": "write_file(file_path=<file path>, content=<exact text to write>)",
-    "search_knowledge_base": "search_knowledge_base(query=<search text>)",
+    "search_knowledge_base": "search_knowledge_base(query=<search text, or empty to list the "
+    "documents>)",
+    "add_document": "add_document(file_path=<the file to add, relative to the working folder>)",
+    "remove_document": "remove_document(name=<the document's name, e.g. handbook.pdf>)",
     "calculate": "calculate(expression=<numeric expression, e.g. 4.25*12+9.99*7>)",
     "current_time": "current_time()",
     "web_search": "web_search(query=<web search terms>)",
@@ -159,6 +170,13 @@ def coerce_args(name: str, args) -> Optional[dict]:
 
 
 
+# Tools the redirect below never points at. Their one required argument is a name half the
+# registry shares (`file_path`, `name`): with them in the running `calculate(file_path=…)`
+# stops reading as read_file's call, and `list_directory(name=…)` starts reading as a request
+# to remove a document.
+_NEVER_THE_OTHER_TOOL = frozenset({"add_document", "remove_document"})
+
+
 def tool_for_args(name: str, args) -> Optional[str]:
     """The OTHER tool whose required arguments `args` supplies when none of them fits `name` —
     the small-model slip `recall(fact=…, replaces=…)` for `remember`. None when the arguments
@@ -180,7 +198,8 @@ def tool_for_args(name: str, args) -> Optional[str]:
     if keys & own_names:
         return None
     fits = [other for other, required in _ARG_ALIASES.items()
-            if other != name and required and all(arg in keys for arg in required)]
+            if other != name and other not in _NEVER_THE_OTHER_TOOL
+            and required and all(arg in keys for arg in required)]
     return fits[0] if len(fits) == 1 else None
 
 

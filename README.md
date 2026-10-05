@@ -109,7 +109,8 @@ would look for it)
 - **Web search** — **no API key, no account, ever**: keyless DuckDuckGo search + local page
   extraction (`trafilatura`). Your queries never route through a keyed SaaS backend.
 - **Your documents (RAG)** — ingest PDFs, text, markdown, HTML, CSV, and Word (.docx) files into
-  a local knowledge base it can search across (`/docs add`).
+  a local knowledge base it can search across (`/docs add`, or ask: "add notes.md to my
+  knowledge base" — adding and removing a document always asks first).
 - **Shell commands** — run shell commands (scripts, build tools, git, package managers) in the
   working folder, through `/bin/sh`. Every run is a bounded **foreground** run: the process
   lives and dies inside the turn you approved (no detached-process surface), with a timeout so

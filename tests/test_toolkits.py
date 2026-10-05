@@ -238,14 +238,23 @@ def test_every_sentence_a_toolkit_owns_occurs_exactly_once_in_the_literal():
     assert messages._AGENT_SYS.count("\n\nRules:") == 1
 
 
-def test_the_prompt_names_the_commands_only_the_user_can_run():
-    """Dogfooding 2026-10-05 (runs 65, 68): asked to delete a memory or add a file to the RAG
-    corpus — neither has a tool — the model answered "I can't" or asked which RAG framework
-    was in use. The prompt names the command the user types instead, as it does for /add-dir,
-    and keeps naming it whatever is turned off (the commands do not depend on a toolkit)."""
+def test_the_prompt_names_the_command_only_the_user_can_run():
+    """Dogfooding 2026-10-05 (run 68): asked to delete a memory — no tool does — the model
+    answered "I can't". The prompt names the command the user types instead, as it does for
+    /add-dir, whatever is turned off (memory is core)."""
     for text in (_sys(), _sys("knowledge"), _sys(*SWITCHABLE)):
         assert "/memory remove <n>" in text
-        assert "/docs add <path>" in text and "/docs remove <name>" in text
+
+
+def test_the_prompt_names_the_corpus_tools_while_their_toolkit_is_on():
+    """Run 65: "add it to my rag corpus" got "which RAG framework are you using?". The prompt
+    says the knowledge base IS the RAG corpus and names the tools that change it; with the
+    toolkit off the sentence goes with the rest of the toolkit's."""
+    text = _sys()
+    assert "RAG corpus" in text and "add_document" in text and "remove_document" in text
+    assert "/docs add" not in text          # the stopgap pointer from before the tools existed
+    off = _sys("knowledge")
+    assert "add_document" not in off and "remove_document" not in off and "RAG corpus" not in off
 
 
 @pytest.mark.parametrize("key", SWITCHABLE)
@@ -547,7 +556,7 @@ def test_bare_tools_is_the_toolkit_readout_and_never_a_flip(tools_cmd, config_fi
     assert _row(out, "core")[1:4] == ["6", "always", "on"]
     assert _row(out, "mail")[1:3] == ["6", "on"]
     assert _row(out, "messages")[1:3] == ["3", "off"]
-    assert "45 tools" in out and "42 bound" in out and "1 toolkit off" in out
+    assert "47 tools" in out and "44 bound" in out and "1 toolkit off" in out
     assert registry.off_toolkits() == ["messages"] and tools_cmd.primes == []
     assert config_file.read_text("utf-8") == OLD_CONFIG
 
@@ -570,7 +579,7 @@ def test_off_unbinds_saves_and_primes(tools_cmd, config_file):
     saved = yaml.safe_load(config_file.read_text("utf-8"))["toolkits"]
     assert saved == {k: k not in ("mail", "messages") for k in SWITCHABLE}
     assert config_file.read_text("utf-8").startswith(OLD_CONFIG)
-    assert "messages off" in out and "mail off" in out and "36 of 45" in out
+    assert "messages off" in out and "mail off" in out and "38 of 47" in out
     assert "next request" in out
     assert tools_cmd.primes == [1]
 
@@ -583,7 +592,7 @@ def test_on_binds_again_and_saves(tools_cmd, config_file):
 
     assert registry.off_toolkits() == []
     assert yaml.safe_load(config_file.read_text("utf-8"))["toolkits"]["messages"] is True
-    assert "messages on" in out and "45 of 45" in out
+    assert "messages on" in out and "47 of 47" in out
 
 
 def test_session_only_leaves_the_file_alone(tools_cmd, config_file):

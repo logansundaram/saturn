@@ -312,8 +312,13 @@ def approval_node(state: AgentState) -> Command[Literal["tools", "agent"]]:
                 or _user_stated(tc, state))
     ]
 
+    # The remember calls let through on provenance — the tools node stamps exactly these
+    # (state["user_stated"]); written on every route to `tools`, so a later batch never
+    # inherits an earlier one's.
+    stated = [tc["id"] for tc in tool_calls if tc not in gated and _user_stated(tc, state)]
+
     if not gated:
-        return Command(goto="tools")
+        return Command(goto="tools", update={"user_stated": stated})
 
     # Decision context for the gate's `e(xplain)` answer: the plan step this batch is fulfilling
     # and the agent's pre-action reasoning (the text content of the tool-calling AIMessage) —
@@ -402,7 +407,7 @@ def approval_node(state: AgentState) -> Command[Literal["tools", "agent"]]:
     )
 
     if approved_ids == gated_ids:
-        return Command(goto="tools", update={"gate_events": [event]})
+        return Command(goto="tools", update={"gate_events": [event], "user_stated": stated})
 
     # Decline ONLY the rejected calls (orphaned tool_calls break the next model turn). The
     # structural outcome stamp (same contract as nodes/tools.py) is what the recorder keys the
@@ -417,7 +422,7 @@ def approval_node(state: AgentState) -> Command[Literal["tools", "agent"]]:
         )
         for tc in rejected
     ]
-    update = {"messages": decline, "gate_events": [event]}
+    update = {"messages": decline, "gate_events": [event], "user_stated": stated}
 
     # Anything left to run (ungated or approved) still runs; a fully-rejected batch goes
     # straight back to the agent, which sees the declines (and whose declined-repeat guard

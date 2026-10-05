@@ -165,7 +165,9 @@ def test_node_auto_approved_batch_records_nothing(monkeypatch):
     )
     cmd = approval_node(_node_state(list(_CALLS)))
     assert cmd.goto == "tools"
-    assert not cmd.update  # no gate_events delta at all
+    # No gate_events delta at all. (The one thing every route to `tools` writes is
+    # user_stated — the remember calls let through on provenance, none here.)
+    assert cmd.update == {"user_stated": []}
 
 
 def test_node_quarantine_escalation_flag_recorded(monkeypatch):

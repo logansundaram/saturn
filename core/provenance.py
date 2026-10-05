@@ -8,7 +8,12 @@ note (core.state.is_turn_start / is_steer_message — a compaction summary is ne
 model's words about earlier turns). `seen` is everything else that ENTERED the conversation
 (completed tool results, attachments, the grounding, a summary). `untrusted` is whether any of
 that came from outside the trust boundary: an attachment (`@file`, `@clipboard`, piped stdin,
-`!cmd` output) or a ToolMessage from a tool declared untrusted (trust.quarantine.is_untrusted).
+`!cmd` output), a ToolMessage from a tool declared untrusted (trust.quarantine.is_untrusted),
+or `state["outside_seen"]` — the conversation's own record that either happened in an EARLIER
+turn. The record is what makes it last: a turn's attachment is reset at the next turn and its
+tool messages are compacted away one turn later (app/session._compact_history), while the
+answer that restated the page stays in history. A call the human DECLINED ran nothing and
+brought nothing in (`saturn_status` skipped), so it does not count.
 
 The model's own messages are skipped: they are what the holds check, so a URL the model wrote
 in a preamble (the issuing message is already in state) or an earlier answer must not vouch
@@ -50,7 +55,7 @@ def is_typed(m) -> bool:
 def of(state) -> Provenance:
     typed: list[str] = []
     seen = [str(state.get("attachments") or ""), str(state.get("context") or "")]
-    untrusted = bool(state.get("attachments"))
+    untrusted = bool(state.get("attachments")) or bool(state.get("outside_seen"))
     for m in state.get("messages") or []:
         text = str(getattr(m, "content", "") or "")
         if is_typed(m):
@@ -59,9 +64,10 @@ def of(state) -> Provenance:
         if isinstance(m, AIMessage):
             continue
         if isinstance(m, ToolMessage):
-            if quarantine.is_untrusted(str(m.name or "")):
+            status = (getattr(m, "additional_kwargs", None) or {}).get("saturn_status") or "done"
+            if status != "skipped" and quarantine.is_untrusted(str(m.name or "")):
                 untrusted = True
-            if ((getattr(m, "additional_kwargs", None) or {}).get("saturn_status") or "done") != "done":
+            if status != "done":
                 continue
         seen.append(text)
     return Provenance(tuple(typed), "\n".join(seen), untrusted)

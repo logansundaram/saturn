@@ -12,6 +12,7 @@ import time
 from langchain.messages import ToolMessage
 from langgraph.errors import GraphInterrupt
 
+import diag
 from trust import egress
 from trust import quarantine
 from tools.registry import RETRIEVAL_TOOLS, is_action, tools_by_name
@@ -90,6 +91,50 @@ def _egress_slice(mark: int) -> list[dict]:
     return out
 
 
+def _replaced_fact(args) -> "dict | None":
+    """The stored fact a `remember(replaces=…)` is about to retire, read BEFORE the call so the
+    note after the answer can show what was removed (the tool's report is clipped to a
+    preview, and `/memory forget` on the new fact does not bring the old one back)."""
+    raw = (args or {}).get("replaces") if isinstance(args, dict) else None
+    if raw in (None, "", 0):
+        return None
+    try:
+        from stores.memory_registry import entry
+
+        old = entry(int(str(raw).strip().lstrip("#")))
+    except Exception:
+        return None
+    return {"id": old["id"], "text": old["text"]} if old else None
+
+
+def _auto_memory_marks(observation: str, replacing: "dict | None") -> dict:
+    """What the event of a fact remembered WITHOUT the gate carries, for the note after the
+    answer (app/repl._auto_memory_notes) and the trace: `auto_memory` (the new fact's id) or
+    `auto_memory_known` (it was already stored — nothing new to undo), `auto_memory_replaced`
+    (the fact it retired) and `auto_memory_similar` (the stored facts it landed beside —
+    core/auto_memory.similar; no prompt showed them). Best-effort past the id: the fact is
+    already saved, and a failed lookup must cost the line, not the turn."""
+    fid = auto_memory.fact_id(observation)
+    if not observation.startswith("Remembered"):
+        return {"auto_memory_known": fid} if fid else {}
+    marks: dict = {"auto_memory": fid}
+    try:
+        from stores.memory_registry import entry
+
+        if replacing and entry(replacing["id"]) is None:
+            marks["auto_memory_replaced"] = replacing
+        saved = entry(fid) if fid else None
+        near = auto_memory.similar(saved["text"], saved["layer"], exclude={fid}) if saved else []
+        # A sensitive neighbour's text stays out of the event: events go to the trace and
+        # to exports.
+        near = [{"id": e["id"], "text": e["text"]} for e in near if not e.get("sens")]
+        if near:
+            marks["auto_memory_similar"] = near
+    except Exception as exc:
+        diag.log(f"tool_node : auto-memory lookup failed: {exc}")
+    return marks
+
+
 def tool_node(state: AgentState):
     """Execute the pending tool calls and feed results back as ToolMessages.
 
@@ -109,9 +154,12 @@ def tool_node(state: AgentState):
     }
 
     # The remember calls the approval node let through because the user typed every word of
-    # them (core/auto_memory) — recomputed from the same state, so the stamp matches the gate.
-    user_stated_ids = {tc["id"] for tc in pending_calls
-                       if tc["name"] == "remember" and auto_memory.qualifies(tc, state)}
+    # them (core/auto_memory) — the gate's own decision, carried in state. Never recomputed
+    # here: by now the gate's decline messages are in the conversation, and a second reading
+    # could disagree with the one the human was (not) asked on.
+    user_stated_ids = set(state.get("user_stated") or []) & {
+        tc["id"] for tc in pending_calls if tc["name"] == "remember"}
+    outside_ran = False   # an untrusted tool executed: outside content entered (provenance)
 
     tool_messages = []
     tools_called = []
@@ -134,6 +182,9 @@ def tool_node(state: AgentState):
         else:
             approved_token = _HUMAN_APPROVED.set(tool_call["id"] in approved_ids)
             stated_token = _USER_STATED.set(tool_call["id"] in user_stated_ids)
+            outside_ran = outside_ran or quarantine.is_untrusted(name)
+            said = tool_call["id"] in user_stated_ids and tool_call["id"] not in approved_ids
+            replacing = _replaced_fact(args) if said and name == "remember" else None
             try:
                 observation = selected.invoke(args)
             except GraphInterrupt:
@@ -240,22 +291,8 @@ def tool_node(state: AgentState):
             event["quarantine"] = q_kinds
         # A fact remembered without the gate: the REPL's after-answer note reads this
         # (app/repl._auto_memory_notes), and the trace keeps it with the event.
-        if ok and tool_call["id"] in user_stated_ids and tool_call["id"] not in approved_ids:
-            fid = auto_memory.fact_id(observation)
-            event["auto_memory"] = fid
-            # ...and the stored facts it landed beside (auto_memory.similar): no prompt showed
-            # them, so the note after the answer does. Best-effort — the fact is already saved.
-            try:
-                from stores.memory_registry import entry as _fact
-
-                saved = _fact(fid) if fid else None
-                near = (auto_memory.similar(saved["text"], saved["layer"], exclude={fid})
-                        if saved else [])
-            except Exception as exc:
-                diag.log(f"tool_node : similar-fact lookup failed: {exc}")
-                near = []
-            if near:
-                event["auto_memory_similar"] = [{"id": e["id"], "text": e["text"]} for e in near]
+        if ok and selected is not None and said:
+            event.update(_auto_memory_marks(str(observation), replacing))
         # The per-call egress slice (computed above), rendered live as a rail leaf and persisted
         # with the event for /trace replays.
         if sent:
@@ -271,4 +308,6 @@ def tool_node(state: AgentState):
     }
     if plan_update is not None:
         result["plan"] = plan_update
+    if outside_ran:
+        result["outside_seen"] = True
     return result

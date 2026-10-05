@@ -186,4 +186,10 @@ def grounding_node(state: AgentState) -> dict:
     dynamic = "\n\n".join(sections)
     context = stable + ("\n\n" + dynamic if dynamic else "")
     diag.log(f"grounding_node : {time.perf_counter() - start:.4f}s")
-    return {"context": context, "context_stable": stable, "context_dynamic": dynamic}
+    out = {"context": context, "context_stable": stable, "context_dynamic": dynamic}
+    # An attachment is outside content, and `attachments` is reset at the next turn — so the
+    # conversation's own record is set here, the first node of the turn that carried it
+    # (core/provenance.of reads it; auto-learn stays off from then on).
+    if state.get("attachments"):
+        out["outside_seen"] = True
+    return out

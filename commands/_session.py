@@ -72,6 +72,11 @@ def _swap_to_messages(ctx, messages) -> None:
     """Rebuild a fresh state seeded with `messages` (mirrors /clear)."""
     state = ctx.make_initial_state()
     state["messages"] = messages
+    # A session file holds the messages, not the record of what entered the conversation they
+    # came from (a page read three turns before the save is gone from them). So a restored
+    # conversation counts as having seen outside content: auto-learn asks at the gate in it
+    # (core/provenance.of, core/auto_memory).
+    state["outside_seen"] = True
     ctx.state = state
 
 

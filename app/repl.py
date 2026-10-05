@@ -33,23 +33,32 @@ from tui.typeahead import InputQueue
 
 def _auto_memory_notes(state) -> list:
     """One line per fact this turn remembered without the gate (nodes/tools.py marks the event
-    `auto_memory` with the fact's id): what was kept, and the way back. Said after the answer,
-    because there was no prompt to see it at."""
-    import re
-
+    `auto_memory` with the fact's id): what was kept, what it replaced, and the way back. Said
+    after the answer, because there was no prompt to see it at. A fact that was already stored
+    is said as that (`auto_memory_known`) — there is nothing new to undo; a stored fact the new
+    one landed beside is named under it (`auto_memory_similar`)."""
     from textutil import clip
 
     out = []
     for ev in state.get("tool_events") or []:
-        fid = ev.get("auto_memory") if isinstance(ev, dict) else None
-        if not fid:
+        if not isinstance(ev, dict):
             continue
         args = ev.get("args") if isinstance(ev.get("args"), dict) else {}
-        line = f"remembered #{fid}: {clip(' '.join(str(args.get('fact') or '').split()), 80)}"
-        replaced = re.search(r"replaces #(\d+)", str(ev.get("result") or ""))
-        if replaced:
-            line += f" (replaced #{replaced.group(1)})"
-        out.append(f"{line} — you said it · /memory forget {fid} undoes it")
+        fact = clip(" ".join(str(args.get("fact") or "").split()), 80)
+        if ev.get("auto_memory_known"):
+            out.append(f"already remembered as #{ev['auto_memory_known']}: {fact}")
+            continue
+        fid = ev.get("auto_memory")
+        if not fid:
+            continue
+        line = f"remembered #{fid}: {fact}"
+        old = ev.get("auto_memory_replaced")
+        if isinstance(old, dict) and old.get("id"):
+            # Forgetting the new fact does not bring the old one back, so say what went.
+            line += f' (replaced #{old["id"]} "{clip(str(old.get("text") or ""), 60)}")'
+            out.append(f"{line} — you said it · /memory forget {fid} removes the new fact")
+        else:
+            out.append(f"{line} — you said it · /memory forget {fid} undoes it")
         near = [e for e in ev.get("auto_memory_similar") or [] if isinstance(e, dict)]
         if near:
             from core.auto_memory import similar_note

@@ -465,7 +465,10 @@ def review_pending(ctx, *, use_llm: bool = True, on_quit: bool = False) -> None:
         mark = (id(ctx), len(messages))
         if mark != _LAST_MODEL_PASS.get("mark"):
             try:
-                proposals = rv.llm_candidates(messages)
+                from core import provenance
+
+                proposals = rv.llm_candidates(
+                    messages, outside=provenance.of(ctx.state or {}).untrusted)
             except KeyboardInterrupt:
                 proposals = []
                 _print("  (model proposals skipped)")

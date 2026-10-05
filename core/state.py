@@ -139,6 +139,20 @@ class AgentState(TypedDict):
     # This turn's @file attachments, pre-formatted by `mentions.expand`; empty without any.
     attachments: str
 
+    # Whether content from outside the trust boundary has EVER entered this conversation: an
+    # attachment (set by the grounding node) or an untrusted tool that ran (set by the tools
+    # node). Carried across turns (app/session._CARRY_ACROSS_TURNS) — the messages that held it
+    # are compacted away after a turn or two, but an answer that restated a page is still in
+    # history, so core/provenance.of reads this and auto-learn stays off for the conversation.
+    # /clear resets it; a resumed session starts with it set.
+    outside_seen: bool
+
+    # The ids of this batch's `remember` calls the approval node let through because the user
+    # typed every word of them (core/auto_memory.qualifies). Written by the approval node on
+    # every route to `tools`, read by the tools node — which must take the gate's word, not
+    # work it out again from a state the gate's own decline messages have changed.
+    user_stated: List[str]
+
     # The skill the user ran this turn by typing /<name> (core/skills.block); empty otherwise.
     # The ground node folds it into the DYNAMIC half, so it never touches the cached prefix.
     skill: str

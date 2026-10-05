@@ -149,10 +149,11 @@ memory:
   # candidate still faces the review screen — nothing is written without your accept.
   review_llm: true
   # Auto-learn: a fact you state in your own words ("I'm vegetarian", "Petra is my manager",
-  # "never book anything before 10am") is remembered WITHOUT asking — but only when every word
-  # of it is one you typed and nothing from outside (a web page, mail, a file, an attachment) is
-  # in the conversation. Anything else still asks at the gate, which says why. The answer ends
-  # with a `remembered #n` line; /memory forget <n> undoes it. false: every remember asks.
+  # "never book anything before 10am") is remembered WITHOUT asking — but only when its words
+  # come from one sentence you typed and stated (not asked), and nothing from outside (a web
+  # page, mail, a file, an attachment) has entered the conversation, in this turn or an earlier
+  # one. Anything else still asks at the gate, which says why. The answer ends with a
+  # `remembered #n` line; /memory forget <n> undoes it. false: every remember asks.
   # Headless runs (-p / -q) never auto-learn.
   auto_learn: true
 

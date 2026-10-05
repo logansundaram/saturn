@@ -192,6 +192,12 @@ def _parse_bullet(line: str, layer: str) -> dict | None:
     if d:
         entry["date"] = d.group(1)
         body = body[d.end():]
+    else:
+        # A hand-written bullet: `date` is already today (_new_entry) and the next write
+        # stamps it. Until then the model is shown no day for it (_context_line) — "today,
+        # every day" would outrank every dated fact and change the cached stable prefix at
+        # each midnight.
+        entry["undated"] = True
     c = _CATEGORY_RE.match(body)
     if c:
         entry["category"] = " ".join(c.group(1).split()) or "general"
@@ -351,21 +357,34 @@ def _clean_category(category) -> str:
 # The memory file is plain text, is read into every prompt, and leaves the machine under a
 # remote OLLAMA_HOST. So no Saturn path writes a credential into it — not the model's
 # `remember`, not a review accept, not /memory add or /memory edit (add_memory and edit_memory
-# are the two writers of fact text, and both ask here). Deterministic shapes only; health and
-# money are the user's own facts and are handled by `sens=`, not refused. Editing the file by
-# hand is the user's business.
-_CARD_RE = re.compile(r"(?<![\w-])\d(?:[ -]?\d){12,18}(?![\w-])")
-_SSN_RE = re.compile(r"(?<![\d-])\d{3}-\d{2}-\d{4}(?![\d-])")
+# are the two writers of fact text, and both ask here; the category is screened with the fact).
+# Deterministic, recognisable shapes only — a secret written some other way gets through, so
+# this is a net, not a promise. Health and money are the user's own facts and are handled by
+# `sens=`, not refused. Editing the file by hand is the user's business.
+_CARD_RE = re.compile(r"(?<![\w-])\d(?:[ .-]?\d){12,18}(?![\w-])")
+_SSN_RE = re.compile(r"(?<![\d-])\d{3}-\d{2}-\d{4}(?![\d-])"
+                     r"|\b(?:ssn|social security)\b\D{0,24}\d{3}[ -]?\d{2}[ -]?\d{4}(?!\d)",
+                     re.IGNORECASE)
 _PRIVATE_KEY_RE = re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")
-_API_KEY_RE = re.compile(r"(?<![A-Za-z0-9])(?:sk-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{30,}"
-                         r"|AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]{10,})")
-_PASSWORD_RE = re.compile(r"\b(?:password|passcode|passphrase)\b\s*(?:is|was|:|=)\s*[\"']?"
-                          r"([^\s\"']+)", re.IGNORECASE)
-_PIN_RE = re.compile(r"\bpin\b(?:\s+code)?\s*(?:is|was|:|=)?\s*\d{4,8}\b", re.IGNORECASE)
+_API_KEY_RE = re.compile(r"(?<![A-Za-z0-9])(?:sk[-_][A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{30,}"
+                         r"|github_pat_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{30,}"
+                         r"|xox[baprs]-[A-Za-z0-9-]{10,})")
+# "password is hunter2", "password: hunter2", "wifi password for home is hunter2" — the value
+# follows is/:/= within a few words; or "wifi password hunter2" — it follows directly and does
+# not look like a word (a digit or a symbol in it).
+_PASSWORD_SAID_RE = re.compile(
+    r"\b(?:password|passcode|passphrase)\b(?:\s+\w+){0,4}?\s*(?:\b(?:is|was)\b\s*[:=]?|[:=])"
+    r"\s*[\"']?([^\s\"']+)", re.IGNORECASE)
+_PASSWORD_BARE_RE = re.compile(
+    r"\b(?:password|passcode|passphrase)\s+[\"']?((?=\S*[\d!@#$%^&*+=_])[^\s\"']{4,})",
+    re.IGNORECASE)
+_PIN_RE = re.compile(r"\bpin\b(?:\s+\w+){0,4}?\s*(?:\b(?:is|was)\b\s*[:=]?|[:=])\s*\d{4,8}\b"
+                     r"|(?-i:\bPIN)\s+\d{4,8}\b", re.IGNORECASE)   # bare form: capitals only
 # What may follow "the password is …" without being the password itself.
 _NOT_A_PASSWORD = frozenset("""
 in on at the a an my our stored saved kept written not same different too weak strong long
 short there here what where with for under inside changed expired wrong correct unknown
+required needed optional mandatory set reset protected empty blank missing safe secure
 """.split())
 
 
@@ -397,8 +416,10 @@ def secret_problem(text) -> "str | None":
         return "a Social Security number"
     if _PIN_RE.search(text):
         return "a PIN"
-    for m in _PASSWORD_RE.finditer(text):
-        if m.group(1).lower().strip(".,;") not in _NOT_A_PASSWORD:
+    if _PASSWORD_BARE_RE.search(text):
+        return "a password"
+    for m in _PASSWORD_SAID_RE.finditer(text):
+        if m.group(1).lower().strip(".,;:") not in _NOT_A_PASSWORD:
             return "a password"
     return None
 
@@ -423,8 +444,8 @@ def add_memory(fact: str, category: str = "general", *, layer: str = "user", rep
     fact = _clean_text(fact)
     if not fact:
         return "Nothing to remember — the fact was empty."
-    _refuse_secret(fact)
     category = _clean_category(category)
+    _refuse_secret(f"{category} {fact}")     # the category is written into the file too
     layer = normalize_layer(layer)
 
     entries, next_id = _read_state()
@@ -696,7 +717,7 @@ def _context_line(e: dict) -> str:
     reads as a prohibition), `[inferred]` on a fact the user accepted but did not state, and the
     due date of a commitment."""
     bits = [f"- #{e['id'] or '?'}"]
-    if e.get("date"):
+    if e.get("date") and not e.get("undated"):
         bits.append(f"({e['date']})")
     if e["layer"] not in ("user",):
         bits.append(f"[{e['layer']}]")

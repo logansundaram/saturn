@@ -130,7 +130,7 @@ def _maybe_autocompact(state: AgentState, run_id=None) -> AgentState:
 
 # The only fields that survive a turn boundary: the conversation itself (compacted, appended
 # to below) and the context-fill gauge (the window only grows; the next LLM call overwrites it).
-_CARRY_ACROSS_TURNS = ("messages", "context_tokens")
+_CARRY_ACROSS_TURNS = ("messages", "context_tokens", "outside_seen")
 
 
 def _fresh_turn(state: AgentState, user_input: str) -> AgentState:
@@ -173,6 +173,8 @@ def _initial_state() -> AgentState:
         "current_query": "",
         "context": "",
         "attachments": "",
+        "outside_seen": False,
+        "user_stated": [],
         "skill": "",
         "plan": [],
         "iteration": 0,

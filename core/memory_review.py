@@ -245,14 +245,17 @@ def llm_enabled() -> bool:
         return True
 
 
-def llm_candidates(messages: list, run_id=None) -> list[dict]:
+def llm_candidates(messages: list, run_id=None, *, outside=None) -> list[dict]:
     """Ask the model for durable facts worth keeping from this session — from `own_words`:
     what the user typed and what Saturn answered, never a tool result or a summary.
     Proposals only — every one still faces the review screen. ONE constrained call (a flat JSON
     schema for the decoder plus the shape hint as a trailing HumanMessage — never a
     SystemMessage, which Ollama rejects mid-conversation for qwen3.8 models); the outermost
     {...} is salvaged from prose-wrapped output. Empty on any failure (the mechanical candidates
-    stand on their own). Monkeypatched in tests; never reached offline."""
+    stand on their own). `outside` is whether outside content ever entered the conversation
+    (core/provenance.of(state).untrusted — the caller has the state; the messages alone lose it
+    once a turn's scratchpad is compacted away); None reads it from the messages. Each
+    proposal carries it to the review screen. Monkeypatched in tests; never reached offline."""
     if not messages:
         return []
     try:
@@ -273,7 +276,8 @@ def llm_candidates(messages: list, run_id=None) -> list[dict]:
         transcript = own_words(messages)
         if not transcript.strip():
             return []
-        outside = provenance.of({"messages": messages}).untrusted
+        if outside is None:
+            outside = provenance.of({"messages": messages}).untrusted
         messages = [HumanMessage(content=MEMORY_REVIEW_PROMPT + transcript),
                     HumanMessage(content=MEMORY_REVIEW_SHAPE)]
         resp = generate(get_model(), messages, tag=model_tag(),

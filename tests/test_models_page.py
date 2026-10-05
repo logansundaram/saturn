@@ -294,6 +294,7 @@ def test_probe_never_raises_when_every_reader_fails(monkeypatch):
 def test_gpu_cores_reader_parses_ioreg(monkeypatch):
     from core import hardware
 
+    monkeypatch.setattr(hardware.platform, "system", lambda: "Darwin")  # ioreg is a macOS reader
     monkeypatch.setattr(hardware, "_run", lambda cmd, timeout=3:
                         '+-o AGXAcceleratorG16X  <class ...>\n    {\n      "gpu-core-count" = 20\n    }')
     assert hardware._gpu_cores() == 20

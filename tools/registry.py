@@ -186,6 +186,25 @@ def toolkit_problems() -> list[str]:
     return problems
 
 
+def toolkit_block() -> str:
+    """The `toolkits:` section as config.default.yaml carries it (a test pins the two equal):
+    one `key: true` line per switchable toolkit. /tools appends it to a config.yaml that was
+    written before the section existed (config.append_block)."""
+    lines = [
+        "# ---------------------------------------------------------------------------",
+        "# Toolkits (/tools). A toolkit is a group of tools. `false` unbinds one: the model is",
+        "# not shown its tools and cannot call them, and Saturn says the toolkit is off when a",
+        "# request needs it. `/tools on|off <name>` edits these lines. The core (the checklist,",
+        "# questions, memory, the calculator and clock) is always on; an MCP server is turned",
+        "# on and off under `mcp:`.",
+        "# ---------------------------------------------------------------------------",
+        "toolkits:",
+    ]
+    lines += [f"  {key + ': true':<21} # {kit.about}"
+              for key, kit in TOOLKITS.items() if _switchable(key)]
+    return "\n".join(lines) + "\n"
+
+
 apply_toolkits()
 
 

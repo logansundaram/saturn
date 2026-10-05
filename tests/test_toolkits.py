@@ -405,3 +405,89 @@ def test_the_tools_node_cannot_run_a_tool_that_is_off(isolated_paths, rebinds):
     refused = run()
     assert "unknown tool" in refused.content
     assert refused.additional_kwargs["saturn_status"] == "error"
+
+
+# ── saving (config.py, config.default.yaml) ──────────────────────────────────────────────────
+
+import yaml  # noqa: E402
+
+OLD_CONFIG = "active_tier: 4b   # keep me\nruntime:\n  think: auto\n# toolkits: not this\nmcp:\n  toolkits: nor this\n"
+
+
+@pytest.fixture
+def config_file(tmp_path, monkeypatch):
+    """A config.yaml from before toolkits existed, as the live file."""
+    import config
+
+    path = tmp_path / "config.yaml"
+    path.write_text(OLD_CONFIG, encoding="utf-8")
+    monkeypatch.setattr(config, "_CONFIG_PATH", path)
+    return path
+
+
+def test_the_block_lists_every_switchable_toolkit_as_on():
+    from tools import registry
+
+    block = yaml.safe_load(registry.toolkit_block())
+    assert list(block) == ["toolkits"]
+    assert list(block["toolkits"].items()) == [(k, True) for k in SWITCHABLE]
+
+
+def test_the_template_carries_the_block_verbatim():
+    from pathlib import Path
+
+    from tools import registry
+
+    template = (Path(__file__).resolve().parents[1] / "config.default.yaml").read_text("utf-8")
+    assert registry.toolkit_block() in template
+    assert yaml.safe_load(template)["toolkits"] == {k: True for k in SWITCHABLE}
+
+
+def test_an_older_config_gains_the_block_by_append(config_file):
+    import config
+    from tools import registry
+
+    assert config.append_block("toolkits", registry.toolkit_block()) is True
+
+    text = config_file.read_text("utf-8")
+    assert text.startswith(OLD_CONFIG)                         # no existing line is touched
+    data = yaml.safe_load(text)
+    assert data["toolkits"] == {k: True for k in SWITCHABLE}
+    assert data["mcp"] == {"toolkits": "nor this"} and data["runtime"] == {"think": "auto"}
+
+
+def test_the_block_is_appended_once(config_file):
+    import config
+    from tools import registry
+
+    config.append_block("toolkits", registry.toolkit_block())
+    once = config_file.read_text("utf-8")
+
+    assert config.append_block("toolkits", registry.toolkit_block()) is False
+    assert config_file.read_text("utf-8") == once
+
+
+def test_an_append_survives_a_file_without_a_final_newline(config_file):
+    import config
+    from tools import registry
+
+    config_file.write_text(OLD_CONFIG.rstrip("\n"), encoding="utf-8")
+    config.append_block("toolkits", registry.toolkit_block())
+
+    assert yaml.safe_load(config_file.read_text("utf-8"))["mcp"] == {"toolkits": "nor this"}
+
+
+def test_a_toggle_persists_through_the_single_line_edit(config_file, monkeypatch):
+    import config
+    from tools import registry
+
+    config.append_block("toolkits", registry.toolkit_block())
+    before = config_file.read_text("utf-8").splitlines()
+    monkeypatch.setitem(config.get_config()._data, "toolkits", {"messages": False})
+    config.persist("toolkits.messages")
+
+    after = config_file.read_text("utf-8").splitlines()
+    changed = [(a, b) for a, b in zip(before, after) if a != b]
+    assert len(before) == len(after) and len(changed) == 1
+    assert changed[0][0].startswith("  messages: true") and changed[0][1].startswith("  messages: false")
+    assert changed[0][0].split("#")[1] == changed[0][1].split("#")[1]     # the comment stays

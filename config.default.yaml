@@ -188,6 +188,29 @@ memory:
 #       Authorization: Bearer ${EXAMPLE_TOKEN}
 #     risk: read_only
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Toolkits (/tools). A toolkit is a group of tools. `false` unbinds one: the model is
+# not shown its tools and cannot call them, and Saturn says the toolkit is off when a
+# request needs it. `/tools on|off <name>` edits these lines. The core (the checklist,
+# questions, memory, the calculator and clock) is always on; an MCP server is turned
+# on and off under `mcp:`.
+# ---------------------------------------------------------------------------
+toolkits:
+  files: true           # read, write, edit, move, delete and search files
+  web: true             # search the web, read a page
+  shell: true           # run a shell command
+  knowledge: true       # search the documents added with /docs
+  notes: true           # Apple Notes: search, read, create, append
+  calendar: true        # Apple Calendar: list, create, update, delete events
+  mail: true            # Apple Mail: list, search, read, draft, reply, file
+  contacts: true        # Apple Contacts: look a person up
+  reminders: true       # Apple Reminders: list, create, complete
+  messages: true        # iMessage: find a group chat, read, send
+  shortcuts: true       # list and run your Shortcuts
+  desktop: true         # the front browser tab, the Finder selection
+  notifications: true   # schedule a one-off alert
+  skills: true          # save a procedure as a skill
+
 # --- scheduled notifications (notify/, the schedule_notification tool, /notify) -----------
 notify:
   # Start the menu bar icon with each interactive launch (macOS). It is a separate small

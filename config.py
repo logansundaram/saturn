@@ -416,6 +416,22 @@ def persist(dotted_key: str) -> Path:
     return _CONFIG_PATH
 
 
+def append_block(key: str, block: str) -> bool:
+    """Append `block` — a whole top-level `key:` section, its comments included — to
+    config.yaml when the file has no top-level `key:`. This is how a config.yaml written before
+    a section existed gains it: persist() only edits a line that is already there, and an
+    append touches no existing line. Returns whether it appended."""
+    with open(_CONFIG_PATH, "r", encoding="utf-8", newline="") as fh:
+        text = fh.read()
+    if re.search(rf"(?m)^{re.escape(key)}[ \t]*:", text):
+        return False
+    eol = "\r\n" if "\r\n" in text else "\n"
+    lead = "" if not text or text.endswith(("\n", "\r")) else eol
+    with open(_CONFIG_PATH, "a", encoding="utf-8", newline="") as fh:
+        fh.write(lead + eol + block.replace("\n", eol))
+    return True
+
+
 def _load() -> Config:
     with open(_CONFIG_PATH, "r", encoding="utf-8") as fh:
         data = yaml.safe_load(fh) or {}

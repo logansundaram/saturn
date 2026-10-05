@@ -3,7 +3,7 @@ from commands._utils import (
     _resync_rag_after_model_change,
     split_persist_flags,
 )
-from config import TRUST_KEYS
+from config import TRUST_KEYS, in_template
 
 _MIN_NUM_CTX = 256  # below this Ollama can't fit the system prompts; reject obvious typos
 
@@ -75,8 +75,9 @@ change should stick. Append --session to apply an edit for this session only:
   /config runtime.max_iterations 12 --session  set for this session only
   /config runtime.max_iterations --save        persist the CURRENT value unchanged
 A trust setting (runtime.auto_approve, runtime.airgap, …) never persists silently: it needs
---save. A key not already in config.yaml can't be persisted, so it stays session-only with a
-note. `/config reload` re-reads config.yaml from disk, discarding session-only edits.
+--save. A setting your config.yaml was written before (the template has it, your file does not)
+gains its line on the first save; any other unknown key stays session-only with a note.
+`/config reload` re-reads config.yaml from disk, discarding session-only edits.
 
 The context window: `/config runtime.num_ctx 16384` resizes it (the models rebuild on next use),
 `/config runtime.num_ctx auto` goes back to each model's declared window. The status bar shows
@@ -191,12 +192,15 @@ def _config(ctx, args):
     # on a config.yaml predating them — but the success-shaped line is replaced with a plain
     # warning so a misspelled safety knob can't masquerade as applied. The suggestion snapshots
     # the leaf list BEFORE the set, so the typo never suggests itself.
-    suggestion = _did_you_mean(cfg, key) if current is _MISSING else ""
+    # A setting the template declares is not unknown, only newer than this config.yaml: it
+    # takes the ordinary path below, and persist adds its line.
+    unknown = current is _MISSING and not in_template(key)
+    suggestion = _did_you_mean(cfg, key) if unknown else ""
     cfg.set(key, value)
-    if current is _MISSING:
-        # A key not already in config.yaml can't be persisted (persist edits existing scalar
-        # leaves), so it is inherently session-only — say so plainly instead of attempting a
-        # persist that would only fail.
+    if unknown:
+        # A key neither config.yaml nor the template holds can't be persisted (a typo must not
+        # become a line in the file), so it is inherently session-only — say so plainly instead
+        # of attempting a persist that would only fail.
         _print(f"  note: {key!r} was not an existing config key{suggestion} "
                "(set for this session; only keys the code reads have any effect, and a key that "
                "is not already in config.yaml cannot be persisted)")

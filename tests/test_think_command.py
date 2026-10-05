@@ -142,21 +142,35 @@ def test_setting_the_level_persists_by_default(monkeypatch, tmp_path, capsys):
     assert path.read_text() == after and cfg.get("runtime.think") == "fast"
 
 
-def test_a_config_without_the_think_line_is_left_exactly_as_it_was(monkeypatch, tmp_path, capsys):
-    """A config.yaml seeded before the key existed has no line to edit. The level applies for
-    the session, the file is untouched — never emptied — and the user is told what to add."""
-    import config
+def test_a_config_without_the_think_line_gains_it(monkeypatch, tmp_path, capsys):
+    """A config.yaml seeded before the key existed has no line to edit (dogfooding 2026-10-05:
+    the level could not be saved at all). The line is added under `runtime:`, nothing else in
+    the file changes, and the next save edits that same line."""
+    import yaml
     cfg = _cfg(monkeypatch, think="auto")
     old = CONFIG.replace("  think: auto          # fast | auto | deep\n", "")
     path = _config_file(monkeypatch, tmp_path, old)
     _run("/think deep")
     out = capsys.readouterr().out
+    after = path.read_text()
+    assert after.replace("  think: deep\n", "") == old
+    assert yaml.safe_load(after)["runtime"] == {"max_iterations": 16, "think": "deep"}
+    assert cfg.get("runtime.think") == "deep" and "saved to config.yaml" in out
+    _run("/think fast")
+    assert path.read_text() == after.replace("think: deep", "think: fast")
+
+
+def test_a_config_without_the_runtime_section_is_left_exactly_as_it_was(monkeypatch, tmp_path,
+                                                                       capsys):
+    """With no `runtime:` section there is nowhere to add the line: the level applies for the
+    session, the file is untouched — never emptied — and the user is told what to add."""
+    cfg = _cfg(monkeypatch, think="auto")
+    old = "# the user's file\nactive_tier: 4b\ntiers:\n  4b:\n    model: m\n"
+    path = _config_file(monkeypatch, tmp_path, old)
+    _run("/think deep")
+    out = capsys.readouterr().out
     assert path.read_text() == old
     assert cfg.get("runtime.think") == "deep" and "Add `think: deep`" in out
-    # the root cause, pinned where it lives: persist computes the edit before it opens the file
-    with pytest.raises(KeyError):
-        config.persist("runtime.think")
-    assert path.read_text() == old
 
 
 def test_a_persisted_level_round_trips_through_yaml():

@@ -60,9 +60,9 @@ def _auto_memory_notes(state) -> list:
         if isinstance(old, dict) and old.get("id"):
             # Forgetting the new fact does not bring the old one back, so say what went.
             line += f' (replaced #{old["id"]} "{clip(str(old.get("text") or ""), 60)}")'
-            out.append(f"{line} — you said it · /memory forget {fid} removes the new fact")
+            out.append(f"{line} — you said it · /memory remove {fid} removes the new fact")
         else:
-            out.append(f"{line} — you said it · /memory forget {fid} undoes it")
+            out.append(f"{line} — you said it · /memory remove {fid} undoes it")
         near = [e for e in ev.get("auto_memory_similar") or [] if isinstance(e, dict)]
         if near:
             from core.auto_memory import similar_note

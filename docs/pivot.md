@@ -51,7 +51,7 @@ _Table updated 2026-10-03 against the tree; the ranked list below keeps each ite
 |---|---|---|
 | Know the user | Six memory layers exist; a fact you state in your own words is kept without a click (auto-learn, 2026-10-04), anything else needs a review accept, a gated `remember` or `/memory add`; the agent reads Notes / Calendar / Mail / Contacts / Reminders / Messages; first run asks for a model tier, not for you | The agent starts every session knowing almost nothing and learns from what it is told (the interview and the brief are planned, not built; auto-learn is unmeasured on the 4b and 9b) |
 | Yours to shape | `~/.saturn/SATURN.md` global plus `SATURN.md` per folder; hooks in `~/.saturn/hooks.yaml`; any of your Shortcuts as a tool (`run_shortcut`); MCP config in YAML with zero servers enabled; `/policy` for the gate; toolkits — `/tools off messages` unbinds a group of tools (shipped 2026-10-05, `superpowers/specs/2026-10-05-toolkits-design.md`; everything starts on until a trimmed catalog has been measured) | No script-file tools (skills shipped 2026-10-03: `~/.saturn/skills`, `/skills`) |
-| Visible + gated | Done and true; bare `/help` lists five commands, the other fourteen sit behind `/help --all` | A trace vocabulary built for auditors, not for someone asking about their Thursday; the macOS permission dialogs name the terminal, not Saturn (`superpowers/specs/2026-10-02-macos-app-identity.md`, undecided) |
+| Visible + gated | Done and true; bare `/help` lists every command by theme (the five-command diet was reversed 2026-10-05) | A trace vocabulary built for auditors, not for someone asking about their Thursday; the macOS permission dialogs name the terminal, not Saturn (`superpowers/specs/2026-10-02-macos-app-identity.md`, undecided) |
 | Works where you are | File tools work in the launch folder plus `/add-dir` folders; `read_file` reads PDF / .docx / .xlsx directly; `search_files` asks Spotlight | No always-listed roots: "the PDF on my desktop" from another folder needs `/add-dir ~/Desktop` first |
 | Feels like a product | First launch runs `/models`: it probes the hardware, recommends a tier and pulls it on consent; `install.sh` still seeds and pulls the 4b first | The installer's download is the weakest model even on a machine that should run the 27b |
 
@@ -89,7 +89,7 @@ due date). Readers `untrusted=True` as today.
 Provenance-gated auto-memory. A fact the user states in their own words ("I'm vegetarian",
 "Petra is my manager", "my lease ends in March") is written by the trusted principal and lands
 directly in the `user` / `entities` / `commitments` layer with `by=user`; the rail shows a one-line
-`· remembered: …` leaf and `/memory forget` undoes it. Only *inferred* facts (the model's
+`· remembered: …` leaf and `/memory remove` undoes it. Only *inferred* facts (the model's
 proposals, compaction summaries) keep the review queue. Keep the gate on `remember` when the
 source of the fact is a tool result — a web page must never plant a memory. This is the change
 that turns "it never remembers" into "it knows me", and it costs nothing at the gate for the
@@ -130,7 +130,7 @@ closed to `destructive`; every call faces the gate; stdout is untrusted.
 `after-write`. The same seam Claude Code exposes; the memory review and the launch brief could be
 built on it.
 
-### 11. The command diet (1 day) — shipped 2026-09-28 (`/help --all`; the daily five are `/memory`, `/policy`, `/trace`, `/help`, `/quit`; `/skills` joined them with #8 on 2026-10-03, `/confidence` was cut, `/privacy` merged into `/policy` 2026-09-30)
+### 11. The command diet (1 day) — shipped 2026-09-28 (`/help --all`; the daily five are `/memory`, `/policy`, `/trace`, `/help`, `/quit`; `/skills` joined them with #8 on 2026-10-03, `/confidence` was cut, `/privacy` merged into `/policy` 2026-09-30; reversed 2026-10-05 after dogfooding — bare `/help` lists every command again, since the short list hid `/tools`, `/models`, `/docs` and `/config` from the person looking for them)
 Five commands a person needs — `/memory`, `/skills`, `/policy`, `/trace`, `/help` — listed by
 default; `/confidence`, `/privacy`, `/notify`, `/mcp`, `/models`, `/config`, `/docs`, `/undo`
 behind `/help --all`. Nothing is removed; the first screen stops looking like an audit console.

@@ -42,24 +42,24 @@ def test_groups_are_alphabetical_and_bounded():
 
 # --- the rendered listing ----------------------------------------------------------------------
 
-def test_bare_help_is_the_diet(capsys):
-    """pivot #11: the first screen lists the everyday commands only; every other command stays
-    registered and one flag away. Nothing on the diet may be a command that does not exist."""
-    from commands.system import _DAILY
-
-    assert set(_DAILY) <= set(COMMANDS)
+def test_bare_help_lists_every_command(capsys):
+    """Dogfooding 2026-10-05: the short list hid commands a person went looking for (/tools,
+    /models, /docs, /config). Bare /help is the whole grouped listing; `--all` stays accepted
+    and prints the same thing."""
     dispatch("/help", _ctx())
-    out = capsys.readouterr().out
-    for name in _DAILY:
-        assert f"/{name}" in out
-    for hidden in ("mcp", "models", "update", "privacy"):
-        assert f"/{hidden}" not in out
-    assert "--all" in out
-    assert "posture" not in out  # the trust map is the auditor's view
+    bare = capsys.readouterr().out
+    for name in COMMANDS:
+        assert f"/{name}" in bare, name
+    for group, _names in _GROUPS:
+        assert group in bare
+    assert "posture" in bare and "more (" not in bare
+    for spelling in ("/help --all", "/help -a", "/h"):
+        dispatch(spelling, _ctx())
+        assert capsys.readouterr().out == bare, spelling
 
 
 def test_help_renders_groups_map_and_no_dead_legend(capsys):
-    dispatch("/help --all", _ctx())
+    dispatch("/help", _ctx())
     out = capsys.readouterr().out
     assert "* = scaffolded" not in out  # the dead legend is gone
     for group, _names in _GROUPS:

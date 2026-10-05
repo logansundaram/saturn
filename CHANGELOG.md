@@ -29,6 +29,30 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
 - **`/tools` opens on the toolkits**, not the flat list of every tool. The flat list is
   `/tools --all`, grouped by toolkit. `/policy risk` still lists and sets the tier of a tool
   whose toolkit is off.
+- **`/help` lists every command.** The short everyday list hid the commands people went
+  looking for (`/tools`, `/models`, `/docs`, `/config`); bare `/help` is now the full listing by
+  theme. `/help --all` still works and prints the same thing.
+- **Saturn names the command when the thing you asked for is yours to do.** It cannot delete a
+  remembered fact or change what is in the knowledge base, and used to answer "I can't" — or
+  ask which RAG framework you use. Now it says what to type: `/memory remove 1`, `/docs add
+  <path>`, `/docs remove <name>`.
+- **`/memory remove <n>`** is the documented way to delete a fact, beside `/memory add` — the
+  same pair `/docs` uses. Every hint Saturn prints says `remove` (`remembered #12: … ·
+  /memory remove 12 undoes it`), and the confirmation reads `removed:`. `/memory forget <n>`
+  and the other removal verbs still work.
+
+### Fixed
+
+- **Saturn no longer spins on a call it was already refused.** Asked for something no tool
+  does ("remove the memory of my name"), a small model could issue the same refused call over
+  and over — thirteen times in one turn — until the pass budget ran out, which looked like a
+  hang. Now the first refusal is the warning: the same call issued again, unchanged, ends the
+  tool phase and Saturn answers with what it has. A different call after a refusal still runs.
+- **A setting newer than your `config.yaml` can be saved.** `config.yaml` is written once, so
+  a setting added to Saturn later had no line in it: `/think fast` applied for the session and
+  could not be kept, and `/config` called the key unknown. Saving such a setting now adds its
+  line at the end of its section (`think: fast` under `runtime:`) and changes nothing else in
+  the file. A key Saturn does not know is still never written.
 
 ## [0.2.0] — 2026-10-05
 

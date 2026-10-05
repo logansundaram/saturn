@@ -96,9 +96,9 @@ def _think(ctx, args):
     try:
         _print(f"  saved to {persist(_KEY).name}")
     except KeyError:
-        # A config.yaml seeded before the key existed has no line to edit (persist rewrites one
-        # existing line; it never adds one).
-        _print(f"  set for this session — config.yaml has no `think:` line under `runtime:` to "
-               f"update. Add `think: {level}` there to keep it.")
+        # persist adds the line to a config.yaml seeded before the key existed; what is left
+        # is a file with no `runtime:` section to add it to.
+        _print(f"  set for this session — config.yaml has no `runtime:` section to save it in. "
+               f"Add `think: {level}` under `runtime:` to keep it.")
     except Exception as exc:
         _print(f"  set for this session, but saving failed: {exc}")

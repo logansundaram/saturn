@@ -94,7 +94,7 @@ def _egress_slice(mark: int) -> list[dict]:
 def _replaced_fact(args) -> "dict | None":
     """The stored fact a `remember(replaces=…)` is about to retire, read BEFORE the call so the
     note after the answer can show what was removed (the tool's report is clipped to a
-    preview, and `/memory forget` on the new fact does not bring the old one back)."""
+    preview, and `/memory remove` on the new fact does not bring the old one back)."""
     raw = (args or {}).get("replaces") if isinstance(args, dict) else None
     if raw in (None, "", 0):
         return None

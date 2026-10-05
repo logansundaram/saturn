@@ -394,9 +394,9 @@ def test_the_after_answer_note_names_each_auto_learned_fact_and_the_undo():
         {"name": "remember", "args": {"fact": "gated one"}, "ok": True},
     ]}
     assert _auto_memory_notes(state) == [
-        "remembered #7: User is vegetarian — you said it · /memory forget 7 undoes it",
+        "remembered #7: User is vegetarian — you said it · /memory remove 7 undoes it",
         'remembered #9: User lives in Berlin (replaced #2 "User lives in Paris") — you said it · '
-        "/memory forget 9 removes the new fact",
+        "/memory remove 9 removes the new fact",
     ]
     assert _auto_memory_notes({}) == []
 
@@ -677,8 +677,8 @@ def test_the_after_answer_note_names_a_similar_stored_fact():
          "auto_memory_similar": [{"id": 1, "text": "I live in Paris"}],
          "result": "Remembered #2 (user): 'User lives in Berlin'"}]}
     assert _auto_memory_notes(state) == [
-        "remembered #2: User lives in Berlin — you said it · /memory forget 2 undoes it",
-        '  similar: #1 "I live in Paris" — /memory forget 1 if that is no longer true',
+        "remembered #2: User lives in Berlin — you said it · /memory remove 2 undoes it",
+        '  similar: #1 "I live in Paris" — /memory remove 1 if that is no longer true',
     ]
 
 
@@ -706,7 +706,7 @@ def test_memory_add_names_a_similar_stored_fact(isolated_paths, capsys):
     ctx = CommandContext(state={"messages": []}, make_initial_state=dict, db_path="")
     _memory(ctx, ["add", "I", "live", "in", "Berlin"])
     out = capsys.readouterr().out
-    assert 'similar: #1 "I live in Paris" — /memory forget 1 if that is no longer true' in out
+    assert 'similar: #1 "I live in Paris" — /memory remove 1 if that is no longer true' in out
 
 
 # ── R1/R2: the session review reads only the conversation's own words ──────────────────────
@@ -899,7 +899,7 @@ def test_the_note_shows_the_fact_a_replacement_removed(isolated_paths):
     assert ev["auto_memory_replaced"] == {"id": 1, "text": "I live in Paris"}
     assert _auto_memory_notes({"tool_events": [ev]}) == [
         'remembered #2: User lives in Berlin (replaced #1 "I live in Paris") — you said it · '
-        "/memory forget 2 removes the new fact"]
+        "/memory remove 2 removes the new fact"]
 
 
 def test_a_fact_already_stored_is_not_announced_as_new(isolated_paths):
@@ -1181,7 +1181,7 @@ def test_the_repl_keeps_the_auto_learned_events_of_a_turn_that_later_fails():
         {"name": "remember", "args": {"fact": "User likes tea"}, "auto_memory_known": 3}]})
     assert seen == ["agent", "tools"]            # the wrapped subscriber still runs
     assert _auto_memory_notes({"tool_events": learned}) == [
-        "remembered #7: User is vegetarian — you said it · /memory forget 7 undoes it",
+        "remembered #7: User is vegetarian — you said it · /memory remove 7 undoes it",
         "already remembered as #3: User likes tea"]
 
 

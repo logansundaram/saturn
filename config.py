@@ -395,11 +395,103 @@ def _set_yaml_scalar(text: str, dotted_key: str, value: Any) -> str:
     raise KeyError(f"{dotted_key} not found in config.yaml as an editable scalar")
 
 
+def _insert_yaml_scalar(text: str, dotted_key: str, value: Any) -> str:
+    """Return `text` (raw config.yaml) with a new `key: value` line added as the LAST line of
+    the section `dotted_key` belongs to, at its siblings' indentation; no existing line changes.
+    This is how a file written before a setting existed gains it. Raises KeyError when the
+    section is not in the file as a mapping (a whole missing section is append_block's job), when
+    the key is top-level, or when the section already holds the key; ValueError for a container."""
+    if isinstance(value, (dict, list)):
+        raise ValueError(f"{dotted_key} is a container, not a scalar — edit config.yaml by hand")
+    *parent, leaf = dotted_key.split(".")
+    if not parent:
+        raise KeyError(f"{dotted_key} not found in config.yaml as an editable scalar")
+
+    lines = text.splitlines(keepends=True)
+    stack: list[tuple[int, str]] = []
+    header = None  # (line index, indent) of the section's `key:` line
+    for i, raw in enumerate(lines):
+        m = _YAML_KEY_LINE.match(raw.rstrip("\n").rstrip("\r"))
+        if not m:
+            continue
+        indent = len(m.group(1))
+        while stack and stack[-1][0] >= indent:
+            stack.pop()
+        stack.append((indent, m.group(2).strip()))
+        if [k for _, k in stack] == parent:
+            content = m.group(3).strip()
+            if content and not content.startswith("#"):
+                break  # `runtime: 3` or `runtime: {}` — not a block a line can be added to
+            header = (i, indent)
+            break
+    if header is None:
+        raise KeyError(f"{'.'.join(parent)} is not a section in config.yaml — {dotted_key} "
+                       "cannot be added to it")
+
+    at, indent = header
+    last, child_indent = at, None
+    for j in range(at + 1, len(lines)):
+        body = lines[j].rstrip("\n").rstrip("\r")
+        strip = body.strip()
+        if not strip or strip.startswith("#"):
+            continue  # blank/comment lines say nothing about nesting
+        line_indent = len(body) - len(body.lstrip())
+        if child_indent is None and (strip == "-" or strip.startswith("- ")):
+            raise KeyError(f"{'.'.join(parent)} is a list in config.yaml — edit it by hand")
+        if line_indent <= indent:
+            break
+        if child_indent is None:
+            child_indent = line_indent
+        if line_indent == child_indent:
+            m = _YAML_KEY_LINE.match(body)
+            if m and m.group(2).strip() == leaf:
+                raise KeyError(f"{dotted_key} is already in config.yaml, not as an editable "
+                               "scalar")
+        last = j
+
+    eol = "\r\n" if "\r\n" in text else "\n"
+    if not lines[last].endswith(("\n", "\r")):
+        lines[last] += eol  # the section ends the file, with no final newline
+    pad = " " * (child_indent if child_indent is not None else indent + 2)
+    lines.insert(last + 1, f"{pad}{leaf}: {_dump_scalar(value)}{eol}")
+    return "".join(lines)
+
+
+def _template_path() -> "Path | None":
+    """The tracked template this install seeds config.yaml from (clone: beside the code; wheel:
+    the packaged copy), None when neither is there."""
+    for path in (Path(__file__).parent / "config.default.yaml",
+                 Path(sys.prefix) / "share" / "saturn" / "config.default.yaml"):
+        if path.exists():
+            return path
+    return None
+
+
+def in_template(dotted_key: str) -> bool:
+    """Whether the template declares `dotted_key` as a scalar setting. A config.yaml is seeded
+    once, so a setting added to the template later is missing from it: this is what tells that
+    setting (persist adds its line) from a typo (never written)."""
+    path = _template_path()
+    if path is None or not dotted_key:
+        return False
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            node = yaml.safe_load(fh) or {}
+    except (OSError, yaml.YAMLError):
+        return False
+    for part in dotted_key.split("."):
+        if not isinstance(node, dict) or part not in node:
+            return False
+        node = node[part]
+    return not isinstance(node, (dict, list))
+
+
 def persist(dotted_key: str) -> Path:
     """Write the current in-memory value of `dotted_key` back to config.yaml in place (comments and
     layout preserved) so it survives a restart. Returns the config path. Covers the scalar leaves a
     user actually tunes — the runtime knobs, `active_tier`, the web/shell settings, the paths.
-    Deeper structural edits belong in the file or `/models`."""
+    A setting the file predates (the template has it, the file's section does not) gains its
+    line. Deeper structural edits belong in the file or `/models`."""
     value = get_config().get(dotted_key)
     # newline="" both ways: read_text's universal-newline mode would fold CRLF to \n before
     # _set_yaml_scalar captures each line's ending, and write_text would then re-expand every
@@ -410,7 +502,15 @@ def persist(dotted_key: str) -> Path:
     # The edit is computed BEFORE the file is opened for writing: _set_yaml_scalar raises for a
     # key the file does not hold (or a container), and opening with "w" first would leave
     # config.yaml empty when it did.
-    edited = _set_yaml_scalar(text, dotted_key, value)
+    try:
+        edited = _set_yaml_scalar(text, dotted_key, value)
+    except KeyError:
+        # Add the line only for one of the template's own settings (a typo must not become a
+        # line in the file) that this session actually holds (an unset key has nothing to save).
+        unset = object()
+        if get_config().get(dotted_key, unset) is unset or not in_template(dotted_key):
+            raise
+        edited = _insert_yaml_scalar(text, dotted_key, value)
     with open(_CONFIG_PATH, "w", encoding="utf-8", newline="") as fh:
         fh.write(edited)
     return _CONFIG_PATH

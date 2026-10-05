@@ -72,6 +72,14 @@ ALREADY_DECLINED_TEXT = ("Not executed: the user already declined this exact cal
                          "Do not retry it — tell the user it was not done.")
 STALL_TEXT = ("Not executed: this exact call was already made twice this turn and its outcome "
               "is above. Do not repeat it — answer from what you have, or do something different.")
+# The stop: a call this node already refused, issued again unchanged with nothing changed in
+# between. Worded like the budget refusal, which the 4b obeyed on the run where it ignored the
+# stall refusal thirteen times (2026-10-05, run 68).
+STUCK_TEXT = ("Not executed: this call was already refused and you issued it again unchanged, "
+              "so no further tool call will run this turn. Answer now from what you have, and "
+              "state plainly what was not done.")
+STUCK_NOTE = ("You repeated a call that had already been refused, so no further tool call will "
+              "run this turn. Answer now from what you have, and state plainly what was not done.")
 ASK_ALONE_TEXT = ("Not executed: ask_user must be called on its own. Ask the question first; act "
                   "on the answer in your next turn.")
 MALFORMED_NOTE = ("Your previous reply was not a valid tool call (its arguments were not valid "
@@ -105,6 +113,9 @@ INCIDENTS_NOTE_HEADER = "Note — the following could not be completed:"
 # A call may repeat once (a re-read is legitimate); the third identical call with nothing
 # changed in between is a loop.
 STALL_REPEATS = 2
+# The stamp on a ToolMessage this node wrote itself (a hygiene refusal, the cap, the stop): the
+# call did not run and was not put to the user. A tool's own failure carries no such stamp.
+ANSWERED_KEY = "saturn_answered"
 _INCIDENT_STATUSES = ("skipped", "blocked", "error")
 # Long enough for a whole remedy: an error that says what to do (grant Full Disk Access …, 186
 # characters) is the user's next step, and 160 cut it at "Full Disk…" (2026-10-02, run 45).
@@ -136,6 +147,38 @@ def _rounds(this_turn: list) -> list:
             status = (getattr(m, "additional_kwargs", None) or {}).get("saturn_status") or "done"
             out.append((_call_key(name, args), name, args, status, str(m.content)))
     return out
+
+
+def _answer(call: dict, text: str, status: str = "error") -> ToolMessage:
+    """The ToolMessage that answers `call` here instead of running it."""
+    return ToolMessage(content=text, tool_call_id=call["id"], name=str(call.get("name") or ""),
+                       additional_kwargs={"saturn_status": status, ANSWERED_KEY: True})
+
+
+def _answered_since_change(this_turn: list) -> set:
+    """The keys of the calls this node answered itself since anything last changed — since the
+    last call that ran or was put to the user, or the user's last word. A pass that issues only
+    these again has been told, and nothing it could learn from has happened since."""
+    keys = {tc.get("id"): _call_key(tc.get("name"), tc.get("args"))
+            for m in this_turn if isinstance(m, AIMessage)
+            for tc in getattr(m, "tool_calls", None) or []}
+    out: set = set()
+    for m in reversed(this_turn):
+        if isinstance(m, ToolMessage):
+            if not (getattr(m, "additional_kwargs", None) or {}).get(ANSWERED_KEY):
+                break
+            if m.tool_call_id in keys:
+                out.add(keys[m.tool_call_id])
+        elif not isinstance(m, AIMessage):
+            break
+    return out
+
+
+def _stopped(this_turn: list) -> bool:
+    """Whether the turn stands at the stop: its last message is the STUCK_TEXT answer. A steer
+    typed after it reopens the turn."""
+    last = this_turn[-1] if this_turn else None
+    return isinstance(last, ToolMessage) and str(last.content) == STUCK_TEXT
 
 
 # ── the prompt ────────────────────────────────────────────────────────────────────────────────
@@ -482,8 +525,7 @@ def _hygiene(call: dict, rounds: list, malformed: bool = False,
     name = str(call.get("name") or "")
 
     def refuse(text, status="error"):
-        return call, ToolMessage(content=text, tool_call_id=call["id"], name=name,
-                                 additional_kwargs={"saturn_status": status})
+        return call, _answer(call, text, status)
 
     # Before everything else: a tool whose toolkit is off is not "unknown", and nothing about
     # its arguments matters.
@@ -569,11 +611,12 @@ def incidents(this_turn: list) -> list:
     and worded for the user (the observations are written for the model). One line per
     distinct call: a declined call the model re-issued is one incident, not two. A call's LAST
     outcome decides — one that failed and then ran when re-issued is not an incident. The stall
-    guard's and the cap's refusals are not outcomes: a stalled call already ran twice, and those
-    runs are what happened to it; a call refused at the cap is reported as not run, unless the
+    guard's, the stop's and the cap's refusals are not outcomes: a stalled call already ran
+    twice, and those runs are what happened to it; a call answered with the stop is reported by
+    the refusal it repeated; a call refused at the cap is reported as not run, unless the
     same call did run earlier in the turn. A call into a toolkit that is off is worded as
     that, with the switch."""
-    rounds = [r for r in _rounds(this_turn) if r[4] != STALL_TEXT]
+    rounds = [r for r in _rounds(this_turn) if r[4] not in (STALL_TEXT, STUCK_TEXT)]
     last = {key: status for key, _n, _a, status, obs in rounds if obs != BUDGET_TEXT}
     out = []
     seen: set = set()
@@ -660,20 +703,26 @@ def agent_node(state: AgentState):
     # 4. generate — a malformed model output is retried once, then answered honestly; any
     # other failure propagates (the REPL reports "Turn failed").
     this_turn = _this_turn(messages + new)
-    kind = _think.step_kind(this_turn, capped, mechanical=(ASK_ALONE_TEXT,))
+    # The repeat bound has the cap's two steps, pass count aside: the stop (step 5) answered
+    # the last pass, so this one is past the budget whatever its number — no call it makes runs.
+    stopped = _stopped(this_turn)
+    spent = iteration > cap or stopped
+    kind = _think.step_kind(this_turn, capped or stopped, mechanical=(ASK_ALONE_TEXT,))
     decision = _think.decide(_think.level(state), kind, _think.policy(), _think.supported())
     if _think.gave_up(state.get("think")):  # a thinking call failed this turn: not asked again
         decision = _think.Decision(False, False, decision.why)
     llm_input = _llm_input(state, messages + new)
     ai, thinking = _run_pass(llm_input, decision)
-    if ai is not None and iteration > cap and _calls_of(ai)[0]:
+    if ai is not None and spent and _calls_of(ai)[0]:
         # The hard stop: the model was told its calls will not run and called again. Take the
         # tools away — the one pass that pays a full re-prefill (the system section changes),
         # which is why it is the last resort and not the cap itself. The budget note rides the
         # prompt only (never state: a HumanMessage there would read as a new turn boundary).
-        diag.log("agent_node : calls again past the budget refusal — rerunning with tools unbound")
+        diag.log("agent_node : calls again past the "
+                 f"{'stop' if stopped else 'budget refusal'} — rerunning with tools unbound")
         _retract_stream()
-        ai = _generate_or_retry(_llm_input(state, messages + new, [HumanMessage(content=BUDGET_NOTE)]),
+        note = STUCK_NOTE if stopped else BUDGET_NOTE
+        ai = _generate_or_retry(_llm_input(state, messages + new, [HumanMessage(content=note)]),
                                 tools=False, think=False)
         _take_thought(ai)
     # One think record per pass (core.think.entry): what kind of step it was, whether it
@@ -694,7 +743,7 @@ def agent_node(state: AgentState):
     updates["context_tokens"] = extract_prompt_tokens(stats)
 
     calls, malformed = _calls_of(ai)
-    if not calls or iteration > cap:
+    if not calls or spent:
         # 6. the answer
         final = AIMessage(content=_with_trailers(ai.content, state, this_turn),
                           response_metadata=ai.response_metadata,
@@ -710,13 +759,20 @@ def agent_node(state: AgentState):
     kept, replies = [], []
     for call in calls:
         if capped:  # the budget is spent: nothing runs, whatever the call is
-            fixed, reply = call, ToolMessage(content=BUDGET_TEXT, tool_call_id=call["id"],
-                                             name=str(call.get("name") or ""),
-                                             additional_kwargs={"saturn_status": "error"})
+            fixed, reply = call, _answer(call, BUDGET_TEXT)
         else:
             fixed, reply = _hygiene(call, rounds, malformed=call["id"] in malformed, provenance=prov)
         kept.append(fixed)
         replies.append(reply)
+    # The repeat bound: every call in the pass was answered here, and each is one this node
+    # already answered with nothing changed since. Answering it the same way again is how a
+    # turn spends its whole budget on refusals — the stop ends the tool phase instead. The pass
+    # stays an ordinary bound one, like the cap's; the next pass answers (or loses its tools).
+    if not capped and all(r is not None for r in replies) and (
+            {_call_key(c.get("name"), c.get("args")) for c in kept}
+            <= _answered_since_change(this_turn)):
+        diag.log("agent_node : a refused call issued again unchanged — the stop")
+        replies = [_answer(c, STUCK_TEXT) for c in kept]
     # ask_user runs ALONE: its interrupt re-executes the tools node from the top on resume, so
     # any sibling would run twice (an approved write, a second draft). The first question is
     # kept; every other call in the pass is answered here with "ask first".
@@ -725,9 +781,7 @@ def agent_node(state: AgentState):
     if first_ask is not None:
         for i, (c, r) in enumerate(zip(kept, replies)):
             if r is None and c is not first_ask:
-                replies[i] = ToolMessage(content=ASK_ALONE_TEXT, tool_call_id=c["id"],
-                                         name=str(c.get("name") or ""),
-                                         additional_kwargs={"saturn_status": "error"})
+                replies[i] = _answer(c, ASK_ALONE_TEXT)
     answered = [r for r in replies if r is not None]
     ai = AIMessage(content=ai.content, tool_calls=kept, response_metadata=ai.response_metadata,
                    usage_metadata=ai.usage_metadata)

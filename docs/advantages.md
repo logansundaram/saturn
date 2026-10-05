@@ -66,8 +66,9 @@ The audience is people who live in a terminal. Lean into what that gives:
 - **It is fast to start and cheap to keep open.** Import time is under a second; the model stays
   loaded between turns. A launch brief (pivot #6) turns "open the terminal" into "here is your
   day".
-- **It no longer looks like an audit console.** Since 2026-09-28 bare `/help` lists five
-  commands and the auditor's ones sit behind `/help --all` (pivot #11).
+- **It no longer looks like an audit console.** From 2026-09-28 bare `/help` listed five
+  commands with the auditor's ones behind `/help --all` (pivot #11); dogfooding reversed that
+  on 2026-10-05 — the short list hid commands people went looking for, so `/help` lists them all.
 - **It is yours to shape the way Claude Code is.** A global `SATURN.md` and hooks shipped (pivot
   #7, #10) and any Shortcut is a tool (`run_shortcut`, the Mac-native half of #9); markdown
   skills (#8) and script-file tools are still open. Same file formats, same vocabulary, pointed at a life instead of a
@@ -90,7 +91,7 @@ What is missing is the *rate* at which it learns:
 - **Facts the user states in their own words should land without a click** (pivot #4). "I'm
   vegetarian", "Petra is my manager", "my lease ends in March" come from the trusted principal
   and go straight to `user` / `entities` / `commitments` with `by=user`; the rail shows a one-line
-  `· remembered: …` leaf and `/memory forget` undoes it. Only *inferred* facts and compaction
+  `· remembered: …` leaf and `/memory remove` undoes it. Only *inferred* facts and compaction
   summaries keep the review queue. A tool result must never plant a memory; that gate stays.
 - **The first run should be an interview, not a model picker** (pivot #5). Five questions, and
   the second turn already knows who it is talking to.

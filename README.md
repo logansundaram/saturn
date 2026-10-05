@@ -125,7 +125,7 @@ would look for it)
   (`remember` / `recall`), open commitments, dated notes, what it learned about this machine, the
   people and projects in your life, and what not to do again. Loaded selectively each turn under
   one cap, every fact carries the run it came from. What you tell it in your own words is kept
-  without a prompt (a `remembered #n` line after the answer; `/memory forget n` undoes it); a fact
+  without a prompt (a `remembered #n` line after the answer; `/memory remove n` undoes it); a fact
   whose words came from a web page, a mail or a file still asks, and what it infers waits for a
   review screen (`/memory review`). A password, a card number or a key in a recognisable form is
   refused.
@@ -367,12 +367,11 @@ missing.
 
 ## Useful commands
 
-Type `/help` for the everyday five, `/help --all` for every command, or `/<command> --help`
-for details on any one. Highlights:
+Type `/help` for every command, or `/<command> --help` for details on any one. Highlights:
 
 | Command | What it does |
 |---|---|
-| `/help` | The commands you need day to day; `/help --all` lists every command by theme, opening with the trust-stack map (posture · activity · record); `/help <cmd>` details one. |
+| `/help` | Every command by theme, opening with the trust-stack map (posture · activity · record); `/help <cmd>` details one. |
 | `/models` | The model page: your hardware, the qwen ladder (four chat sizes + three embedders) priced against it — fit and estimated speed — pick a row to switch, pulling what's missing on consent. |
 | `/config` | View/edit settings (`/config runtime.num_ctx <size|auto>` resizes the context window). |
 | `/docs` | The knowledge base: list documents, `add <path>`, `remove <name>`, `rebuild` (launch syncs on its own). |

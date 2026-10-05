@@ -153,7 +153,7 @@ memory:
   # come from one sentence you typed and stated (not asked), and nothing from outside (a web
   # page, mail, a file, an attachment) has entered the conversation, in this turn or an earlier
   # one. Anything else still asks at the gate, which says why. The answer ends with a
-  # `remembered #n` line; /memory forget <n> undoes it. false: every remember asks.
+  # `remembered #n` line; /memory remove <n> undoes it. false: every remember asks.
   # Headless runs (-p / -q) never auto-learn.
   auto_learn: true
 

@@ -238,6 +238,16 @@ def test_every_sentence_a_toolkit_owns_occurs_exactly_once_in_the_literal():
     assert messages._AGENT_SYS.count("\n\nRules:") == 1
 
 
+def test_the_prompt_names_the_commands_only_the_user_can_run():
+    """Dogfooding 2026-10-05 (runs 65, 68): asked to delete a memory or add a file to the RAG
+    corpus — neither has a tool — the model answered "I can't" or asked which RAG framework
+    was in use. The prompt names the command the user types instead, as it does for /add-dir,
+    and keeps naming it whatever is turned off (the commands do not depend on a toolkit)."""
+    for text in (_sys(), _sys("knowledge"), _sys(*SWITCHABLE)):
+        assert "/memory remove <n>" in text
+        assert "/docs add <path>" in text and "/docs remove <name>" in text
+
+
 @pytest.mark.parametrize("key", SWITCHABLE)
 def test_the_prompt_never_names_a_tool_whose_toolkit_is_off(key):
     from tools import registry

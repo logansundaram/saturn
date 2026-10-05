@@ -123,7 +123,7 @@ def test_legacy_flat_file_reads_as_user_layer_and_migrates_on_write(mem):
     )
     ents = mr.entries()
     assert [e["layer"] for e in ents] == ["user", "user"]
-    # Provisional ids on READ (so /memory forget 2 addresses what the listing showed) — but a
+    # Provisional ids on READ (so /memory remove 2 addresses what the listing showed) — but a
     # read never writes: the file is byte-identical until the next write persists them.
     assert [e["id"] for e in ents] == [1, 2]
     assert "{#" not in mr._read_raw() and "## user" not in mr._read_raw()
@@ -276,6 +276,23 @@ def test_remember_tool_passes_layer_replaces_and_run_provenance(mem, monkeypatch
     assert mr.entries()[-1]["run"] is None
     assert "Petra" in recall.invoke({"query": "manager"})
     assert recall.invoke({"query": "zzz"}) == "No matching facts in persistent memory."
+
+
+def test_recall_says_who_deletes_a_fact(isolated_paths):
+    """Dogfooding 2026-10-05 (runs 67, 68): asked to delete a fact, the 4b read it and then had
+    nowhere to go — no tool deletes one. The system prompt names the command, which the 9b
+    follows; the 4b follows it only when the line sits in the result it just read (measured:
+    0 of 4 replays named the command without this line, 3 of 4 with it). Facts come first,
+    each on its own line as before; nothing is added when there is nothing to delete."""
+    from stores.memory_registry import add_memory
+    from tools.knowledge import RECALL_NOTE, recall
+
+    add_memory("my name is logan")
+    out = recall.invoke({"query": "name"})
+    lines = out.splitlines()
+    assert lines[0].startswith("- #1 ") and "my name is logan" in lines[0]
+    assert lines[1:] == [RECALL_NOTE] and "/memory remove <n>" in RECALL_NOTE
+    assert RECALL_NOTE not in recall.invoke({"query": "zzz"})
 
 
 def test_remember_is_by_user_only_when_a_human_approved_the_call(mem):

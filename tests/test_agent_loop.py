@@ -221,10 +221,15 @@ def _state(msgs, **kw):
     return s
 
 
-def _round(name, args, cid, content="hello", status="done"):
+def _round(name, args, cid, content="hello", status="done", answered=False):
+    """One call and its observation. `answered`: the agent node answered the call itself (a
+    hygiene refusal) — the stamp its own ToolMessages carry — instead of the call running."""
+    stamp = {"saturn_status": status}
+    if answered:
+        from nodes.agent import ANSWERED_KEY
+        stamp[ANSWERED_KEY] = True
     return [AIMessage(content="", tool_calls=[_call(name, args, cid)]),
-            ToolMessage(content=content, tool_call_id=cid, name=name,
-                        additional_kwargs={"saturn_status": status})]
+            ToolMessage(content=content, tool_call_id=cid, name=name, additional_kwargs=stamp)]
 
 
 def test_agent_answers_directly_with_trailers(monkeypatch):
@@ -404,6 +409,215 @@ def test_stall_guard_counts_repeats_since_something_changed(monkeypatch):
              + _round("edit_file", {"file_path": "a.py", "old": "q", "new": "z"}, "c4", "Error: not found", "error"))
     out = agent.agent_node(_state(prior))
     assert out["messages"][-1].content == agent.STALL_TEXT
+
+
+# ── the repeat bound: a refused call issued again unchanged ───────────────────────────────────
+# Dogfooding 2026-10-05, runs 67 and 68: asked to delete a memory (no tool does that), the 4b
+# called recall(query='') 16 times. The stall guard refused the third call and every one after
+# it — 13 refusals, a model call each — and only the pass cap ended the turn.
+
+
+def _stalled(args, *more):
+    """read_file(args) ran twice and its third issue was refused by the stall guard."""
+    from nodes import agent
+
+    return ([HumanMessage(content="q")] + _round("read_file", args, "c1") + _round("read_file", args, "c2")
+            + _round("read_file", args, "c3", agent.STALL_TEXT, "error", answered=True) + list(more))
+
+
+def _emits(monkeypatch, *calls, seen=None):
+    from nodes import agent
+
+    def fake(llm_input, *, tools, think=False):
+        if seen is not None:
+            seen.append((tools, think, llm_input[-1].content))
+        return AIMessage(content="", tool_calls=list(calls))
+
+    monkeypatch.setattr(agent, "_generate", fake)
+
+
+def test_the_node_stamps_the_calls_it_answers_itself(monkeypatch):
+    from nodes import agent
+
+    args = {"file_path": "a"}
+    prior = [HumanMessage(content="q")] + _round("read_file", args, "c1") + _round("read_file", args, "c2")
+    _emits(monkeypatch, _call("read_file", args, "c3"), _call("nope", {}, "c4"))
+    out = agent.agent_node(_state(prior))
+    assert [m.additional_kwargs.get(agent.ANSWERED_KEY) for m in out["messages"][-2:]] == [True, True]
+    # the cap's refusals too
+    _emits(monkeypatch, _call("read_file", {"file_path": "b"}, "c5"))
+    out = agent.agent_node(_cap_state())
+    assert out["messages"][-1].additional_kwargs.get(agent.ANSWERED_KEY) is True
+
+
+def test_a_refused_call_issued_again_unchanged_closes_the_turn(monkeypatch):
+    """The refusal was the warning. The same call again, with nothing changed since, is answered
+    with the stop — on an ordinary bound pass, so the cached prefix holds — and routes back for
+    the answer."""
+    from nodes import agent
+
+    args = {"file_path": "a"}
+    seen = []
+    _emits(monkeypatch, _call("read_file", args, "c4"), seen=seen)
+    out = agent.agent_node(_state(_stalled(args)))
+    last = out["messages"][-1]
+    assert last.content == agent.STUCK_TEXT and last.tool_call_id == "c4"
+    assert last.additional_kwargs == {"saturn_status": "error", agent.ANSWERED_KEY: True}
+    assert seen[0][0] is True and len(seen) == 1
+    assert agent.route_after_agent({"messages": out["messages"]}) == "agent"
+
+
+def test_after_the_stop_a_text_answer_is_the_answer(monkeypatch):
+    from nodes import agent
+
+    args = {"file_path": "a"}
+    stopped = _stalled(args, *_round("read_file", args, "c4", agent.STUCK_TEXT, "error", answered=True))
+    seen = {}
+
+    def fake(llm_input, *, tools, think=False):
+        seen.update(tools=tools, think=think)
+        return AIMessage(content="I read a twice; that is all I can do.")
+
+    monkeypatch.setattr(agent, "_generate", fake)
+    out = agent.agent_node(_state(stopped, iteration=4))
+    assert seen == {"tools": True, "think": False}           # still the cached prefix; never thinks
+    assert out["think"][0]["kind"] == "capped"
+    final = out["messages"][-1].content
+    assert final.startswith("I read a twice")
+    # the read succeeded twice: neither refusal is that call's outcome
+    assert agent.INCIDENTS_NOTE_HEADER not in final
+    assert agent.route_after_agent({"messages": out["messages"]}) == "end"
+
+
+def test_after_the_stop_a_model_that_still_calls_gets_the_tools_taken_away(monkeypatch):
+    from nodes import agent
+
+    args = {"file_path": "a"}
+    stopped = _stalled(args, *_round("read_file", args, "c4", agent.STUCK_TEXT, "error", answered=True))
+    seen = []
+
+    def fake(llm_input, *, tools, think=False):
+        seen.append((tools, llm_input[-1].content))
+        if tools:
+            return AIMessage(content="", tool_calls=[_call("read_file", args, "c5")])
+        return AIMessage(content="partial")
+
+    monkeypatch.setattr(agent, "_generate", fake)
+    out = agent.agent_node(_state(stopped, iteration=4))
+    assert [t for t, _ in seen] == [True, False] and seen[1][1] == agent.STUCK_NOTE
+    final = out["messages"][-1]
+    assert final.content.startswith("partial") and not getattr(final, "tool_calls", None)
+    assert agent.route_after_agent({"messages": out["messages"]}) == "end"
+
+
+def test_a_different_call_after_a_refusal_is_not_a_repeat(monkeypatch):
+    """"Do something different" is an offer: a new call runs, and so does a pass that mixes the
+    refused call with a new one (the refused one gets its ordinary answer again)."""
+    from nodes import agent
+
+    args = {"file_path": "a"}
+    _emits(monkeypatch, _call("read_file", {"file_path": "b"}, "c4"))
+    out = agent.agent_node(_state(_stalled(args)))
+    assert agent.route_after_agent({"messages": out["messages"]}) == "approval"
+
+    _emits(monkeypatch, _call("read_file", args, "c4"), _call("read_file", {"file_path": "b"}, "c5"))
+    out = agent.agent_node(_state(_stalled(args)))
+    assert [m.content for m in out["messages"][1:]] == [agent.STALL_TEXT]
+    assert agent.route_after_agent({"messages": out["messages"]}) == "approval"
+
+
+def test_the_repeat_bound_counts_from_the_last_thing_that_changed(monkeypatch):
+    """A call that ran since the refusal, or a steer from the user, is new ground: the same
+    call again gets its ordinary answer, not the stop."""
+    from core.state import STEER_PREFIX
+    from nodes import agent
+
+    args = {"file_path": "a"}
+    _emits(monkeypatch, _call("read_file", args, "c9"))
+    ran = _stalled(args, *_round("list_directory", {"directory": "."}, "c4"))
+    out = agent.agent_node(_state(ran))
+    assert out["messages"][-1].content == agent.STALL_TEXT
+
+    steered = _stalled(args, HumanMessage(content=STEER_PREFIX + "read it once more"))
+    out = agent.agent_node(_state(steered))
+    assert out["messages"][-1].content == agent.STALL_TEXT
+
+    # and a steer after the stop reopens the turn
+    reopened = _stalled(args, *_round("read_file", args, "c4", agent.STUCK_TEXT, "error", answered=True),
+                        HumanMessage(content=STEER_PREFIX + "read b instead"))
+    _emits(monkeypatch, _call("read_file", {"file_path": "b"}, "c9"))
+    out = agent.agent_node(_state(reopened, iteration=4))
+    assert agent.route_after_agent({"messages": out["messages"]}) == "approval"
+
+
+def test_the_repeat_bound_covers_every_refusal_the_node_gives(monkeypatch):
+    """Not only the stall guard: an unknown tool called again, or a call the user declined
+    issued a third time, is the same loop."""
+    from nodes import agent
+    from nodes.approval import DECLINE_TEXT
+
+    unknown = agent.UNKNOWN_TOOL_TEXT.format(name="forget_memory")
+    prior = [HumanMessage(content="q")] + _round("forget_memory", {"id": 1}, "c1", unknown, "error",
+                                                 answered=True)
+    _emits(monkeypatch, _call("forget_memory", {"id": 1}, "c2"))
+    out = agent.agent_node(_state(prior))
+    assert out["messages"][-1].content == agent.STUCK_TEXT
+    # different arguments are a different call: it gets the ordinary refusal
+    _emits(monkeypatch, _call("forget_memory", {"id": 2}, "c2"))
+    out = agent.agent_node(_state(prior))
+    assert out["messages"][-1].content == unknown
+
+    args = {"file_path": "x", "content": "y"}
+    declined = ([HumanMessage(content="q")] + _round("write_file", args, "c1", DECLINE_TEXT, "skipped")
+                + _round("write_file", args, "c2", agent.ALREADY_DECLINED_TEXT, "skipped", answered=True))
+    _emits(monkeypatch, _call("write_file", args, "c3"))
+    out = agent.agent_node(_state(declined))
+    assert out["messages"][-1].content == agent.STUCK_TEXT
+
+
+def test_the_stop_is_not_reported_as_a_failed_call():
+    from nodes import agent
+
+    unknown = agent.UNKNOWN_TOOL_TEXT.format(name="forget_memory")
+    turn = ([HumanMessage(content="q")]
+            + _round("forget_memory", {"id": 1}, "c1", unknown, "error", answered=True)
+            + _round("forget_memory", {"id": 1}, "c2", agent.STUCK_TEXT, "error", answered=True))
+    # one line, worded from what actually happened to the call — never from the stop
+    assert agent.incidents(turn) == [f"forget_memory(id=1) — failed: {unknown}"]
+
+
+def test_a_model_that_only_repeats_one_read_ends_in_six_calls(isolated_paths, monkeypatch):
+    """Run 68 end to end: recall(query='') on every pass, whatever it is told. Two runs, the
+    stall refusal, the stop, then one pass that still calls and is rerun with the tools taken
+    away — six model calls where the pass cap allowed seventeen."""
+    from nodes import agent
+    from nodes.tools import tool_node
+
+    model_calls = []
+
+    def fake(llm_input, *, tools, think=False):
+        model_calls.append(tools)
+        if not tools:
+            return AIMessage(content="I cannot delete a memory; /memory remove 1 does.")
+        return AIMessage(content="", tool_calls=[_call("recall", {"query": ""}, f"c{len(model_calls)}")])
+
+    monkeypatch.setattr(agent, "_generate", fake)
+    _think_cfg(monkeypatch, think="fast")     # as on run 68: one model call per pass
+    state = _state([HumanMessage(content="memory forget 1")])
+    for _ in range(30):
+        out = agent.agent_node(state)
+        state = {**state, "iteration": out["iteration"], "messages": state["messages"] + out["messages"]}
+        where = agent.route_after_agent(state)
+        if where == "end":
+            break
+        if where == "approval":   # recall is read_only: the gate lets it through
+            state = {**state, "messages": state["messages"] + tool_node(state)["messages"]}
+    assert model_calls == [True, True, True, True, True, False]
+    observations = [m.content for m in state["messages"] if isinstance(m, ToolMessage)]
+    assert observations[2:] == [agent.STALL_TEXT, agent.STUCK_TEXT]
+    final = state["messages"][-1]
+    assert final.content.startswith("I cannot delete a memory") and not final.tool_calls
+    assert agent.INCIDENTS_NOTE_HEADER not in final.content
 
 
 def _cap_state(extra_passes=0, extra_msgs=()):
@@ -1197,7 +1411,9 @@ def test_a_refusal_that_echoes_an_invented_number_does_not_vouch_for_it(monkeypa
     monkeypatch.setattr(agent, "_generate", lambda i, *, tools, think=False: AIMessage(
         content="", tool_calls=[_call("read_messages", {"contact": number}, "c2")]))
     again = agent.agent_node(_state(prior + first))["messages"]
-    assert again[-1].content == agent.UNKNOWN_HANDLE_TEXT.format(handle=number)
+    # still refused — as the same call issued again unchanged, which is the stop
+    assert again[-1].content == agent.STUCK_TEXT
+    assert agent.route_after_agent({"messages": prior + first + again}) == "agent"
     # ... and in a later turn, with the refusal still in the history
     later = prior + first + [AIMessage(content="I could not find Ian."), HumanMessage(content="try again")]
     assert (agent.agent_node(_state(later))["messages"][-1].content
@@ -1215,7 +1431,8 @@ def test_a_refusal_that_echoes_an_invented_chat_ref_does_not_vouch_for_it(monkey
     monkeypatch.setattr(agent, "_generate", lambda i, *, tools, think=False: AIMessage(
         content="", tool_calls=[_call("read_messages", {"chat": "g7f3a2b"}, "c2")]))
     again = agent.agent_node(_state(prior + first))["messages"]
-    assert again[-1].content == agent.UNKNOWN_CHAT_TEXT.format(ref="g7f3a2b")
+    assert again[-1].content == agent.STUCK_TEXT
+    assert agent.route_after_agent({"messages": prior + first + again}) == "agent"
 
 
 def test_only_a_completed_call_is_provenance_but_a_failed_one_is_still_outside_content():

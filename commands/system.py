@@ -36,9 +36,8 @@ _GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("observability", ("mcp", "models", "tools", "trace")),
     ("system", ("config", "help", "notify", "quit", "update")),
 )
-# Bare /help lists only the commands a person needs on a Tuesday; everything else (the auditor's
-# and operator's surfaces) stays registered and listed by `/help --all`. Order is display order.
-_DAILY: tuple[str, ...] = ("memory", "skills", "policy", "think", "trace", "help", "quit")
+# Bare /help lists every command (since 2026-10-05: the short list hid commands people went
+# looking for). `--all` was the spelling for this listing and is still accepted.
 _ALL_FLAGS = {"--all", "-a", "all"}
 
 # The three-line trust-stack map /help opens with: where the boundary POSTURE is set, where the
@@ -61,11 +60,10 @@ def _names(cmd) -> str:
     "help",
     "List all slash commands by theme, or detail one.",
     aliases=("?", "h"),
-    usage="/help [--all | command]",
+    usage="/help [command]",
     details="""
-With no argument, lists the handful of commands a person needs day to day. `/help --all` opens
-with the trust-stack map (posture · activity · record) then lists EVERY command grouped by
-theme — nothing is hidden, only unlisted by default.
+With no argument, opens with the trust-stack map (posture · activity · record) then lists
+every command grouped by theme.
 
 With a command name, prints its detailed help — identical to `/<command> --help`. Renamed
 commands answer here too: `/help privacy` prints the same pointer as typing /privacy.
@@ -76,8 +74,7 @@ runs it). A mid-position token is data, so `/memory add prefer -h over --help in
 the fact.
 
 Examples:
-  /help              the everyday commands
-  /help --all        every command, grouped by theme
+  /help              every command, grouped by theme
   /help policy       detail one command
   /policy --help     same thing, the git-style way
 """,
@@ -98,15 +95,6 @@ def _help(ctx, args):
         return
 
     from tui import ui
-
-    if not show_all:
-        rows = [(_names(COMMANDS[n]), (COMMANDS[n].summary, "dim")) for n in _DAILY if n in COMMANDS]
-        more = len(COMMANDS) - len(rows)
-        ui.section("slash commands", "/help <command> details one · /help --all lists every command")
-        ui.table(rows)
-        _print(f"  {more} more (config, docs, models, mcp, …): /help --all")
-        _print("")
-        return
 
     ui.section("slash commands", "/help <command> or /<command> --help for details on one")
     ui.table(list(_TRUST_MAP), styles=("dim", "accent"))

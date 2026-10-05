@@ -71,6 +71,7 @@ The whole product is one loop. Reading it end to end explains 80% of the repo:
      person and a group or neither (`tools/messages.route_target`, which moves a target in the wrong slot),
      a repeat of a call the user declined this turn, a third
      identical call with nothing changed in between — each answered with an error ToolMessage back to the model;
+     a refused call issued again unchanged is answered with the stop (`STUCK_TEXT`): no further call runs and the next pass answers;
      `ask_user` runs alone — its siblings in the batch are answered with "ask first"). A message
      without tool calls is the answer: the Sources receipt and the incidents note (declined /
      blocked / failed calls, read off the ToolMessages' `saturn_status` stamp; a call's last

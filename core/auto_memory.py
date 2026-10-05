@@ -673,8 +673,8 @@ def similar_names(near) -> str:
 def similar_note(near) -> str:
     """The line under a write that landed beside a related fact, with the way to resolve it."""
     ids = [e["id"] for e in near]
-    tail = (f"/memory forget {ids[0]} if that is no longer true" if len(ids) == 1
-            else "/memory forget <n> if one is no longer true")
+    tail = (f"/memory remove {ids[0]} if that is no longer true" if len(ids) == 1
+            else "/memory remove <n> if one is no longer true")
     return f"similar: {similar_names(near)} — {tail}"
 
 

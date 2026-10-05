@@ -63,7 +63,7 @@ def test_memory_accepts_every_removal_verb(ctx, capsys, isolated_paths, verb):
     assert len(entries()) == 1
     _memory(ctx, [verb, "1"])
     assert entries() == []
-    assert "forgot:" in _out(capsys)
+    assert "removed:" in _out(capsys)
 
 
 def test_memory_remove_by_index_the_audit_inversion(ctx, capsys, isolated_paths):
@@ -77,7 +77,23 @@ def test_memory_remove_by_index_the_audit_inversion(ctx, capsys, isolated_paths)
     facts = entries()
     assert len(facts) == 2
     assert not any("fact three" in f["text"] for f in facts)
-    assert "forgot:" in _out(capsys)
+    assert "removed:" in _out(capsys)
+
+
+def test_memory_names_its_removal_verb_remove(ctx, capsys, isolated_paths):
+    """Dogfooding 2026-10-05: `/memory add` beside `/memory forget` read as two vocabularies.
+    The pair is add / remove, as in /docs; `forget` and the other removal verbs still work."""
+    from commands._framework import COMMANDS
+
+    for verb in ("remove", "forget"):
+        _memory(ctx, [verb])
+        assert "usage: /memory remove <n>" in _out(capsys)
+    _memory(ctx, ["bogus"])
+    assert "| remove <n> |" in _out(capsys)
+    cmd = COMMANDS["memory"]
+    assert "remove <n>" in cmd.usage and "forget <n>" not in cmd.usage
+    assert "/memory remove <n>" in cmd.details and "/memory forget <n>" not in cmd.details
+    assert "forget" in cmd.details      # still named as an accepted spelling
 
 
 @pytest.mark.parametrize("verb", REMOVE_VERBS)
@@ -400,6 +416,19 @@ def test_config_set_near_miss_key_warns_and_leaves_real_key(ctx, capsys, sandbox
     assert "did you mean runtime.auto_approve?" in out
     assert cfg.get("runtime.auto_approve") == before  # the real knob untouched
     assert "session only" not in out  # the warning REPLACES the success line
+
+
+def test_config_set_saves_a_setting_the_file_predates(ctx, capsys, sandboxed_config,
+                                                      recording_persist):
+    """A config.yaml seeded before a setting existed does not hold it, but it is a real setting
+    (the template has it): it sets and saves like any other, with no not-a-key warning."""
+    cfg = sandboxed_config
+    cfg._data["runtime"].pop("think", None)
+    _config(ctx, ["runtime.think", "deep"])
+    out = _out(capsys)
+    assert cfg.get("runtime.think") == "deep"
+    assert recording_persist == ["runtime.think"]
+    assert "was not an existing config key" not in out and "session" not in out
 
 
 def test_config_set_new_key_still_takes_effect(ctx, capsys, sandboxed_config):

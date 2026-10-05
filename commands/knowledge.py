@@ -204,7 +204,7 @@ def _sync(*, force: bool) -> None:
     "See, add, edit, and review the agent's persistent memory (the layered remember/recall store).",
     aliases=("mem",),
     usage="/memory [list [layer] | add [--layer L] [--replaces n] [--sens mark] <fact> | "
-          "edit <n> <text> | forget <n> | why <n> | review [--no-llm] | stale]",
+          "edit <n> <text> | remove <n> | why <n> | review [--no-llm] | stale]",
     details="""
 The transparency surface for durable memory. What is stored here quietly shapes every answer:
 the user layer and open commitments load into the agent's context EVERY turn, the recent memo
@@ -223,7 +223,7 @@ Layers:  user (identity, preferences, constraints) · commitments (open items, w
                              --sens <mark> marks it sensitive: withheld from any prompt bound
                              for a remote inference host, e.g. --sens health)
   /memory edit <n> <text>    rewrite fact n in place (keeps its id and provenance)
-  /memory forget <n>         delete fact n (any removal verb: forget/remove/rm/delete/del/drop;
+  /memory remove <n>         delete fact n (any removal verb: remove/rm/delete/del/forget/drop;
                              `done <n>` reads better for a finished commitment)
   /memory why <n>            provenance: when it was learned, who said it (you, or inferred
                              at a review), the run it came from (→ /trace why #run), last use,
@@ -249,7 +249,7 @@ def _memory(ctx, args):
     from tui import ui
 
     usage = ("  usage: /memory [list [layer] | add [--layer L] [--replaces n] [--sens mark] <fact> "
-             "| edit <n> <text> | forget <n> | why <n> | review [--no-llm] | stale]")
+             "| edit <n> <text> | remove <n> | why <n> | review [--no-llm] | stale]")
 
     if not args or is_list_verb(args[0]):
         _list_memory(mr, ui, args[1] if len(args) > 1 else None)
@@ -306,13 +306,13 @@ def _memory(ctx, args):
 
     if is_remove_verb(sub) or sub == "done":
         if len(args) < 2 or not _fact_id(args[1]):
-            _print("  usage: /memory forget <n>   (the #id shown by /memory)")
+            _print("  usage: /memory remove <n>   (the #id shown by /memory)")
             return
         removed = mr.remove_memory(_fact_id(args[1]))
         if removed is None:
             _print(f"  no fact #{args[1]} — /memory lists {len(mr.entries())} fact(s).")
         else:
-            _print(f"  {'done' if sub == 'done' else 'forgot'}: {removed}")
+            _print(f"  {'done' if sub == 'done' else 'removed'}: {removed}")
         return
 
     if sub in ("why", "show", "info"):
@@ -332,7 +332,7 @@ def _memory(ctx, args):
             ui.note(f"nothing stale — no by-match fact has gone {mr.stale_days()} days unmatched.")
             return
         ui.section("memory · stale", f"{len(stale)} fact(s) unmatched for {mr.stale_days()}+ days "
-                   "· /memory forget <n> drops one (nothing is deleted on its own)")
+                   "· /memory remove <n> drops one (nothing is deleted on its own)")
         ui.table([((f"#{e['id']}", "accent"), e["layer"], _display_entry(e)) for e in stale])
         return
 

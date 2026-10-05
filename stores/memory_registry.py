@@ -234,7 +234,7 @@ def _parse_state(text: str) -> "tuple[list[dict], int]":
     next_id = max(next_id, (max(ids) + 1) if ids else 1)
     entries.sort(key=lambda e: (e.get("id") is None, e.get("id") or 0))
     # Id-less bullets (a pre-layer file, a hand-written line) get their ids HERE, on read, in
-    # file order from the high-water mark — deterministic, so `/memory forget 2` on a legacy
+    # file order from the high-water mark — deterministic, so `/memory remove 2` on a legacy
     # file addresses the same fact the listing showed. The file itself is untouched until the
     # next write persists them (a read never writes).
     next_id = _assign_ids(entries, next_id)

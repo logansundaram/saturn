@@ -156,7 +156,7 @@ def _similar_note(tc: dict) -> "str | None":
     if not near:
         return None
     return (f"remember: similar to {auto_memory.similar_names(near)} — approving keeps both "
-            "(/memory forget <n> removes the old one)")
+            "(/memory remove <n> removes the old one)")
 
 
 def _url_holds(tool_calls: list, state, prov=None) -> dict:

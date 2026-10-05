@@ -88,12 +88,12 @@ each costing a chat turn nothing):
    `read_messages`), or a group chat ref no tool returned (`quarantine.chat_hold`); a messaging
    call naming both a person and a group, or a send naming neither (`tools/messages.route_target`); a repeat of a call the user DECLINED this turn; a third
    identical call with nothing changed since the first (`STALL_REPEATS` — a completed write,
-   edit or command in between resets the count, so edit → test → edit → test is not a stall). `ask_user` runs alone — a resumed interrupt re-executes
+   edit or command in between resets the count, so edit → test → edit → test is not a stall). The **repeat bound** sits on top of all of these: a pass whose every call the node already answered itself, issued again unchanged with nothing changed since (no call ran, the user did not steer — `_answered_since_change`, read off the `ANSWERED_KEY` stamp the node's own ToolMessages carry), is answered with `STUCK_TEXT` — the stop. It has the cap's two steps: that pass stays an ordinary bound one, the next pass is the answer, and a model that calls again is rerun once with tools unbound and `STUCK_NOTE`. Before it (2026-10-05, runs 67 and 68) the 4b repeated a refused `recall` thirteen times and only the pass cap ended the turn. `ask_user` runs alone — a resumed interrupt re-executes
    the tools node, so siblings in its batch are answered with `ASK_ALONE_TEXT`.
 6. **answer** — a message without tool calls IS the answer. The incidents note (calls that
    were declined, blocked or failed, read off the ToolMessages' `saturn_status` stamp; a
-   call's LAST outcome decides, so one that failed and then ran is not listed; a stall refusal is
-   not an outcome, and a call refused at the cap reads "not run") and the Sources receipt (the
+   call's LAST outcome decides, so one that failed and then ran is not listed; a stall refusal and the stop are
+   not outcomes, and a call refused at the cap reads "not run") and the Sources receipt (the
    completed calls and documents the turn gathered — not failures, not writes — numbered as
    `/trace source` numbers them) are appended to the RECORDED message, never the stream.
 

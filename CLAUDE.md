@@ -87,7 +87,11 @@ ground → agent ─(no tool calls)─→ END
   invented (`quarantine.handle_hold` / `chat_hold`), a repeat of a call the user
   DECLINED this turn, a third identical call with nothing changed in between — each answered with
   an error ToolMessage that routes straight back to `agent`, no gate, no model call; `ask_user`
-  runs alone, its siblings answered the same way) → **answer** (a message without tool calls IS
+  runs alone, its siblings answered the same way; the **repeat bound**: a pass that only
+  re-issues, unchanged, calls the node already answered itself with nothing changed since
+  (`_answered_since_change`, off the `ANSWERED_KEY` stamp) gets `STUCK_TEXT` — the cap's two
+  steps without the pass count: the next pass is the answer, and a model that calls again is
+  rerun once with tools unbound and `STUCK_NOTE`) → **answer** (a message without tool calls IS
   the answer; the Sources receipt and the incidents note are appended to the RECORDED message,
   never the stream). `nodes.agent._generate` is the one model seam tests replace.
 - `approval` asks `trust/policy.approves(name, risk, args)` — the ONE gate question — on the
@@ -173,7 +177,7 @@ and the turn ends in an answer (one pass later at most).
 
 `config.yaml` is **gitignored user data**, seeded on first run from the tracked template
 `config.default.yaml` (or `~/.saturn/config.yaml` for wheel installs — `config.saturn_home`). Change defaults in the
-template. `config.persist()` does a surgical single-line YAML edit to preserve comments — don't replace
+template. `config.persist()` does a surgical single-line YAML edit to preserve comments (and ADDS the line, at the end of its section, for a setting the template has and an older config.yaml lacks — `config.in_template`; a key the template does not have is never written) — don't replace
 it with a full dump. `textutil.py` imports nothing project-side, `diag.py` only `textutil`, and
 `config.py` only the leaves `diag` and `core/model_family`; all three are safe
 leaves; `diag.log()` replaces `print()` in nodes/tools (stdout collides with the rich Live TUI).

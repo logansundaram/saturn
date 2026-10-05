@@ -77,6 +77,13 @@ def remember(fact: str, category: str = "general", layer: str = "user", replaces
         raise ToolError(str(exc)) from None
 
 
+# The line after the facts recall returns. No tool deletes a fact, and the system prompt's
+# sentence about that reaches the 9b but not the 4b: it follows the pointer only from the
+# result it has just read (2026-10-05, replays of runs 67 and 68: 0 of 4 → 3 of 4).
+RECALL_NOTE = ("(You cannot delete a fact. If the user wants one deleted, tell them to run "
+               "/memory remove <n>.)")
+
+
 @register_tool("read_only", toolkit="core")
 def recall(query: str = ""):
     """Retrieve durable facts previously saved to persistent memory (every layer: user
@@ -88,4 +95,4 @@ def recall(query: str = ""):
     facts = search_memory(query)
     if not facts:
         return "No matching facts in persistent memory."
-    return "\n".join(f"- {f}" for f in facts)
+    return "\n".join(f"- {f}" for f in facts) + "\n" + RECALL_NOTE

@@ -12,12 +12,21 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
 - **Saturn remembers what you tell it, without asking.** Say "I'm vegetarian", "Petra is my
   manager" or "never book anything before 10am" and it is kept — no approval prompt — with one
   line after the answer: `remembered #12: … · /memory forget 12 undoes it`. This happens only
-  when the fact's words come from one sentence you typed and stated (a question does not
-  count, and a "not" has to stay where you put it), and nothing from outside (a web page, mail,
-  a file, an attachment) has entered the conversation — once something has, every later fact
-  in that conversation asks, until `/clear`. Otherwise the prompt still appears and says why
-  ("'evil@x.com' is not in anything you typed"). The check proves you typed the words, not
-  that the fact means what you meant: read the line after the answer. A rule you give ("never…", "from now on…") is
+  when the fact says whole clauses of one sentence you typed and stated — a question or an
+  "if / when / unless" sentence does not count, nothing may be left out ("My brother is
+  vegetarian" is not "User is vegetarian", nor is "My brother is tall and vegetarian"), a
+  "not" and the tense stay where you put them ("I was vegetarian" is not "User is
+  vegetarian"), and nothing left behind may qualify, take back or report it ("On weekdays,
+  I'm vegetarian", "I'm vegetarian, not really", "My sister said, I'm vegetarian") — on a
+  line you typed at the prompt rather than pasted, recalled with Up or typed ahead while
+  Saturn was working, and nothing from outside (a web page, mail, a file, an
+  attachment) has entered the conversation: once something has, every later fact in that
+  conversation asks, until `/clear`. Otherwise the prompt still appears and says why
+  ("'evil@x.com' is not in anything you typed", "it leaves out 'brother' from what you
+  said"). Decline a fact at the prompt and a reworded retry in the same turn asks again. A
+  fact saved before a turn failed or was cancelled still gets its line. The check proves you
+  typed the words as whole clauses, not that the fact means what you meant: read the line
+  after the answer. A rule you give ("never…", "from now on…") is
   kept where it applies to every request. `/memory` marks these facts `said`; `/memory why`
   explains. Turn it off with `memory.auto_learn: false`; `saturn -p` / `-q` never do it.
 - **A new fact names the one it may contradict.** When "I live in Berlin" lands beside a stored
@@ -27,7 +36,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
 - **Recognisable secrets are refused by memory.** A card number, a Social Security number, a
   password, a PIN, an API key or a private key in one of its common written forms is refused
   wherever a fact is written — by the model, at a review, with `/memory add` or `/memory edit` —
-  and Saturn says why. It is a net for the usual shapes, not a guarantee for every one.
+  and Saturn says why. It is a net for the usual shapes, not a guarantee for every one:
+  "my password manager is Bitwarden" is an ordinary fact, "password is correct horse battery
+  staple" and "the password I use is hunter2" are not.
 
 - **`/think` — how much Saturn reasons before it answers.** Three levels: `fast` (never
   thinks), `auto` (thinks before it acts) and `deep` (thinks on every pass). `/think` shows
@@ -44,7 +55,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
   `thinking 3s` and Esc stops the thought; the pass then answers without it. A thought is also
   cut at `runtime.think_budget` tokens (1024). Afterwards the trace line shows `thought 1.8s`
   with the reason and the opening of the thought, the receipt shows the turn's thinking time,
-  and `/trace why` lists when each pass thought.
+  and `/trace why` lists when each pass thought. If the model server fails a thought (a
+  timeout, an error) the move Saturn had already drafted goes ahead and the rest of that turn
+  does not think again; if the server cannot be reached at all the turn stops before it acts.
 - **`benchmark.py --loop --think <mode> --tier <tier> --runs N`** runs the loop benchmark
   under a think mode without touching `config.yaml`, and the report records every pass's
   thinking.
@@ -370,7 +383,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
 - **A fetch can't carry your data out unasked.** `web_extract` never prompts, but it sends
   its URL. When the model composes an address after reading a file, a note, an email or a web
   page — one that appears in nothing you typed and nothing a tool returned — the gate now
-  shows it to you first. A URL you typed or one a search returned runs as before. The same
+  shows it to you first, for the rest of the conversation (the page drops out of it after a
+  turn or two; the answer that repeated it does not). A URL you typed or one a search
+  returned runs as before. The same
   goes for an address on this machine or your local network that you did not type, and a
   public page can no longer redirect a fetch onto one. `runtime.quarantine: warn` turns the
   holds off.

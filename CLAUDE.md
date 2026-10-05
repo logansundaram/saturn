@@ -127,7 +127,10 @@ only after an error) survives as the benchmark's baseline (`benchmark.py --think
 thinking** — a thought that is empty, past `runtime.think_budget` (`_generate` counts reasoning
 chunks and closes the stream) or stopped by Esc (a pending pause; the pause itself stays
 pending) is dropped and the pass answers without it; a drafted call stands when its rethink
-came to nothing. A model that rejects the think flag never thinks and gets no widened
+came to nothing or the daemon failed the rethink call (outcome `failed`: a timeout, an error
+status — `core.llms.call_failure`; nothing is retried, and `think.gave_up` keeps the rest of
+the turn think-off). A daemon that cannot be reached, an error that is not the daemon's, and a
+thinking call with no draft behind it still fail the turn. A model that rejects the think flag never thinks and gets no widened
 `num_predict`. One `think.entry` per pass lands in `state["think"]` (never the prompt): the
 rail row and leaf, the status bar's `thinking 3s · esc stops thinking` (`thinking` events on
 the custom stream → `run_turn(on_thinking=)`), the receipt, `/think`, `/trace why` and the
@@ -190,11 +193,29 @@ queues candidates from each turn's state and from compaction summaries into
 time. Never write a fact without a user action: a gated `remember`; a `remember` whose words
 the user TYPED and STATED in one sentence, in a conversation no external content has ever
 entered (auto-learn, `core/auto_memory.why_not` — deterministic, never a model's judgement;
-stamped `src=said`, noted after the answer, off headless); `/memory add`; or a review accept.
-"Ever" is `state["outside_seen"]`, carried across turns and set by the tools node (an untrusted
-tool ran) and the grounding node (an attachment); `/resume` starts with it set. The approval
-node decides and hands the ids to the tools node (`state["user_stated"]`) — never recompute
-`qualifies` after the gate. A standing rule ("never…") lands in `user`, which loads every turn
+stamped `src=said`, noted after the answer — also when the turn later fails,
+`app/repl._keeping_auto_memory` — off headless); `/memory add`; or a review accept.
+"Stated" is whole clauses: the fact's words are exactly those of one or more stated clauses
+of the sentence (`_clauses`, `_sentence_problem`) — nothing left out but a lead-in or a title,
+no question (with or without its "?"), no sentence with an if / when / unless clause, in the
+tense it was said in (`_tense_shift`; was / were / had / did are not glue). Nothing left
+behind may change it: a list item or conjunct comes with the clause it hangs off unless that
+clause is plainly the user's own (`_user_led`), and a clause that qualifies, takes back or
+reports the statement cannot be dropped (`_dropped_problem` — closed word lists, so it asks
+when it cannot tell). "Typed" is a line KNOWN to be typed by hand: the `»` prompt records a
+paste and a recall from history (`tui/ui/prompt.line_was_pasted`), a line typed ahead is of
+unknown origin (`app/repl._next_line`) — each is stamped `core.state.PASTED_KEY` on the
+message and kept out of `provenance.by_hand`. The pause prompt cannot see a paste; a steer
+note still counts as typed. A `remember` the user declined makes every later one in that
+turn ask.
+"Ever" is `state["outside_seen"]`, carried across turns and set True by the tools node (an
+untrusted tool ran) and the grounding node (an attachment); `/resume` starts it at
+`core.state.OUTSIDE_UNKNOWN`. `provenance.untrusted` (any of that — not knowing is a yes) is
+read by auto-learn and the memory review; the URL hold and the skill note read
+`provenance.entered` (in the conversation now, or seen entering it earlier — the answer that
+restated a page outlives the page), which a restored session's blank does not arm. The approval
+node asks `why_not` once per `remember`, with one reading of the conversation, and hands the
+ids to the tools node (`state["user_stated"]`) — never recompute `qualifies` after the gate. A standing rule ("never…") lands in `user`, which loads every turn
 (`auto_memory.rule_layer`). `memory_registry.secret_problem` refuses the recognisable shapes of
 a credential in the two writers of fact text (`add_memory`, `edit_memory` raise
 `SecretRefused`), so a new write path inherits it. A write that lands beside a

@@ -72,7 +72,8 @@ each costing a chat turn nothing):
    `_run_pass` bounds it: at most two model calls per pass because of thinking. A thought that
    comes back empty (the 4b/9b write the answer inside the reasoning and emit no content), runs
    past `think_budget` (1024 reasoning tokens, counted in the stream) or is stopped by Esc is
-   dropped — the pass reruns think-off, or its draft stands. One
+   dropped — the pass reruns think-off, or its draft stands (also when the daemon fails
+   the rethink call; the rest of that turn then runs think-off). One
    record per pass lands in `state["think"]`; the reasoning itself is recorded in `llm_calls`
    (shown by `/trace why`), never on the message. A model
    reply whose tool arguments were not valid JSON is retried once with a corrective note;

@@ -302,8 +302,9 @@ the suite is 1,887 green. **Nothing here has been run against a model.**
 
 **What the check still does not prove.** That the user typed the words in one stated
 sentence — not that the fact means what they meant. Inside one sentence a restatement can
-reorder: "I hate cilantro but my sister loves sushi" → "User loves cilantro" passes. The
-control for that is the line after the answer. Whether a 4b or 9b ever does it is unmeasured.
+reorder: "I hate cilantro but my sister loves sushi" → "User loves cilantro" passed when this
+was written (the second review's whole-clause rule now stops that one; a restatement that
+keeps every word can still reorder). The control for that is the line after the answer. Whether a 4b or 9b ever does it is unmeasured.
 
 **What the review found and what happened to it**
 
@@ -312,7 +313,7 @@ control for that is the line after the answer. Whether a 4b or 9b ever does it i
 | Critical — a fact made of glue or two-letter chunks skipped the gate with nothing typed | Fixed. |
 | "Nothing from outside" expired after one or two turns | Fixed (`outside_seen`). |
 | The approval and tools nodes could disagree; the fact was stored silently as inferred | Fixed (`user_stated`). |
-| Meaning flipped by omission, by a question, or by assembling words across messages | Fixed, except reordering inside one sentence (above). |
+| Meaning flipped by omission, by a question, or by assembling words across messages | Fixed for assembling across messages and for a "?" question; omission and the other question forms were not — see the second review below. |
 | `replaces=` could retire an unrelated fact on one shared word; the note could omit it | Fixed. |
 | `diag` was not imported in `nodes/tools.py`: a failed lookup killed the turn | Fixed. |
 | The review label was computed from compacted messages | Fixed. |
@@ -322,6 +323,39 @@ control for that is the line after the answer. Whether a 4b or 9b ever does it i
 | A repeated fact was announced as new, with an undo that would delete the original | Fixed. |
 | An undated bullet read as "today" every day and churned the cached prefix | Fixed. |
 | My ruling that the `supersession` task could stand in for the `correction` probe | Reversed; the probe is built. |
+
+**The second code review (2026-10-04) and what happened to it**
+
+Ten findings; `tests/test_auto_memory.py` (section R1–R10) and `tests/test_think.py` pin each.
+
+| Finding | Outcome |
+|---|---|
+| A declined `remember` could be reworded past the "no" in the same turn | Fixed: after a decline, every `remember` in that turn asks. |
+| A fact auto-learned before the turn failed or was cancelled got no line | Fixed: the REPL keeps the events off the update stream (`_keeping_auto_memory`). |
+| Questions without a "?", behind a filler word, or embedded counted as statements | Fixed: an opening auxiliary is a question ("do not …" excepted); "if / whether" inside a clause cannot be dropped; a sentence with an if / when / unless clause states nothing. The row above that called this fixed was wrong. |
+| Dropping a subject or a hedge kept the gate shut; a negation could move between clauses | Fixed by a stricter rule: the fact's words must be exactly those of one or more stated clauses (cut at commas and "and / but / because"). It also closes most of "reordering inside one sentence": only a restatement that keeps every word can still reorder. The polarity check is now part of it. |
+| A replaced fact went unnamed when the new text was already stored | Fixed: the tools node asks the store, not the report; the line says `(removed #1 "…")`. |
+| `outside_seen` also armed the URL hold for a whole resumed session | Fixed: `provenance.entered` for the holds and the skill note — what this session saw enter, now or earlier — and `untrusted` for auto-learn and the review. `/resume` starts the record at `OUTSIDE_UNKNOWN`, which only `untrusted` counts. (The first fix read only what the conversation holds now; the third review found that an answer restating a page outlives the page, so a live session's record arms the hold again.) |
+| "can't" never matched "cannot" | Fixed. |
+| The secret screen refused talk about passwords and missed a passphrase opening with a stop word | Fixed for the cases found; still a net. A lower-case "pin code" is read as a postal code unless it is the pin code of something that has one ("my phone's pin code"). The first fix let a value through whenever unlisted words sat before its "is" ("the password I use is …"); the third review turned the list around: only a noun right after the word ("password manager", "password policy") makes it talk about passwords, so an unknown phrasing is refused, not saved. |
+| A rethink that raised failed the turn and lost a valid draft | Fixed (think outcome `failed`). |
+| Typed-vs-pasted was inferred from length | Fixed for the `»` prompt, which records the paste event and a recall from history (a pasted line brought back with Up looked typed). A line queued mid-turn is of unknown origin and is not read as typed by hand. Not for a steer note: the pause prompt and the Esc steer cannot see a paste. The length thresholds stay as the second net. |
+
+**The third review (2026-10-04)** found that the whole-clause rule looked only at the clauses
+a fact took, never at the ones it left:
+
+| Finding | Outcome |
+|---|---|
+| A list item or conjunct could leave its subject ("My brother is tall and vegetarian" → "User is vegetarian") | Fixed: an item comes with the clause it hangs off unless that clause opens with "I" / "we" and names nobody else (`_user_led`). The item's verb is still not checked ("I sold the car and the dog" → "User has a dog"). |
+| A qualifier, a retraction or a reporting clause could be dropped ("On weekdays, I'm vegetarian", "I'm vegetarian, not really", "My sister said, I'm vegetarian") | Fixed (`_dropped_problem`): a clause with no subject or verb of its own may be left behind only as an aside or as another item of the same kind; a clause ending in a saying or supposing verb cannot. Closed word lists — it asks when it cannot tell ("I work at Acme and at Globex" → "User works at Acme"). |
+| The past tense passed as the present ("I was vegetarian", "I worked at Acme") | Fixed: was / were / been / had / did are words of substance, and a word that meets what was said only across an "-ed" ending asks (`_tense_shift`). Irregular verbs never matched. |
+| "cannot" sat in NEGATIONS but is rewritten to "can not" before any word is read | Removed. |
+| The gate ran the check three times per call and read the conversation up to three times per check | Fixed: once per call, one reading (`why_not(call, state, prov)`). |
+
+What the stricter rule costs: a fact that takes part of a clause asks ("I'm vegetarian so
+find me a recipe" → "User is vegetarian" — no comma, one clause), as does a statement that
+opens like a question ("Have two kids"). An unpunctuated "so is Petra my manager" still reads
+as a statement. None of this has met a model.
 
 **Left as they are (minor)**
 

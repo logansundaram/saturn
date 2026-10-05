@@ -294,6 +294,16 @@ What differs from the design above, and what a short live check on the 4b showed
 - **A sixth outcome, `malformed`:** a thinking call whose output could not be parsed twice.
   It is not an empty thought and nothing is rerun; the turn answers with the malformed-output
   text as before.
+- **A seventh outcome, `failed`** (code review, 2026-10-04): on the draft path a rethink
+  call that raises (a daemon 500, a read timeout) used to fail the turn and discard a valid
+  draft. Now the draft stands, as for an empty or cut thought; nothing is retried. A thinking
+  call with no draft behind it (`recovery`, `steered`, `deep`) still fails the turn loudly.
+  Narrowed the same day (second review): the draft stands only when the DAEMON failed the
+  call (`core.llms.call_failure` → `daemon`: a read timeout, a dropped stream, an error
+  status). A daemon that cannot be reached fails the turn — the draft would act, and the next
+  pass could not report it — and so does an exception that is not the daemon's (a bug is not
+  "the model was busy"). After one `failed` outcome the rest of the turn runs think-off
+  (`think.gave_up`): a multi-pass turn does not wait out a failing thinking call on every pass.
 - **The cut lands AT the budget** (1024 reasoning tokens read, then the stream is closed).
 - **`think_budget: 0` turns the in-stream cut off** rather than cutting every thought at once;
   `num_predict` still bounds the pass.

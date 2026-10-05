@@ -45,14 +45,18 @@ def _auto_memory_notes(state) -> list:
             continue
         args = ev.get("args") if isinstance(ev.get("args"), dict) else {}
         fact = clip(" ".join(str(args.get("fact") or "").split()), 80)
+        old = ev.get("auto_memory_replaced")
         if ev.get("auto_memory_known"):
-            out.append(f"already remembered as #{ev['auto_memory_known']}: {fact}")
+            line = f"already remembered as #{ev['auto_memory_known']}: {fact}"
+            if isinstance(old, dict) and old.get("id"):
+                # The replacement retired its target before it met the copy already stored.
+                line += f' (removed #{old["id"]} "{clip(str(old.get("text") or ""), 60)}")'
+            out.append(line)
             continue
         fid = ev.get("auto_memory")
         if not fid:
             continue
         line = f"remembered #{fid}: {fact}"
-        old = ev.get("auto_memory_replaced")
         if isinstance(old, dict) and old.get("id"):
             # Forgetting the new fact does not bring the old one back, so say what went.
             line += f' (replaced #{old["id"]} "{clip(str(old.get("text") or ""), 60)}")'
@@ -65,6 +69,34 @@ def _auto_memory_notes(state) -> list:
 
             out.append(f"  {similar_note(near)}")
     return out
+
+
+def _keeping_auto_memory(on_update, learned: list):
+    """`on_update`, also keeping every tool event that remembered a fact without the gate. A
+    turn that fails or is cancelled never returns its state, so its `tool_events` are gone —
+    but the fact is in the file, and it is owed its line and its undo all the same."""
+    def wrapped(node, delta):
+        for ev in (delta.get("tool_events") or []) if isinstance(delta, dict) else []:
+            if isinstance(ev, dict) and (ev.get("auto_memory") or ev.get("auto_memory_known")):
+                learned.append(ev)
+        on_update(node, delta)
+
+    return wrapped
+
+
+def _next_line(input_queue, read_prompt) -> "tuple[str, bool]":
+    """(the next line to process, whether it is NOT known to be typed by hand). Anything typed
+    ahead while the last turn ran is drained first (FIFO, echoed so it reads like it was
+    entered live); only once the queue is empty does `read_prompt` block on the `»` prompt.
+    The prompt sees a paste and a recall from history (ui.line_was_pasted); the type-ahead
+    reader sees neither — a paste reaches it as ordinary keys — so a queued line is of unknown
+    origin, and auto-learn does not take it for the user's own statement."""
+    queued = input_queue.pop()
+    if queued is not None:
+        ui.echo_queued(queued)
+        return queued, True
+    line = read_prompt()
+    return line, ui.line_was_pasted()
 
 
 def run_repl() -> None:
@@ -232,17 +264,18 @@ def run_repl() -> None:
     )
     pause_controller = get_pause_controller()
 
+    # Whether the line `_next_input` last returned is NOT known to be typed by hand: it
+    # carried a paste, came back from history, or was queued mid-turn (`_next_line`).
+    line_pasted = False
+
     def _next_input() -> str:
-        """The next line to process: anything the user typed-ahead while the last turn ran is
-        drained first (FIFO, echoed so it reads like it was entered live), and only once the queue
-        is empty do we block on the `»` prompt. A queued line can be a query or a slash command —
-        both flow through the same handling below — so follow-ups and commands alike can be lined
-        up mid-turn and run the moment the agent is free."""
-        queued = input_queue.pop()
-        if queued is not None:
-            ui.echo_queued(queued)
-            return queued
-        return ui.prompt(commands.command_completions() + skill_completions())
+        """The next line to process (`_next_line`). A queued line can be a query or a slash
+        command — both flow through the same handling below — so follow-ups and commands alike
+        can be lined up mid-turn and run the moment the agent is free."""
+        nonlocal line_pasted
+        line, line_pasted = _next_line(
+            input_queue, lambda: ui.prompt(commands.command_completions() + skill_completions()))
+        return line
 
     # Files dropped on the prompt and queued for the next turn (the drag-and-drop "[a]ttach"
     # choice below); consumed and cleared when that turn starts. `pending_blocks` are ready-made
@@ -323,7 +356,7 @@ def run_repl() -> None:
         if not user_input.strip():
             continue
 
-        state = _fresh_turn(state, user_input)
+        state = _fresh_turn(state, user_input, pasted=line_pasted)
         if deep_request is not None:
             state["think_level"] = "deep"
             ui.note("thinking deep for this turn")
@@ -349,6 +382,7 @@ def run_repl() -> None:
         # Renders the agent's answer token-by-token as it streams (on_token below). It
         # opens the response section on the first token and is finished (or aborted) after the turn.
         answer = ui.ResponseStream()
+        learned: list = []  # this turn's auto-learned facts, kept even if the turn fails
 
         # Resolve each interrupt by type: the Esc pause -> the pause prompt; ask_user -> the
         # question prompt; the approval gate -> the approval prompt. (/policy open needs no
@@ -374,8 +408,9 @@ def run_repl() -> None:
                 state,
                 config,
                 approver=on_interrupt,
-                on_update=_make_on_update(tracer, run_id, show_ui=cmd_ctx.show_ui,
-                                          answer=answer),
+                on_update=_keeping_auto_memory(
+                    _make_on_update(tracer, run_id, show_ui=cmd_ctx.show_ui, answer=answer),
+                    learned),
                 pause=input_queue,
                 on_token=answer.feed,
                 on_retract=answer.discard,
@@ -401,6 +436,9 @@ def run_repl() -> None:
                 ui.warn(f"Turn failed: {exc}")
             if (trace_note := _trace_warning(tracer)):
                 ui.warn(trace_note)
+            # A fact remembered without the gate before the turn broke is still in the file.
+            for line in _auto_memory_notes({"tool_events": learned}):
+                ui.note(line)
             cmd_ctx.state = state
             continue
         finally:

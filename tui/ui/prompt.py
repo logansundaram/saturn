@@ -161,6 +161,27 @@ _AT_FRAGMENT_RE = _re.compile(r"(?:^|\s)@([^\s@]*)$")
 _PASTE_STORE: dict[int, str] = {}
 _PASTE_STORE_MAX = 30
 _paste_seq = 0  # last id handed out
+# Whether the line being edited (then: the line last submitted) is NOT known to be typed by
+# hand: it received a paste of ANY size, or it was recalled from history (Up) — where it may
+# have been a paste the first time, edited since or not. A short paste is inserted verbatim
+# and looks typed afterwards, so this is the only place that knows; the REPL stamps it on the
+# turn's message (core.state.PASTED_KEY) and auto-learn does not take such a line for the
+# user's own statement (core/auto_memory).
+_pasted = False
+
+
+def line_was_pasted() -> bool:
+    """Whether the line `prompt()` last returned carried a paste or came back from history."""
+    return _pasted
+
+
+def _recalled(buf) -> bool:
+    """Whether the buffer is showing a history entry rather than the new line. prompt_toolkit
+    keeps the new line last in its working lines; the attribute is private, so a version
+    without it reads as recalled (not typed by hand) rather than as typed."""
+    lines = getattr(buf, "_working_lines", None)
+    return lines is None or buf.working_index != len(lines) - 1
+
 _PASTE_TAG_RE = _re.compile(r"\[paste #(\d+)[^\]\n]*\]")
 _PASTE_TAG_LINES = 3    # compact a paste of >= this many lines
 _PASTE_TAG_CHARS = 600  # ... or this many chars (single-line walls); dragged paths stay raw
@@ -307,10 +328,13 @@ _PTK_KB = _PTKKeyBindings()
 
 @_PTK_KB.add("enter")
 def _ptk_enter(event):
+    global _pasted
     buf = event.current_buffer
     if buf.complete_state and buf.complete_state.current_completion:
         buf.apply_completion(buf.complete_state.current_completion)
     else:
+        if _recalled(buf):
+            _pasted = True  # read before the submit resets the buffer to a new line
         buf.validate_and_handle()  # submit the line
 
 @_PTK_KB.add("escape", "enter")  # Alt/Option+Enter, Esc-then-Enter, and Shift/Ctrl+Enter
@@ -330,7 +354,8 @@ def _ptk_paste(event):
     """One paste = one event. Small pastes insert verbatim (newlines included — never a
     submit); anything bigger is stored and rendered as a `[paste #N +L lines]` chip so the
     prompt stays one clean line. The full text rides into the message at submit."""
-    global _paste_seq
+    global _paste_seq, _pasted
+    _pasted = True  # whatever its size: the line is no longer only what the user typed
     data = event.data.replace("\r\n", "\n").replace("\r", "\n")
     n_lines = data.count("\n") + 1
     if n_lines < _PASTE_TAG_LINES and len(data) < _PASTE_TAG_CHARS:
@@ -400,7 +425,8 @@ def prompt(command_meta) -> str:
     `[paste #N …]` chip (Ctrl+E on it re-expands for editing) and is swapped back to the full text
     in the returned line. Active posture flags render live at the line's right edge (rprompt).
     Returns the raw line (slash-command + @mention handling happen upstream)."""
-    global _ptk_session
+    global _ptk_session, _pasted
+    _pasted = False
     _live_stop()  # never read a line under an active Live (also clears a bar left by an error)
     if _ptk_session is None:
         _ptk_session = PromptSession()

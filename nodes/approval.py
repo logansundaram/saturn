@@ -54,25 +54,31 @@ def _can_act(name: str) -> bool:
             or DECLARED_RISK.get(name, "destructive") != "read_only")
 
 
+def _three(p) -> "tuple[str, str, bool]":
+    return "\n".join(p.typed), p.seen, p.entered
+
+
 def provenance(state) -> "tuple[str, str, bool]":
     """(what the user typed, everything else that ENTERED the conversation, whether any of that
     came from an untrusted tool or an attachment) — the three facts quarantine.url_hold reads (the
     first two are what quarantine.handle_hold reads, from the agent's hygiene). The reading itself
     — what counts as typed, why the model's own words and a failed call's text vouch for nothing —
-    is core/provenance.of, shared with auto-learn."""
-    p = _provenance.of(state)
-    return "\n".join(p.typed), p.seen, p.untrusted
+    is core/provenance.of, shared with auto-learn. The third is `entered`: what this session saw
+    come in, now or in an earlier turn — the page is compacted away, the answer that restated
+    it is not. A restored session's blank record (`untrusted` alone, auto-learn's) does not
+    arm a hold: on it, every composed URL in a resumed session would face the gate."""
+    return _three(_provenance.of(state))
 
 
 def _once(state):
-    """`provenance(state)` as a callable that reads the conversation at most once per node
-    pass, and only if something asks: the URL hold, each handle note and the skill note all
-    read the same three facts."""
+    """`core.provenance.of(state)` as a callable that reads the conversation at most once per
+    node pass, and only if something asks: the URL hold, each handle note, the skill note and
+    auto-learn's check of every `remember` in the batch all read the same facts."""
     box: list = []
 
     def get():
         if not box:
-            box.append(provenance(state))
+            box.append(_provenance.of(state))
         return box[0]
     return get
 
@@ -126,7 +132,7 @@ def _handle_note(tc: dict, state, prov=None) -> "str | None":
             if found:
                 name, label = found
                 return f"{tc['name']}: {handle} is {name}'s {label + ' ' if label else ''}{kind} (from search_contacts)"
-    user_text, seen_text, _ = (prov or _once(state))()
+    user_text, seen_text, _ = _three((prov or _once(state))())
     if quarantine.handle_hold(handle, user_text, "") is None:
         return f"{tc['name']}: {handle} — you typed it"
     if quarantine.handle_hold(handle, user_text, seen_text) is None:
@@ -153,18 +159,12 @@ def _similar_note(tc: dict) -> "str | None":
             "(/memory forget <n> removes the old one)")
 
 
-def _user_stated(tc: dict, state) -> bool:
-    """A `remember` whose every word the user typed, in a conversation nothing external entered
-    (core/auto_memory): the one call the gate lets through on provenance instead of policy."""
-    return tc.get("name") == "remember" and auto_memory.qualifies(tc, state)
-
-
 def _url_holds(tool_calls: list, state, prov=None) -> dict:
     """{call id: reason} for the web_extract calls whose URL must face the human."""
     fetches = [tc for tc in tool_calls if tc.get("name") == "web_extract"]
     if not fetches:
         return {}
-    prov = (prov or _once(state))()
+    prov = _three((prov or _once(state))())
     out = {}
     for tc in fetches:
         args = tc.get("args")
@@ -303,19 +303,29 @@ def approval_node(state: AgentState) -> Command[Literal["tools", "agent"]]:
     prov = _once(state)
     holds = _url_holds(tool_calls, state, prov)
 
+    # Auto-learn's answer for every `remember` in the batch (core/auto_memory.why_not: None =
+    # the user stated it, in a conversation nothing external entered) — the one call the gate
+    # lets through on provenance instead of policy. Asked ONCE per call: the gate, the
+    # hand-off to the tools node and the note at the prompt must all read the same answer.
+    unstated = {tc["id"]: auto_memory.why_not(tc, state, prov())
+                for tc in tool_calls if tc.get("name") == "remember"}
+
+    def user_stated(tc) -> bool:
+        return tc["id"] in unstated and unstated[tc["id"]] is None
+
     gated = [
         tc
         for tc in tool_calls
         if (escalated and _can_act(tc["name"]))
         or tc["id"] in holds
         or not (policy.approves(tc["name"], risk_of(tc["name"]), tc.get("args"))
-                or _user_stated(tc, state))
+                or user_stated(tc))
     ]
 
     # The remember calls let through on provenance — the tools node stamps exactly these
     # (state["user_stated"]); written on every route to `tools`, so a later batch never
     # inherits an earlier one's.
-    stated = [tc["id"] for tc in tool_calls if tc not in gated and _user_stated(tc, state)]
+    stated = [tc["id"] for tc in tool_calls if tc not in gated and user_stated(tc)]
 
     if not gated:
         return Command(goto="tools", update={"user_stated": stated})
@@ -336,13 +346,13 @@ def approval_node(state: AgentState) -> Command[Literal["tools", "agent"]]:
     # A fact the user did not provably type: say why it is asking, so "remember" prompting
     # once in a while reads as a reason, not a whim.
     if auto_memory.enabled():
-        notes += [f"remember: not saved automatically — {why}" for tc in gated
-                  if tc["name"] == "remember" and (why := auto_memory.why_not(tc, state))]
+        notes += [f"remember: not saved automatically — {unstated[tc['id']]}" for tc in gated
+                  if unstated.get(tc["id"])]
     notes += [n for n in (_similar_note(tc) for tc in gated) if n]
     # A skill drafted after a web page, a file, an attachment or mail entered the conversation
     # may carry that content's instructions. A note, not a refusal: "summarise this page and
     # save the method as a skill" is a fair request — but the human should read it as untrusted.
-    if any(tc["name"] == "create_skill" for tc in gated) and prov()[2]:
+    if any(tc["name"] == "create_skill" for tc in gated) and prov().entered:
         notes.append(f"create_skill: {SKILL_OUTSIDE_NOTE}")
     decision = interrupt(
         {

@@ -111,18 +111,23 @@ def _auto_memory_marks(observation: str, replacing: "dict | None") -> dict:
     """What the event of a fact remembered WITHOUT the gate carries, for the note after the
     answer (app/repl._auto_memory_notes) and the trace: `auto_memory` (the new fact's id) or
     `auto_memory_known` (it was already stored — nothing new to undo), `auto_memory_replaced`
-    (the fact it retired) and `auto_memory_similar` (the stored facts it landed beside —
+    (the fact it retired — with either) and `auto_memory_similar` (the stored facts it landed beside —
     core/auto_memory.similar; no prompt showed them). Best-effort past the id: the fact is
     already saved, and a failed lookup must cost the line, not the turn."""
     fid = auto_memory.fact_id(observation)
-    if not observation.startswith("Remembered"):
-        return {"auto_memory_known": fid} if fid else {}
-    marks: dict = {"auto_memory": fid}
+    new = observation.startswith("Remembered")
+    if not new and not fid:
+        return {}
+    marks: dict = {"auto_memory" if new else "auto_memory_known": fid}
     try:
         from stores.memory_registry import entry
 
+        # Asked of the store, not read off the report: add_memory retires the replaced fact
+        # BEFORE its dedup, so "Already remembered as #5" can have removed #1 on the way.
         if replacing and entry(replacing["id"]) is None:
             marks["auto_memory_replaced"] = replacing
+        if not new:
+            return marks
         saved = entry(fid) if fid else None
         near = auto_memory.similar(saved["text"], saved["layer"], exclude={fid}) if saved else []
         # A sensitive neighbour's text stays out of the event: events go to the trace and

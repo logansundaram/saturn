@@ -74,9 +74,12 @@ def _swap_to_messages(ctx, messages) -> None:
     state["messages"] = messages
     # A session file holds the messages, not the record of what entered the conversation they
     # came from (a page read three turns before the save is gone from them). So a restored
-    # conversation counts as having seen outside content: auto-learn asks at the gate in it
-    # (core/provenance.of, core/auto_memory).
-    state["outside_seen"] = True
+    # conversation MAY have seen outside content: auto-learn asks at the gate in it. The URL
+    # hold is not armed by not knowing — it would ask about every composed address for the
+    # rest of the session (core/provenance.of: `untrusted` against `entered`).
+    from core.state import OUTSIDE_UNKNOWN
+
+    state["outside_seen"] = OUTSIDE_UNKNOWN
     ctx.state = state
 
 

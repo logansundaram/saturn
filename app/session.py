@@ -10,7 +10,7 @@ from langchain.messages import HumanMessage, AIMessage
 
 import diag
 from config import get_config
-from core.state import AgentState
+from core.state import PASTED_KEY, AgentState
 from tui import ui
 from tui.ui._base import _human_tokens
 
@@ -133,13 +133,17 @@ def _maybe_autocompact(state: AgentState, run_id=None) -> AgentState:
 _CARRY_ACROSS_TURNS = ("messages", "context_tokens", "outside_seen")
 
 
-def _fresh_turn(state: AgentState, user_input: str) -> AgentState:
+def _fresh_turn(state: AgentState, user_input: str, *, pasted: bool = False) -> AgentState:
     """Append the new query and reset per-turn fields (accumulators + loop counter).
     `messages` persists across turns to keep in-process conversation memory, but is first
     compacted (see _compact_history): older turns collapse to a clean Q&A transcript while the
-    most recent turn's tool scratchpad is retained so a follow-up can refer back to it."""
+    most recent turn's tool scratchpad is retained so a follow-up can refer back to it.
+    `pasted`: the line is not known to be typed by hand (it carried a paste, was recalled
+    from history or was typed ahead — app/repl._next_line) — stamped on the message, so
+    auto-learn does not read it as the user's own statement."""
     state["messages"] = _compact_history(state["messages"])
-    state["messages"].append(HumanMessage(content=user_input))
+    state["messages"].append(HumanMessage(
+        content=user_input, additional_kwargs={PASTED_KEY: True} if pasted else {}))
     # Arm a fresh snapshot batch for this turn (lazy — created only if a file tool mutates
     # something), so /undo can reverse exactly the writes the turn that just ran made.
     from stores.snapshots import begin_turn

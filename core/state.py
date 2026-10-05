@@ -14,6 +14,20 @@ from typing_extensions import TypedDict, Annotated
 STEER_PREFIX = "[Steering correction from the user, mid-task — adjust your approach accordingly]:"
 
 
+# Set in a turn request's `additional_kwargs` when the line the user submitted is not known to
+# be typed by hand: it carried a paste or was recalled from history (tui/ui/prompt sees both),
+# or it was typed ahead, where a paste cannot be seen (app/repl._next_line;
+# app/session._fresh_turn stamps the message). Such a line is not the user stating something:
+# core/provenance keeps it out of `by_hand`.
+PASTED_KEY = "saturn_pasted"
+
+
+# `state["outside_seen"]` for a conversation restored from a file: nobody recorded whether
+# outside content entered it. Truthy on purpose — every reader but the holds treats not
+# knowing as yes.
+OUTSIDE_UNKNOWN = "unknown"
+
+
 def is_steer_message(m) -> bool:
     """True if `m` is a standalone mid-turn steering note injected by the agent node. The merged form
     (note appended onto an existing HumanMessage's content) deliberately does NOT match — there
@@ -144,8 +158,10 @@ class AgentState(TypedDict):
     # node). Carried across turns (app/session._CARRY_ACROSS_TURNS) — the messages that held it
     # are compacted away after a turn or two, but an answer that restated a page is still in
     # history, so core/provenance.of reads this and auto-learn stays off for the conversation.
-    # /clear resets it; a resumed session starts with it set.
-    outside_seen: bool
+    # /clear resets it. True means this session SAW it enter; a resumed session starts at
+    # OUTSIDE_UNKNOWN — its file holds messages, not what entered them — which keeps auto-learn
+    # off without arming the URL hold (core/provenance: `untrusted` against `entered`).
+    outside_seen: bool | str
 
     # The ids of this batch's `remember` calls the approval node let through because the user
     # typed every word of them (core/auto_memory.qualifies). Written by the approval node on

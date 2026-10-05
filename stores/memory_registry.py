@@ -369,23 +369,51 @@ _PRIVATE_KEY_RE = re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")
 _API_KEY_RE = re.compile(r"(?<![A-Za-z0-9])(?:sk[-_][A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{30,}"
                          r"|github_pat_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{30,}"
                          r"|xox[baprs]-[A-Za-z0-9-]{10,})")
-# "password is hunter2", "password: hunter2", "wifi password for home is hunter2" — the value
-# follows is/:/= within a few words; or "wifi password hunter2" — it follows directly and does
-# not look like a word (a digit or a symbol in it).
+# "password is hunter2", "password: hunter2", "wifi password for home is hunter2", "the
+# password I use is hunter2" — the value follows is/:/= within a few words, whatever they are;
+# or "wifi password hunter2" — it follows directly and does not look like a word (a digit or
+# a symbol in it). Only a noun right after the word makes it talk ABOUT passwords: "password
+# manager is Bitwarden", "the password policy is strict", "passcode rotation is quarterly".
+# The list is what is let through, so a phrasing it does not know is refused, not saved.
+_ABOUT = (r"(?!\s+(?:manager|managers|policy|policies|rotation|reset|resets|length|rule|rules"
+          r"|requirement|requirements|hint|hints|field|prompt|change|changes|expiry|expiration"
+          r"|strength|generator|vault|app|protection|sharing|reuse|complexity|storage"
+          r"|management|history|recovery|reminder|screen|page|form|box|dialog|check|checker"
+          r"|link|email|habit|habits|hygiene|security)\b)")
+_WHICH_ONE = _ABOUT + r"(?:\s+[\w'’.-]+){0,4}?"
+_IS = r"\s*(?:\b(?:is|was)\b\s*[:=]?|[:=])\s*"
 _PASSWORD_SAID_RE = re.compile(
-    r"\b(?:password|passcode|passphrase)\b(?:\s+\w+){0,4}?\s*(?:\b(?:is|was)\b\s*[:=]?|[:=])"
-    r"\s*[\"']?([^\s\"']+)", re.IGNORECASE)
+    r"\b(?:password|passcode|passphrase)\b" + _WHICH_ONE + _IS + r"[\"']?([^\s\"']+)",
+    re.IGNORECASE)
 _PASSWORD_BARE_RE = re.compile(
     r"\b(?:password|passcode|passphrase)\s+[\"']?((?=\S*[\d!@#$%^&*+=_])[^\s\"']{4,})",
     re.IGNORECASE)
-_PIN_RE = re.compile(r"\bpin\b(?:\s+\w+){0,4}?\s*(?:\b(?:is|was)\b\s*[:=]?|[:=])\s*\d{4,8}\b"
-                     r"|(?-i:\bPIN)\s+\d{4,8}\b", re.IGNORECASE)   # bare form: capitals only
+# "my pin (number) for the garage is 4821", "the pin I use is 4821"; in capitals also bare and
+# as "PIN code" — in lower case a "pin code" is a postal code ("pin code is 94110") unless it
+# is the pin code OF something that has one ("my phone's pin code is 482193").
+_HAS_A_PIN = (r"(?:phone|iphone|ipad|tablet|laptop|computer|card|debit|credit|bank|atm|sim"
+              r"|door|garage|gate|lock|alarm|safe|locker|voicemail|account)")
+_PIN_RE = re.compile(r"\bpin\b(?:\s+number)?(?!\s+code\b)" + _WHICH_ONE + _IS + r"\d{4,8}\b"
+                     r"|\b" + _HAS_A_PIN + r"(?:['’]s)?\s+pin\s+code\b" + _WHICH_ONE + _IS
+                     + r"\d{4,8}\b"
+                     r"|(?-i:\bPIN)(?:\s+code)?(?:" + _IS + r"|\s+)\d{4,8}\b", re.IGNORECASE)
 # What may follow "the password is …" without being the password itself.
 _NOT_A_PASSWORD = frozenset("""
 in on at the a an my our stored saved kept written not same different too weak strong long
 short there here what where with for under inside changed expired wrong correct unknown
 required needed optional mandatory set reset protected empty blank missing safe secure
 """.split())
+# ...unless it opens a passphrase: "correct horse battery staple" is four words or more and
+# none of the rest is one of these or of the words above, where a remark about the password
+# ("required for the wifi", "stored in my vault") is made of them.
+_PASSPHRASE_MIN_WORDS = 4
+_REMARK_WORDS = _NOT_A_PASSWORD | frozenset("""
+is are was be been it this that these those and or but to of by as than from now again
+always never only also every each last next day week month year today yesterday i we you
+enough already honestly really very quite pretty so just still far much more less anyway
+though actually probably maybe
+""".split())
+_VALUE_END_RE = re.compile(r"[.;,!?\n\"]")
 
 
 class SecretRefused(ValueError):
@@ -420,6 +448,12 @@ def secret_problem(text) -> "str | None":
         return "a password"
     for m in _PASSWORD_SAID_RE.finditer(text):
         if m.group(1).lower().strip(".,;:") not in _NOT_A_PASSWORD:
+            return "a password"
+        if _VALUE_END_RE.search(m.group(1)[-1:]):
+            continue        # "The password is wrong. Call Petra…" — its sentence ends there
+        rest = _VALUE_END_RE.split(text[m.end(1):], maxsplit=1)[0].lower().split()
+        if (len(rest) + 1 >= _PASSPHRASE_MIN_WORDS
+                and not any(w.strip("':") in _REMARK_WORDS for w in rest)):
             return "a password"
     return None
 

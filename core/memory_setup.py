@@ -28,6 +28,7 @@ import os
 import re
 from dataclasses import dataclass
 
+from config import get_config
 from stores import memory_registry as mr
 
 # What `ask` returns on Ctrl-C / Ctrl-D: the caller passes it as ui.ask's on_interrupt, so an
@@ -129,3 +130,84 @@ def system_first_name() -> "str | None":
 def current(q: Question) -> list[dict]:
     """The facts an earlier interview wrote for this question, in id order."""
     return [e for e in mr.entries() if e.get("category") == q.category]
+
+
+INTRO = ("A few questions so I know who I'm working with. Each answer is saved to your memory "
+         "as you give it — Enter skips a question, q stops.")
+
+
+def _prompt(i: int, q: Question, have: list, default: "str | None") -> str:
+    if have:
+        keep = " [Enter keeps these; type to add]" if q.many else " [Enter keeps it]"
+    else:
+        keep = f" [Enter = {default}]" if default else ""
+    return f"[{i}/{len(QUESTIONS)}] {q.prompt}{keep} » "
+
+
+def _refusal(q: Question, texts: list[str]) -> "str | None":
+    """Why an answer cannot be stored as given, or None. Asked BEFORE any write, so a refused
+    answer is asked again instead of ending the interview on the registry's SecretRefused."""
+    for text in texts:
+        if len(text) > MAX_FACT_CHARS:
+            return (f"that is {len(text)} characters — a memory fact should be one line "
+                    f"(under {MAX_FACT_CHARS}). Shorten it, or press Enter to skip.")
+        what = mr.secret_problem(f"{q.category} {text}")
+        if what:
+            return (f"that looks like it holds {what} — Saturn never writes a secret to memory "
+                    "(the file is plain text and is read into every prompt). Leave it out, or "
+                    "press Enter to skip.")
+    return None
+
+
+def run_interview(*, ask, emit=print, default_name: "str | None" = None) -> dict:
+    """Ask the five questions in order. `ask(prompt) -> str` reads one line (ui.ask with
+    on_interrupt=INTERRUPT in the app; a scripted callable in tests); `emit(line)` prints. Each
+    answer is written through add_memory (by=user) the moment it is given, so leaving early keeps
+    everything answered so far. On a re-run each question shows its current answer: Enter keeps
+    it, a one-fact question is superseded (replaces=), a many-fact one is added to. Returns
+    {"saved": [add_memory's reports], "left": True when the user stopped early}."""
+    saved: list[str] = []
+    left = False
+    emit(f"  {INTRO}")
+    for i, q in enumerate(QUESTIONS, 1):
+        have = current(q)
+        default = default_name if (q.key == "name" and not have) else None
+        if have:
+            emit("    now: " + "; ".join(e["text"] for e in have))
+        elif q.hint:
+            emit(f"    {q.hint}")
+        while True:
+            raw = ask(_prompt(i, q, have, default))
+            if raw == INTERRUPT:
+                left = True
+                break
+            reply = " ".join(str(raw or "").split())
+            if reply.lower() in _LEAVE:
+                left = True
+                break
+            if reply.lower() in _SKIP:
+                reply = ""
+            elif not reply and default:
+                reply = default
+            texts = pieces(q, reply)
+            refusal = _refusal(q, texts)
+            if refusal is None:
+                break
+            emit(f"    {refusal}")
+            default = None  # after a refusal, Enter means skip
+        if left:
+            break
+        for text in texts:
+            replaces = None
+            if have and not q.many:
+                if text.lower() == have[-1]["text"].lower():
+                    emit("    unchanged")
+                    continue
+                replaces = have[-1]["id"]
+            report = mr.add_memory(text, q.category, layer=layer_for(q), replaces=replaces,
+                                   by="user", src=f"setup:{q.key}")
+            saved.append(report)
+            emit(f"    {report}")
+    emit(f"  saved {len(saved)} fact(s) · see or change them: /memory · ask again: /memory setup")
+    emit(f"  file: {get_config().path('memory')}")
+    return {"saved": saved, "left": left}

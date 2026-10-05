@@ -34,7 +34,7 @@ def risk_handler(ctx, args):
     the policy file; `reset` restores the declared tier."""
     from trust import policy
     from tools import registry
-    from tools.registry import tool as TOOLS, risk_of
+    from tools.registry import all_tools as TOOLS, risk_of  # on or off: a tier outlives /tools off
     from tools.toolspec import RISK_TIERS as _RISK_TIERS
 
     # One --save grammar (case-insensitive, any position) — same flag as every other command.
@@ -63,10 +63,10 @@ def risk_handler(ctx, args):
         return
 
     name = args[0]
-    if name not in registry.tools_by_name:
+    if name not in registry.all_by_name:
         import difflib
 
-        hint = difflib.get_close_matches(name, registry.tools_by_name, n=1)
+        hint = difflib.get_close_matches(name, registry.all_by_name, n=1)
         suggest = f" — did you mean {hint[0]}?" if hint else ""
         _print(f"  unknown tool: {name} (see /tools){suggest}")
         return

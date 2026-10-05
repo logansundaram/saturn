@@ -580,19 +580,24 @@ def reload() -> list[str]:
     Imports registry/llms/policy lazily — they are fully initialised by the time a slash
     command can run, and importing them at module level would be circular (registry imports us)."""
     from trust import policy
-    from tools import registry
+    from tools import registry, toolspec
     from core.llms import reset_models
 
     with _LOCK:
         old = {n for st in _SERVERS.values() for n in st.registered}
-        # registry.tool IS toolspec._TOOLS (same list object) — mutate in place so every holder
-        # of the list (llms' bind, messages' catalog) sees the change.
-        registry.tool[:] = [t for t in registry.tool if t.name not in old]
+        # registry.all_tools IS toolspec._ALL (same list object) — mutate in place so every
+        # holder of the list sees the change. The bound views (registry.tool, tools_by_name)
+        # are rebuilt from it below (apply_toolkits), in place too.
+        registry.all_tools[:] = [t for t in registry.all_tools if t.name not in old]
         for name in old:
-            registry.tools_by_name.pop(name, None)
+            registry.all_by_name.pop(name, None)
             registry.TOOL_RISK.pop(name, None)
             registry.DECLARED_RISK.pop(name, None)
             registry.RETRIEVAL_TOOLS.discard(name)
+            toolspec._TOOLKIT_OF.pop(name, None)
+        # Each server's /tools toolkit goes with it; a server that reconnects adds its own back.
+        for key in [k for k, kit in toolspec.TOOLKITS.items() if kit.managed_by == "/mcp"]:
+            toolspec.TOOLKITS.pop(key)
 
         _stop_servers()
         _SERVERS.clear()
@@ -603,13 +608,14 @@ def reload() -> list[str]:
         # Fold the new tools into the views registry built at import time, then re-apply the
         # user's persisted per-tool tier overrides over the fresh declarations.
         new = {n for st in _SERVERS.values() for n in st.registered}
-        for t in registry.tool:
+        for t in registry.all_tools:
             if t.name in new:
-                registry.tools_by_name[t.name] = t
+                registry.all_by_name[t.name] = t
                 registry.DECLARED_RISK[t.name] = registry.TOOL_RISK[t.name]
         for name, tier in policy.risk_overrides().items():
             if name in new and tier in RISK_TIERS:
                 registry.TOOL_RISK[name] = tier
+        registry.apply_toolkits()  # the bound views: every registered tool whose toolkit is on
 
         # The tool set and tiers just changed — re-push the quarantine's trust classifications
         # (untrusted set + the tool-coercion pattern's gated-name alternation).

@@ -647,3 +647,72 @@ def test_help_explains_and_does_not_run(tools_cmd, config_file):
 
     assert "/tools off" in out and "--session" in out
     assert registry.off_toolkits() == []
+
+
+# ── /policy risk and MCP servers ─────────────────────────────────────────────────────────────
+
+
+def test_policy_risk_still_knows_a_tool_that_is_off(tools_cmd, monkeypatch):
+    from tools import registry
+
+    monkeypatch.setitem(registry.TOOL_RISK, "create_note", "side_effecting")
+    registry.set_toolkits(["notes"], False)
+
+    out = tools_cmd("/policy risk create_note destructive")
+    assert "unknown tool" not in out
+    assert registry.TOOL_RISK["create_note"] == "destructive"
+    assert "create_note" in tools_cmd("/policy risk")
+
+
+@pytest.fixture
+def mcp_server(monkeypatch, rebinds):
+    """A connected MCP server "demo" with one tool, registered the way startup does it; every
+    trace of it is removed afterwards."""
+    from tools import mcp_client as mc, registry, toolspec
+
+    spec = mc.ServerSpec(name="demo", transport="stdio", command="true")
+    st = mc._ServerState(spec=spec, state="connected")
+    st.tools = [SimpleNamespace(name="issue", description="Open an issue.",
+                                inputSchema={"type": "object", "properties": {}})]
+    monkeypatch.setitem(mc._SERVERS, "demo", st)
+    st.registered = mc._register_server_tools(st)
+    registry.all_by_name.update((t.name, t) for t in registry.all_tools)
+    registry.apply_toolkits()
+    yield st
+    for name in st.registered:
+        registry.all_tools[:] = [t for t in registry.all_tools if t.name != name]
+        registry.all_by_name.pop(name, None)
+        registry.TOOL_RISK.pop(name, None)
+        toolspec._TOOLKIT_OF.pop(name, None)
+        toolspec._UNTRUSTED.discard(name)
+    toolspec.TOOLKITS.pop("mcp:demo", None)
+    registry.apply_toolkits()
+
+
+def test_an_mcp_servers_tools_are_one_toolkit_that_mcp_manages(mcp_server, tools_cmd):
+    from tools import registry, toolspec
+
+    assert mcp_server.registered == ["mcp_demo_issue"]
+    assert toolspec.toolkit_of("mcp_demo_issue") == "mcp:demo"
+    assert toolspec.TOOLKITS["mcp:demo"].managed_by == "/mcp"
+    assert "mcp_demo_issue" in registry.tools_by_name                  # bound: always on
+
+    assert _row(tools_cmd("/tools"), "mcp:demo")[1:3] == ["1", "/mcp"]
+    assert "managed by /mcp" in tools_cmd("/tools off mcp:demo")
+    assert "mcp_demo_issue" in registry.tools_by_name
+
+
+def test_mcp_reload_drops_a_gone_servers_tools_and_its_toolkit(mcp_server, monkeypatch):
+    from tools import mcp_client as mc, registry, toolspec
+
+    monkeypatch.setattr(mc, "_stop_servers", lambda timeout=5.0: None)
+    monkeypatch.setattr(mc, "_parse_specs", lambda problems: [])
+    registry.set_toolkits(["shell"], False)                 # a toggle survives the reload
+    mc.reload()
+
+    assert "mcp_demo_issue" not in registry.all_by_name
+    assert "mcp_demo_issue" not in registry.tools_by_name
+    assert all(t.name != "mcp_demo_issue" for t in registry.all_tools + registry.tool)
+    assert toolspec.toolkit_of("mcp_demo_issue") is None and "mcp:demo" not in toolspec.TOOLKITS
+    assert registry.off_toolkits() == ["shell"] and "run_shell" not in registry.tools_by_name
+    assert {t.name for t in registry.tool} == set(registry.tools_by_name)

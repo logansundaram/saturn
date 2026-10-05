@@ -138,7 +138,7 @@ every check in the agent node. Note: `nodes/tools.py` is the *tool-execution nod
 | File | What it does |
 |---|---|
 | `toolspec.py` | `@register_tool(risk[, retrieval, untrusted])` — risk tier declared at definition, timing wrapper. Unknown risk fails closed to `destructive`. `ToolError`: what a tool RAISES when the call did not do its job (the tools node stamps it `error`; never return a failure as a string). |
-| `registry.py` | Imports the tool modules (which registers them), exposes the live registry + risk views, connects MCP, applies persisted `/policy risk` overrides. |
+| `registry.py` | Imports the tool modules (which registers them), exposes the live registry + risk views, connects MCP, applies persisted `/policy risk` overrides. Owns the toolkit switch behind `/tools`: `tool` / `tools_by_name` are the BOUND tools (toolkits that are on, recomputed in place by `apply_toolkits`), `all_tools` / `all_by_name` every registered one; the toolkit table itself is `toolspec.TOOLKITS`. |
 | `mcp_client.py` | MCP client: stdio/HTTP/SSE servers from config.yaml, remote tools registered as `mcp_<server>_<tool>` (never trusting self-declared tiers), remote calls on the egress ledger, one background asyncio bridge. |
 | `calculator.py` | `calculate` (whitelisted AST evaluator — never `eval`) + `current_time` (clock grounding). |
 | `web.py` | `web_search` (keyless DuckDuckGo — API-less by design since 2026-07-06), `web_extract` (httpx fetch + local trafilatura extraction; redirects followed one hop at a time, each new host air-gap checked and recorded before it is contacted). `http_request` was cut 2026-07-16 — MCP is the integration surface. |

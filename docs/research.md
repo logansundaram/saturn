@@ -336,7 +336,7 @@ rests on.
 2. T2 — escalate on provenance, with paraphrased-injection probes in the trust benchmark
 3. P3 — drafts in the user's voice
 4. P4 — incognito
-5. E1(a) — `tools.disabled`, and measure the trimmed catalog
+5. E1(a) — `tools.disabled`, and measure the trimmed catalog (the switch shipped 2026-10-05 as toolkits: `/tools off <toolkit>`, `benchmark.py --off`; the measurement is open)
 6. P1 — routines (after skills)
 7. P2 — triage skill and the awaiting-reply reader (after skills)
 8. T3 — argument provenance at the gate (mail and calendar; Messages shipped 2026-10-02)

@@ -204,6 +204,11 @@ def run_repl() -> None:
 
     for problem in mcp_client.problems():
         ui.warn(problem)
+    # A `toolkits:` line that names no toolkit or is not true/false — it turned nothing off.
+    from tools import registry as _registry
+
+    for problem in _registry.toolkit_problems():
+        ui.warn(problem)
     # A permissions.json that failed to load degraded the gate to defaults inside policy._load —
     # silently, since trust/ never imports tui. Surface it with the rest of the startup health
     # report (the mcp_client.problems() pattern); registry already triggered the load at import,

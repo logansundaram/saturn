@@ -778,3 +778,31 @@ def test_skipped_tasks_are_counted_apart():
 
     assert (s["total"], s["passed"], s["failed"]) == (2, 1, ["b"])
     assert s["skipped"] == ["c"] and "messaging" not in s["by_shape"]
+
+
+# ── the other ways the config changes (/config) ──────────────────────────────────────────────
+
+
+def test_config_reload_rebinds_to_the_files_toolkits(tools_cmd, config_file, monkeypatch):
+    import commands.config
+    import config
+    from tools import registry
+
+    live = dict(config.get_config()._data)
+    monkeypatch.setattr(config, "_config", config.get_config())        # restored after the test
+    monkeypatch.setattr(commands.config, "_resync_rag_after_model_change", lambda: None)
+    config_file.write_text(yaml.safe_dump({**live, "toolkits": {"messages": False}}), "utf-8")
+
+    tools_cmd("/config reload")
+
+    assert registry.off_toolkits() == ["messages"]
+    assert "send_message" not in registry.tools_by_name and "read_mail" in registry.tools_by_name
+
+
+def test_the_generic_setter_keeps_the_bound_set_in_step(tools_cmd, config_file):
+    from tools import registry
+
+    tools_cmd("/config toolkits.mail false --session")
+
+    assert registry.off_toolkits() == ["mail"]
+    assert "read_mail" not in registry.tools_by_name

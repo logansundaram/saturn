@@ -7,6 +7,29 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
 
 ## [Unreleased]
 
+### Added
+
+- **Toolkits — turn off the tools you don't use.** `/tools` now shows Saturn's tools in
+  groups: files, web, shell, knowledge base, notes, calendar, mail, contacts, reminders,
+  messages, shortcuts, desktop, notifications, skills. `/tools off messages` turns one off and
+  `/tools on messages` brings it back; `/tools mail` lists one toolkit's tools and `/tools
+  --all` every tool. A toolkit that is off is not shown to the model at all: the prompt is
+  smaller, the model cannot pick those tools by mistake, and Saturn can never reach that app.
+  Ask for something a toolkit that is off would do ("what's on my calendar tomorrow?") and
+  Saturn says it is turned off and names the command that turns it on. The choice is saved to
+  `config.yaml` under `toolkits:` (`--session` keeps it to this session); everything starts
+  on. The core — the checklist, questions, memory, the calculator and clock — is always on,
+  and turning a toolkit on never changes what the approval gate asks about. MCP servers are
+  listed as toolkits and still managed with `/mcp`.
+- **`benchmark.py --off <toolkits>`** runs either benchmark with toolkits turned off, to
+  measure a smaller catalog. A loop task that needs one of them is skipped and counted apart.
+
+### Changed
+
+- **`/tools` opens on the toolkits**, not the flat list of every tool. The flat list is
+  `/tools --all`, grouped by toolkit. `/policy risk` still lists and sets the tier of a tool
+  whose toolkit is off.
+
 ## [0.2.0] — 2026-10-05
 
 ### Added

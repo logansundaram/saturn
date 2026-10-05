@@ -128,6 +128,8 @@ def _config(ctx, args):
     if args[0].lower() == "reload":  # case-insensitive like every sibling subcommand match
         reload()
         from core.llms import reset_models
+        from tools import registry
+        registry.apply_toolkits()  # the bound tools follow the file's `toolkits:` again
         reset_models()
         _print("  config.yaml reloaded from disk (any session edits discarded).")
         _resync_rag_after_model_change()
@@ -220,6 +222,14 @@ def _config(ctx, args):
         from core.llms import reset_models
         reset_models()
         _print("  (models will rebuild with the new context window on next use)")
+    elif key.startswith("toolkits."):
+        # /tools is the front door, but a toolkit set here must not leave the bound tools and
+        # the prompt disagreeing: the prompt reads the config, the bind reads the registry.
+        from core.llms import reset_models
+        from tools import registry
+        registry.apply_toolkits()
+        reset_models()
+        _print("  (toolkits re-applied — /tools shows what is bound)")
 
 
 def _persist_key(cfg, key: str) -> None:

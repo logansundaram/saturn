@@ -1,7 +1,8 @@
 # Toolkits — tools in groups the user can turn off
 
-Date: 2026-10-05. Status: **approved in conversation 2026-10-05; being built.** No plan
-document: the design below is the plan, built test-first in the order of "Build order".
+Date: 2026-10-05. Status: **built 2026-10-05** (read "As built" at the end). Not yet
+measured: no benchmark run with a trimmed catalog. No plan document: the design below was
+the plan, built test-first in the order of "Build order".
 
 ## The goal
 
@@ -183,3 +184,24 @@ turn a toolkit on in the middle of a turn.
 1. The table and the tagging. 2. The bound set and the switch. 3. The prompt and the
 grounding. 4. The backstop. 5. Saving. 6. The command. 7. `/policy risk` and MCP. 8. The
 benchmark flag. 9. Startup report, docs, changelog.
+
+## As built (2026-10-05)
+
+Built as designed. What a reader of the design would not guess:
+
+- **`/tools --all` is grouped by toolkit**, in the table's order, not in registration order.
+- **`--off` and the trust benchmark.** Only the loop benchmark skips a task whose toolkit is
+  off. The trust probes need `files`, `knowledge` and the core; turning those off makes the
+  probe miss, not skip.
+- **`/config` keeps the bound set in step.** The prompt reads `toolkits.*` from the config
+  and the bind reads the registry, so `/config reload` and `/config toolkits.<key> <bool>`
+  re-apply the toolkits too. `toolkit_problems()` is read at launch only (interactive and
+  headless).
+- **One real check, both tiers** (2026-10-05, every app toolkit off, in memory): "What's on
+  my calendar tomorrow?" was answered in one pass with no tool call — the 4b: "that toolkit
+  is currently turned off. You can turn it on with `/tools on calendar`"; the 9b: "The
+  calendar tool is turned off … run `/tools on calendar` first." `calculate` still ran. Two
+  requests are not a measurement.
+
+Open: the loop benchmark with a trimmed catalog on both tiers (`--off`, three runs), which
+is what decides whether any toolkit should start off.

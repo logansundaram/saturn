@@ -376,7 +376,7 @@ for details on any one. Highlights:
 | `/models` | The model page: your hardware, the qwen ladder (four chat sizes + three embedders) priced against it — fit and estimated speed — pick a row to switch, pulling what's missing on consent. |
 | `/config` | View/edit settings (`/config runtime.num_ctx <size|auto>` resizes the context window). |
 | `/docs` | The knowledge base: list documents, `add <path>`, `remove <name>`, `rebuild` (launch syncs on its own). |
-| `/tools` | List the agent's tools and their risk tiers. |
+| `/tools` | The toolkits — the tools in groups (files, web, mail, calendar, messages…): `/tools off messages` turns one off so the model never sees it, `/tools on messages` brings it back, `/tools mail` lists one toolkit's tools and risk tiers, `/tools --all` every tool. |
 | `/mcp` | MCP server status + the remote tools they add; `reload` after a config edit. |
 | `/memory` | See, add, edit, and review the layered facts the agent permanently remembers; `review` is the gated learning step (also runs at `/quit`), `why <n>` its provenance. |
 | `/policy` | Your trust settings in one place: bare = what runs without asking and what can leave the machine; `risk`/`allow`/`shortcut`/`open` are the gate's levers, `egress` the ledger of what left, `airgap` the seal (bare forms report, changing is always explicit). |

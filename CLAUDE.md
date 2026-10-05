@@ -279,6 +279,24 @@ Unknown risk fails closed to `destructive`; `run_shell` is always `destructive`.
 and never trust a server's self-declared tier. `tools/toolspec.py` is separate from `registry.py`
 precisely to avoid the import cycle — keep it that way.
 
+Every tool belongs to a **toolkit** (`toolspec.TOOLKITS`, the ordered table `/tools` lists): its
+module's name unless the decorator says `toolkit=` (the six `core` tools and
+`schedule_notification` do); an unknown key raises at import; an MCP server's tools land under
+`mcp:<server>`, which `/mcp` manages. `/tools on|off <toolkit>` (`commands/runtime.py`,
+persisted as `toolkits.<key>` in config.yaml — `config.append_block` adds the section to a
+file written before it existed) turns a switchable toolkit off, and off means UNBOUND:
+`registry.tool` / `tools_by_name` are the bound views, recomputed IN PLACE by
+`registry.apply_toolkits` (never rebind those names), while `all_tools` / `all_by_name`, the
+risk tables and the quarantine's sets keep covering every registered tool. A toggle rebinds
+the model and re-primes the prefix, because the system prompt changes with it:
+`core/messages.agent_sys_text` cuts the sentences that name an off toolkit's tools
+(`_TOOLKIT_SENTENCES` — each must occur exactly once in `_AGENT_SYS`, a test pins it) and adds
+one line saying what is off and that `/tools on <name>` turns it on; with everything on the
+prompt is the literal, byte for byte. A call to an off tool is answered by hygiene before any
+other check (`TOOLKIT_OFF_TEXT`, worded for the user in the incidents note) and can never
+execute. `core` cannot be turned off. `tests/conftest.py` starts every test with all toolkits
+on. Spec: `docs/superpowers/specs/2026-10-05-toolkits-design.md`; `tests/test_toolkits.py`.
+
 File tools, `run_shell`'s working directory, the workspace `SATURN.md` and `/init` follow
 `core/workspace.py`: the launch folder (`agent.main` sets it from the cwd) plus folders added
 with `/add-dir`. `workspace.resolve` is the ONE containment check (`tools/files._resolve` wraps

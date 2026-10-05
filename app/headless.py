@@ -192,6 +192,10 @@ def run_headless(args) -> None:
 
     for problem in _think.problems():
         print(f"warning: {problem}", file=sys.stderr)
+    from tools import registry as _registry
+
+    for problem in _registry.toolkit_problems():
+        print(f"warning: {problem}", file=sys.stderr)
     tracer = Tracer(DB_PATH)
     state = _initial_state()
     state = _fresh_turn(state, query)

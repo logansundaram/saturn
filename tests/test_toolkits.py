@@ -491,3 +491,159 @@ def test_a_toggle_persists_through_the_single_line_edit(config_file, monkeypatch
     assert len(before) == len(after) and len(changed) == 1
     assert changed[0][0].startswith("  messages: true") and changed[0][1].startswith("  messages: false")
     assert changed[0][0].split("#")[1] == changed[0][1].split("#")[1]     # the comment stays
+
+
+# ── the command (commands/runtime.py) ────────────────────────────────────────────────────────
+
+from types import SimpleNamespace  # noqa: E402
+
+
+@pytest.fixture
+def tools_cmd(capsys, rebinds, monkeypatch):
+    """Run a /tools line and return what it printed. Counts the prefix primes it starts."""
+    import commands
+    from core import prime
+
+    primes: list = []
+    monkeypatch.setattr(prime, "start_priming", lambda *a, **k: primes.append(1))
+
+    def run(line):
+        capsys.readouterr()
+        commands.dispatch(line, SimpleNamespace(state={}, should_quit=False))
+        return capsys.readouterr().out
+
+    run.primes = primes
+    return run
+
+
+def _cells(out):
+    """The table rows of a readout, each as its cells (the rail glyph dropped)."""
+    return [ln.split()[1:] for ln in out.splitlines() if ln.split()[:1] == ["│"]]
+
+
+def _row(out, key):
+    """The readout's row for one toolkit or tool."""
+    rows = [r for r in _cells(out) if r[0] == key]
+    assert len(rows) == 1, (key, out)
+    return rows[0]
+
+
+def test_bare_tools_is_the_toolkit_readout_and_never_a_flip(tools_cmd, config_file):
+    from tools import registry
+
+    registry.set_toolkits(["messages"], False)
+    out = tools_cmd("/tools")
+
+    assert _row(out, "core")[1:4] == ["6", "always", "on"]
+    assert _row(out, "mail")[1:3] == ["6", "on"]
+    assert _row(out, "messages")[1:3] == ["3", "off"]
+    assert "45 tools" in out and "42 bound" in out and "1 toolkit off" in out
+    assert registry.off_toolkits() == ["messages"] and tools_cmd.primes == []
+    assert config_file.read_text("utf-8") == OLD_CONFIG
+
+
+def test_tools_with_a_toolkit_lists_its_tools_and_tiers(tools_cmd):
+    out = tools_cmd("/tools mail")
+
+    for name in ("list_mail", "search_mail", "read_mail", "draft_mail", "reply_mail", "update_mail"):
+        assert name in out
+    assert "side_effecting" in out and "read_only" in out
+    assert "read_file" not in out
+
+
+def test_off_unbinds_saves_and_primes(tools_cmd, config_file):
+    from tools import registry
+
+    out = tools_cmd("/tools off messages mail")
+
+    assert registry.off_toolkits() == ["mail", "messages"]
+    saved = yaml.safe_load(config_file.read_text("utf-8"))["toolkits"]
+    assert saved == {k: k not in ("mail", "messages") for k in SWITCHABLE}
+    assert config_file.read_text("utf-8").startswith(OLD_CONFIG)
+    assert "messages off" in out and "mail off" in out and "36 of 45" in out
+    assert "next request" in out
+    assert tools_cmd.primes == [1]
+
+
+def test_on_binds_again_and_saves(tools_cmd, config_file):
+    from tools import registry
+
+    tools_cmd("/tools off messages")
+    out = tools_cmd("/tools on messages")
+
+    assert registry.off_toolkits() == []
+    assert yaml.safe_load(config_file.read_text("utf-8"))["toolkits"]["messages"] is True
+    assert "messages on" in out and "45 of 45" in out
+
+
+def test_session_only_leaves_the_file_alone(tools_cmd, config_file):
+    from tools import registry
+
+    out = tools_cmd("/tools off shell --session")
+
+    assert registry.off_toolkits() == ["shell"]
+    assert config_file.read_text("utf-8") == OLD_CONFIG
+    assert "session only" in out
+
+
+def test_one_unknown_name_refuses_the_whole_line(tools_cmd, config_file):
+    from tools import registry
+
+    out = tools_cmd("/tools off mail mesages")
+
+    assert registry.off_toolkits() == [] and tools_cmd.primes == []
+    assert config_file.read_text("utf-8") == OLD_CONFIG
+    assert "mesages" in out and "messages" in out          # the closest match is offered
+
+
+@pytest.mark.parametrize("line, said", [
+    ("/tools off core", "always on"),
+    ("/tools off", "/tools off <toolkit>"),
+    ("/tools nosuch", "no toolkit"),
+])
+def test_what_cannot_be_done_is_said_and_changes_nothing(tools_cmd, config_file, line, said):
+    from tools import registry
+
+    assert said in tools_cmd(line)
+    assert registry.off_toolkits() == [] and tools_cmd.primes == []
+    assert config_file.read_text("utf-8") == OLD_CONFIG
+
+
+def test_a_toolkit_already_in_that_state_is_said_to_be(tools_cmd, config_file):
+    assert "mail is already on" in tools_cmd("/tools on mail")
+    assert tools_cmd.primes == [] and config_file.read_text("utf-8") == OLD_CONFIG
+
+
+def test_names_are_not_case_sensitive(tools_cmd, config_file):
+    from tools import registry
+
+    tools_cmd("/tools OFF Mail")
+    assert registry.off_toolkits() == ["mail"]
+
+
+def test_contacts_off_beside_messages_gets_a_note(tools_cmd, config_file):
+    assert "look a name up" in tools_cmd("/tools off contacts")
+    assert "look a name up" not in tools_cmd("/tools off messages")
+
+
+def test_all_is_the_flat_list_with_each_tools_toolkit(tools_cmd):
+    from tools import registry
+
+    registry.set_toolkits(["shell"], False)
+    out = tools_cmd("/tools --all")
+
+    rows = _cells(out)
+    assert sorted(r[0] for r in rows) == sorted(t.name for t in registry.all_tools)
+    assert _row(out, "read_mail")[1:3] == ["mail", "read_only"]
+    assert _row(out, "run_shell")[1:4] == ["shell", "off", "destructive"]
+    kits = [r[1] for r in rows]                       # grouped: the table's order, core first
+    assert kits == sorted(kits, key=(["core"] + SWITCHABLE).index)
+
+
+def test_help_explains_and_does_not_run(tools_cmd, config_file):
+    from tools import registry
+
+    out = tools_cmd("/tools off mail --help")
+
+    assert "/tools off" in out and "--session" in out
+    assert registry.off_toolkits() == []

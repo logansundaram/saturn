@@ -2,7 +2,7 @@
 Runtime-inventory commands — what the agent is running on and with (the /help "observability"
 readouts):
 
-  /tools    the registered tools + risk tiers
+  /tools    the toolkits: the tools in groups, each turned on or off
   /models   the model page: the hardware, the qwen ladders priced against it, pick a tier /
             embedder; also the first-launch setup and its consented `ollama pull`s
   /mcp      MCP server status + remote tools; reload
@@ -19,41 +19,205 @@ from commands._utils import (
 )
 from config import tier_chat_model
 from core import model_family
-from tools.registry import tool as TOOLS, risk_of
+from tools.registry import risk_of
 
 
 # ── /tools ───────────────────────────────────────────────────────────────────────────────────
+# Toolkits (tools/toolspec.TOOLKITS, the switch in tools/registry): the tools in groups the user
+# turns on or off. Off is UNBOUND — the model is not shown the tools — so a toggle rebinds the
+# model and re-primes the cached prefix. Spec: docs/superpowers/specs/2026-10-05-toolkits-design.md.
+_TOOLS_ON = ("on", "enable")
+_TOOLS_OFF = ("off", "disable")
+_TOOLS_ALL = ("--all", "-a", "all")
+
+
+def _tool_rows(tools, *, with_toolkit: bool = False) -> list:
+    """One row per tool: name, (its toolkit), risk tier, the description's first line."""
+    from tools import registry
+    from tools.toolspec import toolkit_of
+    from tui import ui
+
+    rows = []
+    for t in tools:
+        risk = registry.risk_of(t.name)
+        desc = (t.description or "").strip().splitlines()
+        row = [t.name]
+        if with_toolkit:
+            kit = toolkit_of(t.name) or ""
+            row.append((f"{kit} off" if registry.is_off(t.name) else kit, "dim"))
+        rows.append((*row, (risk, ui.risk_style(risk)), (desc[0] if desc else "", "dim")))
+    return rows
+
+
+def _toolkit_state(key: str) -> "tuple[str, str]":
+    """(the state cell, its style) for one toolkit's row."""
+    from tools import registry
+    from tools.toolspec import TOOLKITS
+
+    kit = TOOLKITS[key]
+    if kit.core:
+        return "always on", "dim"
+    if kit.managed_by:
+        return kit.managed_by, "dim"
+    return ("on", "default") if registry.toolkit_on(key) else ("off", "yellow")
+
+
+def _show_toolkits() -> None:
+    from tools import registry
+    from tools.toolspec import TOOLKITS
+    from tui import ui
+
+    off = registry.off_toolkits()
+    ui.section(
+        "tools",
+        f"{len(registry.all_tools)} tools  ·  {len(registry.tool)} bound  ·  "
+        f"{len(off)} toolkit{'' if len(off) == 1 else 's'} off  ·  /tools on|off <toolkit>",
+    )
+    rows = []
+    for key, kit in TOOLKITS.items():
+        n = len(registry.toolkit_tools(key))
+        if n:
+            rows.append((key, (str(n), "dim"), _toolkit_state(key), (kit.about, "dim")))
+    ui.table(rows)
+
+
+def _show_toolkit(key: str) -> None:
+    from tools import registry
+    from tools.toolspec import TOOLKITS
+    from tui import ui
+
+    tools = registry.toolkit_tools(key)
+    ui.section(f"tools · {key}",
+               f"{_toolkit_state(key)[0]}  ·  {len(tools)} tool{'' if len(tools) == 1 else 's'}"
+               f"  ·  {TOOLKITS[key].about}")
+    ui.table(_tool_rows(tools))
+
+
+def _show_all_tools() -> None:
+    from config import get_config
+    from tools import registry
+    from tools.toolspec import TOOLKITS, toolkit_of
+    from tui import ui
+
+    gated = sum(1 for t in registry.tool if not get_config().auto_approves(risk_of(t.name)))
+    ui.section(
+        "tools",
+        f"{len(registry.all_tools)} registered  ·  {len(registry.tool)} bound  ·  {gated} gated"
+        f"  ·  auto-approve ≤ {get_config().auto_approve}",
+    )
+    # Grouped by toolkit, in the table's order (a stable sort keeps registration order within).
+    order = list(TOOLKITS)
+    tools = sorted(registry.all_tools, key=lambda t: order.index(toolkit_of(t.name)))
+    ui.table(_tool_rows(tools, with_toolkit=True))
+
+
+def _no_toolkit(key: str) -> str:
+    """Why `key` cannot be switched or shown — worded for the user, with the closest name."""
+    import difflib
+
+    from tools.toolspec import TOOLKITS
+
+    hint = difflib.get_close_matches(key, TOOLKITS, n=1)
+    return (f"  no toolkit named {key!r}" + (f" — did you mean {hint[0]}?" if hint else "")
+            + "  (/tools lists them)")
+
+
+def _switch_toolkits(keys: list[str], on: bool, *, session: bool) -> None:
+    from config import append_block, get_config
+    from commands.config import _persist_key
+    from core import prime
+    from tools import registry
+    from tools.toolspec import TOOLKITS
+
+    word = "on" if on else "off"
+    if not keys:
+        _print(f"  usage: /tools {word} <toolkit> [<toolkit> …] [--session]")
+        return
+    # The whole line or nothing: one name that cannot be switched refuses every other.
+    for key in keys:
+        kit = TOOLKITS.get(key)
+        if kit is None:
+            _print(_no_toolkit(key))
+            return
+        if kit.core:
+            _print(f"  {key} is always on — the engine and the prompt lean on its tools")
+            return
+        if kit.managed_by:
+            _print(f"  {key} is managed by {kit.managed_by}")
+            return
+
+    changed = registry.set_toolkits(keys, on)
+    for key in dict.fromkeys(keys):
+        n = len(registry.toolkit_tools(key))
+        tools = f"{n} tool{'' if n == 1 else 's'}"
+        if key not in changed:
+            _print(f"  {key} is already {word}")
+        else:
+            _print(f"  {key} {word} — {tools} {'bound' if on else 'unbound'}")
+    if not changed:
+        return
+
+    _print(f"  {len(registry.tool)} of {len(registry.all_tools)} tools bound; "
+           "this applies to your next request.")
+    if not registry.toolkit_on("contacts") and registry.toolkit_on("messages") and (
+            "contacts" in changed or "messages" in changed):
+        _print("  note: with contacts off, messages can text a number you type but cannot "
+               "look a name up.")
+    if session:
+        _print("  session only — omit --session to save to config.yaml.")
+    else:
+        try:
+            if append_block("toolkits", registry.toolkit_block()):
+                _print("  added a toolkits: section to config.yaml")
+        except OSError as exc:
+            _print(f"  could not add the toolkits: section to config.yaml: {exc}")
+        for key in changed:
+            _persist_key(get_config(), f"toolkits.{key}")
+    # The system text and the bound schemas just changed — the whole cached prefix. Re-plant
+    # it now so the next request does not pay for re-reading it (a no-op when priming is off).
+    prime.start_priming()
+
+
 @command(
     "tools",
-    "View the registered tools and their risk tiers.",
+    "Toolkits: the tools Saturn has, in groups you can turn on or off.",
+    usage="/tools [<toolkit> | on|off <toolkit>… [--session] | --all]",
     details="""
-Lists every tool the agent can call, each with its approval risk tier
-(read_only, side_effecting, destructive) and a one-line description.
+Saturn's tools come in toolkits — files, web, mail, calendar, messages and so on. A toolkit
+that is off is unbound: the model is not shown its tools and cannot call them, the prompt is
+that much smaller, and Saturn can never reach that app. When a request needs a toolkit that
+is off, Saturn says so and names the switch.
 
-The risk tier drives the approval gate: read_only runs freely, the others prompt (unless
-auto-approve is on). Override a tier for the session with /policy risk; open/close the gate
-with /policy open.
+  /tools                      the toolkits: how many tools, on or off, what each is for
+  /tools mail                 the mail toolkit's tools, each with its risk tier
+  /tools off messages mail    turn toolkits off (saved to config.yaml)
+  /tools on messages          turn one back on
+  /tools off shell --session  for this session only
+  /tools --all                every tool in one flat list, with its toolkit
 
-Example:
-  /tools
+The core toolkit (the checklist, questions, memory, the calculator and clock) is always on.
+An MCP server is listed here and turned on and off with /mcp.
+
+Turning a toolkit on never changes the approval gate: its tools keep their risk tiers
+(/policy risk), and a send or a skill save still always asks. A change applies to your next
+request.
 """,
 )
 def _tools(ctx, args):
-    from config import get_config
-    from tui import ui
+    from tools.toolspec import TOOLKITS
 
-    gated = sum(1 for t in TOOLS if not get_config().auto_approves(risk_of(t.name)))
-    ui.section(
-        "tools",
-        f"{len(TOOLS)} registered  ·  {gated} gated  ·  auto-approve ≤ {get_config().auto_approve}",
-    )
-    rows = []
-    for t in TOOLS:
-        risk = risk_of(t.name)
-        desc = (t.description or "").strip().splitlines()
-        first = desc[0] if desc else ""
-        rows.append((t.name, (risk, ui.risk_style(risk)), (first, "dim")))
-    ui.table(rows)
+    args, session, _save = split_persist_flags(args)
+    args = [a.lower() for a in args]
+    if not args:
+        _show_toolkits()
+    elif args[0] in _TOOLS_ALL:
+        _show_all_tools()
+    elif args[0] in _TOOLS_ON or args[0] in _TOOLS_OFF:
+        _switch_toolkits(args[1:], args[0] in _TOOLS_ON, session=session)
+    elif args[0] in TOOLKITS:
+        _show_toolkit(args[0])
+    else:
+        _print(_no_toolkit(args[0]))
 
 
 # ── /models ──────────────────────────────────────────────────────────────────────────────────

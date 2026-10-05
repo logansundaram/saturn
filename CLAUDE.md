@@ -2,12 +2,12 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Where to work (since 2026-09-27)
+## Where to work (since 2026-10-05)
 
-**All new work happens in the `v2` worktree at `/Users/Logan/Documents/saturn-v2` (branch `v2`).**
-v2 is a complete overhaul into a simpler agent. The main checkout at `/Users/Logan/Documents/saturn`
-(branch `main`) is the running v1 and a read-only reference (`git show main:<path>`); do not edit or
-commit there unless the user says so explicitly. The worktree has its own `.venv`.
+**All work happens on `main`, in the main checkout at `/Users/Logan/Documents/saturn`.** The v2
+overhaul into a simpler agent (built 2026-09-27 to 2026-10-05 in the `saturn-v2` worktree, branch
+`v2`) is merged and released as 0.2.0. The last v1 commit is `cbd1bd7`, a read-only reference
+(`git show cbd1bd7:<path>`).
 
 Saturn is a local-first, terminal-native AI agent (Python 3.11+, LangGraph, Ollama only). The product
 thesis is the **trust stack**: every action is traced, every risky action faces a human gate, every byte

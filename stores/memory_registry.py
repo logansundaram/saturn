@@ -132,6 +132,14 @@ def normalize_layer(name) -> str:
     return slug or "user"
 
 
+def is_always_loaded(layer) -> bool:
+    """Whether every fact in `layer` rides into EVERY turn's grounding (up to the cap), rather
+    than only when it shares a token with the request. A standing rule must live in such a layer
+    — "never schedule anything before 10am" shares no word with "book a dentist appointment".
+    The memo layer is not: only its recent digest rides along."""
+    return normalize_layer(layer) in _ALWAYS_LAYERS
+
+
 # ── parsing ───────────────────────────────────────────────────────────────────────────────────
 
 _DATE_RE = re.compile(r"^\((\d{4}-\d{2}-\d{2})\)\s*")

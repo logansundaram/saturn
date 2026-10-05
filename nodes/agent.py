@@ -43,6 +43,7 @@ from types import SimpleNamespace
 
 from langchain.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.config import get_stream_writer
+from langgraph.errors import GraphBubbleUp
 from langgraph.types import interrupt
 
 import diag
@@ -50,6 +51,7 @@ from config import get_config
 from langchain_core.exceptions import OutputParserException
 from pydantic import ValidationError
 
+from core.llms import call_failure
 from core.llms import (extract_prompt_tokens, extract_tok_per_sec, generate, get_model,
                        invoke_kwargs, model_tag)
 from core.llms import stream as llm_stream
@@ -364,7 +366,10 @@ def _run_pass(llm_input: list, decision) -> "tuple[AIMessage | None, dict]":
       think         the thinking call; empty, cut or stopped → rerun once think-off.
       draft         the think-off call first. A text answer stands (a chat turn pays nothing).
                     A tool call is retracted and the pass rethought; if that thought is
-                    empty, cut or stopped, the DRAFT stands — never a third call.
+                    empty, cut or stopped, or the daemon fails the call, the DRAFT stands —
+                    never a third call. A daemon that cannot be reached at all fails the
+                    turn instead (the draft must not act in a turn that cannot go on), and
+                    so does an error that is not the daemon's.
 
     None means the model's output was malformed twice (the caller answers honestly)."""
     if decision.draft:
@@ -373,7 +378,22 @@ def _run_pass(llm_input: list, decision) -> "tuple[AIMessage | None, dict]":
             return draft, {"outcome": "none", "thought": _take_thought(draft)}
         _take_thought(draft)
         _retract_stream()  # the draft's preamble is not the answer
-        ai = _generate_or_retry(llm_input, tools=True, think=True)
+        try:
+            ai = _generate_or_retry(llm_input, tools=True, think=True)
+        except GraphBubbleUp:
+            raise
+        except Exception as exc:
+            # A daemon error or a timeout on the rethink is a thought that came to nothing:
+            # the draft is a valid call already in hand, so the turn does not fail on the
+            # optional second call. Not retried — the bound is two calls — and not asked
+            # again this turn (core.think.gave_up). Anything else propagates: a bug here is
+            # not "the model was busy", and with nothing answering at the address the draft
+            # would act — a send, a write — in a turn whose next pass cannot report it.
+            if call_failure(exc) != "daemon":
+                raise
+            diag.log(f"agent_node : the rethink failed ({type(exc).__name__}: {exc}) — "
+                     "the drafted call stands, and this turn does not think again")
+            return draft, {"outcome": "failed", "thought": {}}
         thought = _take_thought(ai)
         outcome = _thought_outcome(ai, thought)
         if ai is not None and outcome in ("thought", "unsupported"):
@@ -620,6 +640,8 @@ def agent_node(state: AgentState):
     this_turn = _this_turn(messages + new)
     kind = _think.step_kind(this_turn, capped, mechanical=(ASK_ALONE_TEXT,))
     decision = _think.decide(_think.level(state), kind, _think.policy(), _think.supported())
+    if _think.gave_up(state.get("think")):  # a thinking call failed this turn: not asked again
+        decision = _think.Decision(False, False, decision.why)
     llm_input = _llm_input(state, messages + new)
     ai, thinking = _run_pass(llm_input, decision)
     if ai is not None and iteration > cap and _calls_of(ai)[0]:

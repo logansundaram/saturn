@@ -33,7 +33,8 @@ from core.state import is_steer_message
 LEVELS = ("fast", "auto", "deep")
 POLICIES = ("act", "recover")  # what auto does · the baseline the benchmark compares it to
 KINDS = ("capped", "recovery", "steered", "first", "wrap-up", "information")
-OUTCOMES = ("none", "thought", "empty", "cut-budget", "cut-esc", "malformed", "unsupported")
+OUTCOMES = ("none", "thought", "empty", "cut-budget", "cut-esc", "malformed", "failed",
+            "unsupported")
 
 # The old spellings (and what YAML makes of a bare `on` / `off`: a boolean).
 _LEVEL_WORDS = {"fast": "fast", "off": "fast", "false": "fast",
@@ -226,6 +227,14 @@ def decide(level: str, kind: str, policy: "str | None" = None, supported: bool =
     return Decision(kind in thinks, False, why)
 
 
+def gave_up(entries) -> bool:
+    """Whether a thinking call FAILED earlier in this turn (`state["think"]`, outcome
+    `failed`). The rest of the turn then runs think-off: a daemon that timed out on one
+    thinking call is not asked for another — each would be waited out in full before the
+    pass could go on (nodes/agent)."""
+    return any(isinstance(e, dict) and e.get("outcome") == "failed" for e in entries or [])
+
+
 # ── the record ───────────────────────────────────────────────────────────────────────────────
 
 _TEXT_CAP = 400  # the thought's opening, for the rail leaf; the whole thought is in llm_calls
@@ -264,6 +273,8 @@ def describe(e: dict) -> str:
         said = "thought stopped by Esc — answered without it"
     elif outcome == "malformed":
         said = "the thinking call's output was malformed"
+    elif outcome == "failed":
+        said = "the thinking call failed — the drafted call stands"
     elif outcome == "unsupported":
         said = "this model has no thinking mode"
     else:

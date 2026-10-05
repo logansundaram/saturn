@@ -456,6 +456,27 @@ def generate(runnable, messages, *, tag: str = "", **kwargs):
         return runnable.invoke(messages, **{k: v for k, v in kwargs.items() if k != "reasoning"})
 
 
+def call_failure(exc: BaseException) -> "str | None":
+    """How the DAEMON failed a model call, or None when the exception is not its doing (a bug
+    on this side must propagate, never be read as "the model was unavailable"):
+
+      unreachable   nothing answered at the address — the connection was refused or timed out
+                    before it was made. The next call will fail the same way.
+      daemon        it answered and then failed: a read timeout, a dropped stream, an error
+                    status, a runner that crashed.
+
+    nodes/agent asks this of a failed rethink: the drafted call may stand for `daemon`, and
+    the turn fails for `unreachable` before the draft can act."""
+    import ollama
+
+    if isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout, ConnectionRefusedError)):
+        return "unreachable"
+    if isinstance(exc, (httpx.HTTPError, ollama.ResponseError, ollama.RequestError,
+                        TimeoutError, ConnectionError)):
+        return "daemon"
+    return None
+
+
 def stream(runnable, messages, *, tag: str = "", **kwargs):
     """`runnable.stream(...)` under the same one-shot think fallback as `generate`. The generator
     is materialized far enough to surface a parameter rejection HERE (the daemon rejects on the

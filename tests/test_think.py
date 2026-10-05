@@ -314,6 +314,38 @@ def test_draft_first_an_unusable_rethink_keeps_the_draft(monkeypatch, rethink, o
     assert e["outcome"] == outcome and not e["draft"] and e["asked"]
 
 
+def test_draft_first_a_rethink_that_fails_keeps_the_draft(monkeypatch):
+    """A daemon error or a timeout on the rethink is a thought that came to nothing: the valid
+    draft stands, the turn does not fail, and there is no third call."""
+    from nodes import agent
+    _cfg(monkeypatch, think="auto", think_policy="act")
+
+    def rethink():
+        raise TimeoutError("read timed out")
+
+    seen = _seam(monkeypatch, lambda think: rethink() if think else CALL)
+    out = agent.agent_node(_state(Q))
+    assert seen == [False, True]
+    assert [c["name"] for c in out["messages"][-1].tool_calls] == ["read_file"]
+    e = out["think"][0]
+    assert e["outcome"] == "failed" and not e["draft"] and e["asked"]
+    assert "failed" in think.describe(e)
+
+
+def test_a_thinking_call_with_no_draft_behind_it_still_fails_loudly(monkeypatch):
+    """Only the draft path has something to fall back on. A failed call is not retried."""
+    from nodes import agent
+    _cfg(monkeypatch, think="deep")
+
+    def boom(think):
+        raise TimeoutError("read timed out")
+
+    seen = _seam(monkeypatch, boom)
+    with pytest.raises(TimeoutError):
+        agent.agent_node(_state(Q))
+    assert seen == [True]
+
+
 @pytest.mark.parametrize("cut, outcome", [("budget", "cut-budget"), ("esc", "cut-esc")])
 def test_a_cut_thought_is_dropped_and_the_pass_answers_without_it(monkeypatch, cut, outcome):
     from nodes import agent
@@ -851,3 +883,76 @@ def test_act_drafts_every_deciding_pass_and_thinks_only_before_a_call(monkeypatc
     seen = _seam(monkeypatch, lambda think: AIMessage(content="not there", response_metadata=_thought()))
     agent.agent_node(_state(Q + _round(("read_file", "error")), iteration=1))
     assert seen == [True]
+
+
+# ── a rethink that fails: what may stand, what must not, and no second wait ──────────────────
+
+
+def test_a_rethink_that_fails_by_a_bug_fails_the_turn(monkeypatch):
+    """The draft stands for a DAEMON failure only: a programming error is not swallowed."""
+    from nodes import agent
+    _cfg(monkeypatch, think="auto", think_policy="act")
+
+    def rethink():
+        raise TypeError("'NoneType' object is not iterable")
+
+    _seam(monkeypatch, lambda think: rethink() if think else CALL)
+    with pytest.raises(TypeError):
+        agent.agent_node(_state(Q))
+
+
+def test_a_rethink_that_cannot_reach_the_daemon_fails_the_turn_before_it_acts(monkeypatch):
+    """Nothing answers at the address: the drafted call must not run in a turn that cannot
+    go on to report it."""
+    from nodes import agent
+    _cfg(monkeypatch, think="auto", think_policy="act")
+
+    def rethink():
+        raise ConnectionRefusedError("connection refused")
+
+    _seam(monkeypatch, lambda think: rethink() if think else CALL)
+    with pytest.raises(ConnectionRefusedError):
+        agent.agent_node(_state(Q))
+
+
+def test_after_a_failed_rethink_the_rest_of_the_turn_does_not_think(monkeypatch):
+    """One failed thinking call is paid for once: later passes of the turn run think-off."""
+    from nodes import agent
+    _cfg(monkeypatch, think="auto", think_policy="act")
+    failed = think.entry(n=1, kind="first", decision=think.Decision(False, True, "first move"),
+                         outcome="failed")
+    seen = _seam(monkeypatch, lambda think: CALL)
+    out = agent.agent_node(_state(Q + _round(("read_file", "done")), iteration=1, think=[failed]))
+    assert seen == [False]                               # no draft-then-rethink, one call
+    assert out["think"][0]["outcome"] == "none" and not out["think"][0]["asked"]
+    # after an error it would think outright — not in this turn any more
+    seen = _seam(monkeypatch, lambda think: CALL)
+    agent.agent_node(_state(Q + _round(("read_file", "error")), iteration=1, think=[failed]))
+    assert seen == [False]
+    assert think.gave_up([failed]) and not think.gave_up([{"outcome": "empty"}]) \
+        and not think.gave_up(None)
+
+
+@pytest.mark.parametrize("exc, kind", [
+    (TimeoutError("read timed out"), "daemon"),
+    (ConnectionResetError("reset"), "daemon"),
+    (ConnectionRefusedError("refused"), "unreachable"),
+    (TypeError("bug"), None),
+    (ValueError("bug"), None),
+])
+def test_call_failure_tells_the_daemons_failures_from_ours(exc, kind):
+    from core import llms
+
+    assert llms.call_failure(exc) == kind
+
+
+def test_call_failure_reads_the_http_clients_errors():
+    import httpx
+    import ollama
+
+    from core import llms
+
+    assert llms.call_failure(httpx.ConnectError("no route")) == "unreachable"
+    assert llms.call_failure(httpx.ConnectTimeout("slow")) == "unreachable"
+    assert llms.call_failure(httpx.ReadTimeout("slow")) == "daemon"
+    assert llms.call_failure(ollama.ResponseError("model runner crashed", 500)) == "daemon"

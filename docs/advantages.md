@@ -93,8 +93,9 @@ What is missing is the *rate* at which it learns:
   and go straight to `user` / `entities` / `commitments` with `by=user`; the rail shows a one-line
   `· remembered: …` leaf and `/memory remove` undoes it. Only *inferred* facts and compaction
   summaries keep the review queue. A tool result must never plant a memory; that gate stays.
-- **The first run should be an interview, not a model picker** (pivot #5). Five questions, and
-  the second turn already knows who it is talking to.
+- **The first run should be an interview, not a model picker** (pivot #5, shipped 2026-10-05).
+  Three questions offered after the model pick, five under `/memory setup`, and the second
+  turn already knows who it is talking to.
 - **Contacts and Reminders as readers** (pivot #3, shipped 2026-10-01) give the memory something
   to resolve against: "Petra" is now an address and a number.
 

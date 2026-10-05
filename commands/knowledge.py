@@ -228,12 +228,13 @@ Layers:  user (identity, preferences, constraints) · commitments (open items, w
   /memory why <n>            provenance: when it was learned, who said it (you, or inferred
                              at a review), the run it came from (→ /trace why #run), last use,
                              confirmations
-  /memory setup              the five-question interview the first launch runs: what to call
-                             you, what you do, your people, what you want help with, what I
-                             should never do. Each answer is saved as you give it (Enter keeps
-                             or skips, q stops); a re-run shows the current answers and a new
-                             one replaces it (people and rules are added to). Answers are not
-                             marked sensitive — /memory add --sens <mark> <fact> for that.
+  /memory setup              the interview, all five questions: what to call you, what you
+                             do, your people, what you want help with, what I should never
+                             do (the first launch offers three of them). Each answer is saved
+                             as you give it (Enter keeps or skips, q stops); a re-run shows
+                             the current answers and a new one replaces it (people and rules
+                             are added to). Answers are not marked sensitive —
+                             /memory add --sens <mark> <fact> for that.
   /memory review             the learning step: candidates this session queued — your mid-task
                              corrections, gate denials, the compaction summary —
                              plus the model's own proposals from the transcript,

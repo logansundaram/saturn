@@ -1,5 +1,11 @@
 # First-Run Interview Implementation Plan
 
+> **Built 2026-10-05** (Tasks 1–6; Task 7, the manual dogfood, is not run) — with the
+> amendments I1–I3 from `../specs/2026-10-04-know-the-user-design.md` §2, which this text
+> predates: the launch OFFERS the interview, the first run asks `name` / `work` / `never`,
+> `/memory setup` asks all five, and a write names its similar facts and refuses a secret.
+> That spec's "As built — the interview" is the record of what the code does.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** On a fresh install, right after `/models` picks the tier, Saturn asks five questions (what to call you, what you do, your people, what you want help with, what it should never do), writes each answer to memory as a `by=user` fact, and never asks again; `/memory setup` re-runs it.

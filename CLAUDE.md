@@ -199,7 +199,10 @@ time. Never write a fact without a user action: a gated `remember`; a `remember`
 the user TYPED and STATED in one sentence, in a conversation no external content has ever
 entered (auto-learn, `core/auto_memory.why_not` — deterministic, never a model's judgement;
 stamped `src=said`, noted after the answer — also when the turn later fails,
-`app/repl._keeping_auto_memory` — off headless); `/memory add`; or a review accept.
+`app/repl._keeping_auto_memory` — off headless); `/memory add`; an answer typed into the
+interview (`core/memory_setup.py`: no model call, facts tagged `[setup-<question>]` and stamped
+`src=setup:<question>`; the first launch OFFERS three questions — `FIRST_RUN`, once per install
+via `database/.interview_done` — and `/memory setup` asks all five); or a review accept.
 "Stated" is whole clauses: the fact's words are exactly those of one or more stated clauses
 of the sentence (`_clauses`, `_sentence_problem`) — nothing left out but a lead-in or a title,
 no question (with or without its "?"), no sentence with an if / when / unless clause, in the
@@ -414,4 +417,4 @@ product goal since 2026-09-27 and the ranked work that closes the distance to it
 user would try. `docs/advantages.md` — why the pivot items matter. `docs/OPTIMIZATIONS.md` — latency
 techniques with the numbers behind them. `docs/research.md` — everything still open in pivot /
 engine / advantages, ranked, with plans for the top items and an outside survey.
-`docs/superpowers/` — specs and plans (of the plans dated 2026-10-01 `terminal-escape-sanitising`, Phase 1 of `skills` and `auto-memory-from-user-statements` — with the know-the-user spec's amendments — are built; `2026-10-03-create-skill` is built too, and `2026-10-04-adaptive-thinking` except its sampling experiment). `CHANGELOG.md` — user-visible history.
+`docs/superpowers/` — specs and plans (of the plans dated 2026-10-01 `terminal-escape-sanitising`, Phase 1 of `skills` and `auto-memory-from-user-statements` — with the know-the-user spec's amendments — are built, and so is `first-run-interview` with that spec's I1–I3; `2026-10-03-create-skill` is built too, and `2026-10-04-adaptive-thinking` except its sampling experiment). `CHANGELOG.md` — user-visible history.

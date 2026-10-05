@@ -49,7 +49,7 @@ _Table updated 2026-10-03 against the tree; the ranked list below keeps each ite
 
 | Goal leg | Today | Gap |
 |---|---|---|
-| Know the user | Six memory layers exist; a fact you state in your own words is kept without a click (auto-learn, 2026-10-04), anything else needs a review accept, a gated `remember` or `/memory add`; the agent reads Notes / Calendar / Mail / Contacts / Reminders / Messages; first run asks for a model tier, not for you | The agent starts every session knowing almost nothing and learns from what it is told (the interview and the brief are planned, not built; auto-learn is unmeasured on the 4b and 9b) |
+| Know the user | Six memory layers exist; a fact you state in your own words is kept without a click (auto-learn, 2026-10-04), anything else needs a review accept, a gated `remember` or `/memory add`; the agent reads Notes / Calendar / Mail / Contacts / Reminders / Messages; the first run offers three questions about you after the model tier (the interview, shipped 2026-10-05) | The agent starts every session knowing almost nothing and learns from what it is told (the brief is planned, not built; auto-learn is unmeasured on the 4b and 9b) |
 | Yours to shape | `~/.saturn/SATURN.md` global plus `SATURN.md` per folder; hooks in `~/.saturn/hooks.yaml`; any of your Shortcuts as a tool (`run_shortcut`); MCP config in YAML with zero servers enabled; `/policy` for the gate; toolkits — `/tools off messages` unbinds a group of tools (shipped 2026-10-05, `superpowers/specs/2026-10-05-toolkits-design.md`; everything starts on until a trimmed catalog has been measured) | No script-file tools (skills shipped 2026-10-03: `~/.saturn/skills`, `/skills`) |
 | Visible + gated | Done and true; bare `/help` lists every command by theme (the five-command diet was reversed 2026-10-05) | A trace vocabulary built for auditors, not for someone asking about their Thursday; the macOS permission dialogs name the terminal, not Saturn (`superpowers/specs/2026-10-02-macos-app-identity.md`, undecided) |
 | Works where you are | File tools work in the launch folder plus `/add-dir` folders; `read_file` reads PDF / .docx / .xlsx directly; `search_files` asks Spotlight | No always-listed roots: "the PDF on my desktop" from another folder needs `/add-dir ~/Desktop` first |
@@ -95,11 +95,12 @@ source of the fact is a tool result — a web page must never plant a memory. Th
 that turns "it never remembers" into "it knows me", and it costs nothing at the gate for the
 common case.
 
-### 5. A first-run interview, not a model picker (1 day) — open; plan written 2026-10-01 (`superpowers/plans/2026-10-01-first-run-interview.md`)
-After the tier is chosen, ask five questions in the REPL — name, what you do, the people you
-mention most, what you want help with, what it should never do — and write the answers to the
-`user` / `entities` / `negative` layers. Skippable, re-runnable as `/memory setup`. The agent's
-second turn should already know who it is talking to.
+### 5. A first-run interview, not a model picker (1 day) — shipped 2026-10-05 (`core/memory_setup.py`; deterministic, no model call; rules land in a layer loaded every turn)
+After the tier is chosen, the REPL offers three questions — name, what you do, what it should
+never do — and writes the answers to the `user` layer (Enter starts, anything else skips; once
+per install). `/memory setup` re-runs it with all five: those three plus the people you mention
+most (`entities`) and what you want help with. The agent's second turn should already know who
+it is talking to. Not measured on a model: whether the 4b and 9b act on the facts.
 
 ### 6. A launch brief (1 day) — open; plan written 2026-10-01 (`superpowers/plans/2026-10-01-launch-brief.md`)
 On session start, one dim block: today's events, mail threads waiting on a reply (from

@@ -1,8 +1,9 @@
 # Knowing the user — how facts about the user arrive, are stored and are read
 
 Date: 2026-10-04. Status: **§1 and §3 built 2026-10-04, not yet measured on a model** (read "As
-built" at the end: it overrides the design where they differ); §2 the interview, §4 incognito
-and the memory receipt, §5 `/memory import` are not built. This is the one design above
+built" at the end: it overrides the design where they differ); **§2 the interview built
+2026-10-05** ("As built — the interview"); §4 incognito and the memory receipt, §5
+`/memory import` are not built. This is the one design above
 three plans that were written before it (2026-10-01): `../plans/2026-10-01-auto-memory-from-user-statements.md`
 (pivot #4), `../plans/2026-10-01-first-run-interview.md` (pivot #5) and
 `../plans/2026-10-01-launch-brief.md` (pivot #6). Each plan keeps its own design section; this
@@ -390,3 +391,20 @@ as a statement. None of this has met a model.
    `last_summary.md` and the trace DB; loop-benchmark runs outside `_isolated_memory` can
    write the real memory file (`bench_approver` approves `remember`); a workspace `SATURN.md`
    in a cloned repo is a trusted instruction channel.
+
+## As built — the interview (2026-10-05)
+
+The first-run-interview plan's Tasks 1–6 with I1–I3, on branch `v2`.
+`tests/test_memory_setup.py` pins it (34 tests). **Nothing here has been run against a model,
+and the plan's Task 7 (a real first launch in a terminal) has not been done.**
+
+| Piece | Where | What differs from the design above |
+|---|---|---|
+| The questions and the answer rules | `core/memory_setup.py` (`QUESTIONS`, `pieces`) | As the plan wrote them. |
+| I1 the offer | `memory_setup.offer_at_launch`, `OFFER` | Enter, `y` or `yes` starts; ANYTHING else is a no, not only `n` / `q` / an interrupt — an auto-select must never land on something nobody chose. A no prints one line naming `/memory setup`. An install whose memory already has facts keeps the plan's one-time hint line: I1 speaks only of an empty memory. |
+| I2 three at first run | `memory_setup.FIRST_RUN`, `run_interview(keys=)` | The prompts count what is asked (`[1/3]`, `[1/5]`). |
+| I3 similar facts | `run_interview`, through `auto_memory.similar` / `similar_note` | The line `/memory add` prints, under the write it belongs to. |
+| I3 secrets | `memory_setup._refusal`, through `memory_registry.secret_problem` | Screened BEFORE the write and asked again, like an answer over 300 characters; the registry's own refusal would have ended the interview. |
+| Provenance | `add_memory(..., src="setup:<key>")` and the `[setup-<key>]` category | Both: the category is what a re-run finds its answers by, `src` is what `/memory why` reads. |
+| Rules load every turn | `memory_setup.rule_layer`, `memory_registry.is_always_loaded` | Rules go to `user`; `negative` still loads by match. |
+

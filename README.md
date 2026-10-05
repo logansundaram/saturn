@@ -230,6 +230,12 @@ run — Enter takes the recommendation, and anything not pulled yet is pulled on
 `/models` anytime, or set `SATURN_TIER=9b` (or `27b`/`35b`) before installing.
 Other knobs: `SATURN_INSTALL_DIR` (install dir), `SATURN_MODELS` (models to pull), `SATURN_BRANCH`.
 
+Right after the model pick, Saturn offers three quick questions — what to call you, what you
+do, and anything it should never do — and saves your answers to its memory (a markdown file
+you can read and edit; `/memory` shows it). Enter starts them, `n` skips, and any question can
+be skipped; `/memory setup` asks them again later, with two more about your people and what
+you want help with.
+
 Saturn ships one recommended tier per parameter size (the qwen3.5–3.8 ladder); `/models`
 shows the ladder priced against your machine. Any Ollama model with native tool-calling binds
 with `/models use <id>`.
@@ -477,7 +483,7 @@ documents people actually have, and reaches Notes, Calendar, Mail, Contacts, Rem
 and Shortcuts.
 
 What is not built yet, said plainly: mail is drafted, never sent; every fact Saturn learns
-still needs your accept; there is no first-run interview, no morning brief and no
+still needs your accept; there is no morning brief and no
 user-authored skills; and the macOS permission dialogs name your terminal, not Saturn.
 `docs/pivot.md` ranks that work. Contributions and feedback welcome — file issues at the GitHub
 repo.

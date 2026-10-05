@@ -153,6 +153,48 @@ def test_a_new_answer_names_the_similar_fact_already_stored(isolated_paths):
     assert any("similar: #1" in line and "/memory remove 1" in line for line in lines)
 
 
+def test_a_rule_in_the_users_own_wording_is_kept_as_typed():
+    never = _q("never")
+    assert ms.pieces(never, "always ask before sending") == ["Always ask before sending"]
+    assert ms.pieces(never, "please don't email Petra") == ["Please don't email Petra"]
+    assert ms.pieces(never, "you should never book flights") == ["You should never book flights"]
+    assert ms.pieces(never, "don\u2019t email Petra") == ["Don\u2019t email Petra"]  # a curly apostrophe
+    assert ms.pieces(never, "only email Sam after I approve") == ["Only email Sam after I approve"]
+    # nothing in it says which way the rule points: it answers "never do…"
+    assert ms.pieces(never, "email Petra unless I ask") == ["Never email Petra unless I ask"]
+    # a bare "without" / "no" further in is not a direction: these still answer "never do…"
+    assert ms.pieces(never, "email people without asking") == [
+        "Never email people without asking"]
+    assert ms.pieces(never, "send mail with no subject") == ["Never send mail with no subject"]
+
+
+def test_a_no_is_a_skip_never_an_answer(isolated_paths):
+    for reply in ("n", "no", "No.", "nope", "nah", "none", "nothing", "Nothing!", "not really",
+                  "no thanks", "I don't think so"):
+        out = ms.run_interview(ask=_scripted([reply] * 5), emit=_quiet, default_name="Logan")
+        assert mr.entries() == [], reply  # not "Call me n", not the rule "Never nothing"
+        assert out["left"] is False  # a no skips one question; it does not end the interview
+
+
+def test_an_answer_with_an_arrow_key_in_it_is_asked_again(isolated_paths):
+    lines = []
+    ms.run_interview(ask=_scripted(["Logn\x1b[Da", "\x1b", "Logan"]), emit=lines.append)
+    assert [e["text"] for e in mr.entries()] == ["Call me Logan"]
+    assert sum("arrow key" in line for line in lines) == 2  # both replies refused
+
+
+def test_a_multi_line_paste_is_refused_and_asked_again(isolated_paths):
+    lines = []
+    ms.run_interview(ask=_scripted([ms.PASTED, "Logan"]), emit=lines.append, default_name="Lo")
+    assert [e["text"] for e in mr.entries()] == ["Call me Logan"]
+    assert any("one line" in line for line in lines)
+
+
+def test_enter_after_a_refusal_skips_instead_of_taking_the_default(isolated_paths):
+    ms.run_interview(ask=_scripted(["x" * 400, ""]), emit=_quiet, default_name="Logan")
+    assert mr.entries() == []
+
+
 def test_dash_skips_even_with_a_default(isolated_paths):
     ms.run_interview(ask=_scripted(["-"]), emit=_quiet, default_name="Logan")
     assert mr.entries() == []
@@ -249,7 +291,7 @@ def test_fresh_install_is_offered_three_questions_once(isolated_paths, monkeypat
 def test_a_declined_offer_asks_nothing_and_is_never_made_again(isolated_paths, monkeypatch,
                                                                 tmp_path):
     monkeypatch.setattr(ms, "system_first_name", lambda: "Logan")
-    for reply in ("n", "no", "q", "\x1b", ms.INTERRUPT, "what?"):
+    for reply in ("n", "no", "q", "\x1b", ms.INTERRUPT, ms.PASTED, "what?"):
         if ms.marker_path().exists():
             ms.marker_path().unlink()
         asked, lines = [], []
@@ -313,9 +355,8 @@ def test_repl_offers_the_interview_after_models():
     from app import repl
 
     src = inspect.getsource(repl.run_repl)
-    assert "memory_setup.offer_at_launch(" in src
-    assert src.index('commands.dispatch("/models", cmd_ctx)') < src.index(
-        "memory_setup.offer_at_launch(")
+    assert "offer_interview()" in src
+    assert src.index('commands.dispatch("/models", cmd_ctx)') < src.index("offer_interview()")
 
 
 _TTY = type("T", (), {"isatty": staticmethod(lambda: True)})()
@@ -366,3 +407,99 @@ def test_memory_help_lists_setup(ctx, capsys):
 
     commands.dispatch("/memory --help", ctx)
     assert "/memory setup" in capsys.readouterr().out
+
+
+# ── the terminal wiring both entry points share (commands/knowledge.py) ──────────────────────
+
+
+def _interrupt(*_a, **_kw):
+    raise KeyboardInterrupt
+
+
+def test_ctrl_c_at_the_real_offer_is_a_no(isolated_paths, monkeypatch):
+    from commands import knowledge
+    from tui.ui._base import _console
+
+    monkeypatch.setattr("sys.stdin", _TTY)
+    monkeypatch.setattr(ms, "system_first_name", lambda: "Logan")
+    monkeypatch.setattr(_console, "input", _interrupt)
+    assert knowledge.offer_interview() == "declined"  # never the empty reply that means yes
+    assert mr.entries() == [] and ms.marker_path().exists()
+
+
+def test_ctrl_c_at_the_real_first_question_saves_no_name(isolated_paths, monkeypatch):
+    from commands import knowledge
+    from tui.ui._base import _console
+
+    replies = iter([""])  # Enter at the offer, then Ctrl-C at "What should I call you?"
+
+    def read(*_a, **_kw):
+        try:
+            return next(replies)
+        except StopIteration:
+            raise KeyboardInterrupt from None
+
+    monkeypatch.setattr("sys.stdin", _TTY)
+    monkeypatch.setattr(ms, "system_first_name", lambda: "Logan")
+    monkeypatch.setattr(_console, "input", read)
+    assert knowledge.offer_interview() == "interview"
+    assert mr.entries() == []  # the offered default name was not taken
+    assert ms.marker_path().exists()
+
+
+def test_a_piped_launch_asks_nothing_and_leaves_the_offer_open(isolated_paths, monkeypatch):
+    from commands import knowledge
+    from tui.ui._base import _console
+
+    def read(*_a, **_kw):
+        raise AssertionError("asked off a terminal")
+
+    monkeypatch.setattr("sys.stdin", _NOT_TTY)
+    monkeypatch.setattr(_console, "input", read)
+    assert knowledge.offer_interview() == ""
+    assert not ms.marker_path().exists()
+
+
+def test_the_reader_reports_a_multi_line_paste(monkeypatch):
+    from commands import knowledge
+    from tui import ui
+
+    monkeypatch.setattr(ui, "ask", lambda _p, **_kw: "I run a small bakery")
+    monkeypatch.setattr(ui, "discard_pending_input", lambda: True)  # more lines were waiting
+    assert knowledge._interview_ask("» ") == ms.PASTED
+    monkeypatch.setattr(ui, "discard_pending_input", lambda: False)
+    assert knowledge._interview_ask("» ") == "I run a small bakery"
+
+
+def test_nothing_is_pending_off_a_terminal():
+    from tui import ui
+
+    assert ui.discard_pending_input() is False
+
+
+def test_a_stored_fact_holding_an_escape_is_shown_as_a_picture(isolated_paths, ctx, monkeypatch,
+                                                                capsys):
+    import commands
+    from tui import ui
+
+    mr.add_memory("Call me Logan", "setup-name", src="setup:name")
+    path = get_config().path("memory")
+    path.write_text(path.read_text().replace("Call me Logan", "Call me \x1b[2JLogan"))  # a hand edit
+    monkeypatch.setattr("sys.stdin", _TTY)
+    monkeypatch.setattr(ms, "system_first_name", lambda: None)
+    monkeypatch.setattr(ui, "ask", _scripted([]))
+    commands.dispatch("/memory setup", ctx)
+    out = capsys.readouterr().out
+    assert "now: Call me" in out and "\x1b" not in out
+
+
+def test_the_launch_offer_prints_through_the_sanitising_printer(isolated_paths, monkeypatch):
+    from commands import knowledge
+    from tui.ui._base import _console
+
+    seen = []
+    monkeypatch.setattr("sys.stdin", _TTY)
+    monkeypatch.setattr(_console, "input", lambda *_a, **_kw: "n")
+    monkeypatch.setattr(knowledge, "_print", seen.append)  # never a bare print()
+    assert knowledge.offer_interview() == "declined"
+    assert any("/memory setup" in line for line in seen)

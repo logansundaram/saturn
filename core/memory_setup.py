@@ -40,8 +40,16 @@ from stores import memory_registry as mr
 # What `ask` returns on Ctrl-C / Ctrl-D: the caller passes it as ui.ask's on_interrupt, so an
 # interrupt means "stop the interview" — never the empty reply that means "skip this one".
 INTERRUPT = "\x03"
+# What `ask` returns when the line it read was the first of several — a multi-line paste. The
+# reader has thrown the rest away (its other lines would answer the questions that follow);
+# the answer is refused and asked again.
+PASTED = "\x16"
 _LEAVE = ("q", "quit")
 _SKIP = ("-", "skip")
+# A "no" is a skip, never an answer: the offer has just taught `n`, and the last question is
+# yes/no shaped ("Is there anything I should never do?" — "nothing" must not become a rule).
+_NOTHING = ("n", "no", "nope", "nah", "none", "nothing", "not really", "no thanks",
+            "no thank you", "i don't think so", "i dont think so")
 # An always-loaded fact costs memory.context_cap (4,000 chars) on every turn: one line, not a page.
 MAX_FACT_CHARS = 300
 
@@ -77,7 +85,17 @@ QUESTIONS = (
 # a click — and a list of people is the privacy-heavy answer. /memory setup asks all five.
 FIRST_RUN = ("name", "work", "never")
 
-_RULE_START = re.compile(r"^(?:never|don'?t|do\s+not|no|avoid|stop)\b", re.IGNORECASE)
+# A "never" answer that already says which way it points — it opens as an instruction, or it
+# carries its own never / always / only / verb negation — is kept in the user's wording.
+# A bare `no`, `not` or `without` further in does not count: "email people without asking"
+# still answers "never do…".
+_OWN_WORDING = re.compile(
+    r"^(?:no|avoid|stop|please)\b"
+    r"|\b(?:never|always|only|cannot|dont|\w+n['’]t"
+    r"|(?:do|does|must|should|may|can|will)\s+not)\b",
+    re.IGNORECASE)
+# An arrow key or Esc typed into a plain line prompt arrives as its escape sequence.
+_CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 _FIRST_NAME = re.compile(r"[^\W\d_][\w'-]{0,39}")
 
 
@@ -99,7 +117,7 @@ def pieces(q: Question, reply: str) -> list[str]:
     `people` splits on `;`, or — with no `;` — on commas only when every piece starts with a
     capital (names: "Petra (my manager), Sam (partner)"; "Petra, my manager" stays whole).
     `never` splits on `;` only (commas inside a rule are common), and a piece that does not
-    already read as a rule is prefixed "Never "."""
+    say which way it points (_OWN_WORDING) is prefixed "Never "."""
     reply = " ".join(str(reply or "").split())
     if not reply:
         return []
@@ -118,7 +136,7 @@ def pieces(q: Question, reply: str) -> list[str]:
         if not p:
             continue
         if q.key == "never":
-            p = p[0].upper() + p[1:] if _RULE_START.match(p) else f"Never {p}"
+            p = p[0].upper() + p[1:] if _OWN_WORDING.search(p) else f"Never {p}"
         out.append(q.template.format(a=p))
     return out
 
@@ -170,6 +188,28 @@ def _refusal(q: Question, texts: list[str]) -> "str | None":
     return None
 
 
+PASTE_TEXT = ("that was more than one line — the rest was thrown away and nothing was saved. "
+              "One line per answer, or press Enter to skip.")
+KEY_TEXT = ("that had an arrow key or Esc in it, which this prompt cannot use — type it again "
+            "(Backspace works), or press Enter to skip.")
+
+
+def _answer(q: Question, raw, default: "str | None") -> "tuple[list[str], str | None]":
+    """One reply as (the facts it becomes, why it cannot be stored as given — or None)."""
+    if raw == PASTED:
+        return [], PASTE_TEXT
+    reply = " ".join(str(raw or "").split())
+    if _CONTROL.search(reply):
+        return [], KEY_TEXT
+    bare = reply.lower().replace("’", "'")
+    if bare in _SKIP or bare.rstrip(".!") in _NOTHING:
+        reply = ""
+    elif not reply and default:
+        reply = default
+    texts = pieces(q, reply)
+    return texts, _refusal(q, texts)
+
+
 def run_interview(*, ask, emit=print, default_name: "str | None" = None,
                   keys: "tuple[str, ...] | None" = None) -> dict:
     """Ask the questions in order — all five, or only those named in `keys` (the first launch
@@ -198,16 +238,10 @@ def run_interview(*, ask, emit=print, default_name: "str | None" = None,
             if raw == INTERRUPT:
                 left = True
                 break
-            reply = " ".join(str(raw or "").split())
-            if reply.lower() in _LEAVE:
+            if " ".join(str(raw or "").split()).lower() in _LEAVE:
                 left = True
                 break
-            if reply.lower() in _SKIP:
-                reply = ""
-            elif not reply and default:
-                reply = default
-            texts = pieces(q, reply)
-            refusal = _refusal(q, texts)
+            texts, refusal = _answer(q, raw, default)
             if refusal is None:
                 break
             emit(f"    {refusal}")

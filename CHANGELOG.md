@@ -15,8 +15,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
   memory in your words, so the next answer already knows you; a "never…" answer becomes one
   rule per `;` and rules load on every turn. `/memory setup` asks those three and two more
   (the people you mention most, what you want help with), showing your current answers: Enter
-  keeps one, a new answer replaces it, and people and rules are added to. An answer that looks
-  like a password or a card number is refused and asked again. An install that already has
+  keeps one, a new answer replaces it, and people and rules are added to. A plain "no" or
+  "nothing" skips a question. An answer is refused and asked again when it looks like a
+  password or a card number, when it is a multi-line paste (the rest is thrown away, not fed
+  to the next question), or when an arrow key or Esc got into it. An install that already has
   memories gets one line about `/memory setup` instead of the offer.
 - **Toolkits — turn off the tools you don't use.** `/tools` now shows Saturn's tools in
   groups: files, web, shell, knowledge base, notes, calendar, mail, contacts, reminders,

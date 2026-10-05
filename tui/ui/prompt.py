@@ -476,6 +476,30 @@ def pause_prompt(value: dict) -> dict:
     return {"action": "continue"}
 
 
+def discard_pending_input() -> bool:
+    """Whether more input was ALREADY waiting behind the line `ask` just read — the rest of a
+    multi-line paste — after throwing it away. A plain line prompt reads one line; the other
+    lines of a paste would otherwise answer the prompts that follow, and the last would reach
+    the `»` prompt as a request. A fragment with no newline yet cannot be seen on a terminal in
+    line mode, so the queue is flushed either way. False off a terminal, or where it cannot be
+    polled."""
+    import os
+    import sys
+
+    try:
+        import select
+        import termios
+
+        fd = sys.stdin.fileno()
+        if not os.isatty(fd):
+            return False
+        waiting = bool(select.select([fd], [], [], 0.05)[0])
+        termios.tcflush(fd, termios.TCIFLUSH)
+        return waiting
+    except Exception:
+        return False
+
+
 def ask(prompt_text: str, *, on_interrupt: str = "") -> str:
     """Read a single line for an interactive command prompt (e.g. the /models picker). Tears down
     any live status bar first — input() can't run under an active Live — and returns the raw,

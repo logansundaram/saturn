@@ -395,7 +395,7 @@ as a statement. None of this has met a model.
 ## As built — the interview (2026-10-05)
 
 The first-run-interview plan's Tasks 1–6 with I1–I3, on branch `v2`.
-`tests/test_memory_setup.py` pins it (34 tests). **Nothing here has been run against a model,
+`tests/test_memory_setup.py` pins it (46 tests), after one fresh-context review and its fix pass. **Nothing here has been run against a model,
 and the plan's Task 7 (a real first launch in a terminal) has not been done.**
 
 | Piece | Where | What differs from the design above |
@@ -407,4 +407,7 @@ and the plan's Task 7 (a real first launch in a terminal) has not been done.**
 | I3 secrets | `memory_setup._refusal`, through `memory_registry.secret_problem` | Screened BEFORE the write and asked again, like an answer over 300 characters; the registry's own refusal would have ended the interview. |
 | Provenance | `add_memory(..., src="setup:<key>")` and the `[setup-<key>]` category | Both: the category is what a re-run finds its answers by, `src` is what `/memory why` reads. |
 | Rules load every turn | `memory_setup.rule_layer`, `memory_registry.is_always_loaded` | Rules go to `user`; `negative` still loads by match. |
+| A "never" answer | `memory_setup.pieces`, `_OWN_WORDING` | The plan prefixed "Never" to anything that did not START as a rule, which inverted "always ask before sending". Now a piece that opens as an instruction or carries its own never / always / only / verb negation is kept as typed; only the rest is prefixed. Still wrong for an answer that says what TO do without any of those words ("ask first" → "Never ask first"); the echo line shows it. |
+| A "no" | `memory_setup._NOTHING` | `n`, `no`, `nothing`, `not really`… skip a question on every question — the offer has just taught `n`, and the last question is yes/no shaped. |
+| The reader | `commands/knowledge._interview_ask`, `offer_interview`, `ui.discard_pending_input` | New. Ctrl-C comes back as `INTERRUPT`, never the empty reply the offer reads as yes; a multi-line paste comes back as `PASTED` with the rest of the terminal's input queue thrown away (its other lines answered the next questions, and one reached the `»` prompt as a request). An arrow key or Esc inside an answer is refused: the prompt is a plain `input()` with no line editing. Checked on a pseudo-terminal. |
 

@@ -199,6 +199,32 @@ def _sync(*, force: bool) -> None:
 
 
 # ── /memory ──────────────────────────────────────────────────────────────────────────────────
+def _interview_ask(prompt: str) -> str:
+    """One line for the interview, read at the terminal — the reader the launch offer and
+    /memory setup share. Ctrl-C / Ctrl-D come back as INTERRUPT, never the empty reply (which
+    the offer reads as yes and the first question as "take the offered name"); a multi-line
+    paste comes back as PASTED with the rest of it thrown away."""
+    from core import memory_setup
+    from tui import ui
+
+    reply = ui.ask(prompt, on_interrupt=memory_setup.INTERRUPT)
+    if reply != memory_setup.INTERRUPT and ui.discard_pending_input():
+        return memory_setup.PASTED
+    return reply
+
+
+def offer_interview() -> str:
+    """The launch's once-only interview offer (app/repl, after the first-run /models pick),
+    wired to the terminal: the shared reader, the sanitising printer, and nothing asked when
+    stdin is not a terminal."""
+    from commands._utils import _stdin_is_tty
+    from core import memory_setup
+    from tui import ui
+
+    return memory_setup.offer_at_launch(ask=_interview_ask, emit=_print, note=ui.note,
+                                        interactive=_stdin_is_tty())
+
+
 @command(
     "memory",
     "See, add, edit, and review the agent's persistent memory (the layered remember/recall store).",
@@ -336,10 +362,8 @@ def _memory(ctx, args):
         if not _stdin_is_tty():
             _print("  /memory setup asks five questions — run it in an interactive terminal.")
             return
-        memory_setup.run_interview(
-            ask=lambda p: ui.ask(p, on_interrupt=memory_setup.INTERRUPT),
-            emit=_print, default_name=memory_setup.system_first_name(),
-        )
+        memory_setup.run_interview(ask=_interview_ask, emit=_print,
+                                   default_name=memory_setup.system_first_name())
         memory_setup.mark_done()
         return
 

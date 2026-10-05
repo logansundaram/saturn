@@ -250,14 +250,9 @@ def run_repl() -> None:
     # fresh install it runs while the warm-up thread loads the weights. Non-fatal: a failure
     # here must never stop the REPL.
     try:
-        from commands._framework import _print
-        from commands._utils import _stdin_is_tty
-        from core import memory_setup
+        from commands.knowledge import offer_interview
 
-        memory_setup.offer_at_launch(
-            ask=lambda p: ui.ask(p, on_interrupt=memory_setup.INTERRUPT),
-            emit=_print, note=ui.note, interactive=_stdin_is_tty(),
-        )
+        offer_interview()
     except Exception as exc:
         ui.warn(f"memory setup skipped: {exc}")
 

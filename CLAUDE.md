@@ -202,7 +202,10 @@ stamped `src=said`, noted after the answer — also when the turn later fails,
 `app/repl._keeping_auto_memory` — off headless); `/memory add`; an answer typed into the
 interview (`core/memory_setup.py`: no model call, facts tagged `[setup-<question>]` and stamped
 `src=setup:<question>`; the first launch OFFERS three questions — `FIRST_RUN`, once per install
-via `database/.interview_done` — and `/memory setup` asks all five); or a review accept.
+via `database/.interview_done` — and `/memory setup` asks all five; both read through
+`commands/knowledge._interview_ask`, which turns Ctrl-C and a multi-line paste into the
+sentinels `INTERRUPT` / `PASTED`, and `app/repl` calls `knowledge.offer_interview`); or a
+review accept.
 "Stated" is whole clauses: the fact's words are exactly those of one or more stated clauses
 of the sentence (`_clauses`, `_sentence_problem`) — nothing left out but a lead-in or a title,
 no question (with or without its "?"), no sentence with an if / when / unless clause, in the

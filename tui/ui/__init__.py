@@ -33,7 +33,7 @@ from .art import splash
 # Input prompt + banner (+ the session-start trust posture line, the ask_user answer prompt and
 # the Esc pause prompt).
 from .prompt import (prompt, banner, ask, answer_question, pause_prompt, posture_line,
-                     line_was_pasted)
+                     line_was_pasted, discard_pending_input)
 
 # Execution trace + recorded replays.
 from .trace import show_node, show_run, show_llm_calls
@@ -60,7 +60,7 @@ __all__ = [
     "set_input_preview", "set_thinking", "reset_turn",
     "splash",
     "prompt", "banner", "ask", "answer_question", "pause_prompt", "posture_line",
-    "line_was_pasted",
+    "line_was_pasted", "discard_pending_input",
     "show_node", "show_run", "show_llm_calls",
     "render_plan", "show_plan",
     "ask_approval",

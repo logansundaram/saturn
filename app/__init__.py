@@ -15,4 +15,4 @@ the CLI, routes into headless.py or repl.py, and re-exports the names benchmark.
 tests import (`from agent import build_agent, run_turn, ...` keeps working).
 """
 
-__version__ = "0.1.0"  # keep in sync with `version` in pyproject.toml
+__version__ = "0.2.0"  # keep in sync with `version` in pyproject.toml

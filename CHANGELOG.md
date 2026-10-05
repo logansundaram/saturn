@@ -7,6 +7,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-10-05
+
 ### Added
 
 - **Saturn remembers what you tell it, without asking.** Say "I'm vegetarian", "Petra is my
@@ -1378,5 +1380,6 @@ nothing side-effecting runs — and nothing leaves your machine — without your
 - Headless mode: `saturn -p "query"` with `--json` and `--export`, piped-stdin attachment,
   gated calls denied by default.
 
-[Unreleased]: https://github.com/logansundaram/saturn/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/logansundaram/saturn/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/logansundaram/saturn/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/logansundaram/saturn/releases/tag/v0.1.0

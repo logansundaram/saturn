@@ -12,7 +12,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "saturn-agent"
-version = "0.1.0"  # keep in sync with __version__ in app/__init__.py (re-exported by agent.py)
+version = "0.2.0"  # keep in sync with __version__ in app/__init__.py (re-exported by agent.py)
 description = "Saturn — a private, local-first AI agent for the terminal. Every step it takes is visible and auditable; nothing leaves your machine without your approval."
 readme = "README.md"
 license = "MIT"

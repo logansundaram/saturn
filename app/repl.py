@@ -245,9 +245,10 @@ def run_repl() -> None:
             diag.log(f"first-run sentinel write failed: {exc}")
 
     # The first-run interview (core/memory_setup): once per install, after the tier is chosen —
-    # five questions whose answers become memory facts, or one line about /memory setup for an
-    # install that already has facts. On a fresh install it runs while the warm-up thread loads
-    # the weights. Non-fatal: a failure here must never stop the REPL.
+    # an offer of three questions whose answers become memory facts (Enter starts, anything
+    # else skips), or one line about /memory setup for an install that already has facts. On a
+    # fresh install it runs while the warm-up thread loads the weights. Non-fatal: a failure
+    # here must never stop the REPL.
     try:
         from commands._framework import _print
         from commands._utils import _stdin_is_tty

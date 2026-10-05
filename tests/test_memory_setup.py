@@ -133,6 +133,26 @@ def test_enter_skips_and_the_default_name_is_offered(isolated_paths):
     assert [e["text"] for e in mr.entries()] == ["Call me Logan"]  # every other question skipped
 
 
+def test_keys_choose_which_questions_are_asked(isolated_paths):
+    asked = []
+
+    def ask(prompt, **_kw):
+        asked.append(prompt)
+        return "x"
+
+    ms.run_interview(ask=ask, emit=_quiet, keys=("name", "never"))
+    assert [a.split(" »")[0] for a in asked] == [
+        "[1/2] What should I call you?", "[2/2] Is there anything I should never do?"]
+    assert {e["category"] for e in mr.entries()} == {"setup-name", "setup-never"}
+
+
+def test_a_new_answer_names_the_similar_fact_already_stored(isolated_paths):
+    mr.add_memory("Petra Novak is my manager at Acme", layer="entities")
+    lines = []
+    ms.run_interview(ask=_scripted(["", "", "Petra Novak, my manager"]), emit=lines.append)
+    assert any("similar: #1" in line and "/memory remove 1" in line for line in lines)
+
+
 def test_dash_skips_even_with_a_default(isolated_paths):
     ms.run_interview(ask=_scripted(["-"]), emit=_quiet, default_name="Logan")
     assert mr.entries() == []
@@ -212,14 +232,38 @@ def _recorder():
     return asked, ask
 
 
-def test_fresh_install_is_interviewed_once(isolated_paths, monkeypatch):
+def test_fresh_install_is_offered_three_questions_once(isolated_paths, monkeypatch):
     monkeypatch.setattr(ms, "system_first_name", lambda: None)
-    asked, ask = _recorder()
+    asked, ask = _recorder()  # Enter at the offer starts it
     assert ms.offer_at_launch(ask=ask, emit=_quiet, note=_quiet, interactive=True) == "interview"
-    assert len(asked) == 5 and ms.marker_path().exists()
+    assert "Enter starts" in asked[0] and "n skips" in asked[0]  # consent first, then questions
+    assert [a.split("]")[0] for a in asked[1:]] == ["[1/3", "[2/3", "[3/3"]
+    assert [q.prompt in a for q, a in zip(map(_q, ms.FIRST_RUN), asked[1:])] == [True] * 3
+    assert ms.FIRST_RUN == ("name", "work", "never")  # people and help wait for /memory setup
+    assert ms.marker_path().exists()
     asked.clear()
     assert ms.offer_at_launch(ask=ask, emit=_quiet, note=_quiet, interactive=True) == ""
     assert asked == []
+
+
+def test_a_declined_offer_asks_nothing_and_is_never_made_again(isolated_paths, monkeypatch,
+                                                                tmp_path):
+    monkeypatch.setattr(ms, "system_first_name", lambda: "Logan")
+    for reply in ("n", "no", "q", "\x1b", ms.INTERRUPT, "what?"):
+        if ms.marker_path().exists():
+            ms.marker_path().unlink()
+        asked, lines = [], []
+
+        def ask(prompt, _reply=reply, **_kw):
+            asked.append(prompt)
+            return _reply
+
+        out = ms.offer_at_launch(ask=ask, emit=lines.append, note=_quiet, interactive=True)
+        assert out == "declined", repr(reply)
+        assert len(asked) == 1, repr(reply)  # the offer line only — no question followed
+        assert mr.entries() == []  # the offered default name was not taken
+        assert ms.marker_path().exists()
+        assert any("/memory setup" in line for line in lines)  # where to find it later
 
 
 def test_existing_memory_gets_the_hint_not_the_questions(isolated_paths):
@@ -243,8 +287,10 @@ def test_no_terminal_no_questions_and_no_marker(isolated_paths):
 
 
 def test_ctrl_c_at_launch_still_marks_done(isolated_paths, monkeypatch):
+    # past the offer (Enter), Ctrl-C at the very first question
     monkeypatch.setattr(ms, "system_first_name", lambda: "Logan")
-    ms.offer_at_launch(ask=_scripted([ms.INTERRUPT]), emit=_quiet, note=_quiet, interactive=True)
+    ms.offer_at_launch(ask=_scripted(["", ms.INTERRUPT]), emit=_quiet, note=_quiet,
+                       interactive=True)
     assert mr.entries() == []
     assert ms.marker_path().exists()
 
@@ -296,6 +342,23 @@ def test_memory_setup_runs_the_interview(isolated_paths, ctx, monkeypatch, capsy
     assert [e["text"] for e in mr.entries()] == ["Call me Logan"]
     assert ms.marker_path().exists()  # a later launch does not offer it again
     assert "Remembered #1" in capsys.readouterr().out
+
+
+def test_memory_setup_asks_all_five(isolated_paths, ctx, monkeypatch):
+    import commands
+    from tui import ui
+
+    asked = []
+
+    def ask(prompt, **_kw):
+        asked.append(prompt)
+        return ""
+
+    monkeypatch.setattr("sys.stdin", _TTY)
+    monkeypatch.setattr(ms, "system_first_name", lambda: None)
+    monkeypatch.setattr(ui, "ask", ask)
+    commands.dispatch("/memory setup", ctx)
+    assert len(asked) == 5 and asked[0].startswith("[1/5]")  # no offer line: you asked for it
 
 
 def test_memory_help_lists_setup(ctx, capsys):

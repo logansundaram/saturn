@@ -1,9 +1,11 @@
 """
-The first-run interview — five questions whose answers become memory facts (docs/pivot.md #5).
+The first-run interview — questions whose answers become memory facts (docs/pivot.md #5; the
+design is §2 of docs/superpowers/specs/2026-10-04-know-the-user-design.md).
 
 Saturn's second turn should already know who it is talking to. After the first launch's
-/models pick, the REPL asks what to call you, what you do, the people you mention most, what
-you want help with, and what Saturn should never do — and writes each answer through
+/models pick, the REPL OFFERS three questions (Enter starts, anything else skips): what to
+call you, what you do, and what Saturn should never do. `/memory setup` asks those and two
+more — the people you mention most, what you want help with. Each answer is written through
 `memory_registry.add_memory` with by=user: typing the answer IS the user action. No model call:
 it runs before a model is pulled, costs nothing, and cannot paraphrase your facts into
 something you did not say. The only transformations are a fixed template per question
@@ -15,11 +17,13 @@ one-fact question with replaces=, and adds to a many-fact one). The hyphenated c
 match token that no request contains, so it never changes what loads. The same fact is stamped
 `src=setup:<question>`, which is what `/memory why` reads.
 
-  run_interview(ask=, emit=)   the five prompts (a scripted `ask` in tests, ui.ask in the app)
-  offer_at_launch(...)          the REPL's once-only decision: interview / one-line hint / nothing
+  run_interview(ask=, emit=)   the prompts (a scripted `ask` in tests, ui.ask in the app)
+  offer_at_launch(...)          the REPL's once-only decision: offer three of the questions
+                                (FIRST_RUN) / one-line hint / nothing
   rule_layer()                  where "never" answers go — a layer loaded EVERY turn
 
-Imports only config, diag and the memory registry, so the REPL and /memory can both use it.
+Imports only config, diag and the memory registry at load (core.auto_memory, for the
+similar-fact line, inside run_interview), so the REPL and /memory can both use it.
 """
 
 from __future__ import annotations
@@ -67,6 +71,11 @@ QUESTIONS = (
     Question("never", "Is there anything I should never do?", "rules", "{a}", True,
              hint="e.g. never schedule anything before 10am; don't email Petra without showing me"),
 )
+
+# What the first launch asks (the know-the-user spec, I2): it should cost under a minute.
+# People are better learned in the flow — "Petra is my manager" is what auto-learn keeps without
+# a click — and a list of people is the privacy-heavy answer. /memory setup asks all five.
+FIRST_RUN = ("name", "work", "never")
 
 _RULE_START = re.compile(r"^(?:never|don'?t|do\s+not|no|avoid|stop)\b", re.IGNORECASE)
 _FIRST_NAME = re.compile(r"[^\W\d_][\w'-]{0,39}")
@@ -138,12 +147,12 @@ INTRO = ("A few questions so I know who I'm working with. Each answer is saved t
          "as you give it — Enter skips a question, q stops.")
 
 
-def _prompt(i: int, q: Question, have: list, default: "str | None") -> str:
+def _prompt(i: int, of: int, q: Question, have: list, default: "str | None") -> str:
     if have:
         keep = " [Enter keeps these; type to add]" if q.many else " [Enter keeps it]"
     else:
         keep = f" [Enter = {default}]" if default else ""
-    return f"[{i}/{len(QUESTIONS)}] {q.prompt}{keep} » "
+    return f"[{i}/{of}] {q.prompt}{keep} » "
 
 
 def _refusal(q: Question, texts: list[str]) -> "str | None":
@@ -161,17 +170,23 @@ def _refusal(q: Question, texts: list[str]) -> "str | None":
     return None
 
 
-def run_interview(*, ask, emit=print, default_name: "str | None" = None) -> dict:
-    """Ask the five questions in order. `ask(prompt) -> str` reads one line (ui.ask with
-    on_interrupt=INTERRUPT in the app; a scripted callable in tests); `emit(line)` prints. Each
-    answer is written through add_memory (by=user) the moment it is given, so leaving early keeps
-    everything answered so far. On a re-run each question shows its current answer: Enter keeps
-    it, a one-fact question is superseded (replaces=), a many-fact one is added to. Returns
+def run_interview(*, ask, emit=print, default_name: "str | None" = None,
+                  keys: "tuple[str, ...] | None" = None) -> dict:
+    """Ask the questions in order — all five, or only those named in `keys` (the first launch
+    passes FIRST_RUN). `ask(prompt) -> str` reads one line (ui.ask with on_interrupt=INTERRUPT
+    in the app; a scripted callable in tests); `emit(line)` prints. Each answer is written
+    through add_memory (by=user) the moment it is given, so leaving early keeps everything
+    answered so far, and a write that lands beside a related fact names it, as /memory add
+    does. On a re-run each question shows its current answer: Enter keeps it, a one-fact
+    question is superseded (replaces=), a many-fact one is added to. Returns
     {"saved": [add_memory's reports], "left": True when the user stopped early}."""
+    from core import auto_memory  # here, not at import: it pulls in the message types
+
+    asking = [q for q in QUESTIONS if keys is None or q.key in keys]
     saved: list[str] = []
     left = False
     emit(f"  {INTRO}")
-    for i, q in enumerate(QUESTIONS, 1):
+    for i, q in enumerate(asking, 1):
         have = current(q)
         default = default_name if (q.key == "name" and not have) else None
         if have:
@@ -179,7 +194,7 @@ def run_interview(*, ask, emit=print, default_name: "str | None" = None) -> dict
         elif q.hint:
             emit(f"    {q.hint}")
         while True:
-            raw = ask(_prompt(i, q, have, default))
+            raw = ask(_prompt(i, len(asking), q, have, default))
             if raw == INTERRUPT:
                 left = True
                 break
@@ -210,10 +225,18 @@ def run_interview(*, ask, emit=print, default_name: "str | None" = None) -> dict
                                    by="user", src=f"setup:{q.key}")
             saved.append(report)
             emit(f"    {report}")
+            fid = auto_memory.fact_id(report)
+            fact = mr.entry(fid) if fid and report.startswith("Remembered") else None
+            near = auto_memory.similar(fact["text"], fact["layer"], exclude={fid}) if fact else []
+            if near:
+                emit(f"      {auto_memory.similar_note(near)}")
     emit(f"  saved {len(saved)} fact(s) · see or change them: /memory · ask again: /memory setup")
     emit(f"  file: {get_config().path('memory')}")
     return {"saved": saved, "left": left}
 
+
+OFFER = "Three quick questions so I know who I'm working for? Enter starts · n skips » "
+DECLINED = "ok — /memory setup asks them whenever you like."
 
 HINT = ("/memory setup asks five quick questions — what to call you, your work, your people, "
         "what you want help with, what I should never do. Your memory already has facts, so it "
@@ -247,16 +270,22 @@ def mark_done() -> None:
 def offer_at_launch(*, ask, emit, note, interactive: bool) -> str:
     """The REPL's once-only offer, after the first-run /models pick. Off a terminal nothing is
     asked AND nothing is marked, so the first real session still gets it. Otherwise the offer is
-    marked made whatever happens — a skip, a Ctrl-C, even a crash inside the interview — so it is
-    never a question at every launch. Returns the action taken ("" / "interview" / "hint")."""
+    marked made whatever happens — a no, a Ctrl-C, even a crash inside the interview — so it is
+    never a question at every launch. The interview is OFFERED, not started: the first thing a
+    new user answers is whether to be asked at all, and only Enter (or y) says yes — an
+    interrupt or anything unreadable is a no. Returns what happened: "" / "interview" /
+    "declined" / "hint"."""
     action = launch_action()
     if not action or not interactive:
         return ""
     try:
-        if action == "interview":
-            run_interview(ask=ask, emit=emit, default_name=system_first_name())
-        else:
+        if action == "hint":
             note(HINT)
+        elif " ".join(str(ask(OFFER)).split()).lower() in ("", "y", "yes"):
+            run_interview(ask=ask, emit=emit, default_name=system_first_name(), keys=FIRST_RUN)
+        else:
+            emit(f"  {DECLINED}")
+            action = "declined"
     finally:
         mark_done()
     return action

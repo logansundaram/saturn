@@ -205,9 +205,11 @@ def _ref(uid: str, calendar: str, tool: str) -> "tuple[str, str]":
 
 @register_tool("side_effecting")
 def update_calendar_event(uid: str, calendar: str, start: str = "", end: str = "",
-                          title: str = "", location: str = "", whole_series: bool = False):
+                          title: str = "", location: str = "", notes: str = "",
+                          whole_series: bool = False):
     """Change an existing Apple Calendar event: move it (`start`, and `end` if its length
-    changes — without `end` it keeps its length), retitle it, or set its location. `uid` and
+    changes — without `end` it keeps its length), retitle it, set its location, or replace its
+    `notes` (the event's description). `uid` and
     `calendar` come from list_calendar_events. Times accept ISO 8601 or 'tomorrow at 14:00'; a
     bare clock time ('15:00', '3pm') keeps the event on its own day.
     A recurring event is refused unless whole_series=true (every occurrence changes).
@@ -215,8 +217,9 @@ def update_calendar_event(uid: str, calendar: str, start: str = "", end: str = "
     uid, calendar = _ref(uid, calendar, "update_calendar_event")
     start, end = str(start or "").strip(), str(end or "").strip()
     title, location = str(title or "").strip(), str(location or "").strip()
-    if not (start or end or title or location):
-        raise ToolError("nothing to change: pass a new start, end, title or location")
+    notes = str(notes or "").strip()
+    if not (start or end or title or location or notes):
+        raise ToolError("nothing to change: pass a new start, end, title, location or notes")
     try:
         # A bare clock time is a time on the EVENT's day ("move Friday's review to 3pm"), which
         # only the script knows; parse_when would make it the next 15:00 from now.
@@ -258,6 +261,8 @@ def update_calendar_event(uid: str, calendar: str, start: str = "", end: str = "
         lines.append(f"set summary of e to {quote(title)}")
     if location:
         lines.append(f"set location of e to {quote(location)}")
+    if notes:
+        lines.append(f"set description of e to {quote(notes)}")
     changes = "\n  ".join(lines)
     script = f"""
 tell application "Calendar"
@@ -280,6 +285,8 @@ end tell
     if len(parts) != 5 or parts[0] != "ok":
         raise ToolError(f"Calendar did not confirm the change: {out or 'no reply'}")
     result = {"uid": uid, "calendar": calendar, "title": parts[1], "start": parts[2], "end": parts[3]}
+    if notes:
+        result["notes"] = notes
     return _attendee_note(result, parts[4], "changed")
 
 

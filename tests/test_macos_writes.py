@@ -197,6 +197,26 @@ def test_update_event_title_only_leaves_the_times_alone(mac, clock):
     assert "set start date of e" not in s and "set end date of e" not in s
 
 
+def test_update_event_sets_the_notes_and_nothing_else(mac, clock):
+    # "Edit the description to basketball with MK" (run 74, 2026-10-05): create took `notes`,
+    # update did not, so the request could not be done.
+    mac.reply(f"ok{US}Basketball{US}2026-10-06T16:00{US}2026-10-06T18:30{US}0\n")
+    out = _tool("update_calendar_event").invoke(
+        {"uid": "u", "calendar": "Home", "notes": 'basketball with "MK"'})
+    assert out == {"uid": "u", "calendar": "Home", "title": "Basketball",
+                   "start": "2026-10-06T16:00", "end": "2026-10-06T18:30",
+                   "notes": 'basketball with "MK"'}
+    s = mac.script()
+    assert 'set description of e to "basketball with \\"MK\\""' in s
+    assert "set start date of e" not in s and "set summary of e" not in s
+
+
+def test_update_event_without_notes_reports_none(mac, clock):
+    mac.reply(f"ok{US}New{US}2026-09-09T14:00{US}2026-09-09T15:00{US}0\n")
+    out = _tool("update_calendar_event").invoke({"uid": "u", "calendar": "Home", "title": "New"})
+    assert "notes" not in out and "set description of e" not in mac.script()
+
+
 def test_update_event_needs_something_to_change(mac, clock):
     out = _err("update_calendar_event", {"uid": "u", "calendar": "Home"})
     assert "nothing to change" in out

@@ -62,6 +62,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
   could not be kept, and `/config` called the key unknown. Saving such a setting now adds its
   line at the end of its section (`think: fast` under `runtime:`) and changes nothing else in
   the file. A key Saturn does not know is still never written.
+- **Saturn can change an event's notes.** A new event could be given notes, an existing one
+  could not: "edit the description to basketball with MK" ended in "I'm unable to edit the
+  event description". `update_calendar_event` now takes `notes` and replaces the event's
+  description with it.
 
 ## [0.2.0] — 2026-10-05
 

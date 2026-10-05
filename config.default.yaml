@@ -206,7 +206,7 @@ toolkits:
   contacts: true        # Apple Contacts: look a person up
   reminders: true       # Apple Reminders: list, create, complete
   messages: true        # iMessage: find a group chat, read, send
-  shortcuts: true       # list and run your Shortcuts
+  shortcuts: true       # Apple Shortcuts: list, run
   desktop: true         # the front browser tab, the Finder selection
   notifications: true   # schedule a one-off alert
   skills: true          # save a procedure as a skill

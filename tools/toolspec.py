@@ -59,7 +59,7 @@ TOOLKITS: "dict[str, Toolkit]" = {
     "contacts": Toolkit("Contacts", "Apple Contacts: look a person up"),
     "reminders": Toolkit("Reminders", "Apple Reminders: list, create, complete"),
     "messages": Toolkit("Messages", "iMessage: find a group chat, read, send"),
-    "shortcuts": Toolkit("Shortcuts", "list and run your Shortcuts"),
+    "shortcuts": Toolkit("Shortcuts", "Apple Shortcuts: list, run"),
     "desktop": Toolkit("Desktop", "the front browser tab, the Finder selection"),
     "notifications": Toolkit("Notifications", "schedule a one-off alert"),
     "skills": Toolkit("Skills", "save a procedure as a skill"),

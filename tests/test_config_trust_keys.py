@@ -1,31 +1,13 @@
 """
-/config persist-by-default (2026-07-07) with the trust-key exemption (2026-07-10): a security
-posture set through the generic setter applies for the SESSION and never writes config.yaml
-without an explicit --save — the same fail-closed convention the canonical toggles
-(/policy open, /privacy airgap) keep via the opt-IN save parser — runtime.redaction stays a
-trust key even though its command front end was cut 2026-07-16 (/config is its only door now).
-Ordinary settings keep the persist-by-default inversion.
+/config persist-by-default with the trust-key exemption: a security posture set through the
+generic setter applies for the SESSION and never writes config.yaml without an explicit --save —
+the same fail-closed convention the canonical toggles (/policy open, /policy airgap) keep via the
+opt-IN save parser. Ordinary settings persist by default.
 """
 
 import pytest
 
-from commands._framework import CommandContext
 from commands.config import _TRUST_KEYS, _config
-
-
-@pytest.fixture
-def ctx():
-    return CommandContext(state={}, make_initial_state=dict, db_path="")
-
-
-@pytest.fixture
-def recording_persist(monkeypatch):
-    """Capture config.persist calls instead of writing the real config.yaml."""
-    import config
-
-    saved: list[str] = []
-    monkeypatch.setattr(config, "persist", lambda key: saved.append(key) or config._CONFIG_PATH)
-    return saved
 
 
 @pytest.fixture(autouse=True)
@@ -48,7 +30,6 @@ def _out(capsys) -> str:
     ("runtime.quarantine", "off"),
     ("runtime.airgap", "false"),
     ("runtime.auto_approve", "destructive"),
-    ("runtime.redaction", "off"),
 ])
 def test_trust_key_set_is_session_only_by_default(ctx, capsys, recording_persist, key, value):
     from config import get_config

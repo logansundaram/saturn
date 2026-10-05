@@ -1,15 +1,15 @@
 """tools/shell.py — foreground run_shell, exercised against real subprocesses kept
-deliberately tiny. (The background-job lifecycle and its opt-in knob were DELETED 2026-07-03 —
-run_shell is a bounded foreground run only; see shelf/2026-07-03-runtime-trim.)"""
+deliberately tiny."""
 
 import sys
 
+import pytest
+
 from tools.shell import run_shell
+from tools.toolspec import ToolError
 
 _PY = sys.executable
-# The platform shell differs (PowerShell vs /bin/sh): PowerShell needs the call operator `&` to
-# run a quoted executable path; POSIX shells take it bare (where `&` would mean background!).
-_CALL = f'& "{_PY}"' if sys.platform == "win32" else f'"{_PY}"'
+_CALL = f'"{_PY}"'
 
 
 def test_foreground_returns_output_and_exit_code(isolated_paths):
@@ -18,9 +18,30 @@ def test_foreground_returns_output_and_exit_code(isolated_paths):
     assert "fg-hello" in out
 
 
-def test_foreground_nonzero_exit_code_reported(isolated_paths):
-    out = run_shell.invoke({"command": f'{_CALL} -c "import sys; sys.exit(3)"'})
-    assert "[exit code" in out and "0]" not in out.splitlines()[0]
+def test_foreground_nonzero_exit_code_is_a_failure(isolated_paths):
+    """A failed command is a failed step: raised, so the round is stamped error and disclosed."""
+    with pytest.raises(ToolError) as info:
+        run_shell.invoke({"command": f'{_CALL} -c "import sys; print(\'out\'); sys.exit(3)"'})
+    assert str(info.value).startswith("[exit code 3]") and "out" in str(info.value)
+
+
+def test_the_child_never_reads_saturns_terminal(isolated_paths, monkeypatch):
+    """The type-ahead/Esc watcher reads the terminal during a turn; a command that inherited
+    it (git's editor, a password prompt, input()) would split keys with it and hang to the
+    timeout. The child's stdin is /dev/null: an immediate EOF."""
+    import subprocess
+
+    seen = {}
+    real = subprocess.Popen
+
+    def spy(*a, **kw):
+        seen.update(kw)
+        return real(*a, **kw)
+
+    monkeypatch.setattr(subprocess, "Popen", spy)
+    with pytest.raises(ToolError, match="EOFError"):
+        run_shell.invoke({"command": f'{_CALL} -c "input()"'})
+    assert seen.get("stdin") is subprocess.DEVNULL
 
 
 def test_no_background_surface():
@@ -34,7 +55,7 @@ def test_no_background_surface():
     assert "run_shell" in toolspec._RISK
 
 
-# ── env scrub (transplanted from the gating isolate's sandbox.scrubbed_env) ─────────────────
+# ── env scrub ─────────────────────────────────────────────────────────────────────────────────
 
 
 def test_scrubbed_env_removes_secret_shaped_variables(monkeypatch):
@@ -89,3 +110,15 @@ def test_env_scrub_is_a_trust_key():
     from commands.config import _TRUST_KEYS
 
     assert "shell.env_scrub" in _TRUST_KEYS
+
+
+def test_every_run_is_recorded_as_untracked_egress(isolated_paths):
+    """The shell can reach the network without Saturn seeing it, so each run leaves a ledger
+    entry naming the command — the receipt and /policy egress say 'untracked', never 'nothing
+    left'."""
+    from trust import egress
+
+    mark = egress.next_seq()
+    run_shell.invoke({"command": "echo hi"})
+    evs = egress.events_since(mark)
+    assert [(e.channel, e.status, e.detail) for e in evs] == [("shell", egress.UNTRACKED, "echo hi")]

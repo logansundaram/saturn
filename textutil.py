@@ -1,10 +1,7 @@
 """
-Shared text-shaping primitives — the one home for the ellipsis-truncation idiom.
-
-Before this module the `s[: n - 1] + "…"` pattern was hand-rolled in a dozen places (trace
-previews, plan labels, steer notes, arg reprs, recap lines — deferred-review #5). Every layer may
-import it: it is a leaf with no project imports, so there is no circular-import risk from nodes,
-tools, stores, commands, or the TUI.
+Shared text-shaping primitives — the one home for the ellipsis-truncation idiom and the
+mirrored-call / Sources-footer formats. Every layer may import it: it is a leaf with no project
+imports, so there is no circular-import risk from nodes, tools, stores, commands, or the TUI.
 """
 
 from __future__ import annotations
@@ -48,7 +45,7 @@ def clip(s, n: int) -> str:
 
 def human_bytes(n) -> str:
     """Byte count as a compact human label (512B, 2.0KB, 3.4MB) — ONE formatter so every trust
-    surface (the per-answer receipt, /privacy egress, the durable-log view) renders the same
+    surface (the per-answer receipt, /policy egress, the durable-log view) renders the same
     number the same way. Tolerates None/junk (reads as 0)."""
     try:
         n = int(n or 0)
@@ -67,11 +64,22 @@ def fmt_args(args: dict, cap: int) -> str:
     return ", ".join(f"{k}={truncate(repr(v), cap)}" for k, v in (args or {}).items())
 
 
+# Cap each argument's repr in a mirrored call so a big write_file payload doesn't bloat the
+# trace or the Sources labels.
+CALL_ARG_REPR = 200
+
+
+def fmt_call(name: str, args: dict) -> str:
+    """A tool call as `calculate(expression='847 * 293')` — the call half of a mirrored
+    tool-result entry (see CALL_RESULT_SEP below). One builder, so the trace replay can find a
+    call's entry by rebuilding its label instead of counting positions."""
+    return f"{name}({fmt_args(args, CALL_ARG_REPR)})"
+
+
 def iter_strings(value):
     """Every string leaf inside a nested dict/list/tuple value (dict KEYS and scalars skipped —
     neither can carry a secret worth scanning). THE one walker over a tool call's argument tree:
-    the gate's secret scan (redaction.scan_args) and the MCP boundary's redaction both use it, so
-    they can never disagree about what counts as argument content."""
+    the gate's secret scan (trust/secret_scan.scan_args) walks with it."""
     if isinstance(value, str):
         yield value
     elif isinstance(value, dict):
@@ -85,8 +93,7 @@ def iter_strings(value):
 def map_strings(value, fn):
     """Structure-preserving rewrite of every string leaf inside a nested dict/list/tuple value —
     the REWRITE twin of `iter_strings`, visiting exactly the same leaves (dict KEYS and
-    non-string scalars untouched), so a scan and a rewrite over the same tree can never disagree
-    about what counts as content (the MCP boundary's warn-mode count vs redact-mode rewrite).
+    non-string scalars untouched) — the trace store's clipping ladder shrinks string leaves with it.
     Tuples come back as lists — every consumer serializes toward JSON, which has none."""
     if isinstance(value, str):
         return fn(value)
@@ -98,8 +105,8 @@ def map_strings(value, fn):
 
 
 # The separator nodes/tools.py mirrors each executed call into `tool_results` with
-# (`f"{call_repr}{CALL_RESULT_SEP}{observation}"`). One constant + one parser so synthesize's
-# Sources labels recover the call half (the observation half) the same way every time.
+# (`f"{call_repr}{CALL_RESULT_SEP}{observation}"`). One constant + one parser so the
+# Sources labels (core/sources.py) recover the call half (the observation half) the same way every time.
 CALL_RESULT_SEP = " -> "
 
 
@@ -117,7 +124,7 @@ def split_call_result(entry) -> "tuple[str, str]":
 
 
 # The `[source: name, page N]` provenance marker search_knowledge_base prepends to each
-# retrieved chunk. One builder + one parser (tools/knowledge.py builds it, nodes/synthesize.py's
+# retrieved chunk. One builder + one parser (tools/knowledge.py builds it, core/sources.py's
 # Sources labels parse it back) so the two sides can't drift — the CALL_RESULT_SEP treatment.
 DOC_SOURCE_RE = re.compile(r"\[source: ([^\]]+)\]")
 
@@ -140,12 +147,10 @@ def parse_doc_sources(text) -> "list[str]":
     return names
 
 
-# The mechanical `Sources:` block synthesize appends to a cited answer — one builder
-# (nodes/synthesize.sources_footer renders through SOURCES_HEADER) and ONE parser, the
-# CALL_RESULT_SEP treatment. Three readers (the Glass Box's answer prose, the trust-colored
-# footer render, /trace why's cited-sources view) each hand-rolled this and already disagreed:
-# two anchored on the trailing block, the third matched the first "Sources:" ANYWHERE in the
-# answer, so prose containing the word swallowed the rest of the text.
+# The mechanical `Sources:` block the agent appends to a cited answer — one builder
+# (nodes/agent.sources_footer renders through SOURCES_HEADER) and ONE parser, the
+# CALL_RESULT_SEP treatment, so every reader (the footer render, /trace why's cited-sources view)
+# anchors on the trailing block — prose containing the word "Sources:" is never swallowed.
 SOURCES_HEADER = "Sources:"
 # Public: the footer entry shape `  [n] label`. The trust-colored renderer reads the
 # number back off each line, so it must be the same pattern the split validates with.
@@ -173,99 +178,14 @@ def split_sources_footer(text) -> "tuple[str, list[str] | None]":
 
 
 def mask_secret(value) -> str:
-    """A display-safe preview of a secret — THE one masking rule (env_keys' key listing and
-    trust/redaction's findings each hand-rolled their own, with different exposure envelopes:
-    3+4 vs 6+2 visible characters, and a short secret partially shown on one surface but fully
-    masked on the other; a tightening decision made once must reach both). ≤8 chars shows
-    nothing; longer shows the first 4 + last 2."""
+    """A display-safe preview of a secret — THE one masking rule, so a tightening decision made
+    once reaches every surface. ≤8 chars shows nothing; longer shows the first 4 + last 2."""
     s = " ".join(str(value or "").split())
     if not s:
         return ""
     if len(s) <= 8:
         return "****"
     return f"{s[:4]}…{s[-2:]}"
-
-
-# ── figures: the numeric claims an answer makes (from the engine isolate, 2026-08-15) ──────────
-#
-# The groundedness gate diffs the figures an ANSWER states against the figures the turn GATHERED.
-# One producer, one comparator, both here (leaf) so synthesize and its tests share them.
-
-_FIGURE_RE = re.compile(r"-?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?")
-
-# `[1]`-style provenance markers are engine syntax, not claims the model made.
-_CITATION_RE = re.compile(r"\[\d+\]")
-
-
-def figure_literals(text) -> "list[tuple[float, str]]":
-    """(value, literal) for every numeric token in `text` that reads as a CLAIMED MEASUREMENT
-    rather than discourse: three or more integer digits, or any non-integer. One- and two-digit
-    integers are excluded on purpose — "I read 2 files", "9 hours" are counts fluent prose
-    produces on its own; treating them as claims would fire on ordinary sentences and train
-    everyone to ignore the gate."""
-    out: list = []
-    for tok in _FIGURE_RE.findall(_CITATION_RE.sub(" ", str(text or ""))):
-        raw = tok.replace(",", "")
-        try:
-            value = float(raw)
-        except ValueError:
-            continue
-        digits = raw.lstrip("-").split(".")[0]
-        if "." in raw or len(digits) >= 3:
-            out.append((value, tok))
-    return out
-
-
-def untraceable_figures(answer, sources) -> "list[str]":
-    """The figures in `answer` that appear in `sources` neither exactly nor as a rounding.
-    Rounding counts as traceable: an observation of 0.857142 legitimately becomes "0.86" — the
-    tolerance is derived from the ANSWER's own precision ("0.86" admits a source rounding to two
-    decimals, "515" one rounding to a whole number), so it never widens beyond what the answer
-    claims."""
-    source_values = [v for v, _lit in figure_literals(sources)]
-    missing: list = []
-    for value, literal in figure_literals(answer):
-        decimals = len(literal.split(".")[1]) if "." in literal else 0
-        if any(
-            abs(src - value) < 1e-9 or abs(round(src, decimals) - value) < 1e-9
-            for src in source_values
-        ):
-            continue
-        if literal not in missing:
-            missing.append(literal)
-    return missing
-
-
-# ── degenerate-generation detection (from the engine isolate, 2026-08-15) ─────────────────────
-#
-# A RETRY TRIGGER, never a global setting: the caller re-rolls the next rung with a repeat penalty
-# (core/serving.repetition_options) only after a draw carries the signature of a decoding loop.
-
-# How many times a fragment must recur back-to-back before it reads as a loop rather than emphasis.
-_LOOP_RUN = 4
-
-# Immediate self-repetition of a 3+ character fragment, four or more times running.
-_LOOP_RE = re.compile(r"(.{3,40}?)\1{" + str(_LOOP_RUN - 1) + r",}", re.DOTALL)
-
-
-def looks_repetitive(text) -> bool:
-    """Whether `text` carries the signature of a decoding loop: a fragment repeated back-to-back
-    (`reviewedreviewedreviewed`) or a whole line repeated down the output — both a run of
-    `_LOOP_RUN`, comfortably past what prose or JSON structure produces on its own."""
-    s = str(text or "")
-    if len(s) < 12:
-        return False
-    if _LOOP_RE.search(s):
-        return True
-    lines = [ln.strip() for ln in s.splitlines() if ln.strip()]
-    if len(lines) < _LOOP_RUN:
-        return False
-    run = 1
-    for prev, cur in zip(lines, lines[1:]):
-        run = run + 1 if cur == prev else 1
-        if run >= _LOOP_RUN:
-            return True
-    return False
 
 
 def safe_stem(name, fallback: str) -> str:
@@ -280,3 +200,143 @@ def safe_stem(name, fallback: str) -> str:
     if stem.lower().endswith(".json"):
         stem = stem[:-5]
     return _SAFE_STEM.sub("-", stem).strip("-_") or fallback
+
+
+# ── terminal-safe text ───────────────────────────────────────────────────────────────────────
+# A terminal treats ESC (and the 8-bit C1 range) as the start of a command: write the clipboard
+# (OSC 52), relink text (OSC 8), move the cursor and erase lines. Text from outside Saturn — tool
+# output, the model, an old recorded run — passes through `visible_controls` before it can
+# reach a terminal (docs/superpowers/plans/2026-10-01-terminal-escape-sanitising.md):
+#   - complete SGR sequences (colour, bold) are removed: they cannot move anything, and removing
+#     them only makes text more visible. So is erase-to-end-of-line (`ESC[K`, which grep and GCC
+#     write after each colour code): with carriage returns and cursor moves inert, the cursor
+#     is always at the end of what was written and there is nothing for it to erase;
+#   - CR LF and a lone CR become LF, so an overwrite shows both texts;
+#   - every other C0 control but TAB and LF becomes its control picture (ESC -> ␛), DEL -> ␡,
+#     and a C1 control becomes ␛ plus its 7-bit form (U+009B CSI -> ␛[).
+# Text with no control character comes back as the same object; the result never contains a
+# character this rewrites, so it is idempotent.
+_SGR = re.compile(r"(?:\x1b\[|\x9b)(?:[0-9;:]*m|0?K)")
+_CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+
+
+def _control_picture(m) -> str:
+    code = ord(m.group())
+    if code < 0x20:
+        return chr(0x2400 + code)
+    if code == 0x7F:
+        return "␡"
+    return "␛" + chr(code - 0x40)
+
+
+def visible_controls_n(text) -> "tuple[str, int]":
+    """`visible_controls`, plus how many characters became pictures (removed colour codes and
+    carriage returns are not counted — nothing was turned into a symbol for them)."""
+    s = "" if text is None else str(text)
+    if not _CONTROL.search(s):
+        return s, 0
+    s = _SGR.sub("", s).replace("\r\n", "\n").replace("\r", "\n")
+    return _CONTROL.subn(_control_picture, s)
+
+
+def visible_controls(text) -> str:
+    """`text` with every terminal control made inert and visible (see above)."""
+    return visible_controls_n(text)[0]
+
+
+def has_controls(text) -> bool:
+    """Whether `text` holds a character `visible_controls` would rewrite."""
+    return bool(_CONTROL.search("" if text is None else str(text)))
+
+
+def is_control_picture(ch: str) -> bool:
+    """Whether `ch` is one of the symbols `visible_controls` writes in place of a control."""
+    return "␀" <= ch <= "␡"
+
+
+# Bidi overrides and isolates, zero-width characters and the BOM: legitimate inside an answer
+# (RTL scripts, emoji ZWJ sequences), but at the approval gate they can make a command or an
+# address display in a different order, or hide a character. The gate shows them by code point,
+# with every other character that prints as nothing (`visible_format_chars`).
+_FORMAT = re.compile("[\u061c\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]")
+# What `str.isprintable()` accepts and a terminal still draws as nothing, or as an empty cell:
+# Unicode's Default_Ignorable_Code_Point set outside the format category (the combining
+# grapheme joiner, the Hangul fillers, the Khmer inherent vowels, the Mongolian and the
+# general variation selectors with their supplement) and the blank braille pattern. No Unicode
+# category separates these from letters and marks, so this is a list — the ONE list, read by
+# both `unseen_chars` and `visible_format_chars`. U+FE0F is left out: it is the emoji selector
+# ("⚠️"), and one repeatable character spells nothing.
+_BLANK = re.compile("[\u034f\u115f\u1160\u17b4\u17b5\u180b-\u180d\u180f\u2800\u3164"
+                    "\ufe00-\ufe0e\uffa0\U000e0100-\U000e01ef]")
+
+
+def unseen_chars(text) -> "list[str]":
+    """The characters in `text` that print as nothing and have no place in text a person must
+    read in full, as `U+XXXX` labels (each once, in order): format characters other than the
+    bidi and zero-width set above (Unicode tag characters, word joiners, the soft hyphen),
+    private-use characters, lone surrogates, and the printable characters that draw as nothing
+    (`_BLANK`: variation selectors other than the emoji one, the Hangul fillers, …). Text
+    spelled in them would be saved, and later read by the model, without the person who
+    approved it ever seeing it in the saved file."""
+    import unicodedata
+
+    found: list = []
+    for ch in "" if text is None else str(text):
+        o = ord(ch)
+        if _FORMAT.match(ch):
+            continue                     # ordinary in RTL text and emoji; the gate shows it
+        if unicodedata.category(ch) in ("Cf", "Co", "Cs") or _BLANK.match(ch):
+            label = f"U+{o:04X}"
+            if label not in found:
+                found.append(label)
+    return found
+
+
+def visible_format_chars(text) -> str:
+    """`text` as the approval gate shows it — nothing a call holds may vanish. Every character
+    that prints as nothing is shown as `⟨U+202E⟩`: bidi and zero-width characters, and any other
+    format, private-use or unassigned character, lone surrogate or line separator (by Unicode
+    category, not a list an attacker can step around) — and the characters Python calls
+    printable that draw as nothing all the same (`_BLANK`: variation selectors, Hangul
+    fillers, …). ESC becomes `␛` here, so the console — which removes colour codes — has none
+    left to remove. Spaces that occupy a cell (NBSP) and the other controls are left as they
+    are: the console pictures the controls."""
+    s = "" if text is None else str(text)
+    if s.isprintable() and not _BLANK.search(s):
+        return s
+    import unicodedata
+
+    out, changed = [], False
+    for ch in s:
+        if _BLANK.match(ch):
+            out.append(f"⟨U+{ord(ch):04X}⟩")
+            changed = True
+        elif ch.isprintable():
+            out.append(ch)
+        elif ch in "\x1b\x9b":
+            out.append("␛" if ch == "\x1b" else "␛[")
+            changed = True
+        elif unicodedata.category(ch) in ("Cc", "Zs"):
+            out.append(ch)
+        else:
+            out.append(f"⟨U+{ord(ch):04X}⟩")
+            changed = True
+    return "".join(out) if changed else s
+
+
+def visible_text(text) -> str:
+    """`text` as it may be STORED where a person accepts it by reading it on the console (a
+    memory fact, a review candidate): controls made inert, then everything that prints as
+    nothing shown by code point — what the approval gate would have shown."""
+    return visible_format_chars(visible_controls(text))
+
+
+# json.dumps(ensure_ascii=False) escapes C0 but writes DEL, C1 and the two Unicode line
+# separators raw. They can only occur inside JSON strings, where a \u escape is equivalent.
+_JSON_RAW = re.compile("[\x7f-\x9f\u2028\u2029]")
+
+
+def json_terminal_safe(dumped: str) -> str:
+    """A `json.dumps(..., ensure_ascii=False)` result with its remaining raw control characters
+    \\u-escaped: `json.loads` returns exactly the same value, and `cat` shows no control byte."""
+    return _JSON_RAW.sub(lambda m: f"\\u{ord(m.group()):04x}", dumped)

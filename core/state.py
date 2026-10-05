@@ -1,23 +1,21 @@
 import operator
 from typing import List, Any, Optional
-from langchain.messages import HumanMessage
+from langchain.messages import HumanMessage, ToolMessage
 from langgraph.graph.message import add_messages
 from typing_extensions import TypedDict, Annotated
 
 
 # --- mid-turn steering tag ----------------------------------------------------------------
-# plan_gate injects a mid-turn steering correction as a HumanMessage. When it can't merge the
-# note into the trailing message it appends a STANDALONE HumanMessage carrying this prefix —
-# which is NOT a turn boundary. Everything that slices the conversation by "last HumanMessage"
-# (agent._compact_history, compaction.summarize_messages, the grounding recap) must test
-# boundaries via is_turn_start
-# below — never a hand-rolled isinstance check — or a steered turn gets mis-sliced: the steer
-# note mistaken for the question, the real question compacted away.
+# A mid-turn steering correction that can't merge into the trailing message is appended as a
+# STANDALONE HumanMessage carrying this prefix — which is NOT a turn boundary. Everything that
+# slices the conversation by "last HumanMessage" must test boundaries via is_turn_start below —
+# never a hand-rolled isinstance check — or a steered turn gets mis-sliced: the steer note
+# mistaken for the question, the real question compacted away.
 STEER_PREFIX = "[Steering correction from the user, mid-task — adjust your approach accordingly]:"
 
 
 def is_steer_message(m) -> bool:
-    """True if `m` is a standalone mid-turn steering note injected by plan_gate. The merged form
+    """True if `m` is a standalone mid-turn steering note injected by the agent node. The merged form
     (note appended onto an existing HumanMessage's content) deliberately does NOT match — there
     the underlying message is still the real turn boundary."""
     return isinstance(m, HumanMessage) and str(m.content).startswith(STEER_PREFIX)
@@ -26,13 +24,7 @@ def is_steer_message(m) -> bool:
 def is_turn_start(m) -> bool:
     """True when `m` is a HumanMessage that STARTS a real turn — i.e. not a standalone mid-turn
     steer note (that belongs to the turn it corrected) and not a compaction summary (carried
-    history, not a question).
-
-    THE turn-boundary predicate. Every conversation slicer (agent._compact_history,
-    compaction.summarize_messages, the grounding recap) keys off this one function — the
-    three-clause filter used to be re-spelled at each
-    site, and the fifth copy drifted (summarize_messages missed the steer check, compacting a
-    steered turn's real question away)."""
+    history, not a question). THE turn-boundary predicate every conversation slicer keys off."""
     # Lazy: keeps core.state import-light. No cycle — compaction imports this module at top,
     # but state itself only reaches for compaction when the predicate is actually called.
     from core.compaction import is_summary
@@ -40,68 +32,71 @@ def is_turn_start(m) -> bool:
     return isinstance(m, HumanMessage) and not is_steer_message(m) and not is_summary(m)
 
 
-# --- The plan: the engine's data bus ------------------------------------------------------
-# (2026-07-03 engine transplant — the agentic_benchmark harness rework.)
-#
-# The plan is a first-class, mutable state object AND the engine's data bus: each step carries
-# its own `result`, written when the step executes. A step with `result is None` has not run —
-# that is THE execution pointer (`current_step`), which replaced the old positional-multiset
-# accounting over `tools_called` (gotcha #6's three cross-checked walkers are gone with it).
+def turn_start(messages: list) -> int:
+    """Index of the current turn's request; len(messages) when there is none."""
+    for i in range(len(messages) - 1, -1, -1):
+        if is_turn_start(messages[i]):
+            return i
+    return len(messages)
+
+
+def this_turn(messages: list) -> list:
+    """The current turn's messages, from its request onward ([] when there is none)."""
+    return list(messages[turn_start(messages):])
+
+
+# --- The plan: the model's checklist -------------------------------------------------------
+# The `plan` tool (tools/planning.py) writes it; nodes/tools.py maps a successful call onto
+# `state["plan"]`. It is intent, not record — the tool rounds that actually ran are the
+# ToolMessages.
 #
 # Step shape (plain dicts — gotcha #4: the checkpointer serializer never round-trips a custom
 # type):
-#   {step_id, label, status, intended_tool, result, needs_resolution}
+#   {step_id, label, status, result}
 #
-#   status           display + incident vocabulary. "pending"/"active" describe un-run steps;
-#                    a step with a result lands on exactly one of:
-#                      done       ran, usable result
-#                      skipped    a guard declined it (user rejection at the gate, write gate)
-#                      blocked    a hard refusal ended it (BLOCKED result)
-#                      error      the tool call failed
-#                      cancelled  retired by rectify after a prior guarded/missing-item outcome
-#                      superseded an engine refusal a redraft then carried out (a dangling
-#                                 ask_user that a later ask_user step asked) — record, not
-#                                 incident. Stamped by update_plan, never by a model.
-#                    Anything but "done" or "superseded" is an INCIDENT synthesize must
-#                    disclose instead of claiming success.
-
-#   intended_tool    the ONE tool this step calls (None = a pure reasoning step).
-#   result           the step's observation/output; None until it runs.
-#   needs_resolution True when the step's exact target (file/value/item list) is not yet known
-#                    and must be resolved from an earlier step's result (rectify checks these
-#                    before execution reaches them).
+#   status   "pending" / "done" — all the `plan` tool writes.
+#   result   "done" for a completed item, None otherwise — `current_step` (the first item with
+#            `result is None`) is the gate's step context.
+#
+# A pre-v2 record also carries `intended_tool` / `needs_resolution` and may carry a `skipped`
+# status; the renderers read those with .get() so `/trace` and `--replay` still draw it.
 
 # A step in one of these statuses is retired for DISPLAY purposes; execution-wise the pointer
 # is `result is None` (a retired step always carries a result).
-TERMINAL_STATUSES = ("done", "skipped", "blocked", "error", "cancelled", "superseded")
+TERMINAL_STATUSES = ("done", "skipped")
 
-# Statuses that count as incidents — the final answer must report these actions did NOT complete.
-# `superseded` is deliberately absent: the refusal it marks was carried out by a later step, so
-# every reader (the incidents block, the write gate, the rail, /trace) treats it as record.
-INCIDENT_STATUSES = ("skipped", "blocked", "error", "cancelled")
 
+def issuing_message(messages) -> "tuple[Any, set]":
+    """The message that issued the pending tool batch, and the ids of its calls already answered:
+    walk back over the trailing ToolMessages (the agent's hygiene answers, the gate's declines,
+    executed results) to the first message that is not one. `(None, answered)` for an empty or
+    all-ToolMessage list. The one walk-back the agent's router, the gate and the tools node share."""
+    answered: set = set()
+    for m in reversed(messages):
+        if isinstance(m, ToolMessage):
+            answered.add(m.tool_call_id)
+            continue
+        return m, answered
+    return None, answered
 
 
 def current_step(plan: List[dict]) -> Optional[dict]:
-    """THE execution pointer: the first step whose `result` is None (not yet run). None when the
-    plan is complete or empty. Everything that asks "what is the engine working on" — the
-    execute node, the approval gate's payload, the plan-review interrupt — reads this."""
+    """The first step whose `result` is None (not done yet); None when the plan is complete or
+    empty. The approval gate's payload and its gate_events `step` label read this."""
     for step in plan or []:
         if step.get("result") is None:
             return step
     return None
 
 
-def unfinished_steps(plan: List[dict]) -> List[dict]:
-    """Steps that never ran (`result is None`) — read by synthesize when a turn lands early
-    (iteration cap, abort) so the answer is honest about work that was planned but not done."""
-    return [s for s in plan or [] if s.get("result") is None]
-
-
-def incident_steps(plan: List[dict]) -> List[dict]:
-    """Steps whose outcome is an incident (skipped/blocked/error/cancelled) — the actions the
-    final answer must plainly report as NOT completed."""
-    return [s for s in plan or [] if s.get("status") in INCIDENT_STATUSES]
+def grounding_parts(state) -> "tuple[str, str]":
+    """The grounding context as (stable, per-turn) halves — the grounding node's split
+    (`context_stable` / `context_dynamic`). A state carrying only the joined `context` (an
+    older checkpoint, a test fixture) is all-stable."""
+    stable = state.get("context_stable")
+    if stable is None and state.get("context_dynamic") is None:
+        return str(state.get("context") or "").strip(), ""
+    return str(stable or "").strip(), str(state.get("context_dynamic") or "").strip()
 
 
 def summarize_gates(gate_events) -> dict:
@@ -125,124 +120,80 @@ def summarize_gates(gate_events) -> dict:
 
 # --- Agent state ------------------------------------------------------------
 class AgentState(TypedDict):
-    # Conversation record. Human/AI/Tool messages. The engine reads curated per-step context
-    # (plan_context), not this raw history — but tool calls AND their ToolMessage observations
-    # still land here so cross-turn follow-ups ("open the second result") keep working through
-    # _compact_history's retained scratchpad, and so the approval/tools nodes can hand a call
-    # across the interrupt boundary.
+    # Human/AI/Tool messages. Tool calls AND their ToolMessage observations land here so
+    # cross-turn follow-ups ("open the second result") survive _compact_history's retained
+    # scratchpad, and so the approval/tools nodes can hand a call across the interrupt boundary.
     messages: Annotated[List[Any], add_messages]
 
-    # Convenience handle for the current turn's user query.
     current_query: str
 
-    # Grounding string built by the `ground` node (document/workspace manifests
-    # + the persistent-memory selection). Sole writer: grounding_node; downstream
-    # nodes read but never mutate it.
+    # Grounding built by the `ground` node (its sole writer). `context_stable` is byte-identical
+    # across turns while nothing on disk changed and rides every prompt right after the system
+    # prompt (the daemon's prompt cache restores past it); `context_dynamic` is the per-turn
+    # remainder; `context` is their join. An older checkpoint lacks the halves — read them
+    # through `grounding_parts`.
     context: str
-    # The two halves of `context` (nodes/ground.py): `context_stable` is byte-identical across
-    # turns while nothing on disk changed and rides every prompt as its own message right after
-    # the system prompt (the daemon's prompt cache restores past it); `context_dynamic` is the
-    # per-turn remainder. `context` is their join. Absent on an older checkpoint — readers go
-    # through plan_context.grounding_parts, which treats the whole `context` as stable then.
     context_stable: str
     context_dynamic: str
 
-    # Which engine this turn runs on (2026-09-08, the common-case contract): "" = decide from
-    # the request (core/complexity.plan_reason via nodes/quick.route_after_ground); "quick" =
-    # the quick path (one router call, read-only tools, no planner/judge) — set by /quick or by
-    # the quick node itself once it runs; "plan" = the plan engine — set by /plan <request>, or
-    # by the quick node when it hands the turn over (its observations stay on the plan). Read by
-    # update_plan's routing so a tool round returns to the engine that issued it. Reset per turn.
-    route: str
-
-    # Per-turn @file attachments: the contents of files the user referenced with `@path` in their
-    # message, pre-formatted as a context section by `mentions.expand` and appended to `context` by
-    # the grounding node — so the planner/execute/synthesize (which read `context`, not raw
-    # `messages`) all see the file inline. Empty when the message had no resolvable @mentions.
+    # This turn's @file attachments, pre-formatted by `mentions.expand`; empty without any.
     attachments: str
 
-    # The living plan / data bus (see above), stored as plain dicts:
-    # {step_id, label, status, intended_tool, result, needs_resolution}.
+    # Whether content from outside the trust boundary has EVER entered this conversation: an
+    # attachment (set by the grounding node) or an untrusted tool that ran (set by the tools
+    # node). Carried across turns (app/session._CARRY_ACROSS_TURNS) — the messages that held it
+    # are compacted away after a turn or two, but an answer that restated a page is still in
+    # history, so core/provenance.of reads this and auto-learn stays off for the conversation.
+    # /clear resets it; a resumed session starts with it set.
+    outside_seen: bool
+
+    # The ids of this batch's `remember` calls the approval node let through because the user
+    # typed every word of them (core/auto_memory.qualifies). Written by the approval node on
+    # every route to `tools`, read by the tools node — which must take the gate's word, not
+    # work it out again from a state the gate's own decline messages have changed.
+    user_stated: List[str]
+
+    # The skill the user ran this turn by typing /<name> (core/skills.block); empty otherwise.
+    # The ground node folds it into the DYNAMIC half, so it never touches the cached prefix.
+    skill: str
+
+    # The model's checklist (see "The plan" above); intent, not record.
     plan: List[dict]
 
-    # Execute-pass counter, bounded by config runtime.max_iterations so a runaway plan/replan
-    # cycle can't spin forever. One increment per execute pass (≈ one per step).
+    # Agent passes this turn, bounded by runtime.max_iterations (nodes/agent.py).
     iteration: int
 
-    # Rectify verdict + reasoning: set by the rectify node each cycle (True = the remaining plan
-    # must be revised → route to replan, with `reasoning` carried as the revision instruction).
-    # plan_gate's mid-turn steering sets the same pair, so a user correction rides the exact
-    # replan seam. replan resets rectify to False.
-    rectify: bool
-    reasoning: str
+    # One record per agent pass this turn (core/think.entry): the kind of step, whether the
+    # pass thought, and what came of the thought. Read by the rail, /think, /trace why and the
+    # loop benchmark; never part of the prompt.
+    think: Annotated[List[dict], operator.add]
 
-    # In-loop replan counter: how many times this turn the replan node rewrote the remaining
-    # steps. Bounded by MAX_REPLANS (nodes/rectify.py). Reset to 0 per turn.
-    replans: int
+    # This turn's own think level (`/think <request>` sets "deep"); empty = runtime.think.
+    think_level: str
 
-    # Plan-review interrupt (see nodes/plan_gate.py). Pauses arrive through the shared
-    # plan_ops.PauseController (keyboard Esc, /plan pause|review); `aborted` is set by the gate
-    # when the user abandons the turn at the review prompt, routing the loop to synthesize.
-    # Reset per turn. (The speculative in-graph `pause_requested`/`pause_reason` seam was
-    # deleted 2026-07-04 — nothing ever set it; a future LLM-initiated pause uses the same
-    # controller.)
-    aborted: bool
-
-    # Trace / transparency accumulators. The engine consumes observations via the plan's step
-    # results; these mirror them as a flat, append-only record for the trace store, citations,
-    # and the benchmark harness. The `operator.add` reducer appends across loop iterations
-    # (reset to [] per turn before invoke).
+    # Flat, append-only mirrors of the ToolMessages, reset to [] per turn: `tools_called` names
+    # every executed call; `tool_results` / `documents_retrieved` hold what the answer could
+    # draw on (the Sources receipt, /trace source).
     tools_called: Annotated[List[str], operator.add]
     tool_results: Annotated[List[Any], operator.add]
     documents_retrieved: Annotated[List[Any], operator.add]
 
-    # Per-call structured trace records emitted by tool_node, one dict per executed call:
-    # {name, args, result (one-line preview), dur (seconds), ok}. Drives the UI's tool-I/O
-    # tree (args + result preview + per-tool timing). Same append-reducer as the accumulators
-    # above; reset to [] per turn.
+    # One {name, args, result (preview), dur, ok} per executed call — the UI's tool-I/O tree.
     tool_events: Annotated[List[dict], operator.add]
 
-    # Structured human-gate record: exactly ONE dict appended per approval prompt that actually
-    # FACED the human (auto-approved batches record nothing):
+    # Exactly ONE dict per approval prompt that actually FACED the human (auto-approved batches
+    # record nothing):
     #   {"calls": [{"id", "name", "approved"}], "decision": "approved"|"rejected"|"partial",
     #    "quarantine": bool (was this the injection-escalation gate?),
     #    "step": active-step label or None}
-    # Plain dicts only (gotcha #4). A human decision is the ONE run fact that can never be
-    # recomputed after the fact, so this same record feeds the headless --json "gates" field and
-    # the Glass Box's gate_summary — keep the shape minimal (see nodes/approval.gate_event). Same
-    # append-reducer; reset per turn.
+    # A human decision is the ONE run fact that can never be recomputed, so this record feeds
+    # the headless --json "gates" field and the run export — keep the shape minimal (see
+    # nodes/approval.gate_event).
     gate_events: Annotated[List[dict], operator.add]
 
-    # Plan-review vetoes (2026-07-06): labels of un-run steps the USER removed (drop) or retired
-    # (status skipped/cancelled/blocked) at the plan-review editor this turn. The human's edit
-    # OUTRANKS the engine's self-correction — the same principle as the gate's guarded outcome:
-    # the rectify judge and the replanner receive these as deliberately-out-of-scope
-    # (plan_context.vetoes_block), replan drops exact-label resurrections mechanically, and
-    # synthesize describes them as skipped at the user's request, never as failures. Written
-    # only by plan_gate (review resume, read-merge-write); reset per turn.
-    plan_vetoes: List[str]
-    # The effect-typed half of the review veto (2026-08-15, from the engine isolate): the TARGETS
-    # (path tokens, REVOKE_ALL, or tool:<name>) of un-run state-changing steps the user removed
-    # or retired at plan review — written only by plan_gate, consumed by execute's revocation
-    # lock (label + generated arguments) and replan's pre-filter. Reset per turn.
-    revoked_writes: List[str]
-
-    # Interrupt-and-correct: the provenance-tagged answer buffer (core/provenance.py — plain
-    # dicts, gotcha #4: {"text", "spans", "edits", "state", ...}). None until the user freezes
-    # the streaming answer (Esc while it streams); then it carries the frozen/edited text
-    # between `synthesize` and the `answer_gate` edit interrupt, with `state` driving the
-    # routing: "frozen" -> answer_gate, "resume"/"done" -> back into synthesize (continue /
-    # finalize), "complete" on the finished turn (kept so the answer render + trace carry the
-    # human-authored spans). Reset to None per turn.
-    answer_buffer: Optional[dict]
-
-    # Tokens/second from the most recent LLM call (execute or synthesizer). Overwritten
-    # each LLM step; reset to 0.0 at the start of each turn. Only populated for Ollama
-    # models (response_metadata carries eval_count + eval_duration); other providers
-    # leave it 0.0.
+    # Tokens/second of the most recent model call (0.0 when the response doesn't report it).
     tok_per_sec: float
 
-    # Prompt tokens ingested by the most recent LLM call — how full the context window is right
-    # now. Overwritten each LLM step (execute/synthesize); the UI gauges it against the model's
-    # context window. Persists across turns (the context only grows) rather than resetting.
+    # Prompt tokens of the most recent model call — the context gauge's numerator. Persists
+    # across turns (the context only grows) rather than resetting.
     context_tokens: int

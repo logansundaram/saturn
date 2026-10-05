@@ -1,12 +1,11 @@
 """
 Slash-command layer for the interactive CLI loop (app/repl.py).
 
-A package of themed modules (consolidated 2026-06-11 from one-file-per-command): each module
-under commands/ groups the commands of one /help theme and shares the dispatch framework from
+A package of themed modules: each module under commands/ groups the commands of one /help theme and shares the dispatch framework from
 commands._framework. Adding a new command is one @command-decorated handler in the module whose
 theme fits (or a new module added to _COMMAND_MODULES below).
 
-Public API (unchanged from the old commands.py):
+Public API:
   CommandContext, is_command, dispatch, command_completions, write_autosave
 """
 
@@ -16,6 +15,7 @@ from commands._framework import (
     COMMANDS,
     command,
     is_command,
+    resolves,
     dispatch,
     command_completions,
 )
@@ -26,17 +26,17 @@ from commands._session import write_autosave
 import importlib as _importlib
 
 _COMMAND_MODULES = [
-    "confidence",    # /confidence — the confidence-coloring front door
-    "config",        # /config (+ key, setup) — owns the persist seam others import
-    "conversation",  # /clear, /resume
+    "config",        # /config — owns the persist seam others import
+    "conversation",  # /clear, /resume, /copy
     "knowledge",     # /docs, /memory, /init, /undo
     "notify",        # /notify — pending OS-scheduled notifications: list, cancel, test
-    "plan",          # /plan
-    "policy",        # /policy — the one gate front door (risk · allow · open)
-    "privacy",       # /privacy
+    "policy",        # /policy — the one trust front door (risk · allow · open · egress · airgap)
     "runtime",       # /tools, /models, /mcp
+    "skills",        # /skills — the user's own procedures (core/skills)
     "system",        # /help, /quit, /update
-    "trace",         # /trace (incl. the answer/source provenance subviews)
+    "think",         # /think — how much Saturn reasons: the readout, the level, one turn at deep
+    "trace",         # /trace (incl. the why/source provenance subviews)
+    "workspace_dirs",  # /add-dir, /rm-dir — folders beyond the launch folder
 ]
 
 for _mod in _COMMAND_MODULES:
@@ -50,6 +50,7 @@ __all__ = [
     "COMMANDS",
     "command",
     "is_command",
+    "resolves",
     "dispatch",
     "command_completions",
     "write_autosave",

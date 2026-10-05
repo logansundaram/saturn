@@ -1,10 +1,10 @@
 """
-Knowledge & workspace commands — what the agent knows and where it works, in one module (the
-/help "knowledge & workspace" theme; consolidated from one-file-per-command 2026-06-11):
+Knowledge & workspace commands — what the agent knows and where it works (the /help
+"knowledge & workspace" theme):
 
-  /docs    the RAG corpus + workspace file listing (add/remove/sync)
+  /docs    the RAG corpus (list/add/remove/rebuild)
   /memory  the durable remember/recall facts
-  /init    survey the workspace and draft SATURDAY.md
+  /init    survey the workspace and draft SATURN.md
   /undo    revert the last turn's file changes (pre-write snapshots)
 """
 
@@ -18,14 +18,13 @@ from commands._utils import is_list_verb, is_remove_verb
 # ── /docs ────────────────────────────────────────────────────────────────────────────────────
 @command(
     "docs",
-    "View and manage the RAG corpus (and see workspace files): /docs add | remove | sync.",
+    "View and manage the RAG corpus: /docs add | remove | rebuild.",
     aliases=("documents",),
-    usage="/docs [list | add <path> | remove <name> | sync [--force]]",
+    usage="/docs [list | add <path> | remove <name> | rebuild]",
     details="""
-The one front door to the document knowledge base (what search_knowledge_base retrieves from),
-plus a view of the workspace sandbox files (where the file tools read/write).
+The one front door to the document knowledge base (what search_knowledge_base retrieves from).
 
-  /docs                 list the ingested corpus + the workspace files (also: list, ls)
+  /docs                 list the ingested corpus (also: list, ls)
   /docs add <path>      copy a file into the corpus and embed it (txt/md/pdf/html/csv/docx).
                         Paths with spaces don't need quoting; a dragged file's quoted path
                         works as-is (tip: type `/docs add ` then drag the file onto the
@@ -33,17 +32,16 @@ plus a view of the workspace sandbox files (where the file tools read/write).
                         A no-op if the file is already present and unchanged (content hash).
   /docs remove <name>   remove a document: drops its vectors and manifest entry (any removal
                         verb works: remove/rm/delete/del/forget/drop)
-  /docs sync            re-scan the corpus directory and embed anything new/changed
-  /docs sync --force    full rebuild: re-embed every document (recovers a stale/corrupt cache;
-                        also how an edited rag.chunk_size/embedder change is applied on demand)
+  /docs rebuild         re-embed every document (recovers a stale/corrupt cache; also how an
+                        edited rag.chunk_size is applied on demand)
 
-Durable memory is separate — see /memory. (This command replaces the old /ingest, /forget,
-and /reingest.)
+Every launch syncs the corpus directory (new, changed and removed files) on its own, and an
+embedder switch re-embeds it. Durable memory is separate — see /memory.
 
 Examples:
   /docs add "C:\\my notes\\spec.pdf"
   /docs remove spec.pdf
-  /docs sync --force
+  /docs rebuild
 """,
 )
 def _docs(ctx, args):
@@ -58,21 +56,21 @@ def _docs(ctx, args):
         _add(rest)
     elif is_remove_verb(sub):
         _remove(rest)
+    elif sub == "rebuild":
+        _sync(force=True)
     elif sub == "sync":
-        _sync(force=any(a in ("--force", "-f", "force") for a in rest))
+        _print("  /docs sync is gone — launch syncs the corpus on its own; /docs rebuild "
+               "re-embeds everything.")
     else:
-        _print(f"  unknown subcommand '{args[0]}' — usage: /docs [list | add <path> | remove <name> | sync [--force]]")
+        _print(f"  unknown subcommand '{args[0]}' — usage: /docs [list | add <path> | remove <name> | rebuild]")
 
 
 def _list_docs() -> None:
     from config import get_config
-    from stores.document_registry import (
-        manifest_entries, read_documents_manifest, read_workspace_manifest,
-    )
+    from stores.document_registry import manifest_entries, read_documents_manifest
     from tui import ui
 
     corpus = manifest_entries(read_documents_manifest())
-    ws = manifest_entries(read_workspace_manifest())
 
     ui.section(
         "documents",
@@ -87,16 +85,23 @@ def _list_docs() -> None:
     else:
         ui.note("none ingested — add one with /docs add <path>")
 
-    _print("")
-    ui.section("workspace", f"{len(ws)} file(s) the file tools can read/write")
-    if ws:
-        ui.table(
-            [(e["name"], (e["type"] or "·", "dim"), (e["size"] or "·", "dim"),
-              (e["added"] or "·", "dim"), (e["summary"], "dim"))
-             for e in ws]
-        )
-    else:
-        ui.note("empty — the agent writes here via write_file/edit_file")
+
+def _ensure_embedder() -> bool:
+    """The lazy embedder pull: the install never pulls the embedding model, so the first
+    `/docs add` (or `/docs rebuild`) offers it here — the same consented `ollama pull` the /models
+    page runs. True when the embedder is available (or the daemon is down, in which case the
+    ingest's own error explains); False when the user declined the pull."""
+    from app.startup import embedder_missing
+    from commands.runtime import _offer_pull
+
+    missing = embedder_missing()
+    if not missing:
+        return True
+    _print(f"  the knowledge base needs the embedding model {missing}, which is not pulled.")
+    if _offer_pull([missing], "the knowledge base"):
+        return True
+    _print("  nothing ingested.")
+    return False
 
 
 def _add(rest: list) -> None:
@@ -131,11 +136,13 @@ def _add(rest: list) -> None:
         if ui.ask("ingest anyway? [y/N] ").lower() not in ("y", "yes"):
             _print("  not ingested.")
             return
+    if not _ensure_embedder():
+        return
     s = ingest_file(str(path))
     failed = dict(s.get("failed") or [])
     # Compare BASENAMES, never an unanchored suffix: "my-notes.md".endswith("notes.md") is True,
-    # so a pre-existing corrupt file in the corpus reported its loader error against the file
-    # just added — and suppressed the success line for a document that embedded fine.
+    # so a pre-existing corrupt file in the corpus would report its loader error against the
+    # file just added — and suppress the success line for a document that embedded fine.
     err = next((e for src, e in failed.items() if Path(str(src)).name == path.name), None)
     if err is not None:
         _print(f"  could not load {path.name}: {err}")
@@ -165,6 +172,8 @@ def _sync(*, force: bool) -> None:
     from tui import ui
 
     n = sum(1 for _ in iter_documents())
+    if n and not _ensure_embedder():
+        return
     if force:
         ui.note(
             f"full rebuild — re-embedding {n} document(s) with "
@@ -195,12 +204,12 @@ def _sync(*, force: bool) -> None:
     "See, add, edit, and review the agent's persistent memory (the layered remember/recall store).",
     aliases=("mem",),
     usage="/memory [list [layer] | add [--layer L] [--replaces n] [--sens mark] <fact> | "
-          "edit <n> <text> | forget <n> | why <n> | review [--no-llm] | pending | stale]",
+          "edit <n> <text> | forget <n> | why <n> | review [--no-llm] | stale]",
     details="""
 The transparency surface for durable memory. What is stored here quietly shapes every answer:
 the user layer and open commitments load into the agent's context EVERY turn, the recent memo
 notes do too, and agent / entities / negative facts load whenever they match the request
-(/trace context shows the exact block a run got). This command shows and manages the store
+(/trace invoke --full shows the exact block a run got). This command shows and manages the store
 without hand-editing database/memory/memory.md (still safe to hand-edit).
 
 Layers:  user (identity, preferences, constraints) · commitments (open items, with a due date)
@@ -220,11 +229,10 @@ Layers:  user (identity, preferences, constraints) · commitments (open items, w
                              at a review), the run it came from (→ /trace why #run), last use,
                              confirmations
   /memory review             the learning step: candidates this session queued — your mid-task
-                             corrections, plan-review vetoes, gate denials, unfinished steps,
-                             the compaction summary — plus the model's own proposals from the
-                             transcript, each shown as a diff line and kept only on your y.
+                             corrections, gate denials, the compaction summary —
+                             plus the model's own proposals from the transcript,
+                             each shown as a diff line and kept only on your y.
                              Also runs at /quit. --no-llm skips the model's proposals.
-  /memory pending            what the review would show, without deciding
   /memory stale              by-match facts that have not matched a request in
                              memory.stale_days (flagged, never auto-deleted)
 
@@ -241,7 +249,7 @@ def _memory(ctx, args):
     from tui import ui
 
     usage = ("  usage: /memory [list [layer] | add [--layer L] [--replaces n] [--sens mark] <fact> "
-             "| edit <n> <text> | forget <n> | why <n> | review [--no-llm] | pending | stale]")
+             "| edit <n> <text> | forget <n> | why <n> | review [--no-llm] | stale]")
 
     if not args or is_list_verb(args[0]):
         _list_memory(mr, ui, args[1] if len(args) > 1 else None)
@@ -265,14 +273,31 @@ def _memory(ctx, args):
         if not fact:
             _print("  usage: /memory add [--layer <layer>] [--replaces <n>] [--sens <mark>] <fact>")
             return
-        _print(f"  {mr.add_memory(fact, layer=layer, replaces=replaces, sensitivity=sens)}")
+        try:
+            report = mr.add_memory(fact, layer=layer, replaces=replaces, sensitivity=sens)
+        except mr.SecretRefused as exc:
+            _print(f"  {exc}")
+            return
+        _print(f"  {report}")
+        # A fact that landed beside a related one: say so, the way the after-answer note does.
+        from core import auto_memory
+
+        fid = auto_memory.fact_id(report)
+        saved = mr.entry(fid) if fid and report.startswith("Remembered") else None
+        near = auto_memory.similar(saved["text"], saved["layer"], exclude={fid}) if saved else []
+        if near:
+            _print(f"    {auto_memory.similar_note(near)}")
         return
 
     if sub == "edit":
         if len(args) < 3 or not _fact_id(args[1]):
             _print("  usage: /memory edit <n> <new text>   (the #id shown by /memory)")
             return
-        old = mr.edit_memory(_fact_id(args[1]), " ".join(args[2:]))
+        try:
+            old = mr.edit_memory(_fact_id(args[1]), " ".join(args[2:]))
+        except mr.SecretRefused as exc:
+            _print(f"  {exc}")
+            return
         if old is None:
             _print(f"  no fact #{args[1]} (or empty text) — /memory lists the ids.")
         else:
@@ -301,19 +326,6 @@ def _memory(ctx, args):
         review_pending(ctx, use_llm=not any(a.lower() in ("--no-llm", "--mechanical") for a in args))
         return
 
-    if sub in ("pending", "queue", "candidates"):
-        from core.memory_review import load_pending, render_line
-
-        pending = load_pending()
-        if not pending:
-            ui.note("no memory candidates pending — they queue from your corrections, vetoes, "
-                    "gate denials, unfinished steps and compaction summaries.")
-            return
-        ui.section("memory · pending review", f"{len(pending)} candidate(s) · /memory review decides")
-        for c in pending:
-            _print(f"  {render_line(c)}")
-        return
-
     if sub == "stale":
         stale = [e for e in mr.entries() if mr.is_stale(e)]
         if not stale:
@@ -340,11 +352,17 @@ def _display_entry(e: dict) -> str:
 
 def _list_memory(mr, ui, layer_filter=None):
     items = mr.entries(layer_filter) if layer_filter else mr.entries()
+    from config import get_config
+
+    # The store is one markdown file the user owns: say where, every time (grep it, edit it,
+    # git-version it — a cloud agent's memory is opaque; this one is not).
+    memory_file = get_config().path("memory")
     if not items:
         if layer_filter:
             ui.note(f"nothing in the {mr.normalize_layer(layer_filter)} layer yet.")
         else:
             ui.note("no persistent memory yet — say `remember that ...` or use /memory add.")
+        _print(f"  file: {memory_file}")
         return
     from core.memory_review import load_pending
 
@@ -355,6 +373,7 @@ def _list_memory(mr, ui, layer_filter=None):
         f"{len(items)} fact(s) · user + commitments + recent memo load every turn, the rest by "
         f"match · /memory why <n> for provenance{pending_note}",
     )
+    _print(f"  file: {memory_file}  (yours — plain markdown, hand-editable)")
     if layer_filter:
         layers = [mr.normalize_layer(layer_filter)]
     else:  # the six standard layers first, then any section a hand edit / layer= introduced
@@ -368,12 +387,27 @@ def _list_memory(mr, ui, layer_filter=None):
         ui.table([
             (
                 (f"#{e['id']}", "accent"),
-                ("inferred" if e.get("by") == "inferred" else "", "dim"),
+                (_how(e), "dim"),
                 ("stale" if mr.is_stale(e) else "", "dim"),
                 _display_entry(e),
             )
             for e in rows
         ])
+
+
+def _how(e: dict) -> str:
+    """The listing's provenance column: `inferred` (accepted at a review, or a remember nobody
+    confirmed), `said` (auto-learn: you typed it in conversation), `setup` (the first-run
+    interview), or blank (the gate, /memory add, a hand edit)."""
+    if e.get("by") == "inferred":
+        return "inferred"
+    return str(e.get("src") or "").split(":", 1)[0]
+
+
+_SAID_BY = {
+    "said": "you said it — saved without a prompt because you typed every word of it",
+    "setup": "you said it — your answer in the first-run interview",
+}
 
 
 def _why(mr, ui, fact_id: int):
@@ -382,8 +416,8 @@ def _why(mr, ui, fact_id: int):
         _print(f"  no fact #{fact_id} — /memory lists the ids.")
         return
     ui.section(f"memory · #{fact_id}", _display_entry(e))
-    who = ("you said it" if e.get("by") == "user"
-           else "inferred (proposed at a review, accepted by you)")
+    who = ("inferred (proposed at a review, accepted by you)" if e.get("by") == "inferred"
+           else _SAID_BY.get(_how(e), "you said it"))
     rows = [
         ("layer", e["layer"]),
         ("learned", e["date"]),
@@ -431,7 +465,10 @@ def review_pending(ctx, *, use_llm: bool = True, on_quit: bool = False) -> None:
         mark = (id(ctx), len(messages))
         if mark != _LAST_MODEL_PASS.get("mark"):
             try:
-                proposals = rv.llm_candidates(messages)
+                from core import provenance
+
+                proposals = rv.llm_candidates(
+                    messages, outside=provenance.of(ctx.state or {}).untrusted)
             except KeyboardInterrupt:
                 proposals = []
                 _print("  (model proposals skipped)")
@@ -469,9 +506,9 @@ _MAX_LISTING = 100
 
 # Written when the workspace is empty or the LLM draft fails — still useful: the file's existence
 # (and its section headings) teaches the user what to put there.
-_TEMPLATE = """# SATURDAY.md
+_TEMPLATE = """# SATURN.md
 
-Standing instructions for this workspace. Saturday loads this file into context at the start of
+Standing instructions for this workspace. Saturn loads this file into context at the start of
 every turn — keep it short and current.
 
 ## What this workspace is for
@@ -493,18 +530,17 @@ every turn — keep it short and current.
 
 
 def _workspace_listing(workspace: Path) -> list[str]:
-    """Workspace-relative paths, capped. Best-effort — unreadable entries are skipped."""
+    """Paths relative to `workspace`, capped, over the pruned walk (core/workspace.Walk) — run
+    from home, a sorted rglob would crawl all of ~/Library first. Best-effort."""
+    from core import workspace as _ws
+
     out = []
     try:
-        for p in sorted(workspace.rglob("*")):
+        for p in _ws.Walk(workspace, dirs=True):
             if len(out) >= _MAX_LISTING:
                 out.append("… (listing capped)")
                 break
-            try:
-                rel = p.relative_to(workspace).as_posix()
-            except ValueError:
-                continue
-            out.append(rel + ("/" if p.is_dir() else ""))
+            out.append(p.relative_to(workspace).as_posix() + ("/" if p.is_dir() else ""))
     except OSError:
         pass
     return out
@@ -512,35 +548,38 @@ def _workspace_listing(workspace: Path) -> list[str]:
 
 @command(
     "init",
-    "Survey the workspace and draft SATURDAY.md (standing per-workspace instructions).",
+    "Survey the working folder and draft SATURN.md (standing per-folder instructions).",
     usage="/init [--force]",
     details="""
-The workspace is Saturn's sandboxed working area — the directory the file tools read and write,
-at paths.workspace in config.yaml (database/workspace under the install by default). It is NOT
-the directory you launched Saturn from, and /init never touches your current directory. To get
-real files into Saturn's view: ingest them into the knowledge base with /docs add <path>, drop a
-file onto the prompt (drag-and-drop offers ingest/attach), or copy them into the workspace.
+The working folder is the folder you launched Saturn from — the directory the file tools read
+and write and the shell runs in. /add-dir reaches another folder for the session.
 
-/init creates SATURDAY.md at that workspace root — the per-workspace instructions file (the
+/init creates SATURN.md in the working folder — the per-workspace instructions file (the
 CLAUDE.md equivalent). The grounding node loads it into context EVERY turn, so whatever it says
 is standing guidance for the agent: what this workspace is for, its layout, your conventions.
 
-/init surveys the workspace (file listing + the manifest's file summaries) and drafts the file
-with the utility model; if the workspace is empty or the model is unavailable, it writes a
+/init surveys the workspace (its file listing) and drafts the file
+with the chat model; if the workspace is empty or the model is unavailable, it writes a
 sensible template instead. Either way: open it and edit — it's your file, the draft is a start.
 
-Refuses to overwrite an existing SATURDAY.md unless --force is passed.
+Refuses to overwrite an existing SATURN.md unless --force is passed.
+
+Standing rules that should follow you into EVERY workspace (tone, "always metric", "never draft
+to my boss without asking") go in ~/.saturn/SATURN.md instead — hand-written, loaded every turn
+under the workspace file, which wins where the two conflict.
 """,
 )
 def _init(ctx, args):
-    from config import get_config
+    from core import workspace as _ws
+    from nodes.ground import INSTRUCTIONS_FILE
 
     force = any(a in ("--force", "-f") for a in args)
-    workspace = get_config().path("workspace")
+    workspace = _ws.root()
     workspace.mkdir(parents=True, exist_ok=True)
-    target = workspace / "SATURDAY.md"
-    if target.exists() and not force:
-        _print(f"  SATURDAY.md already exists at {target} — edit it directly, or re-draft "
+    target = workspace / INSTRUCTIONS_FILE
+    existing = target if target.exists() else None
+    if existing is not None and not force:
+        _print(f"  {existing.name} already exists at {existing} — edit it directly, or re-draft "
                "with /init --force.")
         return
 
@@ -548,19 +587,17 @@ def _init(ctx, args):
     content = None
     # Only worth an LLM call when there is something to look at; an empty workspace gets the
     # template, which explains itself better than a model guessing at nothing.
-    if [e for e in listing if e != "SATURDAY.md"]:
+    if [e for e in listing if e != INSTRUCTIONS_FILE]:
         try:
             from langchain.messages import HumanMessage
-            from core.llms import get_model
+            from core.llms import generate, get_model, invoke_kwargs, model_tag
             from core.messages import INIT_DRAFT_PROMPT
-            from stores.document_registry import read_workspace_manifest
 
-            _print("  surveying the workspace and drafting SATURDAY.md…")
-            prompt = INIT_DRAFT_PROMPT.format(
-                listing="\n".join(listing) or "(empty)",
-                summaries=read_workspace_manifest().strip() or "(none)",
-            )
-            draft = str(get_model("utility").invoke([HumanMessage(content=prompt)]).content).strip()
+            _print("  surveying the workspace and drafting SATURN.md…")
+            prompt = INIT_DRAFT_PROMPT.format(listing="\n".join(listing) or "(empty)")
+            resp = generate(get_model(), [HumanMessage(content=prompt)], tag=model_tag(),
+                            **invoke_kwargs(None, 0.0, task="init"))
+            draft = str(resp.content).strip()
             # Models love to wrap file output in a code fence — unwrap it.
             if draft.startswith("```"):
                 lines = draft.splitlines()
@@ -576,21 +613,17 @@ def _init(ctx, args):
 
     target.write_text(content or _TEMPLATE, encoding="utf-8")
     kind = "drafted from the workspace contents" if content else "template"
-    # Full absolute path on purpose: the workspace is Saturn's sandboxed area, not the cwd a
-    # terminal user expects — a bare basename here left people unable to find the file they
-    # were just told to edit.
     _print(f"  wrote {target} ({kind}).")
-    _print("  this is Saturn's sandboxed workspace, not your current directory.")
     _print("  it now loads into context every turn — open it and make it yours.")
 
 
 # ── /undo ────────────────────────────────────────────────────────────────────────────────────
 @command(
     "undo",
-    "Revert the file changes the last turn made to the workspace.",
+    "Revert the file changes the last turn made.",
     usage="/undo [list]",
     details="""
-Restores the workspace files touched by the most recent turn that wrote anything, using the
+Restores the files touched by the most recent turn that wrote anything, using the
 pre-write snapshots taken automatically by write_file / edit_file (stores/snapshots.py). A file
 the turn created is deleted; a file it overwrote or edited is restored to its turn-start bytes.
 Each /undo pops one batch, so repeating it walks further back (up to the retained history).
@@ -609,7 +642,7 @@ def _undo(ctx, args):
     if args and is_list_verb(args[0]):
         batches = snapshots.list_batches()
         if not batches:
-            _print("  no snapshots stored — no turn has written to the workspace yet.")
+            _print("  no snapshots stored — no turn has written a file yet.")
             return
         _print(f"  {len(batches)} snapshot batch(es), newest first:")
         for i, b in enumerate(batches, 1):

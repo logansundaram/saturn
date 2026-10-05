@@ -1,48 +1,31 @@
 """
-MCP client — remote Model Context Protocol tools inside the trust envelope (roadmap #12).
+MCP client — remote Model Context Protocol tools inside the trust envelope.
 
 Servers are declared in config.yaml under `mcp.servers:` (stdio command, or a streamable-HTTP/SSE
-url). At startup, registry.py calls `startup()` here: each enabled server is connected, its tools
-listed, and every remote tool registered through `toolspec.register_tool_object` as a LangChain
-StructuredTool — so the planner catalog, the native tool binding, /tools, /policy risk, the trace, and
-above all the APPROVAL GATE treat a remote tool exactly like a local one. Nothing downstream knows
-or cares that the implementation lives in another process.
+url). registry.py calls `startup()` at import: each enabled server is connected and every tool
+it lists is registered as a StructuredTool named `mcp_<server>_<tool>`, so the catalog, /tools,
+/policy risk, the trace and the APPROVAL GATE treat it exactly like a local tool.
 
-Trust model (the same hard line as the deferred /learn design):
-  - A remote tool NEVER self-declares its risk tier. MCP tool annotations (readOnlyHint etc.) are
-    surfaced as advisory info in /mcp, but they never drive the gate — a malicious or sloppy
-    server claiming "read-only" is exactly the attack the gate exists to stop.
-  - Every MCP tool therefore fails closed to `destructive` (always prompts). The USER may relax
-    that: per server via `risk:` in their own config.yaml, or per tool via the existing
-    `/policy risk <tool> <tier> [--save]` — both are user decisions, like /policy allow.
-  - registry.py runs `startup()` BEFORE applying the persisted /policy risk overrides, so a saved
-    override on an MCP tool name survives restarts like any other.
+Trust model: a remote tool NEVER self-declares its risk tier. MCP annotations (readOnlyHint etc.)
+are advisory text in /mcp and never drive the gate — a server claiming "read-only" is exactly
+the attack the gate exists to stop. Every MCP tool fails closed to `destructive`; only the USER
+relaxes it (`risk:` per server in config.yaml, or `/policy risk`). `startup()` runs BEFORE the
+persisted /policy risk overrides apply, so a saved override on an MCP tool survives restarts.
 
-Sync/async bridge: the whole agent loop is synchronous (tool_node calls `tool.invoke(args)`),
-while the MCP SDK is async. All sessions live on ONE background daemon thread running an asyncio
-event loop; each registered tool's sync function submits `session.call_tool(...)` to that loop via
-`asyncio.run_coroutine_threadsafe` and blocks on the result with a timeout (`mcp.call_timeout`).
-Tool results flow back as plain strings and are clamped by tool_node like every other observation.
+The agent loop is synchronous and the MCP SDK async: every session lives on ONE background
+daemon-thread event loop, and each tool's sync function submits `session.call_tool(...)` to it
+and blocks with a timeout (`mcp.call_timeout`). `${VAR}` in a server's url/args/env/headers
+expands from the environment / .env (env_keys.get) so tokens stay out of config.yaml; an unset
+var expands to "" and is reported as a startup problem. stdio servers' stderr goes to
+`logging/mcp.log`, never the console (it would scribble over the rich.Live TUI).
 
-Secrets: any `${VAR}` in a server's url/args/env/headers expands from the environment / the
-.env file (env_keys.get), so tokens never sit in config.yaml — e.g.
-`Authorization: Bearer ${GITHUB_TOKEN}`. A reference to an unset var is a startup problem, not a
-silent empty string... it expands to "" so the server still gets a well-formed value, but the gap
-is reported (see _expand/_parse_specs).
+Failure posture: best-effort everywhere. A server that fails to connect is reported (in /mcp and
+the startup warnings) and its tools don't exist this session; a failed call raises ToolError;
+nothing here can take the REPL down. `/mcp reload` is the full recovery; a call against a dropped
+connection attempts one lazy reconnect on its own.
 
-stdio server stderr goes to `logging/mcp.log` (gitignored, mirrors diag.py's dir resolution) —
-NEVER the console, where it would scribble over the rich.Live TUI.
-
-Failure posture: best-effort everywhere. A server that fails to connect is reported (startup
-problems surface next to check_models' warnings, and in /mcp and /config setup) and its tools
-simply don't exist this session; a tool call that fails returns an "Error: ..." observation to the
-model instead of raising; nothing here can take the REPL down. `/mcp reload` is the recovery path
-(full reconnect + re-register); a call against a dropped connection also attempts one lazy
-reconnect on its own.
-
-Imports nothing project-side except leaf modules (config, diag, textutil, toolspec, env_keys), so
-registry.py can import it freely; reload() touches registry/llms/permissions lazily at call time,
-when they are fully initialised.
+Imports only leaf modules project-side, so registry.py can import it freely; reload() imports
+registry/llms/policy lazily.
 """
 
 from __future__ import annotations
@@ -62,19 +45,17 @@ from typing import Optional
 
 import diag
 from trust import egress
-from trust import redaction
 from config import get_config
-from textutil import map_strings, truncate
-from tools.toolspec import RISK_TIERS, register_tool_object
+from textutil import truncate
+from tools.toolspec import RISK_TIERS, ToolError, register_tool_object
 
-# Fallbacks when config.yaml lacks the knobs (mirrors shell.py's local-helper style).
+# Fallbacks when config.yaml lacks the knobs.
 _DEFAULT_CONNECT_TIMEOUT = 20.0   # seconds to start + handshake a server at startup
 _DEFAULT_CALL_TIMEOUT = 60.0      # seconds per remote tool call
 
 _TRANSPORTS = ("stdio", "http", "sse")
 
-# Tool-name constraint shared by the providers' tool-calling APIs (Ollama/OpenAI-style):
-# [A-Za-z0-9_-], bounded length. Remote names are sanitized into it.
+# Tool-name constraint of the tool-calling APIs: [A-Za-z0-9_-], bounded length. Remote names are sanitized into it.
 _NAME_OK = re.compile(r"[^A-Za-z0-9_-]")
 _MAX_TOOL_NAME = 64
 
@@ -100,7 +81,7 @@ class ServerSpec:
 
     @property
     def target(self) -> str:
-        """One-line 'where does this point' for listings (/mcp, /privacy)."""
+        """One-line 'where does this point' for listings (/mcp, /policy)."""
         if self.transport == "stdio":
             return " ".join([self.command, *self.args])
         return self.url
@@ -252,9 +233,7 @@ def _ensure_loop() -> asyncio.AbstractEventLoop:
 def _stderr_log():
     """Shared sink for stdio servers' stderr — a file under logging/ (gitignored), NEVER the
     console where it would collide with the rich.Live TUI. Uses diag.log_dir() — THE one dir
-    resolution (a hand-copied version here once tested tools/config.yaml, which never exists,
-    so clone installs silently logged to ~/.saturday instead of the repo's logging/).
-    Best-effort: falls back to os.devnull so a log failure can't block a server."""
+    resolution, never a hand-copied one. Best-effort: falls back to os.devnull so a log failure can't block a server."""
     global _STDERR_LOG
     if _STDERR_LOG is None:
         try:
@@ -366,7 +345,7 @@ def _await_ready(states: list[_ServerState], timeout: float) -> None:
     deadline = time.monotonic() + timeout
     for st in states:
         remaining = max(0.0, deadline - time.monotonic())
-        if not st.ready.wait(remaining) :
+        if not st.ready.wait(remaining):
             if st.future is not None:
                 st.future.cancel()
             st.state = "error"
@@ -445,56 +424,30 @@ _DEAD_CONNECTION_MARKERS = (
 )
 
 
-def _redact_args(args):
-    """Deep-copy a tool-call args tree with every secret-like span replaced
-    (`redaction.redact`) — the redact-mode twin of the warn-mode count at the MCP boundary.
-    Walks `textutil.map_strings`, the rewrite twin of the `iter_strings` walk that warn mode's
-    `redaction.scan_args` counts with — one walker, so the two modes can never disagree about
-    what counts as argument content. Only string leaves change; structure and non-string
-    values pass through untouched."""
-    total = 0
-
-    def _swap(s):
-        nonlocal total
-        new, findings = redaction.redact(s)
-        total += len(findings)
-        return new
-
-    return map_strings(args, _swap), total
-
-
 def call_tool(server: str, tool: str, args: dict) -> str:
-    """Execute one remote tool call synchronously (the bridge tool_node ends up in). Always
-    returns a string observation — errors are reported to the model, never raised, matching how
-    tool_node treats local tool failures."""
+    """Execute one remote tool call synchronously (the bridge tool_node ends up in). Returns the
+    string observation; a failure (unconfigured, disconnected, timed out, the server's own
+    isError) raises ToolError, so tool_node stamps the round `error` like a local tool's."""
     st = _SERVERS.get(server)
     if st is None:
-        return f"Error: MCP server '{server}' is not configured."
+        raise ToolError(f"MCP server '{server}' is not configured.")
 
     # Network boundary: a remote (http/sse) server call leaves the machine — gate it on air-gap and
-    # record it to the egress ledger. A stdio server is a local child process (its own egress, if
-    # any, is shown in /privacy), so it isn't gated here.
+    # record it to the egress ledger. A stdio server is a local child process: what it does with
+    # the network is out of Saturn's sight, so its call is recorded as UNTRACKED (never a send),
+    # and under air-gap the gate holds it for the human (policy.airgap_holds).
     if st.spec.transport in ("http", "sse"):
         host = egress.host_of(st.spec.url)  # the shared ledger host derivation (trust/egress.py)
         gblocked = egress.check("mcp", host, f"{server}.{tool}")
         if gblocked:
             return gblocked
-        # Redaction parity with the cloud-LLM boundary (llms._CloudBoundaryModel): tool args
-        # cross the wire too. `warn` counts secret-like values into the egress event; `redact`
-        # replaces them in the args actually sent. The gate may have shown the human the call,
-        # but a tier relaxed via /policy risk sends without a prompt — the boundary itself can't be blind.
-        redactions = 0
-        if redaction.active():
-            if redaction.mode() == "redact":
-                args, redactions = _redact_args(args or {})
-            else:
-                redactions = len(redaction.scan_args(args or {}))
         try:
             n_bytes = len(json.dumps(args or {}, default=str))
         except Exception:
             n_bytes = 0
-        egress.record("mcp", host, f"{server}.{tool}", provider=server,
-                      n_bytes=n_bytes, redactions=redactions)
+        egress.record("mcp", host, f"{server}.{tool}", provider=server, n_bytes=n_bytes)
+    else:
+        egress.record("mcp", server, f"{server}.{tool}", provider=server, status=egress.UNTRACKED)
 
     # Lazy reconnect: a server that crashed or dropped (state error/disconnected) gets ONE fresh
     # connection attempt per call. /mcp reload remains the full recovery (re-lists + re-registers).
@@ -505,8 +458,8 @@ def call_tool(server: str, tool: str, args: dict) -> str:
                 _launch(st)
                 _await_ready([st], _connect_timeout())
         if st.state != "connected" or st.session is None:
-            return (
-                f"Error: MCP server '{server}' is not connected"
+            raise ToolError(
+                f"MCP server '{server}' is not connected"
                 f"{f' ({st.error})' if st.error else ''} — the user can run /mcp reload."
             )
 
@@ -521,7 +474,7 @@ def call_tool(server: str, tool: str, args: dict) -> str:
             result = fut.result(timeout + 5)  # outer belt over the protocol-level read timeout
         except concurrent.futures.TimeoutError:
             fut.cancel()
-            return f"Error: MCP tool '{tool}' on server '{server}' timed out after {timeout:g}s."
+            raise ToolError(f"MCP tool '{tool}' on server '{server}' timed out after {timeout:g}s.")
     except (Exception, asyncio.CancelledError) as exc:
         # CancelledError is a BaseException (3.8+): a loop-side teardown cancelling the in-flight
         # call would otherwise escape this clause AND tool_node's `except Exception`, crashing
@@ -530,7 +483,7 @@ def call_tool(server: str, tool: str, args: dict) -> str:
         if any(marker in msg for marker in _DEAD_CONNECTION_MARKERS):
             st.state = "error"
             st.error = msg
-        return f"Error calling MCP tool '{tool}' on server '{server}': {msg}"
+        raise ToolError(f"calling MCP tool '{tool}' on server '{server}': {msg}") from None
     finally:
         diag.log(f"mcp {server}.{tool} : {time.perf_counter() - start:.4f}s")
 
@@ -539,8 +492,8 @@ def call_tool(server: str, tool: str, args: dict) -> str:
 
 def _result_text(result) -> str:
     """Flatten a CallToolResult into the plain-string observation the loop expects. Text content
-    passes through; binary content is summarized, not dumped (the gotcha-#5 rule — and base64
-    would be clamped into garbage anyway); structured-only results render as JSON."""
+    passes through; binary content is summarized, not dumped (base64 would be clamped into
+    garbage anyway); structured-only results render as JSON."""
     parts: list[str] = []
     for item in getattr(result, "content", None) or []:
         kind = getattr(item, "type", "")
@@ -569,7 +522,7 @@ def _result_text(result) -> str:
 
     text = "\n".join(p for p in parts if p).strip() or "(empty result)"
     if getattr(result, "isError", False):
-        return f"Error from MCP tool: {text}"
+        raise ToolError(f"from MCP tool: {text}")
     return text
 
 
@@ -687,7 +640,7 @@ def shutdown() -> None:
 atexit.register(shutdown)
 
 
-# ── status / readouts (for /mcp, /privacy, /config setup, startup warnings) ───
+# ── status / readouts (for /mcp, /policy, startup warnings) ───
 
 
 @dataclass(frozen=True)

@@ -5,22 +5,22 @@ This file is deliberately thin: it forces UTF-8 console output, parses the comma
 routes into the `app/` package, where the application actually lives:
 
     app/cli.py       the argparse surface + piped-stdin capture
-    app/graph.py     build_agent(): the nodes/ package wired into the plan/execute engine
+    app/graph.py     build_agent(): the nodes/ package wired into the ReAct loop
     app/turn.py      run_turn(): drive one turn (stream updates + tokens, resolve interrupts)
     app/session.py   per-turn state shape, fresh-turn reset, history compaction
     app/startup.py   shared startup: knowledge-base sync + attachment warnings
     app/headless.py  the -p/-q path (one query -> stdout; --json / --export / -q receipt)
     app/repl.py      the interactive loop
 
-The re-export block below keeps the historical import surface stable: benchmark.py and the
-tests import these names from `agent` (`from agent import build_agent, run_turn, ...`), and
-that contract survives the split. New code should import from the app/ modules directly.
+The re-export block below is the import surface benchmark.py and the tests use (`from agent
+import build_agent, run_turn, ...`). New code should import from the app/ modules directly.
 """
 
 import sys
+from pathlib import Path
 
-# Force UTF-8 console output. Node prints (plan glyphs, tool results, model output) routinely
-# contain non-cp1252 characters that crash print() on the default Windows console.
+# Force UTF-8 console output: rail glyphs, tool results and model output routinely carry
+# characters a non-UTF-8 locale's stdout would refuse.
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 if hasattr(sys.stderr, "reconfigure"):
@@ -51,6 +51,16 @@ def main():
         from commands.trace import render_export
 
         sys.exit(0 if render_export(args.replay) else 1)
+
+    # The launch folder is the workspace (core/workspace): the file tools, the shell
+    # and the folder's SATURN.md follow it in both modes. Set once, before either runs.
+    from core import workspace
+
+    try:
+        launched = Path.cwd()
+    except OSError:  # the folder was deleted under the shell
+        launched = Path.home()
+    workspace.set_root(launched)
 
     # --yolo: the CLI view of the gate policy — open the gate up front (threshold ->
     # destructive) so gated calls never interrupt; same mechanism as /policy open. Honored in

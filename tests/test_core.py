@@ -23,8 +23,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from langchain.messages import HumanMessage, AIMessage, ToolMessage
 
-from core.state import current_step, unfinished_steps, incident_steps
-from nodes.update_plan import update_plan_node
+from core.state import current_step
 from nodes.tools import _clamp_observation, _MAX_OBSERVATION
 
 
@@ -39,16 +38,6 @@ def test_current_step_is_first_without_result():
     assert current_step(plan)["step_id"] == 2
     assert current_step([_step(1, result="x", status="done")]) is None
     assert current_step([]) is None and current_step(None) is None
-
-
-def test_unfinished_and_incident_views():
-    plan = [
-        _step(1, result="ok", status="done"),
-        _step(2, result="declined", status="skipped"),
-        _step(3),
-    ]
-    assert [s["step_id"] for s in unfinished_steps(plan)] == [3]
-    assert [s["step_id"] for s in incident_steps(plan)] == [2]
 
 
 # --- the mechanical recorder: observation -> current step's result + stamped status ----------
@@ -66,94 +55,6 @@ def _tool_round(plan, observation, name="web_search", stamp=None):
     }
 
 
-def test_update_plan_records_result_on_current_step():
-    plan = [_step(1, "web_search"), _step(2, "calculate")]
-    out = update_plan_node(_tool_round(plan, "search results here"))["plan"]
-    assert out[0]["result"] == "search results here"
-    assert out[0]["status"] == "done"
-    assert out[1]["result"] is None, "only the current step records"
-
-
-def test_update_plan_reads_stamped_incident_statuses():
-    plan = [_step(1, "run_shell")]
-    out = update_plan_node(
-        _tool_round(plan, "Error calling run_shell: boom", stamp="error")
-    )["plan"]
-    assert out[0]["status"] == "error"
-    plan = [_step(1, "web_search")]
-    out = update_plan_node(
-        _tool_round(plan, "Air-gap is ON — this operation would send data.", stamp="blocked")
-    )["plan"]
-    assert out[0]["status"] == "blocked"
-    plan = [_step(1, "write_file")]
-    decline = ("Execution declined by the user. Do not retry this action; tell the user you "
-               "did not perform it.")
-    out = update_plan_node(
-        _tool_round(plan, decline, name="write_file", stamp="skipped")
-    )["plan"]
-    assert out[0]["status"] == "skipped", "a gate rejection records as a skipped incident"
-
-
-def test_update_plan_never_sniffs_status_from_observation_text():
-    """A successful read of a file whose CONTENT starts with an error/blocked word must stay
-    `done` — the status is the producer's stamp, never the observation text (the old prefix
-    sniffing failed a step over its own data)."""
-    plan = [_step(1, "read_file")]
-    out = update_plan_node(
-        _tool_round(plan, "ERROR: disk full at 03:12\nrest of the log", name="read_file")
-    )["plan"]
-    assert out[0]["status"] == "done"
-    plan = [_step(1, "read_file")]
-    out = update_plan_node(
-        _tool_round(plan, "Blocked IPs: 10.0.0.1, 10.0.0.2", name="read_file")
-    )["plan"]
-    assert out[0]["status"] == "done"
-
-
-def test_update_plan_decline_prefix_fallback_without_stamp():
-    """Belt-and-braces: an UNSTAMPED decline still records as skipped off the DECLINE_TEXT
-    prefix (the one textual fallback kept)."""
-    from nodes.approval import DECLINE_TEXT
-
-    plan = [_step(1, "write_file")]
-    out = update_plan_node(_tool_round(plan, DECLINE_TEXT, name="write_file"))["plan"]
-    assert out[0]["status"] == "skipped"
-
-
-def test_set_status_keeps_the_pointer_pairing():
-    """The plan-review editor's status verb must keep gotcha #6 intact: a TERMINAL status on an
-    un-run step also stamps a result (else execute re-selects it by `result is None` and RUNS
-    the step the user just skipped), and pending clears the result so a step is runnable."""
-    from core import plan_ops
-
-    plan = [_step(1), _step(2)]
-    out = plan_ops.set_status(plan, 1, "skipped")
-    assert out[0]["result"] is not None
-    assert current_step(out)["step_id"] == 2, "the skipped step is no longer the pointer"
-    back = plan_ops.set_status(out, 1, "pending")
-    assert back[0]["result"] is None, "back to pending -> runnable again"
-    # A completed step marked done keeps its recorded result untouched.
-    done = [_step(1, result="real output", status="done")]
-    kept = plan_ops.set_status(done, 1, "done")
-    assert kept[0]["result"] == "real output"
-
-
-def test_update_plan_does_not_mutate_input():
-    plan = [_step(1, "web_search")]
-    before = [dict(s) for s in plan]
-    update_plan_node(_tool_round(plan, "result"))
-    assert plan == before, "update_plan must work on a copy, not mutate state in place"
-
-
-def test_update_plan_noop_without_observation_or_pending_step():
-    # No trailing ToolMessage -> nothing to record.
-    assert update_plan_node({"plan": [_step(1)], "messages": [HumanMessage("q")]}) == {}
-    # Every step already has a result -> nothing to record onto.
-    done = [_step(1, result="x", status="done")]
-    assert update_plan_node(_tool_round(done, "obs")) == {}
-
-
-# --- _compact_history: keep the most recent scratchpad, collapse older turns ----------------
 def test_compact_history_keeps_recent_scratchpad_drops_old():
     from agent import _compact_history
 
@@ -191,23 +92,6 @@ def test_clamp_long_observation_truncated_with_marker():
 
 
 # --- planner prompt stays in sync with the live registry ------------------------------------
-def test_planner_prompt_lists_every_registered_tool():
-    from core import messages
-    from tools import registry
-
-    prompt = messages.planner_sys_msg().content
-    for t in registry.tool:
-        assert t.name in prompt, f"{t.name} missing from planner prompt (drift!)"
-    # ...and the same names reach the constrained decoder's enum + the normalizer.
-    from core.structured import plan_format, registered_tools
-
-    enum = plan_format(sorted(registered_tools()))
-    enum = enum["properties"]["plan"]["items"]["properties"]["tool"]["enum"]
-    for t in registry.tool:
-        assert t.name in enum, f"{t.name} missing from the plan schema enum (drift!)"
-
-
-# --- #5: registration decorator keeps the registry views consistent -------------------------
 def test_registry_views_consistent():
     from tools import registry
 
@@ -339,7 +223,7 @@ def test_typeahead_queues_enter_terminated_lines_fifo():
     for ch in "second":
         q._on_char(ch)
     q._on_char("\n")
-    assert q.pending()
+    assert q._queue
     assert q.pop() == "first" and q.pop() == "second", "queue drains FIFO"
     assert q.pop() is None
 
@@ -351,7 +235,7 @@ def test_typeahead_blank_not_queued_and_backspace_edits():
     for ch in "   ":
         q._on_char(ch)
     q._on_char("\r")
-    assert not q.pending(), "a blank line never queues"
+    assert not q._queue, "a blank line never queues"
     for ch in "abx":
         q._on_char(ch)
     q._on_char("\x08")  # backspace removes the x
@@ -361,7 +245,7 @@ def test_typeahead_blank_not_queued_and_backspace_edits():
 
 
 def test_escape_with_text_steers_empty_reviews():
-    from core import plan_ops as interrupts
+    from core import pause as interrupts
     from tui import typeahead
 
     c = interrupts.get_pause_controller()
@@ -375,50 +259,30 @@ def test_escape_with_text_steers_empty_reviews():
     assert q._buffer == "", "the typed line is consumed as a steer, not left to queue"
     c.clear()
     q._on_escape()  # empty buffer
-    assert c.peek().source == "user", "empty Esc asks for a plan-review pause"
+    assert c.peek().source == "user", "empty Esc asks for a pause"
     c.clear()
 
 
-def test_plan_gate_injects_steer_and_consumes_request():
-    from core import plan_ops as interrupts
-    from nodes.plan_gate import plan_gate_node, route_after_gate
-
-    c = interrupts.get_pause_controller()
-    c.clear()
-    c.request("steer", "focus on cost, not schedule")
-    upd = plan_gate_node({"messages": [HumanMessage("q")], "plan": [], "iteration": 1})
-    assert "messages" in upd, "a steer is injected as a message update"
-    assert "focus on cost" in upd["messages"][0].content
-    assert not c.pending(), "the steer request is consumed (won't re-inject next boundary)"
-    # The steer arms a replan with the correction as the revision instruction, and the gate's
-    # router honors it (the remaining steps are redrafted around the user's words).
-    assert upd["rectify"] is True and "focus on cost" in upd["reasoning"]
-    assert route_after_gate({"rectify": True}) == "replan"
-    assert route_after_gate({}) == "execute"
-    assert route_after_gate({"aborted": True}) == "synthesize"
-
-
-# --- Tier 2 #5: write_file diff preview (pure diff classification) ------------------------------
 def test_write_diff_new_file_is_all_additions():
-    from tui import ui
+    from tui.ui.approval import write_verdict
 
-    rows, is_new, _hidden = ui._diff_lines("___does_not_exist___.txt", "alpha\nbeta\n", True)
-    assert is_new
-    assert [k for k, _ in rows] == ["hunk", "add", "add"]
+    v = write_verdict("___does_not_exist___.txt", "alpha\nbeta\n", True)
+    assert v["kind"] == "new file"
+    assert [k for k, _ in v["rows"]] == ["hunk", "add", "add"]
 
 
 def test_write_diff_overwrite_shows_delete_and_add():
     from config import get_config
-    from tui import ui
+    from tui.ui.approval import write_verdict
 
     ws = get_config().path("workspace")
     ws.mkdir(parents=True, exist_ok=True)
     p = ws / "___difftest___.txt"
     p.write_text("one\ntwo\n", encoding="utf-8")
     try:
-        rows, is_new, _hidden = ui._diff_lines("___difftest___.txt", "one\nTWO\n", True)
-        kinds = [k for k, _ in rows]
-        assert not is_new
+        v = write_verdict("___difftest___.txt", "one\nTWO\n", True)
+        kinds = [k for k, _ in v["rows"]]
+        assert v["kind"] != "new file"
         assert "del" in kinds and "add" in kinds, "a changed line shows as a delete + an add"
     finally:
         p.unlink()
@@ -515,6 +379,23 @@ def test_trace_llm_output_extracts_content_and_tokens():
     msg = AIMessage(content="hello", usage_metadata={"input_tokens": 12, "output_tokens": 3, "total_tokens": 15})
     out, ptok, otok = _llm_output(LLMResult(generations=[[ChatGeneration(message=msg)]]))
     assert out["content"] == "hello" and ptok == 12 and otok == 3
+
+
+def test_trace_llm_output_records_a_streamed_passs_reasoning():
+    """A thinking pass streams its reasoning in chunks' `reasoning_content`; the summed chunk
+    carries it whole and the llm_calls record keeps it (/trace why's `thought:` line)."""
+    from langchain_core.messages import AIMessageChunk
+    from langchain_core.outputs import ChatGenerationChunk, LLMResult
+    from stores.trace import _llm_output
+
+    chunks = [AIMessageChunk(content="", additional_kwargs={"reasoning_content": "the file "}),
+              AIMessageChunk(content="", additional_kwargs={"reasoning_content": "has it"}),
+              AIMessageChunk(content="42")]
+    full = chunks[0] + chunks[1] + chunks[2]
+    out, _p, _o = _llm_output(LLMResult(generations=[[ChatGenerationChunk(message=full)]]))
+    assert out["content"] == "42" and out["reasoning"] == "the file has it"
+    plain, _p, _o = _llm_output(LLMResult(generations=[[ChatGenerationChunk(message=chunks[2])]]))
+    assert "reasoning" not in plain
 
 
 def test_tracer_records_and_reads_back_llm_calls():

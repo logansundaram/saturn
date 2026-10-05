@@ -1,8 +1,6 @@
 """
-The gate policy — ONE object behind every approval decision.
-
-What used to be five separate gate-relaxation mechanisms are now views over this module
-(the v1.x "policy-as-configuration" consolidation):
+The gate policy — ONE object behind every approval decision. Every gate-relaxation
+mechanism is a view over this module:
 
   runtime.auto_approve   the policy's tier threshold — tools AT OR BELOW it run without
                          prompting. The baseline lives in config.yaml like every other knob;
@@ -12,13 +10,11 @@ What used to be five separate gate-relaxation mechanisms are now views over this
   --yolo (headless)      the same view, applied at process start.
   /policy risk           edits a TOOL's tier (live in registry.TOOL_RISK; persisted here).
   /policy allow          edits the run_shell prefix allowlist (persisted here).
-
-(The legacy top-level command spellings /risk, /allow, /autoapprove were CUT 2026-07-06 —
-_RENAMED pointers cover the muscle memory; the mechanisms themselves are unchanged.)
+  /policy shortcut       edits the run_shortcut name allowlist (persisted here).
 
 Durable state is one small, versionable JSON file at `config.path("permissions")`
 (database/permissions.json): `risk_overrides` ({tool: tier}, applied over declared tiers at
-startup by registry.py) + `shell_allow` ([prefix, ...]). The tier threshold persists via
+startup by registry.py) + `shell_allow` ([prefix, ...]) + `shortcut_allow` ([name, ...]). The tier threshold persists via
 config.yaml (`/config --save runtime.auto_approve`), not here.
 
 The one gate question is `approves(name, risk, args)` — the approval node asks it for every
@@ -31,8 +27,8 @@ allowing "git status" would also wave through "git status; rm -rf ~" — the gat
 on anything it can't read at a glance. A background run_shell call (detached, timeout-free) is
 never prefix-exempt either: the prefix was granted for a bounded foreground run, not a daemon.
 
-Imports only config + diag (both leaves), so registry.py, the approval node, and the TUI can
-import this freely.
+Imports only config + diag + trust.egress (all leaves), so registry.py, the approval node, and
+the TUI can import this freely.
 """
 
 from __future__ import annotations
@@ -44,15 +40,16 @@ import time
 
 import diag
 from config import get_config, persist, RISK_ORDER
+from trust import egress
 
 # Any of these in a command means it can do more than its first tokens say — chaining, piping,
 # redirection, substitution. Such a command is never prefix-exempt; the human reads it at the gate.
 _SHELL_META = re.compile(r"[;&|<>`$\n\r]")
 
-# --- the argument-tail screen (transplanted from the gating isolate, 2026-08-15) ------------
+# --- the argument-tail screen -------------------------------------------------------------
 #
-# A token-prefix grant validated only its HEAD, so `git log --output=<abs>` and
-# `git -c core.pager=!sh -c id` rode in on a benign-looking grant. These tables close the NAMED
+# A token-prefix grant that validated only its HEAD would let `git log --output=<abs>` and
+# `git -c core.pager=!sh -c id` ride in on a benign-looking grant. These tables close the NAMED
 # laundering paths in the tokens AFTER a granted prefix; the screen re-runs at USE against the
 # live command text (never validate-once) and can only ever tighten. It is a denylist and stays
 # defense-in-depth: the boundary is the human approving the exact reviewed command.
@@ -79,7 +76,7 @@ _INTERPRETERS = {
 }
 
 # A glob in the tail: its expansion is not what was screened.
-_GLOB = re.compile(r"[*?\[\]]")
+_GLOB = re.compile(r"[*?\[\]{}]")  # {} too: brace expansion builds paths ({..,x}/secret)
 
 
 # --- the tier threshold (runtime.auto_approve and its views) -----------------------------
@@ -100,7 +97,7 @@ def set_tier(new_tier: str, save: bool = False) -> str:
     if save:
         persist("runtime.auto_approve")
     # An explicit tier choice supersedes any gate-open snapshot: `/policy open off` must never
-    # restore a tier ABOVE the one the user set last (transplanted from the gating isolate).
+    # restore a tier ABOVE the one the user set last.
     _tier_before_gate_off = None
     return new_tier
 
@@ -110,7 +107,7 @@ def auto_approves(risk: str) -> bool:
     return get_config().auto_approves(risk)
 
 
-# /policy open is not a sixth mechanism — it's this: threshold = destructive (every tier passes).
+# /policy open is not a separate switch — it's this: threshold = destructive (every tier passes).
 # Remember what the threshold was so `off` restores it instead of guessing.
 _tier_before_gate_off: "str | None" = None
 
@@ -122,28 +119,85 @@ def gate_off() -> bool:
 
 def set_gate_off(off: bool) -> None:
     """The /policy open · --yolo view: open the gate by raising the threshold to `destructive`;
-    close it by restoring the prior threshold (read_only if none was recorded — fail closed)."""
+    close it by restoring the prior threshold (read_only if none was recorded — fail closed).
+    Closing a gate that is not open changes nothing: `/policy open off` typed to confirm the
+    posture must not drop a configured side_effecting threshold."""
     global _tier_before_gate_off
     if off:
         prior = _tier_before_gate_off if gate_off() else tier()
         set_tier("destructive")  # clears the snapshot — reinstate it after
         _tier_before_gate_off = prior
-    else:
+    elif gate_off():
         set_tier(_tier_before_gate_off or "read_only")  # set_tier clears the snapshot
 
 
 # --- the one gate question ----------------------------------------------------------------
 
 
+# Processes the egress ledger cannot see inside (each run is recorded UNTRACKED): a shell
+# command, one of the user's Shortcuts — and every MCP server, by its reserved name prefix.
+_OPAQUE_TOOLS = frozenset({"run_shell", "run_shortcut"})
+
+# Tools that ALWAYS face the human: no tier, no open gate, no `/policy risk` override and no
+# always-allow lets one through, and a headless run — which has no human — refuses them even
+# with --yolo. Two kinds of thing qualify: sending the user's words to another person, and
+# saving text Saturn will later follow as the user's own instructions (a skill —
+# tools/skills.py). Each entry is (WHAT the action is — "<what> always asks", the always-allow
+# note and the headless refusal; WHY — the gate's note).
+ALWAYS_ASKS: "dict[str, tuple[str, str]]" = {
+    "send_message": ("a send", "this sends your words to another person; a send always asks, "
+                               "whatever the policy"),
+    "create_skill": ("saving a skill", "this saves a procedure Saturn will follow as your own "
+                                       "words every time the skill runs; saving a skill always "
+                                       "asks, whatever the policy"),
+}
+
+# Tools the gate's `a(lways)` never drops to the auto-approved tier: one keypress must not
+# un-gate every future shell command, every shortcut, every send or every saved skill.
+# run_shell and run_shortcut have their own narrow allowlists (/policy allow, /policy
+# shortcut); a send and a skill save have none.
+NO_BLANKET_GRANT = _OPAQUE_TOOLS | frozenset(ALWAYS_ASKS)
+
+
+def airgap_holds(name: str) -> bool:
+    """Whether air-gap holds this tool for the human. Air-gap refuses every network op Saturn
+    makes itself (egress.check), but a shell command, a shortcut and an MCP server are other
+    processes: whether `git pull`, a shortcut or a stdio server touches the network cannot be
+    checked from here. So while air-gap is on, none is ever auto-approved — not by the tier, an
+    allowlist entry or an open gate — and a headless run, which has no human, refuses them."""
+    return egress.airgap_on() and (name in _OPAQUE_TOOLS or name.startswith("mcp_"))
+
+
+def always_asks(name: str) -> bool:
+    """Whether this tool faces the human on every call, whatever the policy says (ALWAYS_ASKS)."""
+    return name in ALWAYS_ASKS
+
+
+def always_asks_what(name: str) -> str:
+    """What an always-asking tool does, as a noun phrase ("a send"); "" for any other tool."""
+    return ALWAYS_ASKS.get(name, ("", ""))[0]
+
+
+def always_asks_why(name: str) -> str:
+    """Why an always-asking tool is asking — the approval prompt's note; "" for any other tool."""
+    return ALWAYS_ASKS.get(name, ("", ""))[1]
+
+
 def approves(name: str, risk: str, args: "dict | None" = None) -> bool:
     """Whether a tool call runs WITHOUT facing the human. The approval node asks this for every
-    pending call; the only two ways through are the tier threshold and (for run_shell only) a
-    user-persisted /policy allow prefix on the exact command."""
+    pending call; the ways through are the tier threshold and, for the two tools with a narrow
+    allowlist, a user-persisted entry on the exact thing being run (a /policy allow prefix for
+    run_shell, a /policy shortcut name for run_shortcut) — and none applies to a call the
+    air-gap holds (`airgap_holds`) or to a tool that always asks (`always_asks`)."""
+    if airgap_holds(name) or always_asks(name):
+        return False
     if auto_approves(risk):
         return True
     if name == "run_shell":
         command = str((args or {}).get("command", ""))
         return shell_allowed(command) is not None
+    if name == "run_shortcut":
+        return shortcut_allowed(str((args or {}).get("name", "")))
     return False
 
 
@@ -184,8 +238,7 @@ def _load() -> dict:
         data = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(data, dict):
             raise ValueError(f"expected a JSON mapping, got {type(data).__name__}")
-        # Field SHAPES get the same treatment as a garbled file (transplanted from the gating
-        # isolate): a wrong-typed field is never iterated as-is — a string shell_allow would
+        # Field SHAPES get the same treatment as a garbled file: a wrong-typed field is never iterated as-is — a string shell_allow would
         # turn each character into an allowlist prefix, a list risk_overrides would raise in
         # the registry — so it fails closed to defaults through the same recorded/renamed path.
         overrides = data.get("risk_overrides", {})
@@ -194,6 +247,9 @@ def _load() -> dict:
         allow = data.get("shell_allow", [])
         if not isinstance(allow, list) or not all(isinstance(p, str) for p in allow):
             raise ValueError("shell_allow is not a list of prefix strings")
+        names = data.get("shortcut_allow", [])
+        if not isinstance(names, list) or not all(isinstance(n, str) for n in names):
+            raise ValueError("shortcut_allow is not a list of shortcut names")
     except FileNotFoundError:
         data = {}
     except OSError as exc:
@@ -221,6 +277,7 @@ def _load() -> dict:
             diag.log(f"policy: {_LOAD_PROBLEM}")
     data.setdefault("risk_overrides", {})
     data.setdefault("shell_allow", [])
+    data.setdefault("shortcut_allow", [])
     return data
 
 
@@ -246,6 +303,11 @@ def risk_overrides() -> dict:
 
 
 def set_risk_override(tool: str, tier: str) -> None:
+    """Persist one tool's tier. Refused for a NO_BLANKET_GRANT tool: a lowered run_shell or
+    run_shortcut would un-gate every command with no allowlist, and a send always asks —
+    the same line the gate's `a` holds (registry.apply_risk_overrides ignores a stored one)."""
+    if tool in NO_BLANKET_GRANT:
+        raise ValueError(f"{tool} always keeps its declared tier; its tier is never overridden")
     data = _load()
     data["risk_overrides"][tool] = tier
     _save(data)
@@ -261,14 +323,12 @@ def clear_risk_override(tool: str) -> bool:
     return True
 
 
-# --- grant lifecycle (transplanted from the gating isolate, 2026-08-15) ---------------------
+# --- grant lifecycle ------------------------------------------------------------------------
 #
 # Every always-allow grant carries a LIFETIME. `task` dies at the next turn boundary (the
 # default — the shortest lifetime, so an unknown/garbled scope fails closed to it), `session`
-# dies with the process, and only `persist` reaches permissions.json. Before this, the gate's `a`
-# dropped a tool's tier for the whole session and persisted a shell prefix forever from one
-# keypress — the longest-lived grant in the gate, with nothing to see or revoke it (lingering
-# authority: a grant that outlives the task that motivated it). The `/policy allow` COMMAND is an
+# dies with the process, and only `persist` reaches permissions.json — a grant must not outlive
+# the task that motivated it unless the user chose that. The `/policy allow` COMMAND is an
 # explicit allowlist edit and stays persist-scoped; only the gate's `a` takes the default.
 
 GRANT_SCOPES = ("task", "session", "persist")
@@ -278,12 +338,9 @@ _task_allow: list = []
 _session_allow: list = []
 
 # Undo callbacks run at the task boundary for non-shell grants (tier drops). Registered by
-# nodes/approval._apply_always_grants — this module imports only config + diag, so the undo lives
-# with the code that applied it.
+# nodes/approval._apply_always_grants — this module stays a leaf (it never imports tools/), so
+# the undo lives with the code that applied it.
 _task_restorers: list = []
-
-# Every grant, revoke and expiry, in order — the audit trail (grant_log()).
-_grant_log: list = []
 
 
 def default_grant_scope() -> str:
@@ -299,23 +356,6 @@ def default_grant_scope() -> str:
 def on_task_end(fn) -> None:
     """Register an undo to run at the next task boundary (returns the tool name it restored)."""
     _task_restorers.append(fn)
-
-
-def grant_tool_tier(name: str, scope: str, restore=None) -> None:
-    """Record a tool-tier always-allow grant: the audit entry, plus its task-scoped undo.
-
-    The shell half of the same gate decision goes through `grant_shell_prefix`, which logs a
-    `grant` event; the tier half logged NOTHING — only its expiry — so `grant_log()`, documented
-    as "every grant, revoke and expiry, in order", could not answer "was this tool ever granted?".
-    Both halves of one keypress now leave the same kind of record.
-
-    The REGISTRY mutation deliberately stays with the caller (nodes/approval): this module imports
-    only config + diag so it stays a leaf, which is why the undo arrives as a callback rather than
-    policy reaching into tools/. Pass `restore=None` for a grant with nothing to undo (a persisted
-    drop, or a tier that was already read_only)."""
-    _grant_log.append({"event": "grant", "at": time.time(), "tool": str(name), "scope": scope})
-    if scope == "task" and restore is not None:
-        on_task_end(restore)  # the one registration seam — never a direct list write
 
 
 def begin_task() -> None:
@@ -343,23 +383,14 @@ def end_task() -> dict:
             diag.log(f"policy: task-boundary restore failed: {exc}")
             failed.append(f"{type(exc).__name__}: {exc}")
     _task_restorers.clear()
-    if expired or restored or failed:
-        _grant_log.append({"event": "expire", "at": time.time(),
-                           "prefixes": expired, "tools": restored, "failed": failed})
     return {"prefixes": expired, "tools": restored, "failed": failed}
 
 
-def grant_log() -> list:
-    """The audit trail: every grant, revoke and expiry, in order (session-scoped, in memory)."""
-    return list(_grant_log)
-
-
 def reset_grants() -> None:
-    """Drop every in-memory grant, restorer and log entry (tests; never called by the app)."""
+    """Drop every in-memory grant and restorer (tests; never called by the app)."""
     _task_allow.clear()
     _session_allow.clear()
     _task_restorers.clear()
-    _grant_log.clear()
 
 
 # --- run_shell prefix allowlist (/policy allow) -----------------------------------------
@@ -375,6 +406,15 @@ def shell_allow() -> list[str]:
     return ([g["prefix"] for g in _task_allow]
             + [g["prefix"] for g in _session_allow]
             + persisted_shell_allow())
+
+
+def _scope_of(prefix: str) -> str:
+    """The longest-lived scope that holds `prefix` (case-insensitive); "task" when none does."""
+    p = prefix.lower()
+    for scope in reversed(GRANT_SCOPES):
+        if any(g.lower() == p for g in shell_allow_by_scope()[scope]):
+            return scope
+    return "task"
 
 
 def shell_allow_by_scope() -> dict:
@@ -410,7 +450,6 @@ def add_shell_allow(prefix: str, scope: "str | None" = None) -> bool:
         if any(g["prefix"].lower() == prefix.lower() for g in store):
             return False
         store.append({"prefix": prefix, "granted_at": time.time(), "scope": scope})
-    _grant_log.append({"event": "grant", "at": time.time(), "prefix": prefix, "scope": scope})
     return True
 
 
@@ -425,15 +464,55 @@ def remove_shell_allow(token: str) -> "str | None":
     for store in (_task_allow, _session_allow):
         for i, g in enumerate(store):
             if g["prefix"].lower() == target.lower():
-                removed = store.pop(i)["prefix"]
-                _grant_log.append({"event": "revoke", "at": time.time(), "prefix": removed})
-                return removed
+                return store.pop(i)["prefix"]
     data = _load()
     for i, p in enumerate(data["shell_allow"]):
         if p.lower() == target.lower():
             removed = data["shell_allow"].pop(i)
             _save(data)
-            _grant_log.append({"event": "revoke", "at": time.time(), "prefix": removed})
+            return removed
+    return None
+
+
+# --- run_shortcut name allowlist (/policy shortcut) ---------------------------------------
+#
+# A shortcut is allowlisted by its exact name (case-insensitive, as the Shortcuts app treats
+# names), always persisted: the entry says "this one shortcut may run without asking". The
+# gate's `a` never adds one — the user types the name.
+
+
+def shortcut_allow() -> list[str]:
+    """The allowlisted shortcut names, as stored."""
+    return list(_load()["shortcut_allow"])
+
+
+def shortcut_allowed(name: str) -> bool:
+    name = " ".join(str(name).split()).lower()
+    return bool(name) and any(n.lower() == name for n in shortcut_allow())
+
+
+def add_shortcut_allow(name: str) -> bool:
+    """Allowlist one shortcut by name; False if it already is. Raises ValueError on an empty
+    name."""
+    name = " ".join(str(name).split())
+    if not name:
+        raise ValueError("empty shortcut name")
+    data = _load()
+    if any(n.lower() == name.lower() for n in data["shortcut_allow"]):
+        return False
+    data["shortcut_allow"].append(name)
+    _save(data)
+    return True
+
+
+def remove_shortcut_allow(name: str) -> "str | None":
+    """Remove a shortcut from the allowlist; returns the stored name, or None."""
+    name = " ".join(str(name).split()).lower()
+    data = _load()
+    for i, n in enumerate(data["shortcut_allow"]):
+        if n.lower() == name:
+            removed = data["shortcut_allow"].pop(i)
+            _save(data)
             return removed
     return None
 
@@ -470,6 +549,18 @@ def _escapes_workspace(token: str) -> bool:
     return ".." in re.split(r"[\\/]", t)
 
 
+def _flag_values(token: str) -> "list[str]":
+    """The value a flag token carries: after `=` (`--files0-from=/etc/passwd`), or glued onto a
+    short flag (`-o../x`). Screened as a path like any bare argument."""
+    if not token.startswith("-"):
+        return []
+    if "=" in token:
+        return [token.split("=", 1)[1]]
+    if not token.startswith("--") and len(token) > 2:
+        return [token[2:]]
+    return []
+
+
 def arg_tail_rejects(prefix: str, command: str) -> "str | None":
     """Why the tokens AFTER a granted prefix disqualify `command` (None when they don't): the
     program is a general-purpose interpreter with trailing arguments, or a tail token is a
@@ -493,7 +584,7 @@ def arg_tail_rejects(prefix: str, command: str) -> "str | None":
             return f"argument `{tok}` can introduce a new exec or write path"
         if _GLOB.search(tok):
             return f"argument `{tok}` contains a glob — its expansion is not what was screened"
-        if _escapes_workspace(tok):
+        if _escapes_workspace(tok) or any(_escapes_workspace(v) for v in _flag_values(tok)):
             return f"argument `{tok}` names a path outside the workspace"
     return None
 
@@ -536,7 +627,7 @@ def grant_shell_prefix(prefix: str, command: str, *, dry_run: bool = False,
 
     The UI calls this with dry_run=True at decision time, while the approval interrupt is still
     pending: persisting then would let the node's re-run recompute the batch as ungated and lose
-    the human's decision from gate_events (gotcha #7) — so the UI only collects the validated
+    the human's decision from gate_events — so the UI only collects the validated
     grant, and the approval node applies it here past the interrupt. Never raises: every refusal
     is a (False, why) so a typed metacharacter degrades to "it keeps prompting", never a dead
     turn."""
@@ -549,12 +640,15 @@ def grant_shell_prefix(prefix: str, command: str, *, dry_run: bool = False,
                or "token boundary, no shell metacharacters")
         return False, (f'run_shell: prefix "{prefix}" would not exempt this command '
                        f"({why}) — no grant, it keeps prompting")
-    matched = shell_allowed(command)
-    if matched is not None and matched.lower() != prefix.lower():
-        # An already-stored prefix covers this command; the new one adds nothing for it — no
-        # redundant entry to stack up for the user to audit later.
-        return True, f'run_shell: already covered by allowlisted prefix "{matched}"'
     scope = scope if scope in GRANT_SCOPES else default_grant_scope()
+    matched = shell_allowed(command)
+    if (matched is not None and matched.lower() != prefix.lower()
+            and GRANT_SCOPES.index(_scope_of(matched)) >= GRANT_SCOPES.index(scope)):
+        # An already-stored prefix covers this command for at least as long as the user is
+        # asking; the new one adds nothing — no redundant entry to stack up for the user to
+        # audit later. A shorter-lived cover (a task grant under a persist request) does not
+        # count: "already covered" would quietly drop the lifetime the gate disclosed.
+        return True, f'run_shell: already covered by allowlisted prefix "{matched}"'
     if not dry_run:
         add_shell_allow(prefix, scope=scope)  # screened above — cannot raise
     lifetime = {"task": "expires at the end of this turn",

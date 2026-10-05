@@ -1,7 +1,7 @@
 """
 TUI polish helpers — the one-time discovery-hint sentinels (receipt.take_hint), the empty-Esc
-pause acknowledgement path (typeahead on_pause), the posture-at-the-prompt derivation
-(tui.ui.prompt._posture_flags), and the status bar's trailing key legend. All pure/offline.
+pause acknowledgement path (typeahead on_pause), the live posture flags
+(tui.ui._base._posture_flags), and the status bar's trailing key legend. All pure/offline.
 
 NOTE: `tui.ui.prompt` / `tui.ui.response` the ATTRIBUTES are functions (the package re-exports
 them flat), so the submodules are reached via importlib.import_module, never `from tui.ui import`.
@@ -12,7 +12,7 @@ import importlib
 import pytest
 
 from trust import receipt
-from core.plan_ops import PauseController
+from core.pause import PauseController
 from tui.typeahead import InputQueue
 
 
@@ -80,25 +80,32 @@ def test_pause_note_prints_acknowledgement(capsys):
     from tui import ui
 
     ui.pause_note()
-    assert "pausing for plan review" in capsys.readouterr().out
+    assert "pausing at the next pass" in capsys.readouterr().out
 
 
-# --- posture at the prompt (live derivation, same reads as the status bar) ----------------------
+# --- live posture flags (the status bar + the prompt's rprompt read the same flags) -------------
 
 def test_posture_flags_read_live_config(monkeypatch):
-    mod = importlib.import_module("tui.ui.prompt")
+    base = importlib.import_module("tui.ui._base")
+    prompt_mod = importlib.import_module("tui.ui.prompt")
     from config import get_config
 
     rt = get_config()._data.setdefault("runtime", {})
     monkeypatch.setitem(rt, "auto_approve", "read_only")
     monkeypatch.setitem(rt, "airgap", False)
-    assert mod._posture_flags() == []  # default posture: nothing to announce
+    assert base._posture_flags() == []  # default posture: nothing to announce
+    assert prompt_mod._posture_rprompt() == []
+
+    monkeypatch.setitem(rt, "auto_approve", "side_effecting")  # loosened: a bar fact only
+    assert base._posture_flags() == [("side_effecting", "warn")]
+    assert prompt_mod._posture_rprompt() == []
 
     monkeypatch.setitem(rt, "auto_approve", "destructive")  # the gate is OPEN, not "at a tier"
     monkeypatch.setitem(rt, "airgap", True)
-    flags = mod._posture_flags()
-    assert [k for _, k in flags] == ["gate", "airgap"]
-    assert flags[0][0] == "⚠ GATE OFF"
+    flags = base._posture_flags()
+    assert flags == [("⚠ GATE OFF", "risk"), ("⛓ AIRGAP", "accent")]
+    assert [text for _, text in prompt_mod._posture_rprompt()] == ["⚠ GATE OFF", " · ", "⛓ AIRGAP"]
+    assert all(kind in base._POSTURE_STYLE for _, kind in flags)
 
 
 # --- the styled receipt's kind -> style map ------------------------------------------------------
@@ -186,29 +193,42 @@ def test_show_plan_renders_a_replan_redraft_even_when_ids_and_statuses_match(
 
 def test_statusbar_key_legend_trails_the_bar():
     sb = importlib.import_module("tui.ui.statusbar")
-    if not sb._RICH:
-        pytest.skip("rich not available")
     plain = sb._StatusBar().__rich__().plain
     # Trailing on purpose: the bar trims from the right on narrow terminals, so the legend is
     # the first thing sacrificed.
     assert plain.rstrip().endswith("esc pause · ctrl-c cancel")
 
 
+def test_statusbar_counts_egress_once_something_crossed():
+    # The counter reads egress.count() inside a broad except — a missing function would hide
+    # the counter silently, so pin it.
+    from trust import egress
+    sb = importlib.import_module("tui.ui.statusbar")
+    egress.clear()
+    assert "egress" not in sb._StatusBar().__rich__().plain
+    egress.record("web_search", "h", "q")
+    egress.record("shell", "?", "git pull", status=egress.UNTRACKED)
+    try:
+        assert "⇅ 1 egress" in sb._StatusBar().__rich__().plain
+    finally:
+        egress.clear()
+
+
 # ── an unknown plan status is rendered as UNKNOWN, never guessed as pending ─────────────────
-# (transplanted from the visibility isolate: views over instrumentation, never a guess)
 
 
-def test_unknown_plan_status_renders_as_unknown_never_pending(monkeypatch):
+def test_unknown_plan_status_renders_as_unknown_never_pending():
     from tui.ui import plan as plan_ui
+    from tui.ui._base import _RAIL_GLYPH
 
-    monkeypatch.setattr(plan_ui, "_RICH", False)
-    row = plan_ui._plan_line_bare({"step_id": 1, "label": "x", "status": "garbage"},
-                                  show_tool=False)
-    assert "?" in row and "garbage" in row
-    assert not row.lstrip().startswith("·")  # the pending glyph would be a guess
+    def row(step):
+        return plan_ui._plan_line(step, show_tool=False).plain.lstrip().removeprefix(_RAIL_GLYPH)
+
+    unknown = row({"step_id": 1, "label": "x", "status": "garbage"})
+    assert "?" in unknown and "garbage" in unknown
+    assert not unknown.lstrip().startswith("·")  # the pending glyph would be a guess
     # a step carrying no status at all is still pending (the producer's default)
-    row = plan_ui._plan_line_bare({"step_id": 1, "label": "x"}, show_tool=False)
-    assert row.lstrip().startswith("·")
+    assert row({"step_id": 1, "label": "x"}).lstrip().startswith("·")
 
 
 # ── Tier-2 instrument surfaces ───────────────────────────────────────────────────────────────
@@ -226,7 +246,7 @@ def test_each_plan_rerender_is_delimited_by_a_progress_header(fresh_plan_display
     assert "plan · 0/4" in capsys.readouterr().out
 
     plan[0]["status"] = "done"
-    plan[1]["status"] = "error"      # an incident is finished too — the count is progress, not success
+    plan[1]["status"] = "done"
     ui.show_plan(plan)
     out = capsys.readouterr().out
     assert "plan · 2/4" in out
@@ -255,9 +275,8 @@ def test_meter_color_never_wears_the_risk_vocabulary():
 
 def test_air_gap_glyph_is_one_cell_and_shared_by_rail_and_receipt():
     """`⛔` is East-Asian Wide AND emoji-presentation: terminals paint it as a color emoji that
-    ignores the `bold red` style and overflows the rail column. `⊘` is the palette's existing
-    blocked glyph — one cell, and it takes the style. The rail and the receipt must name the same
-    fact with the same glyph."""
+    ignores the `bold red` style and overflows the rail column. `⊘` is one cell, and it takes the
+    style. The rail and the receipt must name the same fact with the same glyph."""
     import unicodedata
 
     from trust import receipt, egress
@@ -267,33 +286,30 @@ def test_air_gap_glyph_is_one_cell_and_shared_by_rail_and_receipt():
 
     text, style = trace._egress_leaf({"channel": "web_search", "host": "h", "status": "blocked"})
     glyph = text[0]
-    assert glyph == base._PLAN["blocked"][0]          # the one blocked glyph in the palette
+    assert glyph == base._BLOCKED_GLYPH               # the one blocked glyph in the palette
     assert unicodedata.east_asian_width(glyph) != "W"  # one cell, so the rail stays aligned
     assert style == "bold red"                         # …and the style is what carries the alarm
 
-    parts = receipt.trust_parts(
+    parts = [t for t, _ in receipt.trust_spans(
         [egress.EgressEvent(ts="t", channel="web_search", host="h", n_bytes=0,
-                            status=egress.BLOCKED)], 0)
+                            status=egress.BLOCKED)], 0)]
     assert any(p.startswith(glyph) for p in parts)
 
 
 def test_llm_leaf_draws_the_rail_like_every_other_leaf(capsys):
-    """The one leaf that opened at a bare 4-space indent, so `/trace invoke` and `/trace context`
-    fell out of the gutter every other view sits in. Its `avail` arithmetic already subtracted 4
-    for the rail — drawing it makes the existing budget correct."""
+    """`/trace invoke`'s leaves sit in the same rail gutter as every other trace view."""
     trace = importlib.import_module("tui.ui.trace")
     base = importlib.import_module("tui.ui._base")
     trace._llm_leaf("sys", "a message body", base._DIM, None)
     out = capsys.readouterr().out
     assert base._RAIL_GLYPH in out
-    assert out.lstrip("\n").startswith(f"  {base._RAIL_GLYPH} ") or not trace._RICH
+    assert out.lstrip("\n").startswith(f"  {base._RAIL_GLYPH} ")
 
 
 def test_recording_cut_reports_the_right_number_and_survives_the_clip(capsys):
-    """Two bugs: the delta was computed against the DISPLAY preview constant (a different number
-    entirely), and the marker was appended to a body that was then clipped to that same length —
-    so it was cut off for exactly the long messages it described, and suppressed under `--full`
-    where a silently capped message matters most."""
+    """The disclosure is measured against the recorded content (not the display preview), and is
+    its own leaf — appended to the body, the preview clip would cut it off for exactly the long
+    messages it describes."""
     trace = importlib.import_module("tui.ui.trace")
 
     recorded = "x" * 8000            # stores.trace caps content at _LLM_MSG_CAP
@@ -313,12 +329,12 @@ def test_recording_cut_reports_the_right_number_and_survives_the_clip(capsys):
 
 def test_recording_cut_is_disclosed_on_the_output_side_too(capsys):
     """stores.trace._msg_out stamps `truncated` on the OUTPUT message as well, but /trace invoke
-    disclosed it only for inputs — so a synthesize/plan reply longer than _LLM_MSG_CAP was
+    disclosed it only for inputs — so an agent reply longer than _LLM_MSG_CAP was
     presented under `--full` as the model's complete output."""
     import json
 
     trace = importlib.import_module("tui.ui.trace")
-    call = (1, 0, "synthesize", "qwen3.5:9b", 0.4, 100, 2400,
+    call = (1, 0, "agent", "qwen3.5:9b", 0.4, 100, 2400,
             json.dumps([{"role": "system", "content": "be brief"}]),
             json.dumps({"content": "y" * 8000, "truncated": 9500, "tool_calls": []}),
             "ok")
@@ -327,16 +343,125 @@ def test_recording_cut_is_disclosed_on_the_output_side_too(capsys):
 
 
 # ── the status bar names the last FINISHED node, never a running one ─────────────────────────
-# show_node is fed from a node's *update* event, which LangGraph emits on completion — so the bar
-# said `▸ plan` in active styling while `execute` was running, contradicting the `✓ plan` rail
-# line directly above it. No active-node signal exists to render (that needs a graph hook).
+# show_node is fed from a node's *update* event, which LangGraph emits on completion. No
+# active-node signal exists to render (that needs a graph hook).
+
+
+# --- status-bar machine gauges: GPU and memory ---------------------------------------------------
+
+def _usage(gpu=31.0, used=21.4, total=36.0, age=0.0):
+    import time
+
+    from core.hardware import LiveUsage
+
+    return (LiveUsage(gpu_pct=gpu, mem_used_gb=used, mem_total_gb=total), time.monotonic() - age)
+
+
+def test_statusbar_shows_gpu_and_memory_while_a_reading_is_fresh(monkeypatch):
+    sb = importlib.import_module("tui.ui.statusbar")
+    monkeypatch.setattr(sb, "_usage", _usage())
+    plain = sb._StatusBar().__rich__().plain
+    assert "gpu 31% · mem 21.4/36 GB" in plain
+    assert plain.rstrip().endswith("esc pause · ctrl-c cancel")     # the legend still trails
+
+
+def test_statusbar_shows_no_machine_gauge_without_a_reading(monkeypatch):
+    sb = importlib.import_module("tui.ui.statusbar")
+    monkeypatch.setattr(sb, "_usage", None)
+    plain = sb._StatusBar().__rich__().plain
+    assert "gpu" not in plain and "mem" not in plain
+
+
+def test_statusbar_drops_a_stale_reading_rather_than_show_it(monkeypatch):
+    sb = importlib.import_module("tui.ui.statusbar")
+    monkeypatch.setattr(sb, "_usage", _usage(age=60.0))
+    plain = sb._StatusBar().__rich__().plain
+    assert "gpu" not in plain and "mem" not in plain
+
+
+def test_statusbar_shows_the_one_gauge_that_was_readable(monkeypatch):
+    sb = importlib.import_module("tui.ui.statusbar")
+    monkeypatch.setattr(sb, "_usage", _usage(gpu=None))
+    plain = sb._StatusBar().__rich__().plain
+    assert "mem 21.4/36 GB" in plain and "gpu" not in plain
+    monkeypatch.setattr(sb, "_usage", _usage(used=None))
+    plain = sb._StatusBar().__rich__().plain
+    assert "gpu 31%" in plain and "mem" not in plain
+
+
+def _style_of(bar, needle):
+    start = bar.plain.index(needle)
+    return next(str(s.style) for s in bar.spans if s.start <= start < s.end)
+
+
+def test_statusbar_memory_turns_yellow_when_nearly_full(monkeypatch):
+    sb = importlib.import_module("tui.ui.statusbar")
+    monkeypatch.setattr(sb, "_usage", _usage(used=21.4))
+    assert _style_of(sb._StatusBar().__rich__(), "21.4/36 GB") == "default"
+    monkeypatch.setattr(sb, "_usage", _usage(used=31.0))                # 86% of 36 GB
+    assert _style_of(sb._StatusBar().__rich__(), "31.0/36 GB") == "yellow"
+
+
+def test_the_sampler_stores_each_reading_until_the_bar_comes_down(monkeypatch):
+    import threading
+
+    sb = importlib.import_module("tui.ui.statusbar")
+    reading, stop, reads = _usage()[0], threading.Event(), []
+
+    def reader():
+        reads.append(1)
+        if len(reads) == 2:
+            stop.set()
+        return reading
+
+    monkeypatch.setattr(sb, "_usage", None)
+    monkeypatch.setattr(sb, "_SAMPLE_EVERY_S", 0)
+    sb._sample_loop(reader, stop)
+    assert len(reads) == 2 and sb._usage[0] is reading
+
+
+def test_a_failed_sample_clears_the_gauge(monkeypatch):
+    import threading
+
+    sb = importlib.import_module("tui.ui.statusbar")
+    stop = threading.Event()
+
+    def reader():
+        stop.set()
+        raise RuntimeError("no")
+
+    monkeypatch.setattr(sb, "_usage", _usage())
+    sb._sample_loop(reader, stop)
+    assert sb._usage is None
+
+
+def test_the_bar_starts_the_sampler_and_stopping_it_ends_the_sampler(monkeypatch):
+    sb = importlib.import_module("tui.ui.statusbar")
+
+    class FakeLive:
+        def __init__(self, *a, **k): pass
+        def start(self): pass
+        def stop(self): pass
+
+    monkeypatch.setattr(sb, "Live", FakeLive)
+    monkeypatch.setattr(sb, "_live", None)
+    sb._live_start()
+    stop = sb._sampler_stop
+    assert stop is not None and not stop.is_set()
+    sb._live_stop()
+    assert stop.is_set() and sb._sampler_stop is None
+
+
+def test_no_test_reads_the_real_machine():
+    """conftest replaces the reader: a suite that spawned ioreg / vm_stat would depend on the
+    machine it ran on."""
+    sb = importlib.import_module("tui.ui.statusbar")
+    assert sb._read_usage() is None
 
 
 def test_statusbar_names_the_last_finished_node_in_past_tense(monkeypatch):
     sb = importlib.import_module("tui.ui.statusbar")
     base = importlib.import_module("tui.ui._base")
-    if not sb._RICH:
-        pytest.skip("rich not available")
 
     monkeypatch.setattr(base, "_status", dict(base._status, node="plan"))
     plain = sb._StatusBar().__rich__().plain
@@ -347,8 +472,6 @@ def test_statusbar_names_the_last_finished_node_in_past_tense(monkeypatch):
 def test_statusbar_seeds_a_started_turn_before_any_node_completes(monkeypatch):
     sb = importlib.import_module("tui.ui.statusbar")
     base = importlib.import_module("tui.ui._base")
-    if not sb._RICH:
-        pytest.skip("rich not available")
 
     monkeypatch.setattr(sb, "_live_start", lambda: None)
     monkeypatch.setattr(base, "_status", dict(base._status))
@@ -360,108 +483,9 @@ def test_statusbar_seeds_a_started_turn_before_any_node_completes(monkeypatch):
     assert f"✓ {base._NODE_STARTING}" not in plain
 
 
-# ── synthesize's rail row must not land inside the open response block ───────────────────────
-# Its update fires when the node COMPLETES — after the answer began streaming — and rich inserts
-# a console print above a live display, so the row shoved the streaming answer down mid-stream.
-# The row is skipped at normal verbosity; everything ELSE about the node must still land.
-
-
-def _fresh_trace():
-    base = importlib.import_module("tui.ui._base")
-    base._trace_started = False
-    base._t_last = None
-    base._status = dict(base._status, node="", iteration=0, tools=0, tok_per_sec=0.0)
-    return base
-
-
-def test_synthesize_rail_row_is_skipped_at_normal_verbosity(capsys):
-    from tui import ui
-
-    base = _fresh_trace()
-    ui.set_verbosity("normal")
-    ui.show_node("synthesize", {"context_tokens": 5200, "tok_per_sec": 41.0})
-    assert "synthesize" not in capsys.readouterr().out
-    # …but the metrics still reached the status bar, which is what the receipt echoes.
-    assert base._status["tok_per_sec"] == 41.0
-    assert base._status["ctx_used"] == 5200
-
-
-def test_synthesize_rail_row_returns_under_trace_full(capsys):
-    from tui import ui
-
-    _fresh_trace()
-    try:
-        ui.set_verbosity("verbose")
-        ui.show_node("synthesize", {"context_tokens": 5200, "tok_per_sec": 41.0})
-        assert "synthesize" in capsys.readouterr().out
-    finally:
-        ui.set_verbosity("normal")
-
-
-def test_synthesize_keeps_its_row_when_a_trust_leaf_hangs_off_it(capsys):
-    """Folding synthesize through _FOLD_NODES would `return` before the metric feed AND before
-    the trust annotations — silently costing the receipt its tok/s and dropping the freeze echo,
-    an auditable human action. The row is kept whenever a leaf would otherwise be orphaned."""
-    from tui import ui
-
-    base = _fresh_trace()
-    ui.set_verbosity("normal")
-    ui.show_node("synthesize", {"tok_per_sec": 12.0,
-                                "answer_buffer": {"state": "frozen", "text": "x"}})
-    out = capsys.readouterr().out
-    assert "synthesize" in out            # the row is back — the leaf has a parent
-    assert "you froze the answer" in out  # …and the auditable event still prints
-    assert base._status["tok_per_sec"] == 12.0
-
-    # A bounded record is the same case: the disclosure keeps its row.
-    _fresh_trace()
-    ui.show_node("synthesize", {"truncated": {"original_chars": 9999, "dropped": ["messages"]}})
-    out = capsys.readouterr().out
-    assert "synthesize" in out and "record bounded at write time" in out
-
-
-def test_synthesize_row_still_folds_on_a_normally_completed_turn(capsys):
-    """The shape a REAL turn emits: synthesize returns `answer_buffer` with state `complete` on
-    every completion (nodes.synthesize._final_updates), so keying the row on the mere PRESENCE of
-    the key resurrected it for every answer — the row landed inside the open response block again,
-    to parent a leaf that is only ever drawn for a `frozen` buffer. The row must fold on what will
-    actually be DRAWN, not on which keys the delta happens to carry."""
-    from tui import ui
-
-    base = _fresh_trace()
-    ui.set_verbosity("normal")
-    ui.show_node("synthesize", {"tok_per_sec": 41.0, "context_tokens": 5200,
-                                "answer_buffer": {"state": "complete", "text": "the answer",
-                                                  "spans": [], "edits": [], "confidence": []}})
-    out = capsys.readouterr().out
-    assert "synthesize" not in out          # nothing to parent — the row folds
-    assert base._status["tok_per_sec"] == 41.0   # …and the metrics still reached the bar
-    assert base._status["ctx_used"] == 5200
-
-    # An `edited` buffer is answer_gate's leaf, not synthesize's: still nothing to parent here.
-    _fresh_trace()
-    ui.show_node("synthesize", {"answer_buffer": {"state": "complete", "edited": True,
-                                                  "edits": [{"cut": "x", "typed": "y"}]}})
-    assert "synthesize" not in capsys.readouterr().out
-
-
-def test_synthesize_keeps_its_row_for_a_gate_decision_leaf(capsys):
-    """The third leaf `_render_trust_annotations` can draw under any node — a human gate decision
-    is auditable, so its row is kept exactly like the freeze echo's."""
-    from tui import ui
-
-    _fresh_trace()
-    ui.set_verbosity("normal")
-    ui.show_node("synthesize", {"gate_events": [{"calls": [{"name": "write_file",
-                                                            "approved": True}]}]})
-    out = capsys.readouterr().out
-    assert "synthesize" in out and "you approved write_file" in out
-
-
 # ── streaming vs finished measure: the answer must not re-wrap when it lands ─────────────────
-# The live tail and the finished markdown rendered at different widths (full terminal vs
-# min(term, _BODY_WIDTH)), so on any terminal wider than ~102 columns every line break in the
-# answer moved the instant finish() ran. Both now render at min(term, _BODY_WIDTH).
+# The live tail and the finished markdown both render at min(term, _BODY_WIDTH), so no line
+# break in the answer moves the instant finish() runs.
 
 
 @pytest.mark.parametrize("width", [80, 110, 160])
@@ -475,8 +499,6 @@ def test_streaming_tail_and_final_body_break_lines_in_the_same_places(width, mon
     its asterisks), so geometry is only comparable where the text is the same text."""
     resp = importlib.import_module("tui.ui.response")
     base = importlib.import_module("tui.ui._base")
-    if not resp._RICH:
-        pytest.skip("rich not available")
 
     from rich.console import Console
 
@@ -510,8 +532,6 @@ def test_the_streaming_tail_indents_every_visual_row_not_every_newline(monkeypat
     first row of each paragraph."""
     resp = importlib.import_module("tui.ui.response")
     base = importlib.import_module("tui.ui._base")
-    if not resp._RICH:
-        pytest.skip("rich not available")
 
     from rich.console import Console
 
@@ -528,3 +548,18 @@ def test_the_streaming_tail_indents_every_visual_row_not_every_newline(monkeypat
     ]
     assert len(rows) > 1
     assert all(r.startswith("  ") for r in rows)
+
+
+# ── tui/ui/trace.py: nothing shadows the module-level textutil.clip import ────────────────────
+# Two locals named `clip` once survived the rename that made room for the import; a call to
+# clip() inside those bodies would raise TypeError only on the --preview/non-full path.
+
+
+def test_trace_module_does_not_shadow_textutil_clip():
+    import inspect
+    import re
+
+    from tui.ui import trace as trace_mod
+
+    src = inspect.getsource(trace_mod)
+    assert not re.search(r"^\s+clip\s*=", src, re.M)

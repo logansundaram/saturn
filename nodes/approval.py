@@ -1,18 +1,17 @@
 """
-Approval node — the human-in-the-loop safety gate (Phase 2).
+Approval node — the human-in-the-loop safety gate.
 
 Whether a call skips the human is ONE question asked of ONE object: `policy.approves(name,
 risk, args)` (the tier threshold + the shell allowlist — see policy.py). Anything it
 doesn't approve pauses via a LangGraph `interrupt` so the user can decide per batch or per
 call. The policy is read live each call, so /config, /policy (risk · allow · open) and Shift+Tab
-all apply to the very next gate. Resuming with the user's decision is handled in agent.run_turn.
+all apply to the very next gate. Resuming with the user's decision is handled in app/turn.run_turn.
 
-Under the plan/execute engine (2026-07-03 transplant) the execute node emits exactly ONE call
-per step, so a batch is normally a singleton — but the node stays batch-shaped (the resume-value
-contract, per-call select, and the gate_event record are unchanged). A rejection routes to
-`update_plan`, which records the decline onto the current step as a `skipped` incident; rectify
-then cancels the remaining steps (a guarded action is reported, never retried or substituted).
-The old positional `_skip_rejected_steps` walker is gone with the multiset accounting.
+The agent node answers some calls itself (malformed, repeated, declined-before) with
+ToolMessages before this node runs, so the batch is the issuing AIMessage's calls MINUS those
+already answered — the same walk-back nodes/tools.py does. A fully-rejected batch routes back to `agent`: the decline ToolMessages are
+what the model sees, and nodes/agent's declined-repeat guard refuses the same call for the rest
+of the turn (a guarded action is reported, never retried or substituted).
 """
 
 from typing import Literal
@@ -23,15 +22,156 @@ from langgraph.types import interrupt, Command
 import diag
 from trust import policy
 from trust import quarantine
-from tools.registry import risk_of
-from core.state import AgentState, current_step
+from tools.registry import DECLARED_RISK, risk_of
+from core import auto_memory
+from core import provenance as _provenance
+from core.state import AgentState, current_step, issuing_message
 
-# The decline observation a rejected call gets. update_plan keys the `skipped` status off this
-# text's prefix (nodes/update_plan._DECLINE_PREFIX) — change them together.
+# The decline observation a rejected call gets. The structural `saturn_status: skipped` stamp on
+# the ToolMessage is what readers key on (nodes/agent.py's declined-repeat guard + incidents).
 DECLINE_TEXT = (
     "Execution declined by the user. Do not retry this action; tell the user you "
     "did not perform it."
 )
+
+
+AIRGAP_NOTE = ("air-gap is on: Saturn cannot see inside a shell command, a shortcut or an MCP "
+               "server — approve only if this will not use the network")
+# Appended to a declined create_skill. The request usually QUOTES the steps ("save this as a
+# skill: 1. Read … 2. List …"), and a small model reads them as work still to do once the save
+# is refused (live probe 2026-10-03, 9b: 17 passes of reads and searches after a "no").
+SKILL_DECLINE_NOTE = (" The skill was not saved. Do not carry out its steps either: saving it "
+                      "was the whole request.")
+SKILL_OUTSIDE_NOTE = ("external content entered this conversation before this skill was "
+                      "drafted — read each step as if a stranger wrote it")
+
+
+def _can_act(name: str) -> bool:
+    """Whether a call can send something out or change something — what a quarantine escalation
+    exists to put in front of the human. The DECLARED tier counts as well as the live one: a
+    tier the user relaxed must not take the tool out from under the escalation."""
+    return (quarantine.is_outbound(name) or risk_of(name) != "read_only"
+            or DECLARED_RISK.get(name, "destructive") != "read_only")
+
+
+def provenance(state) -> "tuple[str, str, bool]":
+    """(what the user typed, everything else that ENTERED the conversation, whether any of that
+    came from an untrusted tool or an attachment) — the three facts quarantine.url_hold reads (the
+    first two are what quarantine.handle_hold reads, from the agent's hygiene). The reading itself
+    — what counts as typed, why the model's own words and a failed call's text vouch for nothing —
+    is core/provenance.of, shared with auto-learn."""
+    p = _provenance.of(state)
+    return "\n".join(p.typed), p.seen, p.untrusted
+
+
+def _once(state):
+    """`provenance(state)` as a callable that reads the conversation at most once per node
+    pass, and only if something asks: the URL hold, each handle note and the skill note all
+    read the same three facts."""
+    box: list = []
+
+    def get():
+        if not box:
+            box.append(provenance(state))
+        return box[0]
+    return get
+
+
+# LangGraph re-runs approval_node from the top when the human answers, so whatever the prompt
+# needed is computed a second time. A group's member line is a bulk Apple event over every
+# Messages chat (0.2-0.8 s, and its answer can change between the two runs): it is resolved
+# once per gated call and kept until that prompt is answered, so the line the human read is
+# the line the re-run carries. The send itself still resolves the group afresh
+# (tools.messages._send_to_group) — that lookup is the one that decides who is reached.
+_GROUP_LINES: dict = {}      # {(call id, chat ref): line}
+
+
+def _group_line(call_id, ref: str) -> str:
+    from tools.messages import describe_group
+
+    key = (call_id, ref)
+    if key not in _GROUP_LINES:
+        _GROUP_LINES[key] = describe_group(ref)
+    return _GROUP_LINES[key]
+
+
+def _forget_group_lines(keep=()) -> None:
+    """Drop every kept line but those of the calls in `keep` (a prompt nobody answered — an
+    aborted turn — must not leave its lines behind)."""
+    for key in [k for k in _GROUP_LINES if k[0] not in keep]:
+        del _GROUP_LINES[key]
+
+
+def _handle_note(tc: dict, state, prov=None) -> "str | None":
+    """Whose number or address a gated call names, for the prompt: the contact card that
+    produced it, the user's own typing, or — past the agent's hygiene this should not happen —
+    nowhere. A group chat is named with every member (tools.messages.describe_group). A bare +13057108702 at the gate (run 51, 2026-10-02) is not something a person
+    can check."""
+    from tools.contacts import owner_of
+
+    args = tc.get("args") if isinstance(tc.get("args"), dict) else {}
+    chat_arg = quarantine.CHAT_ARGS.get(tc.get("name"))
+    ref = str((args or {}).get(chat_arg) or "").strip() if chat_arg else ""
+    if ref:
+        # A group reaches everyone in it: name them all, resolved from Messages for this prompt.
+        return f"{tc['name']}: {_group_line(tc.get('id'), ref)}"
+    arg = quarantine.HANDLE_ARGS.get(tc.get("name"))
+    handle = str((args or {}).get(arg) or "").strip() if arg else ""
+    if not handle:
+        return None
+    kind = "address" if "@" in handle else "number"
+    for m in reversed(state.get("messages") or []):
+        if isinstance(m, ToolMessage) and m.name == "search_contacts":
+            found = owner_of(handle, str(m.content or ""))
+            if found:
+                name, label = found
+                return f"{tc['name']}: {handle} is {name}'s {label + ' ' if label else ''}{kind} (from search_contacts)"
+    user_text, seen_text, _ = (prov or _once(state))()
+    if quarantine.handle_hold(handle, user_text, "") is None:
+        return f"{tc['name']}: {handle} — you typed it"
+    if quarantine.handle_hold(handle, user_text, seen_text) is None:
+        return None                              # from a tool result that is not a card: nothing to add
+    return f"{tc['name']}: {handle} — {quarantine.UNKNOWN_HANDLE_NOTE}"
+
+
+def _similar_note(tc: dict) -> "str | None":
+    """A `remember` at the gate that names no `replaces=`, next to a stored fact it may
+    contradict (auto_memory.similar): the human is told before saying yes to both."""
+    args = tc.get("args") if isinstance(tc.get("args"), dict) else {}
+    if tc.get("name") != "remember" or args.get("replaces") not in (None, "", 0):
+        return None
+    fact = str(args.get("fact") or "")
+    try:
+        layer = auto_memory.rule_layer(fact, str(args.get("layer") or "user"))
+        near = auto_memory.similar(fact, layer)
+    except Exception as exc:
+        diag.log(f"approval_node : similar-fact lookup failed: {exc}")
+        return None
+    if not near:
+        return None
+    return (f"remember: similar to {auto_memory.similar_names(near)} — approving keeps both "
+            "(/memory forget <n> removes the old one)")
+
+
+def _user_stated(tc: dict, state) -> bool:
+    """A `remember` whose every word the user typed, in a conversation nothing external entered
+    (core/auto_memory): the one call the gate lets through on provenance instead of policy."""
+    return tc.get("name") == "remember" and auto_memory.qualifies(tc, state)
+
+
+def _url_holds(tool_calls: list, state, prov=None) -> dict:
+    """{call id: reason} for the web_extract calls whose URL must face the human."""
+    fetches = [tc for tc in tool_calls if tc.get("name") == "web_extract"]
+    if not fetches:
+        return {}
+    prov = (prov or _once(state))()
+    out = {}
+    for tc in fetches:
+        args = tc.get("args")
+        why = quarantine.url_hold(str((args if isinstance(args, dict) else {}).get("url") or ""), *prov)
+        if why:
+            out[tc["id"]] = why
+    return out
 
 
 def gate_event(
@@ -44,9 +184,9 @@ def gate_event(
     """The structured record of ONE human gate decision, appended to state["gate_events"] only
     when the gate actually PROMPTED (auto-approved batches record nothing — there was no human
     decision to record). A human's yes/no is the one fact about a run that cannot be recomputed
-    later, so this is the single justified persisted exception to the Glass Box's
+    later, so this is the single justified persisted exception to the record's
     recompute-everything design. ONE minimal, JSON-serializable shape: the same record feeds the
-    headless --json "gates" field and the Glass Box's gate_summary — resist letting it grow.
+    headless --json "gates" field and the run export — resist letting it grow.
 
     `decision` summarizes the per-call verdicts: "approved" (everything let through),
     "rejected" (nothing), "partial" (a per-call select split the batch)."""
@@ -80,24 +220,23 @@ def _apply_always_grants(decision: dict) -> None:
     live policy — a grant applied while the interrupt was pending would auto-approve the very
     calls the human was prompted about, the re-run would return at the no-gated fast path
     without reaching the gate_event recording site, and the human's decision would vanish from
-    the record (gotcha #7: empty must always mean "never asked"). Failures degrade safely: a
+    the record (an empty gate_events must always mean "never asked"). Failures degrade safely: a
     refused shell grant just means the command faces the gate again next batch — diag-logged,
     since a node cannot print."""
     from tools import registry  # lazy, matching the UI: binds the live TOOL_RISK
 
-    # Every grant carries a LIFETIME (policy.default_grant_scope, default "task" — transplanted
-    # from the gating isolate): a task-scoped tier drop registers its own undo with the policy so
-    # the next turn starts from the declared tier; persist scope reaches permissions.json (or the
-    # scope would be a lie in the narrow direction — the drop looked durable and the next process
-    # started from the declared tier); session scope simply stands until Saturn exits.
+    # Every grant carries a LIFETIME (policy.default_grant_scope, default "task"): a task-scoped
+    # tier drop registers its own undo with the policy so the next turn starts from the declared
+    # tier; persist scope reaches permissions.json; session scope simply stands until Saturn exits.
     scope = policy.default_grant_scope()
     for name in decision.get("tools") or []:
         # run_shell never drops a tier (one keypress must not un-gate every future command —
-        # it gets the scoped prefix grants below instead). The UI never sends it here, but the
-        # resume value is still external input: fail closed.
-        if not name or name == "run_shell":
+        # it gets the scoped prefix grants below instead), and neither does a shortcut run or a
+        # send (policy.NO_BLANKET_GRANT). The UI never sends them here, but the resume value is
+        # still external input: fail closed.
+        name = str(name or "")       # before the set lookup: an unhashable entry must not raise
+        if not name or name in policy.NO_BLANKET_GRANT:
             continue
-        name = str(name)
         prior = registry.TOOL_RISK.get(name)
         registry.TOOL_RISK[name] = "read_only"
         # Only a tier that actually DROPPED registers an undo. A tool already at read_only is
@@ -106,31 +245,19 @@ def _apply_always_grants(decision: dict) -> None:
         # second restorer would re-drop the tier the first one just restored and leave the grant
         # standing for the rest of the process while end_task() reported it expired (fail-open
         # plus a false disclosure). One `a` per tool per turn owns the undo; the rest are no-ops.
-        # Persist FIRST, then log: the audit record must state the lifetime the grant actually
-        # got. Logging scope="persist" before set_risk_override could still fail (read-only
-        # install, full disk) left grant_log claiming a durable grant while the next process
-        # started from the declared tier — the record downgrades to "session" instead, which is
-        # what the surviving live drop really is.
-        effective_scope = scope
         if scope == "persist":
             try:
                 policy.set_risk_override(name, "read_only")
             except Exception as exc:  # the live drop stands (this session's decision) — but say so
                 diag.log(f"approval_node: tier drop for {name} could not be persisted — {exc}")
-                effective_scope = "session"
-        if prior != "read_only":
-            # One audit record per ACTUAL privilege change, whatever its lifetime (a session-scoped
-            # drop used to leave no record at all). The undo is registered only for task scope —
-            # session and persist grants are meant to outlive the turn.
-            restore = None
-            if scope == "task":
-                def restore(_n=name, _t=prior):
-                    if _t is None:
-                        registry.TOOL_RISK.pop(_n, None)
-                    else:
-                        registry.TOOL_RISK[_n] = _t
-                    return _n
-            policy.grant_tool_tier(name, effective_scope, restore)
+        if scope == "task" and prior != "read_only":
+            def restore(_n=name, _t=prior):
+                if _t is None:
+                    registry.TOOL_RISK.pop(_n, None)
+                else:
+                    registry.TOOL_RISK[_n] = _t
+                return _n
+            policy.on_task_end(restore)
     for grant in decision.get("shell_grants") or []:
         if not isinstance(grant, dict):
             continue
@@ -144,7 +271,7 @@ def _apply_always_grants(decision: dict) -> None:
             diag.log(f"approval_node: always-allow shell grant refused — {msg}")
 
 
-def approval_node(state: AgentState) -> Command[Literal["tools", "update_plan"]]:
+def approval_node(state: AgentState) -> Command[Literal["tools", "agent"]]:
     """Human-in-the-loop safety gate. Calls within the configured auto-approve tier pass
     straight through. If any pending call exceeds it, pause via `interrupt` and let the user
     decide per batch OR per call.
@@ -156,37 +283,67 @@ def approval_node(state: AgentState) -> Command[Literal["tools", "update_plan"]]
     past the interrupt by `_apply_always_grants`. Rejected calls get a decline
     ToolMessage here (orphaned tool_calls break the next model turn); everything else in the
     batch still routes to `tools`, which executes only the calls that don't already have a
-    ToolMessage. A fully-rejected batch routes to `update_plan`, which records the decline onto
-    the current plan step as a `skipped` incident."""
-    last = state["messages"][-1]
-    tool_calls = getattr(last, "tool_calls", None) or []
+    ToolMessage. A fully-rejected batch routes back to `agent`."""
+    last, answered = issuing_message(state["messages"])
+    tool_calls = [tc for tc in (getattr(last, "tool_calls", None) or [])
+                  if tc.get("id") not in answered]
 
     # Quarantine escalation (runtime.quarantine = gate): a previous tool result this turn carried
     # instruction-shaped content, so this batch's arguments may derive from injected text — every
-    # call in it faces the human ONCE regardless of risk tier. PEEK here, consume only after the
+    # call in it that can act (send or change something) faces the human ONCE regardless of risk
+    # tier. A batch of local read-only calls (a plan update, a re-read) is not what the
+    # escalation is for: it passes and leaves it armed. PEEK here, consume only after the
     # interrupt resolves: LangGraph re-executes this node from the top on resume, so a consuming
     # check would already be spent on the re-run, `gated` would recompute without the escalation,
     # and the user's rejection of the batch would be silently discarded (an all-auto-approved
     # batch would skip the interrupt entirely and run). The interrupt payload carries the flags so
     # the prompt can say why a normally-silent call is suddenly asking.
-    escalated = quarantine.gate_pending() if tool_calls else False
+    escalated = quarantine.gate_pending() and any(_can_act(tc["name"]) for tc in tool_calls)
+    # The URL hold: a read_only fetch still sends its URL (quarantine.url_hold).
+    prov = _once(state)
+    holds = _url_holds(tool_calls, state, prov)
 
     gated = [
         tc
         for tc in tool_calls
-        if escalated
-        or not policy.approves(tc["name"], risk_of(tc["name"]), tc.get("args"))
+        if (escalated and _can_act(tc["name"]))
+        or tc["id"] in holds
+        or not (policy.approves(tc["name"], risk_of(tc["name"]), tc.get("args"))
+                or _user_stated(tc, state))
     ]
 
+    # The remember calls let through on provenance — the tools node stamps exactly these
+    # (state["user_stated"]); written on every route to `tools`, so a later batch never
+    # inherits an earlier one's.
+    stated = [tc["id"] for tc in tool_calls if tc not in gated and _user_stated(tc, state)]
+
     if not gated:
-        return Command(goto="tools")
+        return Command(goto="tools", update={"user_stated": stated})
 
     # Decision context for the gate's `e(xplain)` answer: the plan step this batch is fulfilling
-    # and the execute node's pre-action reasoning (the text content of the tool-calling
-    # AIMessage) — the same provenance /trace why reconstructs later, surfaced at the moment of
-    # decision.
+    # and the agent's pre-action reasoning (the text content of the tool-calling AIMessage) —
+    # the same provenance /trace why reconstructs later, surfaced at the moment of decision.
     reasoning = getattr(last, "content", "") or ""
     flags = quarantine.turn_flags()
+    # Why a call the tier would have let through is asking anyway — said at the prompt.
+    notes = [f"{tc['name']}: {holds[tc['id']]}" for tc in gated if tc["id"] in holds]
+    if any(policy.airgap_holds(tc["name"]) for tc in gated):
+        notes.append(AIRGAP_NOTE)
+    notes += [f"{tc['name']}: {policy.always_asks_why(tc['name'])}"
+              for tc in gated if policy.always_asks(tc["name"])]
+    _forget_group_lines(keep={tc["id"] for tc in gated})
+    notes += [n for n in (_handle_note(tc, state, prov) for tc in gated) if n]
+    # A fact the user did not provably type: say why it is asking, so "remember" prompting
+    # once in a while reads as a reason, not a whim.
+    if auto_memory.enabled():
+        notes += [f"remember: not saved automatically — {why}" for tc in gated
+                  if tc["name"] == "remember" and (why := auto_memory.why_not(tc, state))]
+    notes += [n for n in (_similar_note(tc) for tc in gated) if n]
+    # A skill drafted after a web page, a file, an attachment or mail entered the conversation
+    # may carry that content's instructions. A note, not a refusal: "summarise this page and
+    # save the method as a skill" is a fair request — but the human should read it as untrusted.
+    if any(tc["name"] == "create_skill" for tc in gated) and prov()[2]:
+        notes.append(f"create_skill: {SKILL_OUTSIDE_NOTE}")
     decision = interrupt(
         {
             "type": "approval_request",
@@ -202,8 +359,13 @@ def approval_node(state: AgentState) -> Command[Literal["tools", "update_plan"]]
             "step": current_step(state.get("plan", [])),
             "reasoning": reasoning if isinstance(reasoning, str) else str(reasoning),
             "quarantine": {"flags": flags} if flags else None,
+            "notes": notes or None,
+            # The URL-held calls by id: the headless approver denies exactly these under --yolo.
+            "held_ids": [tc["id"] for tc in gated if tc["id"] in holds],
         }
     )
+
+    _forget_group_lines()    # past the interrupt: this prompt is answered
 
     # Resolve the decision into the set of approved gated-call ids. Two dict shapes: the per-call
     # select ({"approved_ids": [...]}) and the always-allow decision ({"approved": True,
@@ -221,14 +383,14 @@ def approval_node(state: AgentState) -> Command[Literal["tools", "update_plan"]]
     else:
         # Fail-closed on the resume value: ONLY the literal True approves a whole batch. Anything
         # else — False, None, a stray string, an int, an unrecognized dict — is a rejection. The
-        # human's approval is never inferred from truthiness (transplanted from the gating isolate).
+        # human's approval is never inferred from truthiness.
         approved_ids = set()
 
     # Past the interrupt: this runs exactly once, with the human's decision in hand. The one-shot
     # escalation is spent only when the human LET SOMETHING THROUGH — a fully-rejected batch
     # leaves it armed, so a re-issued copy of the call the human just declined faces the gate
-    # again instead of auto-approving right past their 'no'. Re-issuing is itself rare now:
-    # rectify cancels the remaining steps after a guarded outcome.
+    # again instead of auto-approving right past their 'no'. (nodes/agent.py's declined-repeat
+    # guard usually answers an identical call before it gets here.)
     if escalated and approved_ids:
         quarantine.consume_gate()
 
@@ -240,12 +402,12 @@ def approval_node(state: AgentState) -> Command[Literal["tools", "update_plan"]]
     event = gate_event(
         gated,
         approved_ids,
-        quarantine=bool(escalated),
+        quarantine=bool(escalated or holds),
         step=(step or {}).get("label"),
     )
 
     if approved_ids == gated_ids:
-        return Command(goto="tools", update={"gate_events": [event]})
+        return Command(goto="tools", update={"gate_events": [event], "user_stated": stated})
 
     # Decline ONLY the rejected calls (orphaned tool_calls break the next model turn). The
     # structural outcome stamp (same contract as nodes/tools.py) is what the recorder keys the
@@ -253,18 +415,18 @@ def approval_node(state: AgentState) -> Command[Literal["tools", "update_plan"]]
     rejected = [tc for tc in gated if tc["id"] not in approved_ids]
     decline = [
         ToolMessage(
-            content=DECLINE_TEXT,
+            content=DECLINE_TEXT + (SKILL_DECLINE_NOTE if tc["name"] == "create_skill" else ""),
             tool_call_id=tc["id"],
             name=tc["name"],
             additional_kwargs={"saturn_status": "skipped"},
         )
         for tc in rejected
     ]
-    update = {"messages": decline, "gate_events": [event]}
+    update = {"messages": decline, "gate_events": [event], "user_stated": stated}
 
     # Anything left to run (ungated or approved) still runs; a fully-rejected batch goes
-    # straight to the recorder — the decline lands on the current step as a `skipped` incident,
-    # and rectify retires the remaining plan (a guarded action is reported, never retried).
+    # straight back to the agent, which sees the declines (and whose declined-repeat guard
+    # refuses the same call for the rest of the turn — a guarded action is never retried).
     if len(rejected) < len(tool_calls):
         return Command(goto="tools", update=update)
-    return Command(goto="update_plan", update=update)
+    return Command(goto="agent", update=update)

@@ -4,9 +4,8 @@ The ambient-trust wave — the trust stack surfacing in the DEFAULT flow, no com
   - the session-start posture line (receipt.posture_spans + ui.posture_line),
   - per-call egress attribution riding tool_events (nodes/tools._egress_slice + tool_node) and
     its rail leaf (trace._egress_leaf),
-  - the gate-decision echo + judge-verdict leaf (trace._render_trust_annotations),
-  - native answer provenance (response._split_sources/_print_sources over a live Glass Box),
-    and the centralized live-slice guard (glassbox.build_live).
+  - the gate-decision echo (trace._render_trust_annotations),
+  - the native Sources footer split (textutil.split_sources_footer).
 
 (The taint-warning render and the status bar's session token spend left with the audit-crypto
 shelve / 2026-07-03 runtime trim; their tests went with them.)
@@ -20,7 +19,6 @@ import importlib
 import pytest
 
 from trust import egress
-from trust import glassbox
 from trust import receipt
 
 
@@ -35,13 +33,13 @@ def _runtime(monkeypatch) -> dict:
 def test_posture_spans_default_posture_is_silent(monkeypatch):
     # Deviation-only (2026-07-06): the safe default posture (gate read_only · local inference ·
     # quarantine gate · no airgap) renders NO spans — a stock install prints no posture line at
-    # all. Silence means the defaults hold; /privacy carries the affirmative readout.
+    # all. Silence means the defaults hold; /policy carries the affirmative readout.
     rt = _runtime(monkeypatch)
     monkeypatch.setitem(rt, "auto_approve", "read_only")
     monkeypatch.setitem(rt, "airgap", False)
     monkeypatch.setitem(rt, "quarantine", "gate")
 
-    monkeypatch.setattr(egress, "_inference", lambda: {"all_local": True, "cloud_providers": []})
+    monkeypatch.setattr(egress, "_inference", lambda: {"all_local": True})
 
     assert receipt.posture_spans() == []
 
@@ -51,19 +49,18 @@ def test_posture_spans_loud_states_lead_and_warn(monkeypatch):
     monkeypatch.setitem(rt, "auto_approve", "destructive")  # the gate is OPEN, not "at a tier"
     monkeypatch.setitem(rt, "airgap", True)
     monkeypatch.setitem(rt, "quarantine", "off")
-    monkeypatch.setitem(rt, "redaction", "off")
 
     monkeypatch.setattr(
-        egress, "_inference", lambda: {"all_local": False, "cloud_providers": ["anthropic"]}
+        egress, "_inference",
+        lambda: {"all_local": False, "remote_ollama": "http://10.0.0.5:11434"},
     )
 
     spans = receipt.posture_spans()
     assert spans[0] == ("⚠ GATE OFF", "risk")
     assert ("⛓ airgap", "accent") in spans
-    assert ("inference cloud: anthropic", "warn") in spans
+    assert ("inference off-machine: ollama @ http://10.0.0.5:11434", "warn") in spans
     assert ("quarantine off", "warn") in spans
-    # redaction off only matters when a cloud boundary exists to redact for — here it does
-    assert ("redaction off", "warn") in spans
+    assert not any(text.startswith("redaction") for text, _ in spans)  # cut 2026-09-29
 
 
 def test_posture_spans_state_the_effective_quarantine_mode(monkeypatch):
@@ -72,7 +69,7 @@ def test_posture_spans_state_the_effective_quarantine_mode(monkeypatch):
     none' rendered calm-dim over a system actually running 'gate' is a posture it didn't read."""
     rt = _runtime(monkeypatch)
 
-    monkeypatch.setattr(egress, "_inference", lambda: {"all_local": True, "cloud_providers": []})
+    monkeypatch.setattr(egress, "_inference", lambda: {"all_local": True})
 
     monkeypatch.setitem(rt, "quarantine", "none")  # invalid → the system runs gated (= default,
     spans = receipt.posture_spans()                # so deviation-only says nothing at all)
@@ -90,7 +87,8 @@ def test_posture_line_prints_deviations_with_pointer(capsys, monkeypatch):
     mod.posture_line()
     out = capsys.readouterr().out
     assert "GATE OFF" in out
-    assert "/privacy" in out and "/policy" in out
+    assert "/policy" in out
+    assert "/privacy" not in out  # merged into /policy 2026-09-30 — one pointer, one front door
 
 
 def test_posture_line_silent_on_default_posture(capsys, monkeypatch):
@@ -104,15 +102,15 @@ def test_posture_line_silent_on_default_posture(capsys, monkeypatch):
 
 
 def test_posture_line_styles_cover_every_kind():
-    mod = importlib.import_module("tui.ui.prompt")
-    assert {"ok", "warn", "risk", "accent", "dim"} <= set(mod._POSTURE_LINE_STYLE)
+    base = importlib.import_module("tui.ui._base")
+    assert {"ok", "warn", "risk", "accent", "dim"} <= set(base._POSTURE_STYLE)
 
 
 def test_posture_line_swallows_a_broken_posture(capsys, monkeypatch):
     mod = importlib.import_module("tui.ui.prompt")
     monkeypatch.setattr(receipt, "posture_spans", lambda: 1 / 0)
     mod.posture_line()  # must not raise
-    assert "/privacy" not in capsys.readouterr().out  # and must not print a guessed posture
+    assert "/policy" not in capsys.readouterr().out  # and must not print a guessed posture
 
 
 # --- per-call egress attribution (nodes/tools) ---------------------------------------------------
@@ -134,7 +132,7 @@ def test_tool_node_attaches_the_calls_egress_slice(monkeypatch, isolated_paths):
     ev = delta["tool_events"][0]
     assert ev["egress"] == [{
         "channel": "http", "host": "api.example.com",
-        "n_bytes": 123, "redactions": 0, "status": "sent",
+        "n_bytes": 123, "status": "sent",
     }]
 
 
@@ -169,6 +167,20 @@ def test_tool_node_attaches_blocked_events_and_silent_calls_get_none(monkeypatch
     assert "egress" not in silent  # a local-only call carries no boundary annotation
 
 
+def test_an_untracked_run_is_not_a_rail_boundary_leaf(isolated_paths):
+    """The rail's egress leaves mark what crossed or was blocked. A shell run is on the ledger
+    as untracked (the receipt counts it) but is not annotated as a send, and stays `done`."""
+    from langchain.messages import AIMessage
+
+    import nodes.tools as tn
+
+    msg = AIMessage(content="", tool_calls=[
+        {"name": "run_shell", "args": {"command": "echo hi"}, "id": "c1"}])
+    delta = tn.tool_node({"messages": [msg]})
+    assert "egress" not in delta["tool_events"][0]
+    assert delta["messages"][0].additional_kwargs["saturn_status"] == "done"
+
+
 def test_egress_slice_caps_a_runaway_call(isolated_paths):
     import nodes.tools as tn
 
@@ -187,9 +199,9 @@ def test_egress_leaf_text_and_styles():
 
     text, style = tr._egress_leaf(
         {"channel": "http", "host": "api.example.com", "n_bytes": 123,
-         "redactions": 1, "status": "sent"})
+         "redactions": 1, "status": "sent"})  # an older record's field is ignored
     assert text.startswith("⇅ sent → api.example.com")
-    assert "http" in text and "1 redaction" in text
+    assert "http" in text and "redaction" not in text
     assert style == "yellow"
 
     text, style = tr._egress_leaf(
@@ -198,7 +210,7 @@ def test_egress_leaf_text_and_styles():
     assert style == "bold red"
 
     text, style = tr._egress_leaf({"more": 2})
-    assert "+2 more" in text and "/privacy egress" in text
+    assert "+2 more" in text and "/policy egress" in text
 
 
 def test_gate_decision_echo_renders_both_verdicts(capsys):
@@ -217,34 +229,14 @@ def test_gate_decision_echo_renders_both_verdicts(capsys):
     assert "quarantine escalation" in out
 
 
-def test_rectify_and_replan_leaves_are_honest(capsys):
-    tr = importlib.import_module("tui.ui.trace")
-
-    tr._render_trust_annotations("rectify", {"rectify": True, "reasoning": "resolve the ref"})
-    assert "plan must change" in capsys.readouterr().out
-    tr._render_trust_annotations("rectify", {"rectify": False, "plan": [{"step_id": 1}],
-                                             "reasoning": "action guarded"})
-    assert "retired the remaining steps" in capsys.readouterr().out
-    tr._render_trust_annotations("rectify", {"rectify": False, "reasoning": "pending"})
-    assert capsys.readouterr().out == "", "a quiet rectify pass renders nothing"
-    tr._render_trust_annotations("replan", {"plan": [{"step_id": 1}], "replans": 1})
-    assert "redrafted" in capsys.readouterr().out
-    tr._render_trust_annotations("replan", {"replans": 1})
-    assert "plan kept" in capsys.readouterr().out
-    tr._render_trust_annotations("execute", {})  # other nodes say nothing
-    assert capsys.readouterr().out == ""
-
-
-# --- native answer provenance (response) ---------------------------------------------------------
-
 _FOOTER_TEXT = ("The answer body cites [1].\n\n"
                 "Sources:\n  [1] web_extract(url='https://e.com')\n  [2] knowledge base: a.md")
 
 
 def test_split_sources_extracts_a_wellformed_footer():
-    resp = importlib.import_module("tui.ui.response")
+    from textutil import split_sources_footer
 
-    prose, entries = resp._split_sources(_FOOTER_TEXT)
+    prose, entries = split_sources_footer(_FOOTER_TEXT)
     assert prose == "The answer body cites [1]."
     assert entries == ["  [1] web_extract(url='https://e.com')", "  [2] knowledge base: a.md"]
 
@@ -255,102 +247,9 @@ def test_split_sources_extracts_a_wellformed_footer():
     "prose\n\nSources:",  # header with no entries
 ])
 def test_split_sources_leaves_anything_else_alone(text):
-    resp = importlib.import_module("tui.ui.response")
+    from textutil import split_sources_footer
 
-    assert resp._split_sources(text) == (text, None)
-
-
-def _provenance_box():
-    """A live Glass Box with one network source ([1] web_extract) and one local trusted source
-    ([2] read_file) — built through the real assembler, no synthetic dict."""
-    from langchain.messages import AIMessage, HumanMessage
-
-    state = {
-        "current_query": "q",
-        "messages": [HumanMessage(content="q"), AIMessage(content="Answer [1][2].")],
-        "tool_results": [
-            "web_extract(url='u') -> some network page body of reasonable length here",
-            "read_file(path='x') -> a local trusted file body of reasonable length here",
-        ],
-        "documents_retrieved": [],
-        "tool_events": [{"name": "web_extract"}, {"name": "read_file"}],
-        "replans": 0,
-    }
-    return glassbox.build_from_state(state, egress_events=None, gated=0)
-
-
-def test_facet_annotation_vocabulary():
-    resp = importlib.import_module("tui.ui.response")
-    gb = _provenance_box()
-
-    glyph, style, note = resp._facet_annotation(gb.sources[0])  # web_extract: network/untrusted
-    assert (glyph, style) == ("◐", "yellow") and "web" in note
-    glyph, style, note = resp._facet_annotation(gb.sources[1])  # read_file: local + trusted
-    assert (glyph, style, note) == ("✓", "green", "local")
-
-
-def test_print_sources_colors_by_facet_and_dims_without_provenance(capsys):
-    resp = importlib.import_module("tui.ui.response")
-    gb = _provenance_box()
-
-    resp._print_sources(["  [1] web_extract(url='u')", "  [2] read_file(path='x')"], gb)
-    out = capsys.readouterr().out
-    assert "Sources:" in out
-    assert "◐ web" in out
-    assert "✓ local" in out
-
-    resp._print_sources(["  [1] web_extract(url='u')"], None)  # no provenance: text only
-    out = capsys.readouterr().out
-    assert "[1] web_extract(url='u')" in out
-    assert "◐" not in out and "✓" not in out
-
-
-def test_set_turn_provenance_pops_on_read(isolated_paths):
-    resp = importlib.import_module("tui.ui.response")
-
-    state = {
-        "current_query": "q",
-        "messages": [],
-        "tool_results": ["web_search(query='x') -> a result"],
-        "documents_retrieved": [],
-        "tool_events": [{"name": "web_search", "args": {}, "result": "r", "dur": 0.1, "ok": True}],
-        "replans": 0,
-    }
-    resp.set_turn_provenance(state)
-    gb = resp._pop_turn_provenance()
-    assert gb is not None and gb.sources[0].tool == "web_search"
-    assert resp._pop_turn_provenance() is None  # consumed — can never paint a later answer
-
-
-# --- the centralized live-slice guard (glassbox.build_live) --------------------------------------
-
-_EMPTY_STATE = {"current_query": "q", "messages": [], "tool_results": [],
-                "documents_retrieved": [], "tool_events": [], "replans": 0}
-
-
-def test_build_live_without_a_turn_mark_is_unknown(monkeypatch, isolated_paths):
-    monkeypatch.setattr(receipt, "_TURN_MARK", 0)
-    gb = glassbox.build_live(_EMPTY_STATE)
-    assert gb.sent_known is False  # never 'local-only' over a slice that may be missing sends
-
-
-def test_build_live_with_a_mark_uses_the_exact_slice(monkeypatch, isolated_paths):
-    monkeypatch.setattr(receipt, "_TURN_MARK", receipt._TURN_MARK)
-    receipt.reset_turn()
-    egress.record("llm", "anthropic API", "model", n_bytes=10)
-    gb = glassbox.build_live(_EMPTY_STATE)
-    assert gb.sent_known is True
-    assert gb.composed_local is False  # an llm-channel event in the slice
-
-
-def test_build_live_treats_a_cleared_slice_as_unknown(monkeypatch, isolated_paths):
-    monkeypatch.setattr(receipt, "_TURN_MARK", receipt._TURN_MARK)
-    monkeypatch.setattr(egress, "_CLEARED_AT", egress._CLEARED_AT)
-    receipt.reset_turn()
-    egress.record("http", "api.example.com", "x")
-    egress.clear()
-    gb = glassbox.build_live(_EMPTY_STATE)
-    assert gb.sent_known is False
+    assert split_sources_footer(text) == (text, None)
 
 
 # --- the status bar's posture zone ---------------------------------------------------------------
@@ -361,8 +260,6 @@ def test_statusbar_unreadable_posture_is_unknown_never_calm(monkeypatch):
     # while the gate is open. The facet renders an explicit unknown instead (the posture-line
     # rule: a facet that can't be read is omitted/marked, never guessed).
     sb = importlib.import_module("tui.ui.statusbar")
-    if not sb._RICH:
-        pytest.skip("rich not available")
     import config as config_mod
 
     def boom():

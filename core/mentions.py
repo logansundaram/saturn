@@ -1,12 +1,14 @@
 """`@file` mentions — pull a local file's contents into a turn inline.
 
+(`@clipboard` attaches the clipboard's text the same way — see `_CLIPBOARD_RE`.)
+
 A user message can reference local files as `@path/to/file` (Tab-completed at the `»` prompt; see
 `tui.ui`'s completer) or `@"path with spaces"` — the quoted form is what dragging a file onto the
 terminal after typing `@` produces. `dropped_path` recognizes the other drag shape: a line that IS
 a bare file path, which the loop turns into an ingest/attach offer. Before the turn runs, `agent.py` calls `expand()` to resolve each `@token`
 to a readable file under the current working directory, read it (clamped), and format it as a
 context block. The block is appended to `state["attachments"]`, which the grounding node folds into
-`state["context"]` — so every node that reads context (planner, agent, synthesize) sees the file
+`state["context"]` — so every node that reads context sees the file
 without a tool round-trip or an approval prompt.
 
 Design choices:
@@ -27,6 +29,8 @@ from __future__ import annotations
 import os
 import re
 
+from textutil import visible_controls
+
 # A mention is `@` at a word boundary followed by a run of non-space, non-`@` characters — or a
 # double-quoted run (`@"my docs\file.md"`), so a path with spaces (e.g. dragged onto the terminal
 # after typing `@`) can be mentioned too.
@@ -38,6 +42,28 @@ _MAX_FILE_CHARS = 12_000
 # Trailing punctuation to try stripping so `@notes.md.` / `@file)` / `@a.py,` resolve to the file
 # (path extensions keep their dots — we only strip from the END, and only if the full token misses).
 _TRAILING_PUNCT = ".,;:!?)]}>\"'`"
+
+# `@clipboard` attaches what is on the clipboard, the way `@file` attaches a file. It is read
+# ONLY when the user types the token: a clipboard routinely holds a password, and a tool the
+# model could call on its own would copy that into the trace. The token is the whole word —
+# `@clipboard.` ends a sentence, `@clipboard.txt` and `@clipboard-notes.md` are files.
+_CLIPBOARD_RE = re.compile(
+    rf"(?<!\S)@clipboard(?=[{re.escape(_TRAILING_PUNCT)}]*(?:\s|$))", re.IGNORECASE)
+CLIPBOARD = "clipboard"   # the label an attached clipboard gets in `expand`'s path list
+
+
+def _clipboard() -> "str | None":
+    """The clipboard's text (macOS `pbpaste`), or None when it cannot be read."""
+    import subprocess
+    import sys
+
+    if sys.platform != "darwin":
+        return None
+    try:
+        proc = subprocess.run(["pbpaste"], capture_output=True, timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return proc.stdout.decode("utf-8", errors="replace") if proc.returncode == 0 else None
 
 
 def _resolve(token: str) -> str | None:
@@ -98,12 +124,17 @@ def display(path: str) -> str:
 
 
 def _read_clamped(path: str) -> str:
-    """Read a file as UTF-8 (replacing undecodable bytes), clamped to _MAX_FILE_CHARS with a marker.
-    Never raises — an unreadable file becomes an inline note so the turn still runs."""
+    """Read a file as UTF-8 (replacing undecodable bytes) — a PDF / .docx / .xlsx as its text
+    (core/doctext) — clamped to _MAX_FILE_CHARS with a marker. Never raises — an unreadable file
+    becomes an inline note so the turn still runs."""
+    from core import doctext  # lazy: a turn without an @file never needs it
+
     try:
-        with open(path, "r", encoding="utf-8", errors="replace") as fh:
-            data = fh.read(_MAX_FILE_CHARS + 1)
-    except OSError as exc:
+        data = doctext.extract(path)
+        if data is None:
+            with open(path, "r", encoding="utf-8", errors="replace") as fh:
+                data = fh.read(_MAX_FILE_CHARS + 1)
+    except Exception as exc:  # OSError, or a corrupt document the parser rejects
         return f"[could not read {display(path)}: {exc}]"
     if len(data) > _MAX_FILE_CHARS:
         return data[:_MAX_FILE_CHARS] + f"\n… [truncated — {display(path)} exceeds {_MAX_FILE_CHARS} chars]"
@@ -129,10 +160,21 @@ def expand(text: str, extra_paths: tuple[str, ...] | list[str] = ()) -> tuple[st
         if os.path.isfile(p) and _canonical(p) not in attached:
             paths.append(p)
             attached.add(_canonical(p))
-    if not paths:
+    # `@clipboard` — unless a file by that name is what the mention resolved to.
+    clip = None
+    if _CLIPBOARD_RE.search(text or "") and not os.path.isfile(CLIPBOARD):
+        clip = (_clipboard() or "").strip("\n") or None
+    if not paths and clip is None:
         return "", []
     parts = ["### Files attached to this message (referenced inline with @)"]
     for path in paths:
         label = display(path)
         parts.append(f"\n#### {label}\n```\n{_read_clamped(path)}\n```")
-    return "\n".join(parts), paths
+    if clip is not None:
+        if len(clip) > _MAX_FILE_CHARS:
+            clip = clip[:_MAX_FILE_CHARS] + f"\n… [truncated — the clipboard exceeds {_MAX_FILE_CHARS} chars]"
+        parts.append(f"\n#### {CLIPBOARD}\n```\n{clip}\n```")
+        paths.append(CLIPBOARD)
+    # File and clipboard text is read by the model and may be echoed to the terminal: controls
+    # become visible symbols, exactly as tool output does (nodes/tools.py).
+    return visible_controls("\n".join(parts)), paths

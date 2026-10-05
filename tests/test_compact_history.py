@@ -78,3 +78,70 @@ def test_summary_is_not_a_turn_boundary():
     # The summary is carried history; the real turn behind it keeps its scratchpad.
     assert str(out[0].content).startswith(_SUMMARY_PREFIX)
     assert any(isinstance(m, ToolMessage) for m in out)
+
+
+# ── auto-compaction (app/session._maybe_autocompact) ─────────────────────────────────────────
+
+
+def _research_turn(q, n_reads, size, cid="r"):
+    """One turn that gathered `n_reads` observations of `size` characters each."""
+    msgs = [HumanMessage(content=q)]
+    for i in range(n_reads):
+        msgs.append(AIMessage(content="", tool_calls=[
+            {"name": "read_file", "args": {"file_path": f"{i}.md"}, "id": f"{cid}{i}"}]))
+        msgs.append(ToolMessage(content=f"HEAD{i} " + "x" * size + f" TAIL{i}",
+                                tool_call_id=f"{cid}{i}", name="read_file",
+                                additional_kwargs={"saturn_status": "done"}))
+    msgs.append(AIMessage(content="the answer"))
+    return msgs
+
+
+def _autocompact(monkeypatch, messages, used, window=32000):
+    import core.llms as llms
+    from app import session
+    from core import compaction
+
+    notes = []
+    monkeypatch.setattr(llms, "active_context_window", lambda: window)
+    monkeypatch.setattr(compaction, "_llm_summary", lambda older: "SUMMARY")
+    monkeypatch.setattr(session.ui, "note", notes.append)
+    state = session._maybe_autocompact({"messages": list(messages), "context_tokens": used})
+    return state["messages"], notes
+
+
+def _chars(msgs):
+    return sum(len(str(m.content)) for m in msgs)
+
+
+def test_autocompact_shrinks_the_turn_that_filled_the_window(monkeypatch):
+    """A single research turn fills the window. There is no older turn to fold, so the trigger
+    used to do nothing and the next request overflowed num_ctx. Its observations are trimmed
+    instead: every call and its outcome stay, each result keeps a head and a tail."""
+    turn = _research_turn("research llamas", n_reads=10, size=11000)
+    out, notes = _autocompact(monkeypatch, turn, used=29000)
+
+    assert _chars(out) < _chars(turn) / 4
+    assert [type(m) for m in out] == [type(m) for m in turn]         # nothing dropped
+    assert out[0].content == "research llamas" and out[-1].content == "the answer"
+    tool_out = [m for m in out if isinstance(m, ToolMessage)]
+    assert [m.tool_call_id for m in tool_out] == [f"r{i}" for i in range(10)]
+    assert all(m.additional_kwargs == {"saturn_status": "done"} for m in tool_out)
+    assert "HEAD3" in tool_out[3].content and "TAIL3" in tool_out[3].content
+    assert "compacted" in tool_out[3].content                        # the model is told
+    assert notes and "trimmed 10 tool result" in notes[-1]
+
+
+def test_autocompact_leaves_the_recent_turn_alone_when_folding_older_turns_is_enough(monkeypatch):
+    older = _research_turn("first", n_reads=8, size=11000, cid="a")
+    recent = _research_turn("second", n_reads=1, size=2000, cid="b")
+    out, notes = _autocompact(monkeypatch, older + recent, used=29000)
+
+    assert "SUMMARY" in out[0].content
+    assert out[1:] == recent                                         # verbatim: a follow-up can refer back
+    assert not any("trimmed" in n for n in notes)
+
+
+def test_autocompact_does_nothing_below_the_threshold(monkeypatch):
+    turn = _research_turn("research llamas", n_reads=10, size=11000)
+    out, notes = _autocompact(monkeypatch, turn, used=9000)
+    assert out == turn and notes == []

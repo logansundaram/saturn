@@ -10,13 +10,13 @@ import time
 
 import diag
 
-from textutil import head_tail
+from textutil import fmt_args, head_tail, visible_format_chars
 
 from . import _base
 from ._base import (
-    Text, _console, _RICH,
+    Text, _console,
     _ACCENT, _DIM, _RISK, _RISK_HINT,
-    _fmt_args, _term_width, _truncate,
+    _term_width, _truncate,
 )
 from .statusbar import _live_start, _live_stop
 
@@ -37,32 +37,35 @@ _GATE_PREAMBLE = (
 )
 
 
-def _preamble_due() -> bool:
-    """Whether the first-gate preamble should print, marking it shown as a side effect (one call
-    decides AND records, so a failure between the two can't double-print). Delegates to
-    receipt.take_hint — the one sentinel mechanism, not a second copy of it (receipt is a leaf;
-    no cycle from the TUI)."""
+def _show_preamble_if_due() -> None:
     from trust import receipt
 
-    return receipt.take_hint("gate_seen")
-
-
-def _show_preamble_if_due() -> None:
-    if not _preamble_due():
+    # take_hint decides AND records in one call, so a failure between the two can't double-print.
+    if not receipt.take_hint("gate_seen"):
         return
     for line in _GATE_PREAMBLE:
-        if _RICH:
-            _console.print(Text(f"  {line}", style=_DIM))
-        else:
-            print(f"  {line}")
+        _console.print(Text(f"  {line}", style=_DIM))
+
+
+def _frame_row(*spans: "tuple[str, str]") -> None:
+    """One row inside the approval frame: the bold `┃` gutter, then each `(text, style)` span.
+    Bidi overrides and every character that prints as nothing are shown by code point, and ESC
+    as `␛` — the rows ARE what the human approves: an RTL override can make a command display
+    in another order, and the console would remove a colour code without a trace
+    (textutil.visible_format_chars). The other terminal controls are handled by the console."""
+    row = Text()
+    row.append("  ┃ ", style="bold")
+    for text, style in spans:
+        row.append(visible_format_chars(text), style=style)
+    _console.print(row)
 
 
 def _workspace_target(file_path: str) -> "tuple[str, str, str | None]":
     """What the write/edit preview would touch: (text, state, note) with state ∈ missing | text |
     binary | refused | unreadable. Resolved through THE ONE sandbox resolver (`tools/files._resolve`)
     so the preview can never disagree with what the tool will actually do — a preview that
-    diffs a.txt for a call the jail will refuse is worse than no preview (transplanted from the
-    gating isolate). Best-effort: any failure is a state, never a raise into the gate."""
+    diffs a.txt for a call the jail will refuse is worse than no preview. Best-effort: any
+    failure is a state, never a raise into the gate."""
     try:
         from tools.files import _resolve, _is_binary
 
@@ -91,9 +94,10 @@ def _norm_eol(text: str) -> str:
     return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
-def _unified_rows(old: str, new: str) -> "tuple[list, int]":
+def _unified_rows(old: str, new: str, cap: "int | None" = _MAX_DIFF_LINES) -> "tuple[list, int]":
     """Unified-diff rows between two texts: ([(kind, text), ...], hidden_count) with kind ∈
-    {add, del, hunk, ctx}, capped at _MAX_DIFF_LINES."""
+    {add, del, hunk, ctx}, capped at `cap` rows (None = every row: a skill draft, which the
+    human must be able to read whole)."""
     import difflib
 
     rows: list = []
@@ -107,13 +111,15 @@ def _unified_rows(old: str, new: str) -> "tuple[list, int]":
             rows.append(("del", line[1:]))
         else:
             rows.append(("ctx", line[1:] if line.startswith(" ") else line))
-    hidden = max(0, len(rows) - _MAX_DIFF_LINES)
-    return rows[:_MAX_DIFF_LINES], hidden
+    if cap is None:
+        return rows, 0
+    hidden = max(0, len(rows) - cap)
+    return rows[:cap], hidden
 
 
 def write_verdict(file_path: str, content: str, overwrite: bool) -> dict:
-    """What a pending write_file will actually DO — the gate's effect preview (transplanted from
-    the gating isolate): {"kind", "rows", "hidden", "note"} with kind ∈ new file | overwrite |
+    """What a pending write_file will actually DO — the gate's effect preview:
+    {"kind", "rows", "hidden", "note"} with kind ∈ new file | overwrite |
     append | no_change (byte-identical after line-ending normalization — approving a no-op is a
     prompt that should not have happened, and it must not render as a full-file diff) | binary
     (existing content is not diffable — say so, never render mojibake) | refused (the workspace
@@ -137,14 +143,6 @@ def write_verdict(file_path: str, content: str, overwrite: bool) -> dict:
             "note": None}
 
 
-def _diff_lines(file_path: str, content: str, overwrite: bool) -> "tuple[list, bool, int]":
-    """Diff rows for a pending write_file: (rows, is_new_file, hidden_count) — the row view over
-    `write_verdict`. An append (overwrite=False) diffs old-vs-(old+content) so the appended text
-    reads as additions."""
-    v = write_verdict(file_path, content, overwrite)
-    return v["rows"], v["kind"] == "new file", v["hidden"]
-
-
 _DIFF_STYLE = {"add": "green", "del": "red", "hunk": _ACCENT, "ctx": _DIM}
 # The sign column is ONE cell wide for every kind — an empty hunk marker put `@@ …` headers a
 # column left of the body they head, so the diff read as if it had two different indents.
@@ -162,72 +160,46 @@ _REAL_DIFF_KINDS = ("new file", "overwrite", "append", "edit")
 
 def _render_diff_rows(mode: str, file_path: str, rows: list, hidden: int,
                       *, kind: "str | None" = None) -> None:
-    """Print pre-built diff rows inside the approval frame (rich or plain). Shared by the
-    write_file and edit_file previews — the diff IS the safety surface for both.
+    """Print pre-built diff rows inside the approval frame. Shared by the write_file and
+    edit_file previews — the diff IS the safety surface for both.
 
     `kind` is the caller's verdict (see `_REAL_DIFF_KINDS`): the `(no textual change)` marker
-    prints only for a verdict that genuinely produced an empty diff. None means "a real diff"
-    (the historical behavior), so a caller without a verdict is unchanged."""
-    if _RICH:
-        head = Text()
-        head.append("  ┃ ", style="bold")
-        head.append(f"    ↳ diff ({mode}) ", style=_DIM)
-        head.append(file_path, style="default")
-        _console.print(head)
-        if not rows and (kind is None or kind in _REAL_DIFF_KINDS):
-            empty = Text()
-            empty.append("  ┃ ", style="bold")
-            empty.append("        (no textual change)", style=_DIM)
-            _console.print(empty)
-        width = max(20, _term_width() - 12)  # loop-invariant — compute once
-        for sign, text in rows:  # `sign`, not `kind`: the parameter above must not be shadowed
-            row = Text()
-            row.append("  ┃ ", style="bold")
-            row.append(f"      {_DIFF_SIGN[sign]} ", style=_DIFF_STYLE[sign])
-            row.append(_truncate(text, width), style=_DIFF_STYLE[sign])
-            _console.print(row)
-        if hidden:
-            more = Text()
-            more.append("  ┃ ", style="bold")
-            more.append(f"        … {hidden} more diff line(s)", style=_DIM)
-            _console.print(more)
-    else:
-        print(f"  ┃     -> diff ({mode}) {file_path}")
-        for sign, text in rows:
-            print(f"  ┃       {_DIFF_SIGN[sign]} {text}")
-        if hidden:
-            print(f"  ┃        … {hidden} more diff line(s)")
+    prints only for a verdict that genuinely produced an empty diff. None means "a real diff"."""
+    _frame_row((f"    ↳ diff ({mode}) ", _DIM), (file_path, "default"))
+    if not rows and (kind is None or kind in _REAL_DIFF_KINDS):
+        _frame_row(("        (no textual change)", _DIM))
+    width = max(20, _term_width() - 12)  # loop-invariant — compute once
+    for sign, text in rows:  # `sign`, not `kind`: the parameter above must not be shadowed
+        _frame_row((f"      {_DIFF_SIGN[sign]} ", _DIFF_STYLE[sign]),
+                   (_truncate(text, width), _DIFF_STYLE[sign]))
+    if hidden:
+        _frame_row((f"        … {hidden} more diff line(s)", _DIM))
 
 
 def _render_write_diff(args: dict) -> None:
     """Render the colored unified diff for a pending write_file inside the approval frame, so the
     user sees exactly what changes before approving an overwrite (write_file overwrites by default —
     see gotcha #2). An append (overwrite=False) diffs old-vs-(old+content) so the appended text
-    reads as additions. Falls back to a plain +/- listing without rich."""
+    reads as additions."""
     file_path = str(args.get("file_path", ""))
-    content = str(args.get("content", ""))
     overwrite = bool(args.get("overwrite", True))
 
-    v = write_verdict(file_path, content, overwrite)
+    v = write_verdict(file_path, str(args.get("content", "")), overwrite)
     kind = v["kind"]
-    mode = "overwrite" if overwrite else "append"
     # Each non-diffable verdict passes its own `kind` so the empty row list is NOT captioned
     # "(no textual change)" — false for refused and binary (a change is pending; it merely can't
     # be rendered), and redundant for no_change, which states the fact in its own note below.
-    if kind == "refused":
-        _render_diff_rows(mode, file_path, [], 0, kind=kind)
-        _frame_note(f"REFUSED by the workspace jail: {v['note']} — this write will not happen",
-                    style="bold red")
-        return
-    if kind in ("binary", "unreadable"):
-        _render_diff_rows(mode, file_path, [], 0, kind=kind)
-        _frame_note(f"⚠ {v['note']}", style="yellow")
-        return
-    if kind == "no_change":
-        _render_diff_rows(mode, file_path, [], 0, kind=kind)
-        _frame_note(v["note"], style=_DIM)
-        return
-    _render_diff_rows(kind, file_path, v["rows"], v["hidden"], kind=kind)
+    note = {
+        "refused": (f"REFUSED by the workspace jail: {v['note']} — this write will not happen",
+                    "bold red"),
+        "binary": (f"⚠ {v['note']}", "yellow"),
+        "unreadable": (f"⚠ {v['note']}", "yellow"),
+        "no_change": (v["note"], _DIM),
+    }.get(kind)
+    mode = ("overwrite" if overwrite else "append") if note else kind
+    _render_diff_rows(mode, file_path, v["rows"], v["hidden"], kind=kind)
+    if note:
+        _frame_note(*note)
 
 
 def _render_edit_diff(args: dict) -> None:
@@ -265,22 +237,16 @@ def _render_edit_diff(args: dict) -> None:
     # below is the truth, and the dim marker would read as a harmless no-op.
     _render_diff_rows("edit", file_path, rows, hidden, kind="edit" if note is None else "blocked")
     if note:
-        if _RICH:
-            warn = Text()
-            warn.append("  ┃ ", style="bold")
-            warn.append(f"        ⚠ {note}", style="yellow")
-            _console.print(warn)
-        else:
-            print(f"  ┃        ! {note}")
+        _frame_row((f"        ⚠ {note}", "yellow"))
 
 
 def _wrap_exact(line: str, width: int) -> "list[str]":
     """Byte-faithful hard wrap of one logical line: plain width-slicing, NO whitespace mutation.
     textwrap.wrap would rewrite the very characters the human is approving — tabs become spaces,
     runs of spaces collapse at wrap boundaries, continuation indentation drops, a whitespace-only
-    line vanishes. The arguments (and the shell command, and the HTTP request) ARE the safety
-    surface, so the only transformation allowed is the line break itself; joining the chunks
-    reproduces the input exactly. An empty line renders as itself, never as nothing."""
+    line vanishes. The arguments (and the shell command) ARE the safety surface, so the only
+    transformation allowed is the line break itself; joining the chunks reproduces the input
+    exactly. An empty line renders as itself, never as nothing."""
     if not line:
         return [""]
     return [line[i:i + width] for i in range(0, len(line), width)]
@@ -288,9 +254,9 @@ def _wrap_exact(line: str, width: int) -> "list[str]":
 
 def _continuation_prefix(prefix: str) -> str:
     """The marker a WRAPPED fragment carries instead of repeating `prefix`, at exactly the same
-    width so the body column never shifts. Repeating the prefix on every fragment (the pre-2026-08
-    shape) made one long command render as several: a 200-char one-liner and a 3-line script looked
-    identical, and the destructive tail of a wrapped command read as its own innocuous `$ ` line."""
+    width so the body column never shifts. Repeating the prefix would make one long command render
+    as several — the destructive tail of a wrapped command would read as its own innocuous `$ `
+    line."""
     return ("↳" + " " * (len(prefix) - 1)) if prefix else ""
 
 
@@ -303,24 +269,14 @@ def _frame_wrapped(lines: "list[str]", prefix: str, width: "int | None" = None) 
 
     `prefix` marks a LOGICAL line and appears exactly once per logical line: continuation
     fragments carry the equal-width dim `↳` from `_continuation_prefix`, so the number of `$ `
-    markers is the number of commands, never the number of screen rows. The plain fallback prints
-    each logical line unwrapped (the terminal wraps; byte-faithfulness still holds), so it already
-    emits one prefix per logical line and needs no continuation marker. `width` lets a caller
+    markers is the number of commands, never the number of screen rows. `width` lets a caller
     hoist the _term_width() read out of a per-key loop (loop-invariant — compute once)."""
     if width is None:
         width = max(20, _term_width() - 12)
     cont = _continuation_prefix(prefix)
-    if _RICH:
-        for line in lines:
-            for i, chunk in enumerate(_wrap_exact(line, width)):
-                row = Text()
-                row.append("  ┃ ", style="bold")
-                row.append(f"      {prefix if i == 0 else cont}", style=_DIM)
-                row.append(chunk, style="default")
-                _console.print(row)
-    else:
-        for line in lines:
-            print(f"  ┃       {prefix}{line}")
+    for line in lines:
+        for i, chunk in enumerate(_wrap_exact(line, width)):
+            _frame_row((f"      {prefix if i == 0 else cont}", _DIM), (chunk, "default"))
 
 
 def _render_shell_command(args: dict) -> None:
@@ -330,41 +286,53 @@ def _render_shell_command(args: dict) -> None:
     one-liner)."""
     command = str(args.get("command", ""))
     lines = command.splitlines() or [""]
-    tip = "tip: /policy allow <prefix> auto-approves trusted commands like `git status`"
-    if _RICH:
-        head = Text()
-        head.append("  ┃ ", style="bold")
-        head.append("    ↳ command", style=_DIM)
-        _console.print(head)
-    else:
-        print("  ┃     -> command")
+    _frame_row(("    ↳ command", _DIM))
     _frame_wrapped(lines, "$ ")
     # The tip stays out of _frame_wrapped on purpose: it's advice, not approved bytes, so it
     # keeps the renderer's soft handling rather than the byte-faithful hard wrap.
-    if _RICH:
-        trow = Text()
-        trow.append("  ┃ ", style="bold")
-        trow.append(f"      {tip}", style=_DIM)
-        _console.print(trow)
-    else:
-        print(f"  ┃       {tip}")
+    _frame_row(("      tip: /policy allow <prefix> auto-approves trusted commands like "
+                "`git status`", _DIM))
+
+
+def _render_skill_draft(args: dict) -> None:
+    """A pending create_skill, WHOLE: the file it writes and every line of its text (a new
+    skill), or every row of the diff against the skill it replaces. Unlike the write_file
+    preview nothing is folded or cut — no row cap, and a long line is wrapped byte-faithfully
+    (`_wrap_exact`), never truncated: a saved skill is followed as the user's own instructions,
+    and a folded tail or a clipped line is where a planted step would sit. The text comes from
+    tools.skills.draft, the same function the tool writes with."""
+    try:
+        from core import workspace
+        from tools.skills import draft
+
+        target, text = draft(args)
+        old = target.read_text(encoding="utf-8", errors="replace") if target.is_file() else None
+    except Exception as exc:
+        _frame_note(f"⚠ this skill could not be previewed ({type(exc).__name__}) — do not "
+                    "approve what you cannot read")
+        return
+    rows, _hidden = _unified_rows(old or "", text, cap=None)
+    mode = "replace skill" if old is not None else "new skill"
+    _frame_row((f"    ↳ {mode} ", _DIM), (workspace.display(target), "default"))
+    width = max(20, _term_width() - 12)
+    for sign, line in rows:
+        for i, chunk in enumerate(_wrap_exact(line, width)):
+            _frame_row((f"      {_DIFF_SIGN[sign] if i == 0 else '↳'} ", _DIFF_STYLE[sign]),
+                       (chunk, _DIFF_STYLE[sign]))
+    _frame_note("a saved skill is followed as your own instructions every time it runs — "
+                "`y` saves this one; there is no always-allow", style=_DIM)
 
 
 # Tools with a bespoke full-surface renderer above. ONE table is the single source: which
 # argument keys the compact repr must SKIP (that arg IS the safety surface, shown in full by the
 # bespoke view) and which renderer draws it. Adding a bespoke-rendered tool is exactly one entry
-# here — the membership tuple below derives from it, so the skip keys, the renderer dispatch, and
-# _full_width_args can never drift apart. (http_request's full-request renderer left with the
-# tool, 2026-07-16 — MCP tools render through the generic full-width view.)
+# here, so the skip keys, the renderer dispatch, and _full_width_args can never drift apart.
 _BESPOKE = {
     "write_file": (("content",), _render_write_diff),
     "edit_file": (("old_string", "new_string"), _render_edit_diff),
     "run_shell": (("command",), _render_shell_command),
+    "create_skill": (("description", "steps"), _render_skill_draft),
 }
-
-# Derived view for the branch test: their decisive argument is already shown in full above, so
-# the generic full-width view would duplicate it.
-_BESPOKE_RENDERED = tuple(_BESPOKE)
 
 # Per-value cap for the full-width argument view: big enough to read a whole API payload, small
 # enough that one fat value can't flood the gate.
@@ -381,38 +349,23 @@ def _full_width_args(name, risk: str, quarantined: bool = False) -> bool:
     `quarantined` (the batch follows injection-flagged tool output) forces the full view for
     EVERY tier including read_only. A read_only call reaches the gate only via that escalation —
     i.e. precisely when the arguments may have been steered by injected content and ARE the
-    thing the human is being asked to check. Sending exactly that case to the truncated repr was
-    backwards; the banner says "check these arguments are what YOU intended" over arguments the
-    frame had cut."""
-    if name in _BESPOKE_RENDERED:
+    thing the human is being asked to check (the banner says "check these arguments are what YOU
+    intended")."""
+    if name in _BESPOKE:
         return False  # its decisive argument is already shown in full by the bespoke renderer
     return quarantined or risk in ("side_effecting", "destructive")
-
-
-def _clamp_value(text: str, cap: int = _MAX_ARG_VALUE) -> str:
-    """Bound one argument value for the full-width view: textutil.head_tail at gate scale (head +
-    tail with an explicit elision marker) — the start carries the intent, the tail is where a long
-    payload hides the part that matters, so neither is silently cut. Delegates to THE one home of
-    the head+tail idiom, never a third hand-rolled copy."""
-    return head_tail(text, cap)
 
 
 def _render_full_args(args: dict) -> None:
     """Render every argument of a gated call full-width inside the approval frame — hard-wrapped
     like the run_shell command view, never the 80-char repr. For a tool with no bespoke safety
-    surface the arguments ARE the safety surface."""
+    surface the arguments ARE the safety surface. Each value is clamped head + tail (the start
+    carries the intent, the tail is where a long payload hides the part that matters)."""
     width = max(20, _term_width() - 12)  # loop-invariant — compute once, pass through
     for k, v in (args or {}).items():
         value = v if isinstance(v, str) else repr(v)
-        lines = _clamp_value(value).splitlines() or [""]
-        if _RICH:
-            head = Text()
-            head.append("  ┃ ", style="bold")
-            head.append(f"    {k} =", style=_DIM)
-            _console.print(head)
-        else:
-            print(f"  ┃     {k} =")
-        _frame_wrapped(lines, "", width=width)
+        _frame_row((f"    {k} =", _DIM))
+        _frame_wrapped(head_tail(value, _MAX_ARG_VALUE).splitlines() or [""], "", width=width)
 
 
 def _frame_note(text: str, style: str = "yellow") -> None:
@@ -420,25 +373,19 @@ def _frame_note(text: str, style: str = "yellow") -> None:
     secret-scan warning, the quarantine banner, and the explain view."""
     width = max(20, _term_width() - 12)
     for i, chunk in enumerate(textwrap.wrap(text, width) or [""]):
-        if _RICH:
-            row = Text()
-            row.append("  ┃ ", style="bold")
-            row.append(("    " if i == 0 else "      ") + chunk, style=style)
-            _console.print(row)
-        else:
-            print(f"  ┃     {chunk}" if i == 0 else f"  ┃       {chunk}")
+        _frame_row((("    " if i == 0 else "      ") + chunk, style))
 
 
 def _render_secret_warnings(args: dict) -> None:
     """Warn when a gated call's arguments carry a secret-like value (an API key in an MCP call's
     args, a token inline in a run_shell command): approving the call sends the secret wherever the
-    call goes. Reuses the redaction scanner; emails are excluded here (common, legitimate argument
+    call goes. Reuses trust/secret_scan; emails are excluded here (common, legitimate argument
     content — this warning is about credentials). Best-effort: a scan failure never blocks the
     gate."""
     try:
-        from trust import redaction
+        from trust import secret_scan
 
-        findings = [f for f in redaction.scan_args(args) if f.kind != "email"]
+        findings = [f for f in secret_scan.scan_args(args) if f.kind != "email"]
     except Exception:
         return
     if not findings:
@@ -453,15 +400,8 @@ def _render_secret_warnings(args: dict) -> None:
                 "wherever this call goes")
 
 
-def _arg_repr(v) -> str:
-    """Compact one-line value form for the non-bespoke argument rows."""
-    return _truncate(repr(v), 80)
-
-
 def _render_call(tc: dict, quarantined: bool = False, position=None) -> None:
-    """Render one gated call inside the approval frame — the per-call body shared by the rich
-    and plain prompts (the rendering IS the safety surface, so the two paths must never drift):
-    the risk-tier head line, the argument view (full-width when the call has no bespoke renderer,
+    """Render one gated call inside the approval frame: the risk-tier head line, the argument view (full-width when the call has no bespoke renderer,
     compact 80-char repr otherwise — minus the keys the bespoke view shows in full), the bespoke
     safety surface itself (diff / command, from the one _BESPOKE table), the secret warning, and
     the per-tier hint. `quarantined` (the batch follows injection-flagged output) forces the
@@ -475,16 +415,7 @@ def _render_call(tc: dict, quarantined: bool = False, position=None) -> None:
     skip_keys, bespoke = _BESPOKE.get(name, ((), None))
     idx = f"{position[0]}/{position[1]}  " if position else ""
 
-    if _RICH:
-        head = Text()
-        head.append("  ┃ ", style="bold")
-        if idx:
-            head.append(idx, style=_DIM)
-        head.append(f"{risk:<14} ", style=risk_style)  # tier chip, risk-colored
-        head.append(f"{name}", style="default")
-        _console.print(head)
-    else:
-        print(f"  ┃ {idx}[{risk}] {name}")
+    _frame_row((idx, _DIM), (f"{risk:<14} ", risk_style), (f"{name}", "default"))  # tier chip
 
     if _full_width_args(name, risk, quarantined):
         _render_full_args(args)
@@ -495,38 +426,21 @@ def _render_call(tc: dict, quarantined: bool = False, position=None) -> None:
             # the safety surface, so the 80-char repr would hide the part that matters.
             if k in skip_keys:
                 continue
-            if _RICH:
-                arow = Text()
-                arow.append("  ┃ ", style="bold")
-                arow.append(f"    {k} = ", style=_DIM)
-                arow.append(_arg_repr(v), style="default")
-                _console.print(arow)
-            else:
-                print(f"  ┃     {k} = {_arg_repr(v)}")
+            _frame_row((f"    {k} = ", _DIM), (_truncate(repr(v), 80), "default"))
 
     if bespoke:
         bespoke(args)
     _render_secret_warnings(args)
     hint = _RISK_HINT.get(risk)
     if hint:
-        if _RICH:
-            hrow = Text()
-            hrow.append("  ┃ ", style="bold")
-            hrow.append(f"    ↳ {hint}", style=risk_style)
-            _console.print(hrow)
-        else:
-            print(f"  ┃     -> {hint}")
+        _frame_row((f"    ↳ {hint}", risk_style))
     if name == "remember":
         # Memory is a persistence channel: a stored fact reads as trusted context on every
         # future turn, which is exactly why learning faces the gate. Name what each key really
         # does — `y` is this call only; `a` is the always-allow grant whose LIFETIME is
-        # runtime.grant_scope (the same source _always_allow discloses) — instead of tempting
-        # the user to lower the tier.
+        # runtime.grant_scope — instead of tempting the user to lower the tier.
         try:
-            from trust import policy
-
-            lifetime = {"task": "for the rest of this turn", "session": "for this session",
-                        "persist": "persistently"}[policy.default_grant_scope()]
+            lifetime = _grant_lifetime()
         except Exception:
             lifetime = "per runtime.grant_scope"
         _frame_note("a stored fact rides every future turn's context — keep the gate; "
@@ -565,6 +479,13 @@ def _render_quarantine_banner(value: dict) -> None:
                 "YOU intended")
 
 
+def _gate_notes(value: dict) -> list:
+    """The approval node's reasons a call the tier would have let through is asking anyway
+    (an air-gap hold, a model-composed URL), or []. Garbage payloads read as none."""
+    notes = value.get("notes") if isinstance(value, dict) else None
+    return [str(n) for n in notes] if isinstance(notes, (list, tuple)) else []
+
+
 def _render_explain(value: dict) -> None:
     """The `e(xplain)` answer: WHY the agent wants this batch — the plan step it is fulfilling and
     its recorded pre-action reasoning (the same provenance /trace why reconstructs afterward,
@@ -590,10 +511,19 @@ def _render_explain(value: dict) -> None:
 def _grant_note(msg: str) -> None:
     """Disclosure line for an always-grant — yellow, not dim: widening the gate is exactly the
     line the user must not skim past."""
-    if _RICH:
-        _console.print(Text(f"  {msg}", style="yellow"))
-    else:
-        print(f"  {msg}")
+    _console.print(Text(f"  {visible_format_chars(msg)}", style="yellow"))
+
+
+def _grant_lifetime() -> str:
+    """How long an always-allow grant lives (policy.default_grant_scope) — the lifetime IS the
+    security property, so every disclosure says it."""
+    from trust import policy
+
+    return {
+        "task": "for the rest of this turn",
+        "session": "for the rest of this session",
+        "persist": "persistently (permissions.json)",
+    }[policy.default_grant_scope()]
 
 
 def _propose_shell_prefix(command: str) -> "str | None":
@@ -616,9 +546,9 @@ def _propose_shell_prefix(command: str) -> "str | None":
 def _always_allow(tool_calls: list, ask) -> dict:
     """The `a(lways)` answer: COLLECT the grants the user confirms and return them in the
     decision dict for the approval node to apply PAST the interrupt — nothing mutates here.
-    Mutating at decision time (the old shape) let LangGraph's node re-run recompute the batch
-    as ungated and return at the fast path before the gate_event recording site, so the human's
-    decision vanished from the record (gotcha #7: empty must always mean "never asked").
+    Mutating at decision time would let LangGraph's node re-run recompute the batch as ungated
+    and return at the fast path before the gate_event recording site, so the human's decision
+    would vanish from the record (gotcha #7: empty must always mean "never asked").
 
     Non-shell tools collect a session tier drop to read_only (what /policy risk <tool> read_only
     does). run_shell is the exception: read_only would un-gate EVERY future shell command from one
@@ -630,17 +560,18 @@ def _always_allow(tool_calls: list, ask) -> dict:
     from trust import policy
 
     names = sorted({tc.get("name", "") for tc in tool_calls if tc.get("name")})
-    granted = [n for n in names if n != "run_shell"]
+    granted = [n for n in names if n not in policy.NO_BLANKET_GRANT]
     decision: dict = {"approved": True, "tools": granted, "shell_grants": []}
+    if "run_shortcut" in names:
+        _grant_note("run_shortcut: it keeps prompting — allow one shortcut by name with "
+                    "/policy shortcut <name>")
+    for n in names:
+        if policy.always_asks(n):
+            _grant_note(f"{n}: {policy.always_asks_what(n)} always asks — there is no "
+                        "always-allow for it")
     if granted:
         listing = ", ".join(granted)
-        # The grant's LIFETIME is the security property — say it (policy.default_grant_scope).
-        lifetime = {
-            "task": "for the rest of this turn",
-            "session": "for the rest of this session",
-            "persist": "persistently (permissions.json)",
-        }[policy.default_grant_scope()]
-        _grant_note(f"always-allowing {lifetime}: {listing}  "
+        _grant_note(f"always-allowing {_grant_lifetime()}: {listing}  "
                     "(undo: /policy risk <tool> <tier> · lifetime: /config runtime.grant_scope)")
 
     if "run_shell" not in names:
@@ -655,10 +586,8 @@ def _always_allow(tool_calls: list, ask) -> dict:
             _grant_note("run_shell: no prefix could cover this command (shell metacharacters "
                         "always face the gate) — it keeps prompting")
             continue
-        # "this exact command" was a small lie: the proposal is the command WHITESPACE-NORMALIZED
-        # (_propose_shell_prefix), which is what the matcher compares, so a user checking the echo
-        # against the frame above would find them differing by runs of spaces. Say what it is.
-        # The echo is clamped head+tail — the frame above already rendered the command in full
+        # The proposal is the command WHITESPACE-NORMALIZED (_propose_shell_prefix), which is what
+        # the matcher compares — so the prompt says so. The echo is clamped head+tail — the frame above already rendered the command in full
         # byte-faithfully, so this line is a reference, not the presentation.
         shown = head_tail(proposal, _PROMPT_ECHO_CAP, marker=_PROMPT_ELISION)
         resp = ask(f'      always-allow this command (whitespace-normalized) as a prefix? '
@@ -681,7 +610,7 @@ def _always_allow(tool_calls: list, ask) -> dict:
 # Per-call argument summary at the `s(elect)` prompt. Head+tail (textutil.head_tail), not a head
 # clamp: a path and a shell command carry their DISTINGUISHING token in the tail
 # (`.../reports/q3.csv`, `git push --force`), so a head-only cut is exactly the cut that makes two
-# different calls read identically. `_SELECT_VALUE_CAP` keeps _fmt_args' own per-value truncation
+# different calls read identically. `_SELECT_VALUE_CAP` keeps fmt_args' own per-value truncation
 # (which IS head-only) out of the way, so the head+tail cut below is the only one that lands.
 # Single-line elision marker: this is a prompt, not a frame body.
 _PROMPT_ECHO_CAP = 160
@@ -697,13 +626,12 @@ def _select_calls(tool_calls: list, ask) -> "bool | dict":
     a frame that may have scrolled past several diffs. Approving the wrong twin is a real hazard
     at the safety gate, so BOTH disambiguators are present: the index is unforgeable and the
     summary is the one that carries meaning. The summary renders literally: ask_approval hands
-    this a markup-disabled input on the rich path, so bracketed argument text is never eaten as
-    Rich tags. Collapses to True/False when the answers were unanimous; otherwise returns the
+    this a markup-disabled input, so bracketed argument text is never eaten as Rich tags. Collapses to True/False when the answers were unanimous; otherwise returns the
     partial-approval dict the gate understands."""
     approved = []
     total = len(tool_calls)
     for i, tc in enumerate(tool_calls, 1):
-        summary = head_tail(_fmt_args(tc.get("args") or {}, _SELECT_VALUE_CAP),
+        summary = head_tail(fmt_args(tc.get("args") or {}, _SELECT_VALUE_CAP),
                             _PROMPT_ECHO_CAP, marker=_PROMPT_ELISION)
         r = ask(f"      call {i}/{total}: allow {tc.get('name')}({summary})? "
                 "y / N  (Enter = no) » ").strip().lower()
@@ -733,7 +661,8 @@ _GATE_KEYS = (
 )
 _ANSWER = {key: spellings for key, spellings, _terse, _long in _GATE_KEYS}
 _KNOWN_ANSWERS = tuple(s for _key, spellings, _terse, _long in _GATE_KEYS for s in spellings)
-_KEY_CHOICES = " / ".join(key for key, *_ in _GATE_KEYS)  # "y / N / s / a / e"
+# "y / N / s / a / e", the bold capital N marking the fail-closed default.
+_KEY_CHOICES = " / ".join("[bold]N[/]" if key == "N" else key for key, *_ in _GATE_KEYS)
 _KEY_LEGEND = " · ".join(f"{key} {terse}" for key, _spellings, terse, _long in _GATE_KEYS)
 _KEY_LEGEND_FULL = " · ".join(f"{key} {long}" for key, _spellings, _terse, long in _GATE_KEYS)
 
@@ -765,7 +694,7 @@ def _resolve_decision(resp: str, tool_calls: list, ask) -> "bool | dict":
 def _plain_call_lines(tc) -> list:
     """The fallback rendering of one gated call that CANNOT fail: defensive reads over whatever
     the payload entry is (a non-dict, missing keys, an unprintable value), each argument clipped.
-    Used only when the rich preview raised — the human must always be asked with the call named."""
+    Used only when the full preview raised — the human must always be asked with the call named."""
     try:
         d = tc if isinstance(tc, dict) else {}
         name = str(d.get("name", "?"))
@@ -785,8 +714,8 @@ def _plain_call_lines(tc) -> list:
 
 
 def _render_call_safely(tc, quarantined: bool = False, position=None) -> None:
-    """The gate's per-call render, fail-soft (transplanted from the visibility isolate): the rich
-    preview (diff / command / full-width args) is the safety surface, but a renderer that raises
+    """The gate's per-call render, fail-soft: the preview (diff / command / full-width args) is
+    the safety surface, but a renderer that raises
     — a diff over an unreadable file, a width edge case — must never end the turn with the human
     never asked. On failure the plain fallback names the call and the same N-default prompt runs;
     the decision path is untouched."""
@@ -817,19 +746,14 @@ def _decision_label(decision, n_calls: int) -> "tuple[str, str]":
 
 
 def _close_frame(decision, n_calls: int) -> None:
-    """Close the approval frame — ONCE, after every row the decision could produce. The `┗━` used
-    to be part of the prompt string itself, so `e(xplain)`, the unrecognized-answer note, the
-    always-allow disclosures and the per-call `s(elect)` prompts all printed BELOW the closing
-    corner: pressing `e` visibly broke the box open. Names the decision, like the plan-review
-    frame's `┗━ running the plan`."""
+    """Close the approval frame — ONCE, after every row the decision could produce (explain, the
+    unrecognized-answer note, the always-allow disclosures, the per-call prompts), so none of
+    them prints below the closing corner. Names the decision."""
     text, style = _decision_label(decision, n_calls)
-    if _RICH:
-        tail = Text()
-        tail.append("  ┗━ ", style="bold")
-        tail.append(text, style=style)
-        _console.print(tail)
-    else:
-        print(f"  ┗━ {text}")
+    tail = Text()
+    tail.append("  ┗━ ", style="bold")
+    tail.append(text, style=style)
+    _console.print(tail)
 
 
 def ask_approval(value: dict) -> "bool | dict":
@@ -841,7 +765,7 @@ def ask_approval(value: dict) -> "bool | dict":
     decides per call, `a` approves AND auto-approves these tools for the rest of the session
     (run_shell instead gets a scoped /policy allow-style prefix grant), `e` explains WHY the agent wants
     the batch (plan step + recorded reasoning) and re-prompts. Arguments carrying secret-like
-    values warn inline (redaction scanner); a batch following quarantine-flagged tool output
+    values warn inline (trust/secret_scan); a batch following quarantine-flagged tool output
     opens with a banner saying so. Returns True/False or {"approved_ids": [...]} for a partial
     batch."""
     tool_calls = value.get("tool_calls", []) if isinstance(value, dict) else []
@@ -849,7 +773,7 @@ def ask_approval(value: dict) -> "bool | dict":
     _live_stop()  # the gate blocks on input(); the bar can't be live while it does
 
     # The gate lands mid-trace — one blank line so the blocking decision reads as its own moment.
-    _console.print() if _RICH else print()
+    _console.print()
     _show_preamble_if_due()  # first gate ever: two lines saying what this prompt IS
 
     # Count the calls that faced the gate this turn — the trust receipt's `n gated` segment
@@ -861,24 +785,23 @@ def ask_approval(value: dict) -> "bool | dict":
     # looking at without counting frame rows that may have scrolled.
     n_calls = len(tool_calls)
     count = f" · {n_calls} call{'' if n_calls == 1 else 's'}" if n_calls else ""
-    if _RICH:
-        top = Text()
-        top.append("  ┏━ ", style="bold")
-        top.append("approval required", style=f"bold {_ACCENT}")
-        top.append(count, style=_DIM)
-        _console.print(top)
-    else:
-        print(f"  ┏━ approval required{count}")
+    top = Text()
+    top.append("  ┏━ ", style="bold")
+    top.append("approval required", style=f"bold {_ACCENT}")
+    top.append(count, style=_DIM)
+    _console.print(top)
     try:
         _render_quarantine_banner(value)
     except Exception as exc:  # display only — the prompt below still asks
         _frame_note(f"quarantine banner failed to render ({type(exc).__name__}: {exc})")
-    # A quarantine escalation is the ONE way a read_only call reaches this prompt, i.e. exactly
-    # when its arguments are the attack surface — so it forces the full-width argument view for
-    # the whole batch rather than the truncated repr. Read defensively: a malformed payload must
-    # cost the wider view, never the prompt.
+    for note in _gate_notes(value):
+        _frame_note(f"⚠ {note}")
+    # A quarantine escalation or a hold is the ONE way a read_only call reaches this prompt, i.e.
+    # exactly when its arguments are the attack surface — so it forces the full-width argument
+    # view for the whole batch rather than the truncated repr. Read defensively: a malformed
+    # payload must cost the wider view, never the prompt.
     try:
-        quarantined = bool(_quarantine_flags(value))
+        quarantined = bool(_quarantine_flags(value)) or bool(_gate_notes(value))
     except Exception:
         quarantined = False
     for i, tc in enumerate(tool_calls, 1):
@@ -889,14 +812,11 @@ def ask_approval(value: dict) -> "bool | dict":
     # a legitimate `grep [error]` would be silently eaten as a tag, a `[/...]`-shaped token would
     # raise MarkupError mid-gate, and a `:name:` token would become an emoji glyph — in the very
     # text the human is confirming as a persistent grant. Disable both so the displayed text is
-    # byte-identical to what is granted (prompt.ask does the same; the plain builtin input is
-    # already literal). The main gate prompt below keeps its intentional [bold] markup.
-    ask = (lambda p: _console.input(p, markup=False, emoji=False)) if _RICH else input
+    # byte-identical to what is granted (prompt.ask does the same). The main gate prompt below
+    # keeps its intentional [bold] markup.
+    def ask(p):
+        return _console.input(visible_format_chars(p), markup=False, emoji=False)
 
-    # The bold capital N marks the fail-closed default: bare Enter (or anything unrecognized)
-    # rejects the batch. Both prompt strings derive their key choices from the one _GATE_KEYS
-    # table, like the legends.
-    _choices_rich = " / ".join("[bold]N[/]" if k == "N" else k for k, *_ in _GATE_KEYS)
     while True:
         # The key legend rides ABOVE the prompt, always — not only after an unrecognized answer.
         # `a` permanently widens the gate and `s` is the only way to split a mixed-trust batch;
@@ -904,16 +824,10 @@ def ask_approval(value: dict) -> "bool | dict":
         _frame_note(_KEY_LEGEND, style=_DIM)
         # The prompt sits on a `┠` row, not the closing `┗━`: explain, the unrecognized note,
         # the always-allow disclosures and the per-call select prompts all emit MORE rows after
-        # this line, so closing the frame here made pressing `e` visibly break the box. The frame
-        # closes exactly once, past the decision (below).
-        if _RICH:
-            resp = _console.input(
-                f"  [bold]┠[/] approve? {_choices_rich}  (Enter = no) » "
-            ).strip().lower()
-        else:
-            resp = input(
-                f"  ┠ approve? {_KEY_CHOICES}  (Enter = no) » "
-            ).strip().lower()
+        # this line. The frame closes exactly once, past the decision (below).
+        resp = _console.input(
+            f"  [bold]┠[/] approve? {_KEY_CHOICES}  (Enter = no) » "
+        ).strip().lower()
         if resp in _ANSWER["e"]:
             try:
                 _render_explain(value)

@@ -8,9 +8,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from app import __version__
 from commands._framework import command, _print
 from stores.trace import decode_json
-from textutil import clip as _clip, fmt_args, split_sources_footer
+from textutil import clip as _clip, fmt_args, json_terminal_safe, split_sources_footer
 
 
 @contextmanager
@@ -23,13 +24,6 @@ def _connect(db_path):
         conn.close()
 
 
-# (The `calls`, `cost`, and `state` subviews were CUT 2026-07-16 — `calls` duplicated the
-# per-run drill-down's tool I/O, `cost` was the readout half of the already-cut cloud-era token
-# budget (local users read tok/s + context fill live in the status bar and /config context),
-# and `state` was a developer debugging dump wearing a user command. /trace is why · answer ·
-# source · invoke · export · replay now.)
-
-
 def _to_int(s) -> Optional[int]:
     """Parse a run selector token to an int, tolerating a leading '#'. None if not a number."""
     try:
@@ -39,9 +33,7 @@ def _to_int(s) -> Optional[int]:
 
 
 def _parse_run_selector(args, *, consume=None):
-    """THE run-selector grammar, shared by every /trace subview (was five hand-kept copies that
-    had already drifted: _why/_answer didn't take -r, and invoke reused run_id as the list
-    count). Recognized everywhere:
+    """THE run-selector grammar, shared by every /trace subview. Recognized everywhere:
 
         -r/--run <id> · #<id> · bare integer   -> run_id  (bare digits are RUN IDS — except in
                                                   list mode, where a bare digit is the COUNT)
@@ -82,47 +74,39 @@ def _load_run(conn, run_id, *,
               columns="run_id, query, started_at, ended_at, status, response",
               latest_from="runs",
               empty_msg="  (no runs recorded yet)",
-              hint="/trace -l"):
-    """THE latest-run fallback + row loader (was five hand-kept copies of MAX(run_id) + the
-    per-id SELECT + the two error prints). `latest_from` lets /trace invoke default to the
-    newest run that HAS llm_calls. Returns (run_id, row); row is None (after printing why)
+              hint="/trace -l",
+              report=_print):
+    """THE latest-run fallback + row loader. `latest_from` lets /trace invoke default to the
+    newest run that HAS llm_calls. Returns (run_id, row); row is None (after `report`ing why)
     when there is nothing to show. `columns`/`latest_from` are code-controlled literals, never
     user input."""
     if run_id is None:
         row = conn.execute(f"SELECT MAX(run_id) FROM {latest_from}").fetchone()
         run_id = row[0] if row else None
         if run_id is None:
-            _print(empty_msg)
+            report(empty_msg)
             return None, None
     run = conn.execute(
         f"SELECT {columns} FROM runs WHERE run_id = ?", (run_id,)
     ).fetchone()
     if not run:
-        _print(f"  no run #{run_id} — try {hint} to list recorded runs.")
+        report(f"  no run #{run_id} — try {hint} to list recorded runs.")
         return run_id, None
     return run_id, run
 
 
+def _raise_lookup(msg: str):
+    """A `_load_run` reporter for callers that render the miss themselves (export_run)."""
+    raise LookupError(msg.strip())
+
+
 # --- /trace export ------------------------------------------------------------------------------
 # One run's complete record (run + events + LLM calls) written to a self-contained JSON file —
-# the record format /trace replay renders offline. (The --md report format was CUT 2026-07-16.
-# The sha256 integrity digest + the verify flows — /trace verify, saturn verify — were CUT
-# 2026-07-03: a digest stored inside the file it protects verifies after any edit that recomputes
-# it, so it only ever caught accidental corruption; real verification returns in Phase 3 with
-# signing. Legacy exports still carry `integrity`/`signature` blocks — replay ignores them.)
+# the record format /trace replay renders offline. Older exports may carry `integrity`/`signature`
+# blocks — replay ignores them.
 
 # The versioned artifact-format marker embedded in every export (layout versioning).
 ARTIFACT_FORMAT = "saturn-artifact/1"
-
-
-def _saturn_version() -> str:
-    """The running Saturn version for stamping exports — read off the already-loaded agent module
-    (importing agent.py here would be heavy and double-imports under `python agent.py`)."""
-    for name in ("__main__", "agent"):
-        v = getattr(sys.modules.get(name), "__version__", None)
-        if v:
-            return str(v)
-    return "unknown"
 
 
 def _export_payload(run, events, calls) -> dict:
@@ -130,7 +114,7 @@ def _export_payload(run, events, calls) -> dict:
     payload = {
         "saturn_trace_export": 1,
         "format": ARTIFACT_FORMAT,
-        "saturn_version": _saturn_version(),
+        "saturn_version": __version__,
         "exported_at": datetime.now().astimezone().isoformat(timespec="seconds"),
         "run": {
             "run_id": run_id,
@@ -180,32 +164,18 @@ def export_run(
     different payloads. `run_id=None` exports the latest run; `dest=None` writes the default
     logging/exports/run_<id>.json. Returns (path written, payload as written). Raises
     LookupError (no such run) / OSError (write failed) — each caller renders those its own
-    way (REPL note vs. stderr + exit code). (The `--md` second format was CUT 2026-07-16 —
-    the JSON record is the one artifact, replayable via /trace replay.)"""
+    way (REPL note vs. stderr + exit code)."""
     with _connect(db_path) as conn:
-        if run_id is None:
-            row = conn.execute("SELECT MAX(run_id) FROM runs").fetchone()
-            run_id = row[0] if row else None
-            if run_id is None:
-                raise LookupError("(no runs recorded yet)")
-        run = conn.execute(
-            "SELECT run_id, query, started_at, ended_at, status, response FROM runs WHERE run_id = ?",
-            (run_id,),
-        ).fetchone()
-        if not run:
-            raise LookupError(f"no run #{run_id} — try /trace -l to list recorded runs.")
+        run_id, run = _load_run(conn, run_id, report=_raise_lookup)
         events = conn.execute(
             "SELECT seq, ts, node, summary, data FROM events WHERE run_id = ? ORDER BY seq, id",
             (run_id,),
         ).fetchall()
-        has_calls = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='llm_calls'"
-        ).fetchone()
         calls = conn.execute(
             "SELECT seq, ts, node, model, dur, prompt_tokens, output_tokens, input, output, status "
             "FROM llm_calls WHERE run_id = ? ORDER BY seq, id",
             (run_id,),
-        ).fetchall() if has_calls else []
+        ).fetchall()
 
     payload = _export_payload(run, events, calls)
 
@@ -215,7 +185,7 @@ def export_run(
         dest = get_config().path("exports") / f"run_{run_id}.json"
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+        json_terminal_safe(json.dumps(payload, ensure_ascii=False, indent=2)), encoding="utf-8"
     )
     return dest, payload
 
@@ -271,9 +241,8 @@ def export_rows(payload: dict):
     (event `data` re-encoded to JSON — the export stores it decoded). Pure, for tests."""
     # Every shape is CHECKED, not assumed. An export is the attach-it-to-a-bug-report path, so
     # the payload is untrusted by design: a "run" that decodes to a list, or an event whose
-    # "data" is a list, used to raise AttributeError straight out of render_export — past its
-    # documented "returns False on a file that can't be rendered" and, via saturn --replay,
-    # out of main() as a traceback. A malformed record renders as much as it can.
+    # "data" is a list, must not raise out of render_export (and, via saturn --replay, out of
+    # main() as a traceback). A malformed record renders as much as it can.
     run = payload.get("run")
     run = run if isinstance(run, dict) else {}
     run_tuple = (
@@ -357,15 +326,15 @@ def _verbosity(ctx, args):
         level = ui.verbosity()
         detail = (
             "every node + full timings" if level == "verbose"
-            else "plan · execute · tools · synthesize (plumbing folded)"
+            else "agent · tools · gate decisions (plumbing folded)"
         )
         _print(f"  live trace on — {level}: {detail}.")
 
 
 # --- /trace why — decision provenance ----------------------------------------------------------
-# /trace shows WHAT happened; this subview reconstructs WHY: the causal chain from the recorded
-# plan, per-step agent reasoning + chosen tool calls, the evidence relied on, the groundedness
-# verdict, and the cited sources. (Folded in from the old standalone /why, June 2026.)
+# /trace shows WHAT happened; this subview reconstructs WHY: the causal chain from the model's
+# checklist (if it wrote one), each agent pass's thought + chosen tool calls, the evidence relied
+# on, and the cited sources.
 
 def _why(ctx, args):
     from tui import ui
@@ -382,13 +351,10 @@ def _why(ctx, args):
             "SELECT seq, node, summary, data FROM events WHERE run_id = ? ORDER BY seq, id",
             (run_id,),
         ).fetchall()
-        has_calls = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='llm_calls'"
-        ).fetchone()
         calls = conn.execute(
             "SELECT seq, node, output FROM llm_calls WHERE run_id = ? ORDER BY seq, id",
             (run_id,),
-        ).fetchall() if has_calls else []
+        ).fetchall()
 
     _render_why(ui, run, events, calls)
 
@@ -401,6 +367,46 @@ def _final_plan(events) -> list:
         if delta.get("plan"):
             plan = delta["plan"]
     return plan
+
+
+def _call_names(tcs) -> str:
+    return ", ".join(f"{c.get('name')}({_fmt_call_args(c.get('args'))})" for c in tcs)
+
+
+def _group_passes(rows: list, entries: list) -> "list | None":
+    """Pair the agent's recorded model calls with its passes: [(pass number, the call that
+    STANDS, the pass's other call or None)]. A pass is one call unless thinking made it two
+    (core/think.entry): a discarded draft then its rethink (`draft`), or a thought that came
+    to nothing beside the think-off call that stands — the rerun after it, or the draft
+    before it. None when the records do not line up (no think records: an older run; extra
+    calls from a malformed-output retry or the unbound hard stop), so the caller falls back
+    to one line per call rather than guess."""
+    if not entries:
+        return None
+    out, i = [], 0
+    for e in entries:
+        two = bool(e.get("draft")) or (bool(e.get("asked")) and e.get("outcome") != "thought")
+        chunk = rows[i:i + (2 if two else 1)]
+        i += len(chunk)
+        if len(chunk) != (2 if two else 1):
+            return None
+        if not two:
+            out.append((e.get("pass"), chunk[0], None))
+        elif e.get("draft") or chunk[0].get("think"):
+            out.append((e.get("pass"), chunk[1], chunk[0]))  # the later call stands
+        else:
+            out.append((e.get("pass"), chunk[0], chunk[1]))  # the draft stands
+    return out if i == len(rows) else None
+
+
+def _think_entries(events) -> list:
+    """Every agent pass's think record this run, in order (the `think` key of agent deltas)."""
+    out = []
+    for _seq, node, _summary, data in events:
+        if node != "agent":
+            continue
+        out.extend(e for e in (decode_json(data, {}).get("think") or []) if isinstance(e, dict))
+    return out
 
 
 def _collect_tools(events):
@@ -435,53 +441,51 @@ def _render_why(ui, run, events, calls):
             _print(f"    {glyph} {s.get('step_id')}. {s.get('label')}{tool}")
         _print("")
 
-    # How it reasoned — the execute steps + the rectify verdicts, from the recorded LLM I/O.
-    step = 0
-    printed_header = False
-    verdicts: list[str] = []
-    for _seq, node, output in calls:
-        out = decode_json(output, {})
-        if node == "quick":
-            # The router's output is its grammar-bound decision, not a tool-calling message:
-            # the call is built by the node from the decoded JSON. "answer" produced no step,
-            # so it is not counted as one (review 2026-09-08).
-            decision = decode_json(out.get("content", ""), None)
-            if not isinstance(decision, dict):
-                decision = {"tool": "", "arguments": {}}
-            if not printed_header:
-                _print("  how it reasoned")
-                printed_header = True
-            tool = str(decision.get("tool") or "").strip()
-            if tool == "answer":
-                _print("    quick path: answered directly")
-            elif tool:
-                step += 1
-                _print(f"    step {step}: quick lookup")
-                _print(f"      → chose to call: {tool}({_fmt_call_args(decision.get('arguments'))})")
-            else:
-                _print("    quick path: (no decision — handed to the planner)")
-            continue
-        if node == "execute":
-            step += 1
-            content = _clip(out.get("content", ""), 240)
-            tcs = out.get("tool_calls") or []
-            if not printed_header:
-                _print("  how it reasoned")
-                printed_header = True
-            if content:
-                _print(f"    step {step}: {content}")
-            if tcs:
-                names = ", ".join(
-                    f"{c.get('name')}({_fmt_call_args(c.get('args'))})" for c in tcs
-                )
-                _print(f"      → chose to call: {names}")
-            elif not content:
-                _print(f"    step {step}: (finished — no further action)")
-        elif node in ("rectify", "replan"):
-            content = str(out.get("content", "") or "").strip()
-            if content:
-                verdicts.append(f"{node}: {content}")
-    if printed_header:
+    # How it reasoned — every agent pass, from the recorded LLM I/O: the pre-call thought and the
+    # calls it chose, or the answer. A pass can hold two model calls because of thinking (a
+    # thought that was dropped and the rerun; a think-off draft and its rethink): the think
+    # records say which call STANDS, so a call the model drafted and never issued is shown as
+    # that, not as a choice it made.
+    rows = [decode_json(output, {}) for _seq, node, output in calls if node == "agent"]
+    grouped = _group_passes(rows, _think_entries(events))
+    if grouped is None:  # an older run, or a pass with retries the records cannot place
+        grouped = [(i, row, None) for i, row in enumerate(rows, 1)]
+    if grouped:
+        _print("  how it reasoned")
+    for step, out, other in grouped:
+        content = _clip(out.get("content", ""), 240)
+        tcs = out.get("tool_calls") or []
+        if tcs:
+            _print(f"    pass {step}: {content or '(no preamble)'}")
+        else:
+            _print(f"    pass {step}: answered" + (f" — {content}" if content else ""))
+        # A thinking pass's reasoning (stores/trace._llm_output) — why it chose what follows.
+        reasoning = " ".join(str(out.get("reasoning") or "").split())
+        if reasoning:
+            _print(f"      thought: {_clip(reasoning, 400)}")
+        if other is not None:
+            dropped = " ".join(str(other.get("reasoning") or "").split())
+            if other.get("think"):
+                _print("      a thought was dropped (empty, cut or stopped)"
+                       + (f": {_clip(dropped, 200)}" if dropped else ""))
+            elif other.get("tool_calls"):
+                _print(f"      drafted without thinking, then rethought — not issued: "
+                       f"{_call_names(other['tool_calls'])}")
+        if tcs:
+            _print(f"      → chose to call: {_call_names(tcs)}")
+    if grouped:
+        _print("")
+
+    # When it thought — one line per agent pass (core/think.entry, off the agent's events):
+    # the kind of step each pass was and what came of its thought. Shown only for a turn where
+    # thinking came up at all; a turn of plain passes has nothing to explain.
+    passes = _think_entries(events)
+    if any(e.get("outcome") not in (None, "none") for e in passes):
+        from core import think
+
+        _print("  when it thought")
+        for e in passes:
+            _print(f"    pass {e.get('pass')}: {think.describe(e)}")
         _print("")
 
     # What it relied on — the evidence the answer was built from.
@@ -495,25 +499,12 @@ def _render_why(ui, run, events, calls):
         _print("")
     else:
         _print("  what it relied on")
-        _print("    (no tools ran — answered from the model's own knowledge + context)")
+        _print("    (nothing gathered — answered from the model's own knowledge + context)")
         _print("")
 
-    # Self-correction — ALWAYS printed: the negative case is information too (the Glass Box's
-    # "rectified" row says the same thing, and the two must agree). Silence here used to read as
-    # "maybe checked, maybe not" — a trust surface can't leave that ambiguous. Named for what the
-    # state records (rectify verdicts); "verification" overpromised — nothing verifies the answer.
-    _print("  self-correction")
-    if verdicts:
-        for v in verdicts[-3:]:
-            _print(f"    {_clip(v, 160)}")
-    else:
-        _print("    rectify judge did not run — every step resolved mechanically.")
-    _print("")
-
-    # Provenance footer of the answer, if the synthesizer attached one (the [n] → source map).
-    # THE one parser of the footer synthesize builds. The hand-rolled split this replaced took the
-    # FIRST "Sources:" anywhere in the answer, so an answer whose prose used the word rendered the
-    # rest of its own text as if it were the citation map.
+    # Provenance footer of the answer, if the agent attached one (the [n] → source map), through
+    # THE one parser of the footer nodes/agent.py builds — never a split on the first "Sources:",
+    # which an answer's own prose can contain.
     _, entries = split_sources_footer(response)
     if entries:
         _print("  cited sources (from the answer)")
@@ -528,84 +519,17 @@ def _fmt_call_args(args) -> str:
     return fmt_args(args, 41) if isinstance(args, dict) else ""
 
 
-# --- /trace answer — answer-level provenance ---------------------------------------------------
-# /trace why explains HOW the agent worked; this shows whether you can trust WHAT it told you: each
-# cited source's origin (local vs network) and trust, and what left the machine. Bare reads the
-# live last turn (exact egress); #id reconstructs from the recorded run (egress inferred from
-# source tools).
-
-def _answer(ctx, args):
-    from tui import ui
-    from trust import glassbox
-
-    run_id, _count, _list = _parse_run_selector(args)
-
-    state = ctx.state or {}
-    # "Live" means THIS process ran the last turn: the per-turn accumulators (or current_query)
-    # are populated. Messages alone do NOT count — a /resume-restored conversation carries only
-    # messages, and rendering it against a fresh process's empty egress ledger would produce a
-    # false 'local-only, 0 sources' box for an answer that may have been cloud-composed from web
-    # sources last session. Such turns reconstruct from the recorded run below instead.
-    live = bool(state.get("tool_results") or state.get("documents_retrieved")
-                or state.get("tool_events") or state.get("current_query"))
-    # Bare + a live last turn → the live Glass Box. glassbox.build_live owns the turn-mark guard
-    # (the exact egress slice passes only when trustworthy — the same contract the native
-    # post-answer provenance applies), so this path can't drift from it.
-    if run_id is None and live:
-        from tui.ui import _base
-        gated = _base._status.get("gates", 0) if isinstance(_base._status, dict) else 0
-        ui.show_glassbox(glassbox.build_live(state, gated=gated))
-        return
-
-    # Otherwise reconstruct from the recorded run (last, or the requested #id).
-    with _connect(ctx.db_path) as conn:
-        run_id, run = _load_run(
-            conn, run_id, columns="run_id, query, response",
-            empty_msg="  (no runs recorded yet — ask something first)",
-        )
-        if run is None:
-            return
-        events = conn.execute(
-            "SELECT data FROM events WHERE run_id = ? ORDER BY seq, id", (run_id,)
-        ).fetchall()
-
-    _rid, query, response = run
-    # Decode with an explicit failure sentinel: a fat delta is stored truncated at the trace's
-    # _DATA_CAP and comes back undecodable — the Glass Box must know its inputs are incomplete
-    # rather than assert 'sources: 0 · no untrusted content' over data it silently dropped.
-    deltas = []
-    truncated = False
-    for (data,) in events:
-        d = decode_json(data, None)
-        if d is None and data:
-            truncated = True
-            continue
-        if isinstance(d, dict):
-            # The delta DECODED — but stores.trace._bound_delta may still have dropped keys to
-            # bring it under the record cap, and it says so in an explicit `truncated` record.
-            # Reading only the undecodable case left this disclosure unreachable for every
-            # write-time truncation since bounded deltas started always emitting valid JSON:
-            # the run rendered as complete while its inputs were missing whole keys. The rail
-            # already reads this marker (tui/ui/trace._render_trust_annotations); so does this.
-            if isinstance(d.get("truncated"), dict):
-                truncated = True
-            deltas.append(d)
-    gb = glassbox.build_from_record(query, response, deltas, complete=not truncated)
-    from tui import ui as _ui
-    _ui.show_glassbox(gb)
-
-
 @command(
     "trace",
     "Observability hub: drill-down of recorded runs + live trace control.",
-    usage="/trace [#id | -l [n] | why | answer | source | invoke | context"
-          " | search <words> | export | replay | on|off|full]",
+    usage="/trace [#id | -l [n] | why | source | invoke"
+          " | export | replay | on|off|full]",
     details="""
 Expands one recorded run from the trace database (database/db.sqlite) into the full replay the
-live trace abbreviates: the query, every node with its step time and metrics, the plan as it
-advanced, the agent's reasoning and tool-call decisions at each step (the execution detail the
-live trace omits), each tool call WITH its output (the live trace hides that too), and — last and
-de-emphasized — the recorded final answer. This is the execution log, not a reprint of the
+live trace abbreviates: the query, every node of the loop with its step time and metrics, the
+checklist (if the model wrote one), the agent's reasoning and tool-call decisions at each pass,
+each tool call WITH its output (the live trace hides that), and — last and de-emphasized — the
+recorded final answer. This is the execution log, not a reprint of the
 response.
 
 With no argument it expands the MOST RECENT run. Select another run by id, or list runs to find
@@ -619,30 +543,16 @@ one:
 Every turn is one run. This is the durable record that survives restarts.
 Subviews:
 
-  /trace why [#id]     decision provenance: not WHAT happened but WHY — the plan it drafted, the
-                       model's recorded reasoning + tool choice at each step, the evidence the
-                       answer was built from, the rectify verdicts (plan revisions and why), and
-                       the cited sources. Defaults to the last run.
-  /trace answer [#id]  answer-level provenance — each cited source's origin (local vs network)
-                       and trust, and what left the machine. Bare = the live last turn; #id
-                       reconstructs a recorded run. (/trace source <n> prints the full text
-                       behind citation [n].)
+  /trace why [#id]     decision provenance: not WHAT happened but WHY — the checklist it wrote
+                       (if any), each pass's recorded thought + tool choice, the evidence the
+                       answer was built from, and the cited sources. Defaults to the last run.
   /trace source [n]    the FULL material behind a citation [n] of the last answer — the complete
-                       tool observation or retrieved passage the synthesizer read, under the same
+                       tool observation or retrieved passage the agent read, under the same
                        numbering the answer used. Bare lists the numbered sources.
   /trace invoke [#id]  the LLM calls of a run: each model call's INPUT messages + OUTPUT, with
                        timing + token counts. Defaults to the most recent run with LLM calls; add
-                       --full to show whole messages, -l to list runs that have them.
-  /trace context [#id] the context inspector: exactly what the local model was told at each node —
-                       every input message, at full fidelity, no outputs. The legible companion to
-                       the privacy story ("see literally what your machine sent the model").
-                       --node <name> focuses one node so the per-step context is diffable;
-                       --preview clips; -l lists runs that have LLM calls.
-  /trace search <words> full-text search over every recorded run's request and answer (SQLite
-                       FTS5 over the runs table — no embedder): "what did we do last week",
-                       the report from Monday. Each hit names its run id for /trace #id, /trace
-                       why #id, or /trace export. The agent has the same index as the
-                       `recall_runs` tool. -l <n> caps the hits (default 8).
+                       --full to show whole messages — literally what your machine sent the model
+                       (`/trace context` is the same view, full) — -l to list runs that have them.
   /trace export [#id]  write a run's complete record (events + tool I/O + LLM calls) to a
                        self-contained replayable JSON file under logging/exports/; -o <path>
                        to choose the destination. The record you can hand to someone else
@@ -656,7 +566,7 @@ Subviews:
 Live trace verbosity (controls what scrolls during a turn; recording is always on):
 
   /trace off    only the final response prints — runs quietly
-  /trace on     normal: plan · execute · tools · synthesize (plumbing nodes folded)  [default]
+  /trace on     normal: agent · tools · gate decisions (plumbing nodes folded)  [default]
   /trace full   verbose: every node line, including folded plumbing + full timings
 """,
 )
@@ -665,24 +575,19 @@ def _trace(ctx, args):
 
     if args and args[0].lower() in ("why", "--why"):
         return _why(ctx, args[1:])
-    if args and args[0].lower() in ("answer", "--answer", "glass", "glassbox"):
-        return _answer(ctx, args[1:])
     if args and args[0].lower() in ("source", "sources", "src"):
         return _source(ctx, args[1:])
     if args and args[0].lower() in ("invoke", "--invoke", "llm", "--llm", "model", "models"):
         return _show_llm_calls(ctx, args[1:])
     if args and args[0].lower() in ("context", "--context", "ctx", "prompt", "prompts"):
-        return _show_llm_context(ctx, args[1:])
-    if args and args[0].lower() in ("search", "--search", "find", "grep"):
-        return _search(ctx, args[1:])
+        # The context view is invoke, whole.
+        return _show_llm_calls(ctx, ["--full", *args[1:]])
     if args and args[0].lower() in ("export", "--export"):
         return _export(ctx, args[1:])
     if args and args[0].lower() in ("replay", "--replay"):
         return _replay(ctx, args[1:])
-    # ("calls"/"cost"/"state" were CUT 2026-07-16 — the run selector prints its "ignoring
-    # unrecognized argument" note for the old spellings.)
     # NOTE: no "0"/"1" verbosity aliases here — a bare digit is a RUN ID (`/trace 1` drills into
-    # run #1, same as `/trace #1`); the digit aliases used to eat it and toggle verbosity instead.
+    # run #1, same as `/trace #1`).
     if args and args[0].lower() in ("on", "off", "full", "normal", "quiet", "verbose",
                                      "detailed", "all", "debug", "compact",
                                      "true", "false", "yes", "no"):
@@ -718,39 +623,6 @@ def _trace(ctx, args):
     ui.show_run(run, events)
 
 
-def _search(ctx, args):
-    """`/trace search <words>` — full-text search over recorded runs (stores/trace.search_runs:
-    FTS5 when the build has it, LIKE otherwise). Hits name their run id so every other /trace
-    view can drill in."""
-    from stores.trace import search_runs
-
-    limit = 8
-    words = []
-    it = iter(args)
-    for a in it:
-        if a.lower() in ("-l", "--limit", "-n"):
-            nxt = next(it, None)
-            if nxt and str(nxt).isdigit():
-                limit = max(1, int(nxt))
-            continue
-        words.append(a)
-    text = " ".join(words).strip()
-    if not text:
-        _print("  usage: /trace search <words>   [-l <n>]")
-        return
-    rows = search_runs(ctx.db_path, text, limit=limit)
-    if not rows:
-        _print(f"  no recorded run matches {text!r}")
-        return
-    _print(f"  {len(rows)} run(s) matching {text!r} — best match first  (/trace #<id> expands one):")
-    for r in rows:
-        when = str(r.get("started_at") or "")[:16].replace("T", " ")
-        _print(f"    #{r['run_id']:<4} {when}  {str(r.get('status')):<7} {_clip(r['query'], 60)}")
-        answer = " ".join(str(r.get("response") or "").split())
-        if answer:
-            _print(f"          ↳ {_clip(answer, 110)}")
-
-
 def _show_llm_calls(ctx, args):
     """`/trace invoke` — replay one run's LLM calls (input messages + output). Default: the most
     recent run that has any; `#id`/`-r id`/bare int to pick one; `-l` to list runs with LLM calls;
@@ -768,15 +640,9 @@ def _show_llm_calls(ctx, args):
 
     run_id, count, list_mode = _parse_run_selector(args, consume=consume)
 
+    # The llm_calls table always exists: the Tracer (constructed before any command runs) creates
+    # it, IF NOT EXISTS, on every DB it opens.
     with _connect(ctx.db_path) as conn:
-        # The llm_calls table is created by the Tracer at startup; guard anyway for a stale DB.
-        has_table = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='llm_calls'"
-        ).fetchone()
-        if not has_table:
-            _print("  (no LLM calls recorded yet — run a query first)")
-            return
-
         if list_mode:
             rows = conn.execute(
                 "SELECT c.run_id, COUNT(*) AS n, COALESCE(SUM(c.dur), 0), r.query "
@@ -808,103 +674,19 @@ def _show_llm_calls(ctx, args):
     ui.show_llm_calls(run, calls, full=full)
 
 
-def _show_llm_context(ctx, args):
-    """`/trace context [#id]` — the context inspector: exactly what the local model was told at each
-    node, message by message, at full fidelity (the INPUT half of /trace invoke, no outputs). The
-    legible companion to the privacy story — "see literally what your machine sent the model". Full
-    text by default; `--node <name>` focuses one node so per-step context is diffable; `--preview`
-    clips; `-l` lists runs that have LLM calls."""
-    from tui import ui
-
-    node_filter: Optional[str] = None
-    preview = False
-
-    def consume(low, a, it):
-        nonlocal node_filter, preview
-        if low in ("--node", "-n", "node"):
-            node_filter = next(it, None)
-            return True
-        if low in ("--preview", "-p", "preview", "--clip"):
-            preview = True
-            return True
-        return False
-
-    run_id, count, list_mode = _parse_run_selector(args, consume=consume)
-
-    with _connect(ctx.db_path) as conn:
-        has_table = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='llm_calls'"
-        ).fetchone()
-        if not has_table:
-            _print("  (no LLM calls recorded yet — run a query first)")
-            return
-
-        if list_mode:
-            rows = conn.execute(
-                "SELECT c.run_id, COUNT(*) AS n, COALESCE(SUM(c.prompt_tokens), 0), r.query "
-                "FROM llm_calls c LEFT JOIN runs r ON r.run_id = c.run_id "
-                "GROUP BY c.run_id ORDER BY c.run_id DESC LIMIT ?",
-                (max(1, count or 10),),
-            ).fetchall()
-            if not rows:
-                _print("  (no LLM calls recorded yet)")
-                return
-            _print("  runs with recorded context — newest first  (/trace context #<id> to inspect):")
-            for rid, n, ptok, query in rows:
-                _print(f"    #{rid:<4} {n:>2} call(s)  {int(ptok or 0):>7} tok in  {_clip(query, 46)}")
-            return
-
-        run_id, run = _load_run(
-            conn, run_id, latest_from="llm_calls",
-            empty_msg="  (no LLM calls recorded yet — run a query first)",
-            hint="/trace context -l",
-        )
-        if run is None:
-            return
-        calls = conn.execute(
-            "SELECT seq, ts, node, model, dur, prompt_tokens, output_tokens, input, output, status "
-            "FROM llm_calls WHERE run_id = ? ORDER BY seq, id",
-            (run_id,),
-        ).fetchall()
-
-    ui.show_llm_context(run, calls, node_filter=node_filter, preview=preview)
-
-
 # ── /trace source — the raw material behind a citation ────────────────────────────────────────
-# The citations footer maps each inline [n] to a one-line label; this shows the FULL tool
-# result / retrieved passage behind that number, rebuilt with the same numbering the synthesizer
-# saw (nodes.synthesize.build_sources over the turn's accumulators), so [3] here is exactly the
-# [3] in the answer. Closes the provenance loop in one keystroke instead of a /trace drill-down.
-
-
-def lookup_source(state: dict, n: int) -> "tuple[str, str] | None":
-    """(label, full_text) for citation number `n` of the last turn, or None when out of range.
-    Pure over the state accumulators so it's testable without a turn."""
-    from nodes.synthesize import build_sources
-
-    tool_results = (state or {}).get("tool_results") or []
-    docs = (state or {}).get("documents_retrieved") or []
-    numbered_tools, numbered_docs, sources = build_sources(tool_results, docs)
-    entries = numbered_tools + numbered_docs
-    if not (1 <= n <= len(entries)):
-        return None
-    label = sources[n - 1][1]
-    # Strip the `[n] ` numbering prefix build_sources added for the prompt.
-    text = entries[n - 1]
-    prefix = f"[{n}] "
-    if text.startswith(prefix):
-        text = text[len(prefix):]
-    return label, text
+# The Sources footer gives each thing the answer drew on a number and a one-line label; this
+# shows the FULL tool result / retrieved passage behind that number, rebuilt with the same
+# numbering (core.sources.build_sources over the turn's accumulators), so [3] here is exactly
+# the [3] under the answer. Closes the provenance loop in one keystroke instead of a /trace drill-down.
 
 
 def _source(ctx, args):
     """`/trace source [n]` — the FULL text behind a citation [n] of the last answer."""
-    from nodes.synthesize import build_sources
+    from core.sources import build_sources
 
     state = ctx.state or {}
-    tool_results = state.get("tool_results") or []
-    docs = state.get("documents_retrieved") or []
-    _, _, sources = build_sources(tool_results, docs)
+    sources = build_sources(state.get("tool_results"), state.get("documents_retrieved"))
 
     if not sources:
         _print("  (the last answer drew on no gathered sources — nothing to cite)")
@@ -912,7 +694,7 @@ def _source(ctx, args):
 
     if not args:
         _print("  sources of the last answer  (/trace source <n> for the full text):")
-        for n, label in sources:
+        for n, label, _text in sources:
             _print(f"    [{n}] {label}")
         return
 
@@ -922,11 +704,10 @@ def _source(ctx, args):
         _print(f"  usage: /trace source [n]   (n is a citation number, 1–{len(sources)})")
         return
 
-    found = lookup_source(state, n)
-    if found is None:
+    if not 1 <= n <= len(sources):
         _print(f"  no source [{n}] — the last answer has {len(sources)} source(s); /trace source lists them.")
         return
-    label, text = found
+    _n, label, text = sources[n - 1]
     _print(f"  [{n}] {label}")
     _print("")
     for line in text.splitlines() or [""]:

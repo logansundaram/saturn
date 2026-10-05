@@ -1,32 +1,20 @@
 from commands._framework import command, _print
 from commands._utils import (
-    _ROLES,
     _resync_rag_after_model_change,
     split_persist_flags,
 )
 from config import TRUST_KEYS
-from core import model_family
 
 _MIN_NUM_CTX = 256  # below this Ollama can't fit the system prompts; reject obvious typos
 
 # The trust-posture key set is declared in config.py (a security classification, not a UI
-# detail — see TRUST_KEYS there). Re-exported under the historical private name so the setter
-# below and the tests that pin the classification keep one spelling.
+# detail — see TRUST_KEYS there).
 _TRUST_KEYS = TRUST_KEYS
 
 # Existence sentinel for cfg.get: distinguishes a key that is ABSENT from one present with an
-# explicit null value (cfg.get's None default conflates the two — exactly how a typo'd key used
-# to read back as a success-shaped `= None`).
+# explicit null value (cfg.get's None default conflates the two, so a typo'd key would read back
+# as a success-shaped `= None`).
 _MISSING = object()
-
-
-def _is_role_binding_key(key: str) -> bool:
-    """Whether a dotted key names a CHAT-role model binding (`tiers.<tier>.roles.<role>`) — the
-    keys /models' family gate guards. The EMBEDDER key (`tiers.<tier>.embedder`) is deliberately
-    NOT one of them: it is not a chat model, has no raw-mode template and produces no logprobs,
-    so no calibration claim rides on it (the same exemption _bind makes)."""
-    parts = str(key or "").split(".")
-    return len(parts) == 4 and parts[0] == "tiers" and parts[2] == "roles" and bool(parts[3])
 
 
 def _leaf_keys(node: dict, prefix: str = "") -> list[str]:
@@ -52,10 +40,14 @@ def _did_you_mean(cfg, key: str) -> str:
     return f" — did you mean {hint[0]}?" if hint else ""
 
 
-# (/config key — the managed API-key front end — was CUT 2026-07-16: env_keys.KNOWN_KEYS had
-# been empty since the API-less web pivot, so the picker/fuzzy-resolve/prefix-detect machinery
-# managed nothing. Secrets for MCP `${VAR}` expansion are plain env vars in .env now — the
-# dispatch below points there instead of dead-ending the habit.)
+# Retired /config subcommands -> where that job lives now.
+_RETIRED = {
+    "setup": "/models checks and pulls the models; startup warns about anything missing.",
+    "doctor": "/models checks and pulls the models; startup warns about anything missing.",
+    "check": "/models checks and pulls the models; startup warns about anything missing.",
+    "context": "the status bar shows the fill; /config runtime.num_ctx <size|auto> sets it.",
+    "persist": "use /config <key> --save.",
+}
 
 
 def _config_keys_cut() -> None:
@@ -70,50 +62,33 @@ def _config_keys_cut() -> None:
 @command(
     "config",
     "View or edit runtime config (config.yaml); edits persist by default.",
-    usage="/config | /config <dotted.key> [value] [--session] | /config persist <key> | /config setup | /config reload",
+    usage="/config | /config <dotted.key> [value] [--session] | /config reload",
     details="""
 With no args, prints the key runtime settings (active_tier, runtime.max_iterations,
-runtime.auto_approve) and the resolved paths.
+runtime.auto_approve, runtime.num_ctx), the working folder (the folder Saturn was launched from,
+plus any /add-dir folders) and the data paths.
 
 With a dotted key, reads that value; with a key and a value, sets it AND writes it back to
-config.yaml in place (comments and layout preserved) so it survives a restart — persisting is the
-default, because a setting you change should stick. Append --session (or --session-only) to apply
-an edit for this session only, without touching config.yaml:
+config.yaml in place (comments and layout preserved) so it survives a restart — a setting you
+change should stick. Append --session to apply an edit for this session only:
   /config runtime.max_iterations 12            set AND persist to config.yaml (the default)
   /config runtime.max_iterations 12 --session  set for this session only
   /config runtime.max_iterations --save        persist the CURRENT value unchanged
-  /config persist runtime.max_iterations       same thing, as a verb
-(--save / -s is still accepted; it's the default now, so it only matters as the bare
-"persist the current value" form above. A key not already in config.yaml can't be persisted, so
-it stays session-only with a note.) `/config reload` re-reads config.yaml from disk, discarding
-any unsaved session-only edits.
+A trust setting (runtime.auto_approve, runtime.airgap, …) never persists silently: it needs
+--save. A key not already in config.yaml can't be persisted, so it stays session-only with a
+note. `/config reload` re-reads config.yaml from disk, discarding session-only edits.
 
-/config context — the runtime readout (context window + fill, per-role windows, CPU/RAM/GPU) and
-the live num_ctx setter (folded in from the old /context):
-  /config context                   show the window + current fill + hardware snapshot
-  /config context 16384 [--session] resize every local role's window (persists; --session = live only)
-  /config context auto [--session]  back to per-model capability windows
-The window also frees itself automatically: older turns are compacted as the context fills
-(runtime.auto_compact past runtime.compact_threshold) — no manual step needed.
+The context window: `/config runtime.num_ctx 16384` resizes it (the models rebuild on next use),
+`/config runtime.num_ctx auto` goes back to each model's declared window. The status bar shows
+the fill during a turn; older turns compact on their own as it fills (runtime.auto_compact).
 
-/config setup (doctor, check) — first-run / health check: is the Ollama daemon up and are the
-active tier's models pulled, with the exact command to fix each genuine gap. When models are
-missing and the daemon is up, it offers — y/N, default no — to run the `ollama pull`s for you
-inline with live progress. Runs automatically on first launch; re-run any time with /config setup.
-
-No Saturn feature takes an API key: web search is keyless (DuckDuckGo) and extraction/inference
-are local. Secrets for MCP servers' ${VAR} expansion are plain env vars — put them in .env or
-export them in your shell. (The managed-key front end `/config key` was CUT 2026-07-16.)
-
-Model/tier keys rebuild the cached models on next use; an embedder change re-embeds the corpus.
-To change model bindings specifically, /models is the friendlier front end.
+Models and tiers: /models. Secrets for MCP servers' ${VAR} expansion are plain env vars — put
+them in .env or export them in your shell.
 
 Examples:
   /config                              show the summary
-  /config setup                        check the install (Ollama daemon, models)
   /config runtime.max_iterations       read one key
-  /config runtime.max_iterations 12    set it and persist to config.yaml (the default)
-  /config runtime.max_iterations 12 --session   set it for this session only
+  /config runtime.max_iterations 12    set it and persist to config.yaml
   /config reload                       re-read config.yaml from disk
 """,
 )
@@ -126,19 +101,8 @@ def _config(ctx, args):
         _config_keys_cut()
         return
 
-    if args and args[0].lower() in ("doctor", "setup", "check", "health"):
-        _config_doctor(ctx)
-        return
-
-    if args and args[0].lower() in ("context", "ctx", "window"):
-        _config_context(ctx, args[1:])
-        return
-
-    if args and args[0].lower() == "persist":
-        if len(args) < 2:
-            _print("  usage: /config persist <dotted.key>   (writes the current value to config.yaml)")
-            return
-        _persist_key(cfg, args[1])
+    if args and args[0].lower() in _RETIRED:
+        _print(f"  /config {args[0].lower()} is gone — {_RETIRED[args[0].lower()]}")
         return
 
     if not args:
@@ -147,12 +111,18 @@ def _config(ctx, args):
         _print(f"    runtime.max_iterations: {cfg.max_iterations}")
         _print(f"    runtime.auto_approve  : {cfg.auto_approve}")
         _print(f"    runtime.num_ctx       : {cfg.num_ctx_override or 'auto (per-model capability)'}")
+        # The working folder is the launch folder (+ /add-dir), not a config path —
+        # `paths.workspace` is only the fallback when nothing set it (tests, the benchmark).
+        from core import workspace
+
+        _print(f"  working folder          : {workspace.display(workspace.root())}")
+        for added in workspace.extra():
+            _print(f"    + {workspace.display(added)}   (/add-dir, this session)")
         _print("  paths:")
-        for name in ("documents", "workspace", "memory", "db_sqlite"):
+        for name in ("documents", "memory", "db_sqlite"):
             _print(f"    {name:<10}: {cfg.get('paths.' + name)}")
-        _print("  (workspace & memory resolve live; documents/db_sqlite apply on re-ingest/restart)")
+        _print("  (memory resolves live; documents/db_sqlite apply on re-ingest/restart)")
         _print("  set a value: /config <dotted.key> <value>   (e.g. /config runtime.max_iterations 12)")
-        _print("  window + hardware: /config context   (see /config --help)")
         return
 
     if args[0].lower() == "reload":  # case-insensitive like every sibling subcommand match
@@ -163,11 +133,10 @@ def _config(ctx, args):
         _resync_rag_after_model_change()
         return
 
-    # Settings PERSIST to config.yaml by default now (a changed setting should survive a restart —
-    # what people expect from "change a setting"); --session / --session-only applies an edit for
-    # this session only. --save / -s is still accepted (it's the default) so old habits keep
-    # working. (split_persist_flags: case-insensitive, any position, exact token only — the bare
-    # words save/persist are NOT flags, guarded below.)
+    # Settings PERSIST to config.yaml by default; --session / --session-only applies an edit for
+    # this session only. --save / -s is accepted too (persist the current value, or a trust key).
+    # (split_persist_flags: case-insensitive, any position, exact token only — the bare words
+    # save/persist are NOT flags, guarded below.)
     rest, session, save = split_persist_flags(args)
     if not rest:
         _print("  usage: /config <dotted.key> [value] [--session]")
@@ -177,8 +146,7 @@ def _config(ctx, args):
 
     if not values:
         if save and not session:
-            # A bare `--save` with no value persists the CURRENT value (unchanged convention —
-            # identical to /config persist <key>; it mutates nothing live).
+            # A bare `--save` with no value persists the CURRENT value (it mutates nothing live).
             _persist_key(cfg, key)
             return
         current = cfg.get(key, _MISSING)
@@ -190,35 +158,24 @@ def _config(ctx, args):
         _print(f"  {key} = {current!r}")
         return
 
-    # The old grammar took a trailing bare save/persist as the flag; storing it silently as
-    # value text now would corrupt the setting — refuse and point at the one spelling instead.
+    # A trailing bare save/persist is a mistyped flag; storing it silently as value text would
+    # corrupt the setting — refuse and point at the one spelling instead.
     if values[-1].lower() in ("save", "persist", "--persist"):
         _print(f"  did you mean --save? (the bare word {values[-1]!r} is not a persist flag; "
-               "use --save / -s, or /config persist <key>) — nothing set")
+               "use --save / -s) — nothing set")
         return
 
     value = " ".join(values)
-
-    # The family gate, at the SECOND door (2026-08-16). `/models` refuses a non-family bind; this
-    # setter writes the very same `tiers.<t>.roles.<role>` keys and — unlike the trust keys —
-    # persists by default, so it used to write to config.yaml a binding the product refuses. The
-    # runtime seam still substitutes, so nothing uncalibrated ever ran; but the file then said one
-    # thing while the agent ran another, and the session read the refused value straight back.
-    # ONE message: commands.runtime.print_family_refusal, the same one /models prints.
-    if _is_role_binding_key(key) and not model_family.in_family(value):
-        from commands.runtime import print_family_refusal
-
-        _print(f"  {key} binds a model — nothing set.")
-        print_family_refusal(value)
+    if key == "runtime.num_ctx" and value.isdigit() and int(value) < _MIN_NUM_CTX:
+        _print(f"  num_ctx too small: {value} (minimum {_MIN_NUM_CTX}) — nothing set")
         return
 
     # Section guard: a dotted key naming a whole MAPPING must refuse — cfg.set would replace the
     # mapping with a scalar (every `web.*`-style read silently degrades to defaults for the rest
     # of the session), and a later persist would rewrite the bare `web:` header line into
     # `web: foo` above its still-indented children: unparseable YAML that kills the next launch
-    # (_set_yaml_scalar now also refuses headers, but the session-side corruption must stop here
-    # too). The guard lives in this handler, NOT in Config.set — /models legitimately replaces a
-    # {provider, model} role-binding dict with a bare scalar model id via cfg.set.
+    # (_set_yaml_scalar also refuses headers, but the session-side corruption must stop here
+    # too). The guard lives in this handler, NOT in Config.set.
     current = cfg.get(key, _MISSING)
     if isinstance(current, dict):
         children = ", ".join(f"{key}.{child}" for child in current)
@@ -228,11 +185,10 @@ def _config(ctx, args):
         _print(f"  {key} is a list, not a scalar setting — edit config.yaml by hand")
         return
 
-    # A key the config has never seen still sets — the default-tolerant knobs and absent
-    # per-tier role leaves must keep working on a config.yaml predating
-    # them — but the success-shaped line is replaced
-    # with a plain warning so a misspelled safety knob can't masquerade as applied. The
-    # suggestion snapshots the leaf list BEFORE the set, so the typo never suggests itself.
+    # A key the config has never seen still sets — the default-tolerant knobs must keep working
+    # on a config.yaml predating them — but the success-shaped line is replaced with a plain
+    # warning so a misspelled safety knob can't masquerade as applied. The suggestion snapshots
+    # the leaf list BEFORE the set, so the typo never suggests itself.
     suggestion = _did_you_mean(cfg, key) if current is _MISSING else ""
     cfg.set(key, value)
     if current is _MISSING:
@@ -266,71 +222,6 @@ def _config(ctx, args):
         _print("  (models will rebuild with the new context window on next use)")
 
 
-def _config_context(ctx, args):
-    """`/config context [size|auto [--save]]` — the runtime readout (context window + fill,
-    per-role windows, CPU/RAM/GPU) and the live num_ctx setter. Folded in from the old standalone
-    /context 2026-07-07: the readout and the setter both belong under /config, the one runtime-
-    settings front door."""
-    from config import get_config
-    from core.llms import reset_models, active_context_window, model_id
-    from tui import ui
-
-    cfg = get_config()
-
-    if not args:
-        window = active_context_window()
-        used = int(ctx.state.get("context_tokens", 0) or 0)
-        if cfg.num_ctx_override:
-            source = "override · runtime.num_ctx"
-        else:
-            source = f"auto · {model_id('tool_caller')} capability"
-        per_role = {role: cfg.num_ctx_for(model_id(role)) for role in _ROLES}
-        ui.show_context(window, used, source, per_role)
-        # The hardware half of the runtime readout (absorbed from the old /system).
-        from tui.system_monitor import get_system_metrics
-
-        ui.show_system_metrics(get_system_metrics())
-        return
-
-    args, session, save = split_persist_flags(args)
-    if not args:
-        if save and not session:  # `/config context --save` persists the CURRENT window
-            _persist_key(cfg, "runtime.num_ctx")
-            return
-        _print("  usage: /config context <size>|auto [--session]")
-        return
-
-    arg = args[0].lower()
-    if arg in ("auto", "default", "reset", "off"):
-        cfg.set("runtime.num_ctx", None)
-        reset_models()
-        _print("  context window -> auto (each model uses its capability window).")
-        _print("  models rebuild on next use.")
-        if session:
-            _print("  (session only; omit --session to persist to config.yaml.)")
-        else:
-            _persist_key(cfg, "runtime.num_ctx")
-        return
-
-    try:
-        n = int(arg)
-    except ValueError:
-        _print(f"  not a size: {args[0]!r} — usage: /config context <size>|auto [--session]")
-        return
-    if n < _MIN_NUM_CTX:
-        _print(f"  num_ctx too small: {n} (minimum {_MIN_NUM_CTX}).")
-        return
-
-    cfg.set("runtime.num_ctx", n)
-    reset_models()
-    _print(f"  context window -> {n:,} tokens for all local roles.")
-    _print("  models rebuild on next use.")
-    if session:
-        _print("  (session only; omit --session to persist to config.yaml.)")
-    else:
-        _persist_key(cfg, "runtime.num_ctx")
-
-
 def _persist_key(cfg, key: str) -> None:
     """Write the current in-memory value of `key` back to config.yaml, reporting the outcome."""
     from config import persist
@@ -342,182 +233,3 @@ def _persist_key(cfg, key: str) -> None:
         _print(f"  set for this session, but not persisted: {exc}")
     except Exception as exc:
         _print(f"  set for this session, but persist failed: {exc}")
-
-
-# (The doctor's api-key machinery — _OPTIONAL_KEY_NOTES, _required_keys, _key_line — left with
-# the /config key cut, 2026-07-16: nothing can require a key while cloud is shelved and the web
-# tools are keyless, so the doctor states that in one line below. When a keyed provider returns,
-# rebuild the required-key derivation with it.)
-
-
-def _small_classes() -> tuple:
-    """The size classes the shipped config does not vouch for at the loop's structured work:
-    every class at or below the install default (config.default.yaml's own comment calls 800m
-    and 2b "offered for completeness", and 4b IS the default that a fresh install pulls)."""
-    classes = model_family.classes()
-    try:
-        return classes[:classes.index(model_family.DEFAULT_CLASS) + 1]
-    except ValueError:
-        return classes[:1]
-
-
-def _tier_honesty_line(cfg) -> "str | None":
-    """The doctor's closing tier-honesty line, when the active tier is one of the small ones:
-    the smallest local models are fine for trying Saturn but measurably less reliable at
-    structured plans and tool calls, and the first screen should say so instead of leaving it to
-    be discovered.
-
-    Fires for any size class at or below the install DEFAULT (2026-08-16). It used to fire only
-    for the first-declared tier, which the size-class ladder made `800m` — so the line never
-    printed for a fresh install, whose default is `4b`: a dead surface guarding the exact case
-    it exists for. A legacy (non-ladder) tier name keeps the older declaration-order rule:
-    config.yaml's `tiers:` mapping is written smallest -> largest and YAML preserves order, so
-    the FIRST declared tier IS the smallest — never a size heuristic (summing context windows
-    ranks capacity, not model size: a 4B/128k model outsums a 32B/32k one). None when only one
-    tier exists (nothing to upgrade to)."""
-    tiers = cfg.get("tiers", {}) or {}
-    names = list(tiers)
-    if len(names) < 2:
-        return None
-    active = cfg.active_tier
-    if active in model_family.classes():
-        if active not in _small_classes():
-            return None
-    elif active != names[0]:
-        return None
-    model = cfg.model_for_role("tool_caller").model
-    return (f"you are on a small model tier ({model}) - fine for trying Saturn; "
-            "/models to upgrade if your hardware allows.")
-
-
-def _should_offer_pull(missing: list, daemon_up: bool, interactive: bool) -> bool:
-    """Whether the doctor ends with the inline `ollama pull` offer: something to pull, a
-    reachable daemon to pull into, and a human at a TTY to ask — off-TTY/headless never
-    prompts."""
-    return bool(missing) and daemon_up and interactive
-
-
-def _stdin_is_tty() -> bool:
-    import sys
-
-    try:
-        return sys.stdin is not None and sys.stdin.isatty()
-    except (AttributeError, ValueError):
-        return False
-
-
-def _offer_pull(missing: list[str]) -> None:
-    """Offer to run the `ollama pull`s the doctor just prescribed, inline, instead of telling the
-    user to go run them elsewhere at the exact moment they can't do anything else. Plain prompt
-    (ui.ask tears down any live bar first — input never runs under a rich.Live — and answers no
-    on Ctrl-C/EOF), default NO. The pulls run as ordinary foreground subprocesses with live
-    output (ollama prints each download's size and progress) — the same trust boundary as the
-    installer pulling the default models — and are Ctrl-C-able; a failure stops the batch with
-    the copy-paste commands still on screen above."""
-    from tui import ui
-
-    # ASCII-only like the rest of the doctor (no » glyph) — see _config_doctor.
-    reply = ui.ask(
-        f"[y] pull {len(missing)} missing model(s) now? "
-        "(sizes shown as each pull starts)  [y/N] "
-    ).lower()
-    if reply not in ("y", "yes"):
-        _print("  ok - pull when ready:")
-        for m in missing:
-            _print(f"    ollama pull {m}")
-        _print("")
-        return
-
-    from commands._utils import run_pulls
-
-    if not run_pulls(missing, retry_hint=" - fix and re-run /config setup"):
-        _print("")
-        return
-
-    from core.llms import check_models
-
-    remaining = check_models()
-    if remaining:
-        _print(f"  models pulled - {len(remaining)} other thing(s) still to fix "
-               "(re-run /config setup for details).")
-    else:
-        _print("  models pulled - the active tier is ready to run.")
-    _print("")
-
-
-def _config_doctor(ctx) -> None:
-    """First-run / health view: Ollama up? active-tier models pulled? Each GENUINE gap is paired
-    with the exact fix. When local models are missing, the daemon is reachable, and a human is
-    at a TTY, it ends with a y/N offer to run the `ollama pull`s inline — the one consented
-    action it can take; otherwise it remains a read-only diagnostic."""
-    from config import get_config
-    from core.llms import check_models, list_local_models, ollama_reachable
-    from commands._utils import _ROLES
-
-    cfg = get_config()
-    # ASCII-only output on purpose: this is the FIRST command a fresh install runs, possibly in a
-    # legacy console where the fancy glyphs the other commands use would raise an encoding error.
-    _print("")
-    _print(f"  saturday.ai setup check - tier '{cfg.active_tier}'")
-
-    # Ollama daemon.
-    up = ollama_reachable()
-    _print(f"    ollama daemon   {'ok (reachable)' if up else 'DOWN (not reachable)'}")
-    if not up:
-        _print("        -> install from https://ollama.com, then run `ollama serve`")
-
-    # Local (Ollama-served) models the active tier binds (+ the embedder), and whether each is
-    # pulled. Cloud-bound roles don't belong in this list: their gaps (key, package) surface via
-    # check_models below, and `ollama pull` could never fix them.
-    have = {m.name for m in list_local_models()} if up else set()
-    bound = {
-        spec.model
-        for spec in (cfg.model_for_role(r) for r in _ROLES)
-        if spec.provider == "ollama"
-    }
-    bound.add(cfg.embedder_model)
-    _print("    models")
-    from core.llms import _model_present
-    missing: list[str] = []
-    for m in sorted(bound):
-        if not up:
-            _print(f"        ?        {m}")
-        elif _model_present(m, have):
-            _print(f"        ok       {m}")
-        else:
-            missing.append(m)
-            _print(f"        MISSING  {m}   -> run `ollama pull {m}`")
-
-    # API keys — one honest line: nothing needs one (keyless web, local inference), so a fresh
-    # install's first screen never reads as a list of API keys to go get.
-    _print("    api keys")
-    _print("        ok       none needed (web search is keyless; inference is local)")
-
-    # MCP servers (only when any are configured — most installs have none).
-    from tools import mcp_client
-    statuses = mcp_client.status()
-    if statuses:
-        _print("    mcp servers")
-        for s in statuses:
-            if s.state == "connected":
-                _print(f"        ok       {s.name:<18} {len(s.tools)} tool(s)")
-            elif s.state == "disabled":
-                _print(f"        off      {s.name:<18} disabled in config.yaml")
-            else:
-                _print(f"        FAILED   {s.name:<18} {s.error or s.state}   -> /mcp reload")
-
-    problems = check_models()
-    _print("")
-    if problems:
-        _print(f"  {len(problems)} thing(s) to fix before this tier runs cleanly:")
-        for p in problems:
-            _print(f"    - {p}")
-    else:
-        _print("  all set - the active tier is ready to run.")
-    honesty = _tier_honesty_line(cfg)
-    if honesty:
-        _print(f"  {honesty}")
-    _print("")
-
-    if _should_offer_pull(missing, up, _stdin_is_tty()):
-        _offer_pull(missing)

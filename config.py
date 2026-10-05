@@ -1,13 +1,12 @@
 """
-Runtime configuration for Saturday.ai (Phase 3).
+Runtime configuration for Saturn.
 
 Loads `config.yaml` once and exposes it through a small typed accessor so the rest of the
-codebase never hard-codes a model id or a filesystem path again. The agent references model
-*roles* (planner, tool_caller, synthesizer, utility, judge) and the factory in `llms.py`
-resolves each role to a concrete `(provider, model)` against the active hardware tier.
+codebase never hard-codes a model id or a filesystem path. Each hardware tier binds ONE
+chat model (`tiers.<tier>.model`) plus an embedder; the factory in `llms.py` builds it.
 
-Nothing here imports from the rest of the project, so it is safe to import from anywhere
-(no circular-import risk).
+It imports only the stdlib-only leaves `diag` and `core.model_family`, so it is safe to import
+from anywhere (no circular-import risk).
 
 Live edits: `set(dotted_key, value)` mutates the in-memory config for the session (used by
 the `/config` slash command). `reload()` re-reads the file from disk. `persist(dotted_key)`
@@ -18,7 +17,6 @@ shred the heavily-commented file; the surgical line edit keeps it intact.)
 
 from __future__ import annotations
 
-import os
 import re
 import shutil
 import sys
@@ -29,65 +27,39 @@ from typing import Any
 import yaml
 
 from core import model_family  # stdlib-only leaf: importing it keeps config's no-cycle property
+from diag import saturn_home  # the one data-home rule (diag is a leaf)
 
 # Risk tiers, ordered low -> high. Shared with the approval gate (registry.risk_of returns
 # one of these strings). A tool runs without prompting iff its tier <= the configured
 # `runtime.auto_approve` tier.
 RISK_ORDER = ["read_only", "side_effecting", "destructive"]
 
-# The config keys that describe the TRUST POSTURE. Declared here, beside RISK_ORDER and
-# MODEL_ROLES, because it is a security classification rather than a UI detail: any layer may
+# The config keys that describe the TRUST POSTURE. Declared here, beside RISK_ORDER, because it is a security classification rather than a UI detail: any layer may
 # need to ask "is this key a trust key" (the /config setter is only the first caller), and a knob
 # added without this classification silently gains persist-by-default — which is exactly the
 # footgun the set exists to close.
 #
-# The rule: a trust key is EXEMPT from the persist-by-default inversion (2026-07-07). Setting one
+# The rule: a trust key is EXEMPT from persist-by-default. Setting one
 # applies for the session; persisting takes an explicit --save — the same fail-closed convention
-# that keeps the canonical toggles (/policy open, /privacy airgap) on the opt-IN --save parser.
+# that keeps the canonical toggles (/policy open, /policy airgap) on the opt-IN --save parser.
 TRUST_KEYS = frozenset({
     "runtime.auto_approve",
     "runtime.airgap",
     "runtime.quarantine",
-    "runtime.redaction",
     "shell.env_scrub",      # emptying it lets a shell child read secrets from its environment
     "runtime.grant_scope",  # session/persist lengthen how long an always-allow grant lives
 })
-
-# Non-family chat bindings being substituted RIGHT NOW: role -> (original id, replacement id).
-# Populated by model_for_role, read by llms.check_models and /models so no readout claims the
-# file's value is what is running. In-memory only — config.yaml is NEVER rewritten by the
-# migration path (rebinding is the permanent fix).
-#
-# Keyed by ROLE, not by original id, since 2026-08-16: this is CURRENT STATE, not history. An
-# append-only log kept every readout asserting "'gemma4:e4b' in config.yaml is running as
-# 'qwen3.5:4b'" for the rest of the session after the user had already fixed the binding — a
-# false claim about the file, from the surface whose entire job is to keep the file and the
-# running agent from diverging silently. A role that next resolves in-family drops its entry.
-_MIGRATIONS: dict[str, tuple] = {}
-
-
-def migrated_bindings() -> dict:
-    """The family substitutions in force right now (original id -> replacement id). Empty once
-    every role resolves in-family again."""
-    return {original: replacement for original, replacement in _MIGRATIONS.values()}
-
-
-def clear_migrations() -> None:
-    """Forget the recorded substitutions (a config reload, or a test)."""
-    _MIGRATIONS.clear()
-
 
 def _resolve_config_path() -> Path:
     """Locate the live config.yaml.
 
     Clone mode (the curl installers and manual installs): config.yaml sits next to this file at
-    the repo root. Since 2026-07-10 the live file is UNTRACKED user data (persisted /config
-    edits land in it; a tracked live config dirtied the tree on every saved setting and broke
-    /update's ff-only pull) — it is seeded on first run from the tracked template
-    config.default.yaml.
+    the repo root. The live file is UNTRACKED user data (persisted /config edits land in it; a
+    tracked one would dirty the tree and break /update's ff-only pull) — it is seeded on first
+    run from the tracked template config.default.yaml.
 
-    Installed mode (pipx/uv/pip wheel): the user's editable copy lives under SATURDAY_HOME
-    (default ~/.saturday), seeded on first run from the packaged default that the wheel ships
+    Installed mode (pipx/uv/pip wheel): the user's editable copy lives in `saturn_home()`
+    (~/.saturn), seeded on first run from the packaged default that the wheel ships
     to <venv>/share/saturn/ (see pyproject.toml). Keeping the live copy out of site-packages
     means a persisted /config edit survives a `pipx upgrade`.
     """
@@ -97,9 +69,8 @@ def _resolve_config_path() -> Path:
         return local
     local_default = root / "config.default.yaml"
     if local_default.exists():
-        # Clone mode, first run (or a pull that removed the old tracked config.yaml): seed the
-        # live copy from the template. Upstream default changes land in the template; the
-        # user's live file is never touched by git again.
+        # Clone mode, first run: seed the live copy from the template. Upstream default changes
+        # land in the template; the user's live file is never touched by git.
         try:
             shutil.copy(local_default, local)
         except OSError:
@@ -108,7 +79,7 @@ def _resolve_config_path() -> Path:
             # persist() reports "not persisted" cleanly; the next writable launch seeds.
             return local_default
         return local
-    home = Path(os.environ.get("SATURDAY_HOME") or Path.home() / ".saturday")
+    home = saturn_home()
     user_cfg = home / "config.yaml"
     if not user_cfg.exists():
         share = Path(sys.prefix) / "share" / "saturn"
@@ -118,7 +89,7 @@ def _resolve_config_path() -> Path:
         if not default.exists():
             raise FileNotFoundError(
                 "config.yaml not found: not running from a Saturn clone, and the packaged "
-                f"default ({default}) is missing. Reinstall Saturn, or point SATURDAY_HOME "
+                f"default ({default}) is missing. Reinstall Saturn, or point SATURN_HOME "
                 "at a directory containing a config.yaml."
             )
         home.mkdir(parents=True, exist_ok=True)
@@ -128,52 +99,32 @@ def _resolve_config_path() -> Path:
 
 _CONFIG_PATH = _resolve_config_path()
 # Data root: every `paths.*` entry resolves against the directory holding the live config.yaml —
-# the repo root in clone mode, SATURDAY_HOME for a wheel install. User data never lands in
-# site-packages, where an upgrade would clobber it. (diag.py and env_keys.py mirror this lookup;
-# they deliberately import nothing project-side, so keep the three in step.)
+# the repo root in clone mode, saturn_home() for a wheel install (= diag.data_root()). User data
+# never lands in site-packages, where an upgrade would clobber it.
 _REPO_ROOT = _CONFIG_PATH.parent
 
-# THE five model roles the loop binds (config.yaml `roles:`, llms.get_model's vocabulary). One
-# home so every surface that iterates roles (the readout commands, llms.check_models, the
-# locality classifier behind the posture line) walks the SAME tuple — a role added to one stale
-# copy would silently vanish from the others (e.g. a posture line claiming `all_local` without
-# ever seeing the new binding).
-MODEL_ROLES = ("planner", "tool_caller", "synthesizer", "utility", "judge")
 
-# The fallback window pair for a family tag a user's older config has no `capabilities:` entry
-# for (see capability_of): the SMALLEST runtime window the ladder ships in config.default.yaml
-# (the windows step up the ladder — 32k/64k/128k — and a fallback must never over-allocate) and
-# the shared architectural ceiling. Kept in step with the template by tests/test_model_family.py.
-FAMILY_CONTEXT_WINDOW = 32768
-FAMILY_MAX_CONTEXT_WINDOW = 262144
+def config_path() -> Path:
+    """The live config.yaml this session loaded (clone: beside the code; wheel: the data home)."""
+    return _CONFIG_PATH
 
-
-@dataclass(frozen=True)
-class ModelSpec:
-    """A resolved role binding: which provider serves which model id."""
-
-    provider: str
-    model: str
+def tier_chat_model(tier: dict) -> str:
+    """The chat model a tier binds: its `model:` id, "" when it declares none."""
+    model = tier.get("model")
+    return str(model) if model and not isinstance(model, dict) else ""
 
 
 @dataclass(frozen=True)
 class Capability:
-    """What a model can do. The MVP requires tools + structured output for the roles that
-    drive the loop; the factory warns when a bound model falls short."""
+    """What a model can do. The loop requires native tool-calling; the factory warns when a
+    bound model does not advertise it."""
 
     supports_tools: bool = True
-    supports_structured_output: bool = True
     context_window: int = 8192
-    supports_vision: bool = False
-    # The model's ARCHITECTURAL maximum — display only (the /models metrics columns). Kept
-    # separate from context_window on purpose: context_window is what num_ctx_for hands
-    # ChatOllama, and every qwen3.x tag reports a 262144 maximum that would exhaust VRAM on any
-    # consumer card if it were requested per call. Never collapse these two fields.
-    max_context_window: int = 0
 
 
 class Config:
-    """Thin wrapper over the parsed YAML dict with typed, role-aware accessors."""
+    """Thin wrapper over the parsed YAML dict with typed accessors."""
 
     def __init__(self, data: dict):
         self._data = data
@@ -195,12 +146,11 @@ class Config:
             node = node.setdefault(part, {})
         node[parts[-1]] = _coerce(value)
 
-    # --- tier / roles ------------------------------------------------------
+    # --- tier / model ------------------------------------------------------
     @property
     def active_tier(self) -> str:
-        # The fallback is the ladder's default CLASS, not a retired preset name: "workstation"
-        # stopped shipping with the family lock, so a config missing the key resolved to a tier
-        # that does not exist and hard-failed on every model resolution (2026-08-16).
+        # The fallback is the ladder's default CLASS, so a config missing the key still names a
+        # tier that exists.
         return self._data.get("active_tier", model_family.DEFAULT_CLASS)
 
     def _tier(self) -> dict:
@@ -213,50 +163,28 @@ class Config:
             )
         return tier
 
-    def _enforce_family(self, spec: "ModelSpec", role: str) -> "ModelSpec":
-        """Substitute a non-family CHAT binding with the ladder tag for its nearest size class,
-        and record the substitution. Saturday.ai supports one family (core/model_family) because
-        confidence coloring is calibrated per model; a binding outside it would be marked against
-        another model's numbers.
-
-        A non-ollama binding is left alone — the cloud-model shelve (2026-07-03) owns that
-        refusal, and quietly rewriting it would hide the real problem. The embedder never reaches
-        here (embedder_model is its own accessor).
-
-        The record is per ROLE and is CLEARED when that role resolves in-family again, so a
-        binding the user has since fixed stops being reported (see _MIGRATIONS)."""
-        if spec.provider != "ollama" or model_family.in_family(spec.model):
-            _MIGRATIONS.pop(role, None)
-            return spec
-        replacement = model_family.tag_for(model_family.migrate(spec.model))
-        _MIGRATIONS[role] = (spec.model, replacement)
-        return ModelSpec(provider=spec.provider, model=replacement)
-
-    def model_for_role(self, role: str) -> ModelSpec:
-        """Resolve a role to a concrete (provider, model). Falls back to the `utility`
-        role, then to the first role defined, so a missing role never crashes the graph."""
+    @property
+    def chat_model(self) -> str:
+        """The active tier's chat model id — the one model every call uses: the agent's pass,
+        compaction, the memory review's proposals, /init's draft."""
         tier = self._tier()
-        roles = tier.get("roles", {})
-        entry = roles.get(role) or roles.get("utility")
-        if entry is None and roles:
-            entry = next(iter(roles.values()))
-        if entry is None:
-            raise KeyError(f"tier '{self.active_tier}' defines no roles")
-
-        default_provider = tier.get("provider", "ollama")
-        if isinstance(entry, dict):
-            model = entry.get("model")
-            if not model:
-                raise KeyError(
-                    f"role '{role}' on tier '{self.active_tier}' is a mapping without a "
-                    f"'model' key: {entry!r}"
-                )
-            return self._enforce_family(
-                ModelSpec(provider=entry.get("provider", default_provider), model=model), role
+        if isinstance(tier.get("model"), dict):
+            raise KeyError(
+                f"tier '{self.active_tier}' binds a mapping — bind a bare Ollama model id "
+                "(the {provider, model} form left with cloud support)"
             )
-        return self._enforce_family(
-            ModelSpec(provider=default_provider, model=str(entry)), role
-        )
+        model = tier_chat_model(tier)
+        if not model and isinstance(tier.get("roles"), dict):
+            # A v0.1.0 `roles:` block is refused — say exactly what to write instead.
+            roles = tier["roles"]
+            was = roles.get("tool_caller") or next(iter(roles.values()), "")
+            raise KeyError(
+                f"tier '{self.active_tier}' still uses the old `roles:` block — replace it in "
+                f"config.yaml with one line: model: \"{was}\""
+            )
+        if not model:
+            raise KeyError(f"tier '{self.active_tier}' defines no model")
+        return model
 
     @property
     def embedder_model(self) -> str:
@@ -268,7 +196,7 @@ class Config:
         if not model:
             raise KeyError(
                 f"tier '{self.active_tier}' defines no 'embedder' in config.yaml — add one "
-                "(e.g. embedder: qwen3-embedding:8b) or switch tiers (/models tier)."
+                "(e.g. embedder: qwen3-embedding:8b) or switch tiers (/models)."
             )
         return str(model)
 
@@ -276,21 +204,10 @@ class Config:
         caps = self._data.get("capabilities", {})
         spec = caps.get(model)
         if not spec:
-            if model_family.is_ladder_tag(model):
-                # A config predating the family lock has no `capabilities:` entry for the tag a
-                # legacy binding was SUBSTITUTED with, and the conservative default would quarter
-                # its window to 8192 with nothing said (and render "8192 / 0" in /models tier).
-                # Every ladder tag ships the same pair in config.default.yaml — use it.
-                return Capability(context_window=FAMILY_CONTEXT_WINDOW,
-                                  max_context_window=FAMILY_MAX_CONTEXT_WINDOW)
             return Capability()  # conservative defaults
-        cw = spec.get("context_window", 8192)
         return Capability(
             supports_tools=spec.get("supports_tools", True),
-            supports_structured_output=spec.get("supports_structured_output", True),
-            context_window=cw,
-            supports_vision=spec.get("supports_vision", False),
-            max_context_window=spec.get("max_context_window", cw),
+            context_window=spec.get("context_window", 8192),
         )
 
     # --- runtime knobs -----------------------------------------------------
@@ -314,7 +231,7 @@ class Config:
     @property
     def num_ctx_override(self) -> "int | None":
         """Session/config override for the Ollama context window (`runtime.num_ctx`), or None to
-        let each model use its capability `context_window`. Set live by /config context."""
+        let each model use its capability `context_window`. Set live by /config runtime.num_ctx."""
         v = self.get("runtime.num_ctx")
         try:
             n = int(v)
@@ -482,7 +399,7 @@ def persist(dotted_key: str) -> Path:
     """Write the current in-memory value of `dotted_key` back to config.yaml in place (comments and
     layout preserved) so it survives a restart. Returns the config path. Covers the scalar leaves a
     user actually tunes — the runtime knobs, `active_tier`, the web/shell settings, the paths.
-    Deeper structural edits (per-tier role bindings) belong in the file or `/models`."""
+    Deeper structural edits belong in the file or `/models`."""
     value = get_config().get(dotted_key)
     # newline="" both ways: read_text's universal-newline mode would fold CRLF to \n before
     # _set_yaml_scalar captures each line's ending, and write_text would then re-expand every
@@ -490,8 +407,12 @@ def persist(dotted_key: str) -> Path:
     # translation keeps the per-line eol capture honest and the diff to the single edited line.
     with open(_CONFIG_PATH, "r", encoding="utf-8", newline="") as fh:
         text = fh.read()
+    # The edit is computed BEFORE the file is opened for writing: _set_yaml_scalar raises for a
+    # key the file does not hold (or a container), and opening with "w" first would leave
+    # config.yaml empty when it did.
+    edited = _set_yaml_scalar(text, dotted_key, value)
     with open(_CONFIG_PATH, "w", encoding="utf-8", newline="") as fh:
-        fh.write(_set_yaml_scalar(text, dotted_key, value))
+        fh.write(edited)
     return _CONFIG_PATH
 
 
@@ -512,6 +433,5 @@ def get_config() -> Config:
 def reload() -> Config:
     """Re-read config.yaml from disk (used by /config reload)."""
     global _config
-    clear_migrations()  # a re-read may have fixed the binding — don't let a stale ledger survive
     _config = _load()
     return _config

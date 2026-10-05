@@ -1,36 +1,26 @@
 """
 Type-ahead input queue — the "keep typing while the agent works" surface (à la Claude Code).
 
-While a turn is executing the REPL is blocked driving the graph, so historically every keystroke
-was thrown away (the old `interrupts.KeyWatcher` consumed them purely to keep them out of the next
-prompt) and the only way to line up a follow-up was to wait for the answer. This module lets the
-user type ahead: a daemon thread reads the console *during* execution, echoes the in-progress line
-into the status bar, and on Enter pushes the completed line onto a thread-safe FIFO the REPL drains
-the moment the turn finishes — so follow-up queries AND slash commands can be queued without
-waiting.
+While a turn is executing the REPL is blocked driving the graph. This module lets the user type
+ahead: a daemon thread reads the console *during* execution, echoes the in-progress line into the
+status bar, and on Enter pushes the completed line onto a thread-safe FIFO the REPL drains the
+moment the turn finishes — so follow-up queries AND slash commands can be queued without waiting.
 
 It subsumes the pause trigger, too: a single console can't be read by two threads, so `InputQueue`
 is the *one* reader live during a turn. The keys, by what they do to the line you're typing:
 
   - **Enter** — commit the line to the queue (runs after the current turn).
-  - **Esc while the final answer is streaming** — FREEZE it (interrupt-and-correct): the stream
-    stops cleanly and the freeze editor opens so a hallucination can be cut and corrected before
-    generation resumes from the edited text. Routed through the `continuation.FreezeController`
-    latch, which the synthesize node arms only while an answer is actually streaming from a
-    template-supported model — anywhere else, Esc keeps its meanings below.
   - **Esc with text typed** — submit that text as a *mid-turn steering correction*: it's injected
-    into the running turn at the next step boundary (see `nodes/plan_gate.py`) so the agent
-    adjusts course WITHOUT losing the turn. The line is consumed (cleared), not queued.
-  - **Esc on an empty line** — ask the shared `interrupts.PauseController` for a plan-review pause
-    at the next step boundary (the role the `p` key used to play, moved off a letter so letters are
-    free to type).
+    into the running turn at the agent's next pass (see `nodes/agent.py`) so the agent adjusts
+    course WITHOUT losing the turn. The line is consumed (cleared), not queued.
+  - **Esc on an empty line** — ask the shared `core.pause.PauseController` to pause at the
+    agent's next pass (continue / steer / abort).
 
 Steering vs. queuing is thus the same key story as Enter vs. Esc: Enter defers, Esc acts now.
 
-Degrades to a no-op when the console can't be polled (not a TTY, or neither msvcrt nor POSIX
-termios is available): the queue simply stays empty and the REPL blocks on the prompt exactly as
-before. On Windows the msvcrt path is used; on macOS/Linux the POSIX termios path runs instead
-(cbreak, restored on stop).
+Degrades to a no-op when the console can't be polled (not a TTY, or POSIX termios is
+unavailable): the queue simply stays empty and the REPL blocks on the prompt.
+The reader puts the TTY in cbreak mode and restores it on stop.
 """
 
 from __future__ import annotations
@@ -40,35 +30,21 @@ import threading
 from collections import deque
 from typing import Callable, Optional
 
-from core.continuation import get_freeze_controller
-from core.plan_ops import PauseController, get_pause_controller
-
-# Windows console key polling (msvcrt). On macOS/Linux this import fails and we fall back to
-# a POSIX termios reader; if that's also unavailable the queue degrades to a no-op.
-try:
-    import msvcrt  # type: ignore
-
-    _HAS_MSVCRT = True
-except Exception:  # pragma: no cover - non-Windows
-    _HAS_MSVCRT = False
-
+from core.pause import PauseController, get_pause_controller
 
 # Control characters the reader special-cases.
 _ENTER = ("\r", "\n")
 _BACKSPACE = ("\x08", "\x7f")
 _ESC = "\x1b"
-# Windows getwch() returns one of these as the first half of a two-char sequence for arrow / F-keys;
-# we read and discard the trailing scancode so a stray key never lands in the buffer.
-_WIN_PREFIX = ("\x00", "\xe0")
 
 
 class InputQueue:
     """The single console reader for the duration of a turn: captures type-ahead lines (Enter →
-    queue) and handles the Esc key (with text → mid-turn steer; empty → plan-review pause).
+    queue) and handles the Esc key (with text → mid-turn steer; empty → pause).
 
     `run_turn` brackets graph execution with `start()` / `stop()`, so the reader is live only while
     the graph runs — never while a blocking `input()` (the `»` prompt, the approval gate, the
-    plan-review editor) is reading a line, so it can't steal those keystrokes. The REPL calls
+    pause prompt) is reading a line, so it can't steal those keystrokes. The REPL calls
     `pop()` between turns to drain queued lines before it blocks on the prompt.
 
     `on_change(buffer, queued)` (optional) is invoked on every mutation so a UI can render the live
@@ -80,13 +56,11 @@ class InputQueue:
         on_change: Optional[Callable[[str, int], None]] = None,
         on_steer: Optional[Callable[[str], None]] = None,
         on_pause: Optional[Callable[[], None]] = None,
-        on_freeze: Optional[Callable[[], None]] = None,
         controller: Optional[PauseController] = None,
     ) -> None:
         self._on_change = on_change
         self._on_steer = on_steer  # called(text) when a mid-turn steer is captured (Esc + text)
-        self._on_pause = on_pause  # called() when an empty-line Esc requests a plan-review pause
-        self._on_freeze = on_freeze  # called() when Esc froze the streaming answer
+        self._on_pause = on_pause  # called() when an empty-line Esc requests a pause
         self._controller = controller or get_pause_controller()
         self._queue: deque[str] = deque()
         self._buffer = ""
@@ -102,7 +76,7 @@ class InputQueue:
                 return False
         except Exception:
             return False
-        return _HAS_MSVCRT or _posix_supported()
+        return _posix_supported()
 
     def start(self) -> None:
         """Spin up the reader for one graph-execution segment. No-op if it can't poll the console
@@ -130,8 +104,8 @@ class InputQueue:
 
     def push(self, line: str) -> None:
         """Append a complete line to the queue from OUTSIDE the reader thread. Used by the REPL
-        to salvage a steering correction that landed after the turn's last step boundary (no
-        plan_gate left to consume it) — the text runs as the next message instead of being
+        to salvage a steering correction that landed after the turn's last agent pass (no
+        pass left to drain it) — the text runs as the next message instead of being
         silently dropped. Works even when the reader can't poll the console (pop() is
         availability-independent)."""
         line = (line or "").strip()
@@ -150,10 +124,6 @@ class InputQueue:
             self._notify()  # keep the displayed queue depth honest as we drain
         return line
 
-    def pending(self) -> bool:
-        with self._lock:
-            return bool(self._queue)
-
     # ── internals ────────────────────────────────────────────────────────────────
     def _notify(self) -> None:
         if self._on_change is None:
@@ -166,22 +136,9 @@ class InputQueue:
             pass  # a display hiccup must never kill the reader thread
 
     def _on_escape(self) -> None:
-        """Esc handling. While the final answer is streaming (the freeze latch is armed), Esc
-        FREEZES it — the interrupt-and-correct hotkey; `freeze()` returning False means "not
-        streaming right now" and the key falls through to its usual meanings: with text already
-        typed, a mid-turn steering correction (injected into the running turn at the next step
-        boundary — see plan_gate); with an empty line, a plan-review pause request. The
-        steer/pause paths route through the shared PauseController, distinguished by source."""
-        try:
-            if get_freeze_controller().freeze():
-                if self._on_freeze is not None:
-                    try:
-                        self._on_freeze()
-                    except Exception:
-                        pass  # a display hiccup must never kill the reader thread
-                return
-        except Exception:
-            pass  # freezing is additive — a latch failure must never break Esc's other roles
+        """Esc handling: with text already typed, a mid-turn steering correction (injected into
+        the running turn at the agent's next pass); with an empty line, a pause request. Both
+        route through the shared PauseController, distinguished by source."""
         with self._lock:
             text = self._buffer.strip()
             self._buffer = ""
@@ -194,7 +151,7 @@ class InputQueue:
                 except Exception:
                     pass  # a display hiccup must never kill the reader thread
         else:
-            self._controller.request("user", "you pressed Esc to review the plan")
+            self._controller.request("user", "you pressed Esc to pause")
             # Immediate on-screen acknowledgement (ui.pause_note), symmetric to the steer path
             # above — the pause itself only lands at the next step boundary, which on a local
             # model can be a long, otherwise-silent wait.
@@ -223,31 +180,7 @@ class InputQueue:
                 self._buffer += ch
             self._notify()
 
-    def _loop(self) -> None:
-        if _HAS_MSVCRT:
-            self._loop_windows()
-        else:
-            self._loop_posix()
-
-    def _loop_windows(self) -> None:  # pragma: no cover - platform/IO specific
-        while not self._stop.is_set():
-            try:
-                if msvcrt.kbhit():
-                    ch = msvcrt.getwch()
-                    if ch in _WIN_PREFIX:
-                        if msvcrt.kbhit():
-                            msvcrt.getwch()  # discard the special key's trailing scancode
-                        continue
-                    if ch == _ESC:  # lone Esc on Windows — special keys arrive via _WIN_PREFIX
-                        self._on_escape()
-                        continue
-                    self._on_char(ch)
-                else:
-                    self._stop.wait(0.03)
-            except Exception:
-                return
-
-    def _loop_posix(self) -> None:  # pragma: no cover - platform/IO specific
+    def _loop(self) -> None:  # pragma: no cover - platform/IO specific
         import select
         import termios
         import tty

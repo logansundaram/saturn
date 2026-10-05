@@ -1,43 +1,39 @@
 """
 Egress ledger + air-gap enforcement — the network boundary made visible.
 
-The product's privacy proof point used to be *asserted* (`/privacy` lists what CAN leave this
-machine) but never *shown* (what actually left). This module closes that gap. It is the single
-chokepoint every outbound network operation reports through, so "nothing leaves your machine"
-becomes an observable fact rather than a slogan:
+The single chokepoint every outbound network operation reports through, so "nothing leaves
+your machine" is an observable fact rather than a slogan:
 
   - `record(...)`     every successful egress (a web search, a page fetch, a remote MCP call,
-                      a cloud-model invocation) appends one `EgressEvent` to a process-wide,
-                      append-only ledger. `/privacy egress` renders it; the status bar shows a
-                      live count.
+                      a remote-Ollama invocation) appends one `EgressEvent` to a process-wide,
+                      append-only ledger. `/policy egress` renders it.
+  - `UNTRACKED`       the ledger's honest gap: `run_shell`, `run_shortcut` and stdio MCP servers are processes
+                      whose network use Saturn cannot observe, so each run is recorded with
+                      this status. Under air-gap they are held for the human instead
+                      (`policy.airgap_holds`) — the one boundary a string check cannot enforce.
   - `check(...)`      the air-gap gate. When `runtime.airgap` is on, an outbound op calls this
                       FIRST; it records a `blocked` event and returns a refusal string the caller
-                      hands back instead of touching the network. Air-gap turns the privacy claim
-                      from a promise into something the machine enforces.
+                      hands back instead of touching the network.
 
-Air-gap is read live from `runtime.airgap` (toggled by `/privacy airgap`), exactly like the budget
-and auto-approve knobs — so flipping it applies to the very next op. Cloud LLM egress is enforced
-separately in `llms.get_model` (it raises rather than returning a string, since a node can't run
-without its model); the `/privacy airgap` command drops the model cache so a cached cloud model
-can't sneak a call through.
-
-The ledger is per-process (one Saturn session), like `budget.py` — a live boundary monitor.
+Air-gap is read live from `runtime.airgap` (toggled by `/policy airgap`), so flipping it applies
+to the very next op. Exits that cannot hand a refusal string back (a remote-Ollama model or
+embedder in core/llms.py) use `check_or_raise`. The ledger is per-process (one Saturn session).
 
 This module also owns the inference-locality classifier (`_inference` + its display companions):
-"where do the words come from" is fundamentally an egress question, and this is where the loopback
-test (`ollama_is_local`) already lives. The posture line, `/privacy`, and the Glass Box all read
-the one classifier here. Imports only leaves (config, diag, textutil), so any module (web tools,
-mcp_client, llms, the TUI) can import it without a cycle.
+"where do the words come from" is an egress question, and the loopback test (`ollama_is_local`)
+lives here. Imports only leaves (config, textutil), so any module (web tools, mcp_client, llms,
+the TUI) can import it without a cycle.
 """
 
 from __future__ import annotations
 
+import ipaddress
 import os
 from dataclasses import dataclass
 from datetime import datetime
 from urllib.parse import urlparse
 
-from config import MODEL_ROLES, get_config
+from config import get_config
 from textutil import truncate
 
 # Hard cap on retained events so a long session can't grow the ledger without bound (oldest drop).
@@ -46,6 +42,10 @@ _MAX_EVENTS = 5000
 # Egress statuses, for display + filtering.
 SENT = "sent"        # left the machine
 BLOCKED = "blocked"  # air-gap refused it before anything was sent
+# A process Saturn cannot see inside ran — a shell command, a stdio MCP server. It may have used
+# the network; nothing here can say. Never counted as a send, never left off the ledger: a turn
+# that ran one must not read as "nothing left this machine".
+UNTRACKED = "untracked"
 
 
 @dataclass(frozen=True)
@@ -53,7 +53,7 @@ class EgressEvent:
     """One outbound network operation (or one air-gap refusal). `channel` is the kind of egress
     (web_search/web_extract/mcp/llm/embedding), `host` where it went, `detail` a short human
     label (the query, the URL, the model id), `provider` the backend when relevant, `n_bytes` the
-    approximate size of what was SENT, `redactions` how many secrets were stripped first. `seq` is
+    approximate size of what was SENT. `seq` is
     the session-wide ordinal (monotonic, never reused) — turn slices key on it, not list indexes,
     so the cap-trim and `clear()` can't shift a mark onto the wrong events."""
 
@@ -63,7 +63,6 @@ class EgressEvent:
     detail: str = ""
     provider: str = ""
     n_bytes: int = 0
-    redactions: int = 0
     status: str = SENT
     seq: int = 0
 
@@ -86,8 +85,8 @@ def ollama_endpoint() -> str:
 
 def ollama_is_local() -> bool:
     """Whether Ollama traffic stays on this machine. The whole "local inference" story keys on
-    this: an `OLLAMA_HOST` pointing off-machine makes the "local" models network egress like any
-    cloud provider — recorded in the ledger, refused under air-gap, and disqualifying for the
+    this: an `OLLAMA_HOST` pointing off-machine makes the "local" models network egress —
+    recorded in the ledger, refused under air-gap, and disqualifying for the
     local-inference claim. Fails toward NOT local (an unparseable endpoint must never earn a
     'local' claim)."""
     endpoint = ollama_endpoint()
@@ -97,7 +96,80 @@ def ollama_is_local() -> bool:
         name = (urlparse(endpoint).hostname or "").lower()
     except Exception:
         return False
-    return name in ("localhost", "::1", "0.0.0.0") or name.startswith("127.")
+    return is_loopback_host(name)
+
+
+def _inet_aton(name: str):
+    """inet_aton's grammar, without the socket module (trust/ imports no network client): one
+    to four dot-separated parts, each decimal, `0x` hex or leading-zero octal, the last part
+    filling the remaining bytes. The IPv4Address it names, else None."""
+    parts = name.split(".")
+    if not 1 <= len(parts) <= 4:
+        return None
+    vals = []
+    for p in parts:
+        if not p or not p.isascii() or not p.isalnum():
+            return None
+        try:
+            v = (int(p, 16) if p[:2] in ("0x", "0X")
+                 else int(p, 8) if len(p) > 1 and p[0] == "0"
+                 else int(p, 10))
+        except ValueError:
+            return None
+        vals.append(v)
+    tail_bytes = 5 - len(vals)
+    if any(v > 255 for v in vals[:-1]) or vals[-1] >= 256 ** tail_bytes:
+        return None
+    n = 0
+    for v in vals[:-1]:
+        n = (n << 8) | v
+    return ipaddress.IPv4Address((n << (8 * tail_bytes)) | vals[-1])
+
+
+def _parse_address(name: str):
+    """The IP address `name` is a literal of, else None. `ipaddress` reads the canonical forms;
+    the resolver also accepts inet_aton shorthand — `127.1`, hex or octal octets
+    (`0x7f.0.0.1`, `0177.0.0.1`), a bare decimal — and connects to the same loopback, so those
+    must parse here too or a string the checks below read as a public NAME reaches a local
+    service. A name with letters other than a hex octet is left to DNS (None)."""
+    try:
+        return ipaddress.ip_address(name)
+    except ValueError:
+        return _inet_aton(name)
+
+
+def is_loopback_host(name: str) -> bool:
+    """Whether a hostname is THIS machine: `localhost`, or a literal address in the loopback
+    range (127.0.0.0/8, ::1) or the unspecified address a local daemon binds. Parsed as an
+    address (`_parse_address`), never matched as a string prefix — `127.evil.example.com` is a
+    remote name."""
+    name = (name or "").strip().lower()
+    if name == "localhost":
+        return True
+    addr = _parse_address(name)
+    if addr is None:
+        return False
+    return addr.is_loopback or addr.is_unspecified
+
+
+# Names that resolve inside the local network by convention (mDNS, the loopback TLD, RFC 8375 /
+# common router suffixes). A bare single-label name ("nas") is local by construction.
+_PRIVATE_SUFFIXES = (".local", ".localhost", ".internal", ".lan", ".home.arpa")
+
+
+def is_private_host(name: str) -> bool:
+    """Whether a hostname points at this machine or a private network: loopback, an RFC 1918 /
+    link-local / reserved literal address (the cloud metadata address is link-local), or a name
+    that only resolves locally. No DNS lookup — a public name that RESOLVES to a private
+    address is out of this check's sight. Used to keep a model-chosen fetch off local services
+    (trust/quarantine.url_hold, tools/web._fetch)."""
+    name = (name or "").strip().lower().rstrip(".")
+    if is_loopback_host(name):
+        return True
+    addr = _parse_address(name)
+    if addr is None:
+        return "." not in name or name.endswith(_PRIVATE_SUFFIXES)
+    return addr.is_private or addr.is_link_local or addr.is_reserved or addr.is_multicast
 
 
 def _host_label(host: str) -> str:
@@ -125,7 +197,7 @@ def _safe_int(v) -> int:
 
 
 def record(channel: str, host: str, detail: str = "", *, provider: str = "",
-           n_bytes: int = 0, redactions: int = 0, status: str = SENT) -> None:
+           n_bytes: int = 0, status: str = SENT) -> None:
     """Append one egress event to the ledger. Best-effort and crash-proof: a junk field is coerced
     to a safe default rather than dropping the event — losing the RECORD that something left the
     machine is the one failure a boundary ledger must never have. `host`/`detail` are display
@@ -140,7 +212,6 @@ def record(channel: str, host: str, detail: str = "", *, provider: str = "",
             detail=truncate(str(detail or ""), 500),
             provider=str(provider or ""),
             n_bytes=_safe_int(n_bytes),
-            redactions=_safe_int(redactions),
             status=str(status or SENT),
             seq=_SEQ + 1,
         )
@@ -159,13 +230,13 @@ def blocked_message(host: str, channel: str = "") -> str:
     return (
         f"Air-gap is ON — this operation{what} would send data{where} over the network, which is "
         "currently blocked. Nothing was sent. The user can allow network access with "
-        "`/privacy airgap off`."
+        "`/policy airgap off`."
     )
 
 
 def check(channel: str, host: str, detail: str = "", *, provider: str = "") -> "str | None":
     """THE refusal gate for a network op — every rung of "may this leave the machine" lives here
-    (air-gap today; any future rung — an egress budget — lands here and reaches every exit).
+    (air-gap today; any future rung lands here and reaches every exit).
     Returns None when egress is allowed; on refusal, records a `blocked` event and returns the
     refusal string for the caller to hand back (tools return it to the model as their
     observation)."""
@@ -178,10 +249,10 @@ def check(channel: str, host: str, detail: str = "", *, provider: str = "") -> "
 def check_or_raise(channel: str, host: str, detail: str = "", *, subject: str = "",
                    provider: str = "") -> None:
     """The raising twin of `check()`, for the exits that CANNOT hand a refusal string back: an
-    LLM role, an embedder, a raw-mode continuation. Delegates to check() — one gate, one
+    LLM, an embedder. Delegates to check() — one gate, one
     recording site, so a future rung added inside check() refuses these exits too — then raises
-    instead of returning. `subject` names what was refused ("role 'planner' (qwen3.5:9b)",
-    "embedding", "continuing the answer on <model>") so the message stays specific.
+    instead of returning. `subject` names what was refused ("the model (qwen3.5:9b)",
+    "embedding document text") so the message stays specific.
 
     Callers must not re-implement this: an inference exit that hand-rolls the check is one the
     ledger can silently miss (and one a future rung inside check() would never reach)."""
@@ -191,13 +262,19 @@ def check_or_raise(channel: str, host: str, detail: str = "", *, subject: str = 
     raise RuntimeError(
         f"Air-gap is ON — {what} would cross the network to {host}. Nothing was sent. If "
         f"OLLAMA_HOST points off this machine, unset it to use the local daemon, or turn the "
-        f"air-gap off with `/privacy airgap off`."
+        f"air-gap off with `/policy airgap off`."
     )
 
 
 def events() -> list[EgressEvent]:
     """The ledger, oldest first (a copy — callers may filter/slice freely)."""
     return list(_LEDGER)
+
+
+def count() -> int:
+    """Boundary events this session — sends and air-gap blocks — for the status bar's egress
+    counter. Untracked runs are not counted: the bar counts what crossed or was refused."""
+    return sum(1 for e in _LEDGER if e.status != UNTRACKED)
 
 
 def next_seq() -> int:
@@ -208,7 +285,7 @@ def next_seq() -> int:
 
 def events_since(mark: int) -> list[EgressEvent]:
     """Events recorded at or after seq `mark`, oldest first. Seq-keyed (never an index into the
-    ledger) so the _MAX_EVENTS trim or a mid-session `/privacy egress clear` can't shift a
+    ledger) so the _MAX_EVENTS trim or a mid-session `/policy egress clear` can't shift a
     turn-start mark onto the wrong slice — the trust receipt must never read 'local-only' over a
     turn that actually sent."""
     out: list[EgressEvent] = []
@@ -220,18 +297,14 @@ def events_since(mark: int) -> list[EgressEvent]:
     return out
 
 
-def count() -> int:
-    """Number of egress events recorded this session (for the status-bar indicator)."""
-    return len(_LEDGER)
-
-
 def summarize_events(events) -> dict:
     """Aggregate one slice of EgressEvents — THE one accounting every per-slice trust surface
-    uses (the per-answer receipt, the Glass Box, the `/privacy egress` headline), so they can
+    uses (the per-answer receipt, the `/policy egress` headline), so they can
     never report different byte/host numbers for the same events. Returns
-    {sent, blocked, bytes, redactions, hosts (first-seen order), channels (sent, first-seen)}."""
+    {sent, blocked, untracked, bytes, hosts (first-seen order), channels (sent, first-seen)}."""
     sent = [e for e in events if getattr(e, "status", "") == SENT]
     blocked = [e for e in events if getattr(e, "status", "") == BLOCKED]
+    untracked = [e for e in events if getattr(e, "status", "") == UNTRACKED]
     hosts: list[str] = []
     channels: list[str] = []
     for e in sent:
@@ -244,16 +317,16 @@ def summarize_events(events) -> dict:
     return {
         "sent": len(sent),
         "blocked": len(blocked),
+        "untracked": len(untracked),
         "bytes": sum(_safe_int(getattr(e, "n_bytes", 0)) for e in sent),
-        "redactions": sum(_safe_int(getattr(e, "redactions", 0)) for e in sent),
         "hosts": hosts,
         "channels": channels,
     }
 
 
 def summary() -> dict:
-    """Aggregate the ledger for the `/privacy egress` headline: totals, bytes, distinct hosts,
-    blocked. Carries `cleared`: whether a `/privacy egress clear` wiped events this session —
+    """Aggregate the ledger for the `/policy egress` headline: totals, bytes, distinct hosts,
+    blocked. Carries `cleared`: whether a `/policy egress clear` wiped events this session —
     the counts are then SINCE THE CLEAR, not the whole session, and any truth-claiming consumer
     must disclose that rather than imply an understated total. The same hazard `cleared_since`
     guards for per-turn slices, surfaced here for the whole-ledger aggregation."""
@@ -266,8 +339,8 @@ def summary() -> dict:
         "total": len(_LEDGER),
         "sent": agg["sent"],
         "blocked": agg["blocked"],
+        "untracked": agg["untracked"],
         "bytes": agg["bytes"],
-        "redactions": agg["redactions"],
         "hosts": agg["hosts"],
         "by_channel": by_channel,
         "cleared": _CLEARED_AT > 0,
@@ -275,10 +348,10 @@ def summary() -> dict:
 
 
 def clear() -> None:
-    """Empty the ledger (a deliberate operator reset via `/privacy egress clear`). The seq counter
+    """Empty the ledger (a deliberate operator reset via `/policy egress clear`). The seq counter
     is NOT reset — outstanding turn-start marks must keep pointing past the cleared events, not
     get re-matched against new ones. The clear itself is remembered (cleared_since) so a per-turn
-    consumer (the Glass Box) can tell an empty slice from a clear-emptied one instead of reporting
+    consumer can tell an empty slice from a clear-emptied one instead of reporting
     'local-only' over a turn whose events were wiped."""
     global _CLEARED_AT
     _LEDGER.clear()
@@ -296,62 +369,45 @@ def cleared_since(mark: int) -> bool:
 
 
 # ── inference-locality classifier ────────────────────────────────────────────────────────────────
-# "Where do the words come from" — local (computed on this machine) vs off-machine (a cloud
-# provider, or an Ollama daemon behind a remote OLLAMA_HOST). THE one classifier: the session
-# posture line (receipt.posture_spans), `/privacy`, and the Glass Box all read this — never
-# re-rolled. Lives here because locality IS an egress question and the loopback test
-# (ollama_is_local) already lives in this module.
+# "Where do the words come from" — local (computed on this machine) vs off-machine (an Ollama
+# daemon behind a remote OLLAMA_HOST). THE one classifier: the session posture line
+# (receipt.posture_spans) and `/policy` both read this — never re-rolled.
 
 
 def _inference() -> dict:
     """Local-vs-off-machine binding map. 'local' means the words are computed ON THIS MACHINE: an
     Ollama binding only earns it when the endpoint is loopback — a remote OLLAMA_HOST is network
-    inference and classifies 'remote' (off-machine, like 'cloud'), reported with the endpoint so
-    the reader can see where."""
+    inference and classifies 'remote', reported with the endpoint so the reader can see where."""
     cfg = get_config()
     ollama_local = ollama_is_local()
     ollama_loc = "local" if ollama_local else "remote"
     bindings = []
-    for role in MODEL_ROLES:
-        try:
-            spec = cfg.model_for_role(role)
-        except KeyError:
-            continue
-        bindings.append({
-            "role": role,
-            "provider": spec.provider,
-            "model": spec.model,
-            "locality": ollama_loc if spec.provider == "ollama" else "cloud",
-        })
     try:
-        bindings.append({"role": "embedder", "provider": "ollama",
-                         "model": cfg.embedder_model, "locality": ollama_loc})
+        bindings.append({"role": "chat", "model": cfg.chat_model, "locality": ollama_loc})
+    except KeyError:
+        pass
+    try:
+        bindings.append({"role": "embedder", "model": cfg.embedder_model, "locality": ollama_loc})
     except Exception:
         pass
-    cloud = sorted({b["provider"] for b in bindings if b["locality"] == "cloud"})
-    remote = any(b["locality"] == "remote" for b in bindings)
-    out = {"bindings": bindings, "cloud_providers": cloud,
-           "all_local": not cloud and not remote}
-    if remote:
+    out = {"bindings": bindings, "all_local": ollama_local}
+    if not ollama_local:
         out["remote_ollama"] = ollama_endpoint()
     return out
 
 
 def remote_ollama_label(inf: dict) -> str:
     """The display label for a remote-Ollama destination (`ollama @ <endpoint>`) — one spelling
-    for every surface that names it (posture line, /privacy tables, the report render)."""
+    for every surface that names it (posture line, /policy tables, the report render)."""
     return f"ollama @ {inf.get('remote_ollama', '?')}"
 
 
 def offmachine_destinations(inf: "dict | None" = None) -> list[str]:
-    """The off-machine inference destinations as display labels: cloud providers plus a remote
-    Ollama endpoint (`remote_ollama_label`). THE one assembly of the where-list — the session
-    posture line (receipt.posture_spans), /privacy's verdict, all print this, so they can never
+    """The off-machine inference destinations as display labels: the remote Ollama endpoint
+    (`remote_ollama_label`) when there is one. THE one assembly of the where-list — the session
+    posture line (receipt.posture_spans), /policy's verdict, all print this, so they can never
     name different destination sets for the identical posture. Takes the classifier's dict (or
     computes it fresh); empty when everything is local."""
     if inf is None:
         inf = _inference()
-    where = list(inf.get("cloud_providers") or [])
-    if inf.get("remote_ollama"):
-        where.append(remote_ollama_label(inf))
-    return where
+    return [remote_ollama_label(inf)] if inf.get("remote_ollama") else []

@@ -63,7 +63,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest, macos-latest]
         python-version: ["3.11", "3.13"]
     runs-on: ${{ matrix.os }}
     steps:
@@ -91,7 +91,7 @@ jobs:
         run: pipx run twine check dist/*
       - name: Smoke-test the wheel in a clean venv
         env:
-          SATURDAY_HOME: ${{ runner.temp }}/saturday-home
+          SATURN_HOME: ${{ runner.temp }}/saturn-home
         run: |
           python -m venv "$RUNNER_TEMP/venv"
           "$RUNNER_TEMP/venv/bin/pip" install dist/*.whl

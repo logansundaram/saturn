@@ -2,7 +2,7 @@
 the late-steer salvage path (agent.main pushes an unconsumed steer correction at turn end so the
 user's typed words run as the next message instead of being silently dropped)."""
 
-from core.plan_ops import PauseController
+from core.pause import PauseController
 from tui.typeahead import InputQueue
 
 
@@ -15,11 +15,11 @@ def test_push_pop_fifo():
     q = _queue()
     q.push("first")
     q.push("second")
-    assert q.pending()
+    assert q._queue
     assert q.pop() == "first"
     assert q.pop() == "second"
     assert q.pop() is None
-    assert not q.pending()
+    assert not q._queue
 
 
 def test_push_ignores_blank_lines():

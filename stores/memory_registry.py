@@ -6,7 +6,7 @@ Session memory rides in the checkpointed message thread; the knowledge base live
 store; this module is the layer that survives a restart. It is deliberately ONE flat markdown
 file (`paths.memory`), not a database: human-readable, hand-editable, atomic to write, and it
 shows up in the workspace like everything else. The design is the manifest of layers, not the
-file count (PLAN.md, "memory as the learning layer", 2026-09-02):
+file count:
 
   layer         holds                                        loaded into context
   ─────────────────────────────────────────────────────────────────────────────────────────
@@ -21,20 +21,23 @@ file count (PLAN.md, "memory as the learning layer", 2026-09-02):
   negative      approaches rejected, questions not to re-ask  by match
 
 Every fact carries a metadata token `{#id by=user|inferred run=<run_id> used=<date> n=<count>
-sens=<mark> due=<date>}` at the end of its bullet: learned-on (the date prefix), the run it came
-from (provenance to /trace why), whether the user said it or the review inferred it, last-used
-(the expiry signal for never-matched facts), confirmed-count (an inferred fact graduates to
-trusted when the user re-states it), a sensitivity mark (a sensitive fact is withheld from a
-prompt bound for a remote inference host), and a due date for commitments. Missing tokens are
+sens=<mark> due=<date> src=<how>}` at the end of its bullet: learned-on (the date prefix), the
+run it came from (provenance to /trace why), whether the user said it or the review inferred
+it, last-used (the expiry signal for never-matched facts), confirmed-count (an inferred fact
+graduates to trusted when the user re-states it), a sensitivity mark (a sensitive fact is
+withheld from a prompt bound for a remote inference host), a due date for commitments, and how
+a by=user fact arrived without a prompt (src=said for auto-learn, src=setup:<question> for the
+first-run interview). Missing tokens are
 tolerated — a hand-written bullet is a user-layer fact with defaults — and the next write fills
 them in. A file written before the layers existed (bullets, no `## layer` headings) reads as the
 user layer and is migrated on its next write.
 
 The `remember` / `recall` tools and `/memory` are thin wrappers over `add_memory` /
-`search_memory` / `edit_memory` / `remove_memory`; the grounding node calls `memory_context`
+`search_memory` / `edit_memory` / `remove_memory`; the grounding node calls `memory_context_split`
 with the current request so selection stays auditable (`/trace context` shows exactly what
 loaded). No FACT is written without a caller that the user drove (a tool call that faced the
-gate, a slash command, or the review screen's accept); the one read-path write is `mark_used`,
+gate or whose every word the user typed — core/auto_memory — a slash command, the first-run
+interview, or the review screen's accept); the one read-path write is `mark_used`,
 which stamps last-used on the facts a turn loaded and changes nothing else.
 
 Hand-editing: bullets and `## layer` headings are the file. Prose outside them (the header, a
@@ -50,6 +53,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 from config import get_config
+from textutil import visible_text
 
 LAYERS = ("user", "commitments", "memo", "agent", "entities", "negative")
 
@@ -71,7 +75,7 @@ _LAYER_ALIASES = {
 _ALWAYS_LAYERS = ("user", "commitments")
 _MEMO_DIGEST = 5
 
-_DEFAULT_CONTEXT_CAP = 4000   # chars — the same order as SATURDAY.md's 6000 (nodes/ground.py)
+_DEFAULT_CONTEXT_CAP = 4000   # chars — the same order as SATURN.md's 6000 (nodes/ground.py)
 _DEFAULT_STALE_DAYS = 90      # a by-match fact unused this long is flagged stale in /memory
 
 
@@ -130,8 +134,6 @@ def normalize_layer(name) -> str:
 
 # ── parsing ───────────────────────────────────────────────────────────────────────────────────
 
-# The "(YYYY-MM-DD) [category] " prefix add_memory writes; stripped so dedup compares bare facts.
-_PREFIX_RE = re.compile(r"^\(\d{4}-\d{2}-\d{2}\)\s*(?:\[[^\]]*\]\s*)?")
 _DATE_RE = re.compile(r"^\((\d{4}-\d{2}-\d{2})\)\s*")
 _CATEGORY_RE = re.compile(r"^\[([^\]]*)\]\s*")
 # The trailing metadata token: `{#12 by=user run=7 used=2026-09-02 n=2 sens=health due=...}`.
@@ -143,13 +145,8 @@ _HEADING_RE = re.compile(r"^##\s+(.+?)\s*$")
 _NEXT_ID_RE = re.compile(r"^<!--\s*next-id:\s*(\d+)\s*-->\s*$")
 
 
-def _fact_text(stored: str) -> str:
-    """Strip the date/category prefix from a stored fact line, leaving the bare fact text."""
-    return _PREFIX_RE.sub("", stored).strip()
-
-
 def _new_entry(text: str, *, layer: str = "user", category: str = "general", by: str = "user",
-               run_id=None, sensitivity=None, due=None, day: str | None = None) -> dict:
+               run_id=None, sensitivity=None, due=None, src=None, day: str | None = None) -> dict:
     return {
         "id": None,
         "layer": layer,
@@ -162,6 +159,7 @@ def _new_entry(text: str, *, layer: str = "user", category: str = "general", by:
         "n": 1,
         "sens": sensitivity or None,
         "due": due or None,
+        "src": src or None,
     }
 
 
@@ -187,11 +185,19 @@ def _parse_bullet(line: str, layer: str) -> dict | None:
                 entry["sens"] = v
             elif k == "due":
                 entry["due"] = v
+            elif k == "src":
+                entry["src"] = v
         body = body[: m.start()].rstrip()
     d = _DATE_RE.match(body)
     if d:
         entry["date"] = d.group(1)
         body = body[d.end():]
+    else:
+        # A hand-written bullet: `date` is already today (_new_entry) and the next write
+        # stamps it. Until then the model is shown no day for it (_context_line) — "today,
+        # every day" would outrank every dated fact and change the cached stable prefix at
+        # each midnight.
+        entry["undated"] = True
     c = _CATEGORY_RE.match(body)
     if c:
         entry["category"] = " ".join(c.group(1).split()) or "general"
@@ -272,6 +278,8 @@ def _meta_token(e: dict) -> str:
         parts.append(f"sens={_token_safe(e['sens'])}")
     if e.get("due"):
         parts.append(f"due={_token_safe(e['due'])}")
+    if e.get("src"):
+        parts.append(f"src={_token_safe(e['src'])}")
     return "{" + " ".join(parts) + "}"
 
 
@@ -328,28 +336,116 @@ def _clean_text(fact) -> str:
     # is one fact per bullet: a model-supplied multi-line fact written verbatim would leave
     # continuation lines the parser never sees. Collapsing ALL whitespace runs keeps dedup
     # comparing the same form a reflowed duplicate arrives in. A stray `{#…}` token inside the
-    # text would be parsed back as metadata, so its braces are softened.
-    text = " ".join(str(fact or "").split())
+    # text would be parsed back as metadata, so its braces are softened. The fact is stored as
+    # the approval gate would show it (`textutil.visible_text`): /memory add and the review
+    # screen print it on a console that shows controls but not a tag, zero-width or bidi
+    # character, and text nobody saw must not ride every later turn's context.
+    text = " ".join(visible_text(str(fact or "")).split())
     return text.replace("{#", "(#").replace("}", ")") if "{#" in text else text
 
 
 def _clean_category(category) -> str:
-    # The category rides inside the "[category] " prefix _PREFIX_RE parses: a newline breaks the
-    # bullet line and a "]" terminates the [^\]]* group early. A category that sanitizes to
-    # nothing falls back to the untagged default.
-    return " ".join(str(category or "").split()).replace("]", "").strip() or "general"
+    # The category rides inside the bullet's "[category] " prefix: a newline breaks the bullet
+    # line and a "]" would end the tag early. Terminal controls and unseen characters become
+    # symbols, as in the fact itself (`_clean_text`). A category that sanitizes to nothing
+    # falls back to the untagged default.
+    return (" ".join(visible_text(str(category or "")).split()).replace("]", "").strip()
+            or "general")
+
+
+# ── secrets are never saved ───────────────────────────────────────────────────────────────────
+# The memory file is plain text, is read into every prompt, and leaves the machine under a
+# remote OLLAMA_HOST. So no Saturn path writes a credential into it — not the model's
+# `remember`, not a review accept, not /memory add or /memory edit (add_memory and edit_memory
+# are the two writers of fact text, and both ask here; the category is screened with the fact).
+# Deterministic, recognisable shapes only — a secret written some other way gets through, so
+# this is a net, not a promise. Health and money are the user's own facts and are handled by
+# `sens=`, not refused. Editing the file by hand is the user's business.
+_CARD_RE = re.compile(r"(?<![\w-])\d(?:[ .-]?\d){12,18}(?![\w-])")
+_SSN_RE = re.compile(r"(?<![\d-])\d{3}-\d{2}-\d{4}(?![\d-])"
+                     r"|\b(?:ssn|social security)\b\D{0,24}\d{3}[ -]?\d{2}[ -]?\d{4}(?!\d)",
+                     re.IGNORECASE)
+_PRIVATE_KEY_RE = re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")
+_API_KEY_RE = re.compile(r"(?<![A-Za-z0-9])(?:sk[-_][A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{30,}"
+                         r"|github_pat_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{30,}"
+                         r"|xox[baprs]-[A-Za-z0-9-]{10,})")
+# "password is hunter2", "password: hunter2", "wifi password for home is hunter2" — the value
+# follows is/:/= within a few words; or "wifi password hunter2" — it follows directly and does
+# not look like a word (a digit or a symbol in it).
+_PASSWORD_SAID_RE = re.compile(
+    r"\b(?:password|passcode|passphrase)\b(?:\s+\w+){0,4}?\s*(?:\b(?:is|was)\b\s*[:=]?|[:=])"
+    r"\s*[\"']?([^\s\"']+)", re.IGNORECASE)
+_PASSWORD_BARE_RE = re.compile(
+    r"\b(?:password|passcode|passphrase)\s+[\"']?((?=\S*[\d!@#$%^&*+=_])[^\s\"']{4,})",
+    re.IGNORECASE)
+_PIN_RE = re.compile(r"\bpin\b(?:\s+\w+){0,4}?\s*(?:\b(?:is|was)\b\s*[:=]?|[:=])\s*\d{4,8}\b"
+                     r"|(?-i:\bPIN)\s+\d{4,8}\b", re.IGNORECASE)   # bare form: capitals only
+# What may follow "the password is …" without being the password itself.
+_NOT_A_PASSWORD = frozenset("""
+in on at the a an my our stored saved kept written not same different too weak strong long
+short there here what where with for under inside changed expired wrong correct unknown
+required needed optional mandatory set reset protected empty blank missing safe secure
+""".split())
+
+
+class SecretRefused(ValueError):
+    """A fact was refused because it holds a credential. `str(exc)` is the sentence to show."""
+
+
+def _luhn(digits: str) -> bool:
+    total = 0
+    for i, ch in enumerate(reversed(digits)):
+        d = int(ch)
+        if i % 2:
+            d = d * 2 - 9 if d > 4 else d * 2
+        total += d
+    return total % 10 == 0
+
+
+def secret_problem(text) -> "str | None":
+    """What kind of credential `text` holds ("a card number", "a password", …), or None."""
+    text = str(text or "")
+    if _PRIVATE_KEY_RE.search(text):
+        return "a private key"
+    if _API_KEY_RE.search(text):
+        return "an API key"
+    for m in _CARD_RE.finditer(text):
+        if _luhn(re.sub(r"\D", "", m.group(0))):
+            return "a card number"
+    if _SSN_RE.search(text):
+        return "a Social Security number"
+    if _PIN_RE.search(text):
+        return "a PIN"
+    if _PASSWORD_BARE_RE.search(text):
+        return "a password"
+    for m in _PASSWORD_SAID_RE.finditer(text):
+        if m.group(1).lower().strip(".,;:") not in _NOT_A_PASSWORD:
+            return "a password"
+    return None
+
+
+def _refuse_secret(text: str) -> None:
+    what = secret_problem(text)
+    if what:
+        raise SecretRefused(f"not saved — this looks like it holds {what}. Saturn never writes "
+                            "a secret to memory: the file is plain text and is read into every "
+                            "prompt.")
 
 
 def add_memory(fact: str, category: str = "general", *, layer: str = "user", replaces=None,
-               by: str = "user", run_id=None, sensitivity=None, due=None) -> str:
+               by: str = "user", run_id=None, sensitivity=None, due=None, src=None) -> str:
     """Append a durable fact to `layer`. A fact already stored (same text, any layer) is not
     duplicated — its confirmed-count rises, and an inferred fact the user now states outright
     graduates to trusted. `replaces=<id>` supersedes an earlier fact instead of sitting beside it
-    ("I moved to Berlin" replaces "I live in Paris"). Returns a one-line report."""
+    ("I moved to Berlin" replaces "I live in Paris"). `src` says how a by=user fact arrived
+    without a prompt — `said` (auto-learn: the user typed it in conversation, core/auto_memory)
+    or `setup:<question>` (the first-run interview); None for the gate, /memory add and the
+    review. Returns a one-line report."""
     fact = _clean_text(fact)
     if not fact:
         return "Nothing to remember — the fact was empty."
     category = _clean_category(category)
+    _refuse_secret(f"{category} {fact}")     # the category is written into the file too
     layer = normalize_layer(layer)
 
     entries, next_id = _read_state()
@@ -383,12 +479,14 @@ def add_memory(fact: str, category: str = "general", *, layer: str = "user", rep
                 e["by"] = "user"
             if sensitivity and not e.get("sens"):
                 e["sens"] = sensitivity
+            if src and not e.get("src"):
+                e["src"] = src
             _write(entries, next_id)
             note = " — now confirmed by you" if graduated else f" (confirmed ×{e['n']})"
             return f"Already remembered as #{e['id']}{note}: {fact!r}{replaced_note}"
 
     new = _new_entry(fact, layer=layer, category=category, by=by, run_id=run_id,
-                     sensitivity=sensitivity, due=due)
+                     sensitivity=sensitivity, due=due, src=src)
     if replaced is not None and replaced["layer"] != "user" and layer == "user":
         new["layer"] = replaced["layer"]  # a replacement stays in the layer it corrects
     entries.append(new)
@@ -402,6 +500,7 @@ def edit_memory(fact_id: int, new_text: str) -> str | None:
     text = _clean_text(new_text)
     if not text:
         return None
+    _refuse_secret(text)
     entries, next_id = _read_state()
     for e in entries:
         if e.get("id") == fact_id:
@@ -464,12 +563,6 @@ def entry(fact_id: int) -> dict | None:
         if e.get("id") == fact_id:
             return e
     return None
-
-
-def list_memory() -> list[str]:
-    """The stored fact lines (`(date) [category] text`, no metadata token), in file order. The
-    pre-layer shape; /memory's grouped listing reads `entries()` instead."""
-    return [_display(e) for e in _entries()]
 
 
 def search_memory(query: str = "", *, local_inference: bool | None = None) -> list[str]:
@@ -618,13 +711,18 @@ def select_for_context(query: str = "", *, cap: int | None = None,
 
 def _context_line(e: dict) -> str:
     """One fact as the model sees it: the id (so `remember(..., replaces=<id>)` can supersede
-    it), a date where recency matters (memo, commitments), the due date of a commitment, and the
-    layer tag for the by-match facts (so a `negative` fact reads as a prohibition)."""
+    it), the day it was written (the one deterministic signal for which of two facts is
+    current — a small model otherwise follows whichever stored value it reads; spec
+    2026-10-04-know-the-user A1), the layer tag for the by-match facts (so a `negative` fact
+    reads as a prohibition), `[inferred]` on a fact the user accepted but did not state, and the
+    due date of a commitment."""
     bits = [f"- #{e['id'] or '?'}"]
-    if e["layer"] in ("memo", "commitments"):
+    if e.get("date") and not e.get("undated"):
         bits.append(f"({e['date']})")
     if e["layer"] not in ("user",):
         bits.append(f"[{e['layer']}]")
+    if e.get("by") == "inferred":
+        bits.append("[inferred]")
     bits.append(e["text"])
     if e.get("due"):
         bits.append(f"(due {e['due']})")
@@ -652,18 +750,6 @@ def memory_context_split(query: str = "") -> "tuple[str, str, list[int]]":
     if trailer:
         matched.append("(" + "; ".join(trailer) + " — `recall` searches everything else stored)")
     return "\n".join(always), "\n".join(matched), selected_ids(sel)
-
-
-def memory_context(query: str = "") -> "tuple[str, list[int]]":
-    """`memory_context_split` as one block: `(block, matched_ids)` — the always half first,
-    then the by-match half ("" when nothing is stored)."""
-    always, matched, ids = memory_context_split(query)
-    return "\n".join(b for b in (always, matched) if b), ids
-
-
-def read_memory_block(query: str = "") -> str:
-    """The grounding block alone (see memory_context)."""
-    return memory_context(query)[0]
 
 
 def selected_ids(sel: dict) -> list[int]:

@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from functools import cache
 from typing import Callable
 
+from textutil import visible_controls
+
 
 @dataclass
 class CommandContext:
@@ -14,23 +16,13 @@ class CommandContext:
     reassign via `ctx.state = ...`), and flip `should_quit` to end the loop.
 
     `make_initial_state` is injected so handlers don't import from `agent.py` (which would
-    be circular) — it's how `/reset` gets a clean state without knowing its shape."""
+    be circular) — it's how `/clear` gets a clean state without knowing its shape."""
 
     state: dict
     make_initial_state: Callable[[], dict]
     db_path: str
     show_ui: bool = True
     should_quit: bool = False
-    # Persistent plan-review mode: when on, every turn pauses at the first plan_gate.
-    review_plan: bool = False
-    # A user-drafted plan composed via /draft, waiting for its request: the REPL seeds it
-    # into the NEXT turn's state (plan_node honors a pre-seeded plan and skips drafting), then
-    # clears it — one draft, one turn. None = nothing drafted.
-    pending_plan: list | None = None
-    # A turn a command asked the REPL to run next, with its engine forced: ("quick"|"plan",
-    # request) from `/quick <request>` / `/plan <request>` (the complexity check's overrides,
-    # nodes/quick.route_after_ground). The REPL consumes it right after dispatch. None = nothing.
-    pending_turn: tuple | None = None
 
 
 Handler = Callable[["CommandContext", list[str]], None]
@@ -80,6 +72,13 @@ def is_command(line: str) -> bool:
     return line.lstrip().startswith("/")
 
 
+def resolves(key: str) -> bool:
+    """Whether `/key` is Saturn's own: a command, an alias, or a renamed command's pointer. A
+    user's skill of the same name never runs — the built-in always wins (core/skills)."""
+    key = str(key or "").lower()
+    return key in COMMANDS or key in _ALIASES or key in _RENAMED
+
+
 @cache
 def command_completions() -> list[tuple[str, str]]:
     """(token, summary) pairs for every invocable command — canonical names and aliases."""
@@ -92,66 +91,34 @@ def command_completions() -> list[tuple[str, str]]:
 
 
 def _print(line: str = "") -> None:
-    print(line)
+    # Slash-command output carries stored text (memory facts, trace records, MCP descriptions,
+    # egress hosts): terminal controls in it are made visible, never sent to the terminal.
+    print(visible_controls(line))
 
 
 _HELP_FLAGS = {"--help", "-h"}
 
 # Old command names -> where the behaviour lives now. Typing one prints a pointer instead of a
-# bare "unknown command", so muscle memory from before the /docs consolidation lands softly.
+# bare "unknown command", so muscle memory lands softly. A pointer lives for one release.
 _RENAMED = {
-    "ingest": "docs add",
-    "forget": "docs remove",
-    "remove": "docs remove",
-    "reingest": "docs sync --force",
-    # June 2026 focus pass: overlapping readouts + session commands consolidated.
-    "workspace": "docs",
-    "ws": "docs",
-    "system": "config context",
-    "sys": "config context",
-    "save": "resume save",
-    "load": "resume",
-    # June 2026 trust-surface consolidation: the boundary commands fold into the /privacy front
-    # door; /why becomes a /trace subview (both read the same trace DB).
-    "egress": "privacy egress",
-    "airgap": "privacy airgap",
-    # ("redact" pointed at /privacy redact until that subcommand was CUT 2026-07-16 — a cut
-    # feature leaves no pointer; the knob survives as /config runtime.redaction.)
-    "why": "trace why",
-    # /commands was never a real command — point the habit at the command list.
-    "commands": "help",
-    "cmds": "help",
-    # /dryrun CUT 2026-07-03 — /plan review + the per-call gate are the surviving
-    # intent-before-execution surfaces.
-    "dryrun": "plan review",
-    "dry": "plan review",
-    # 2026-07-06 surface trim: the legacy top-level gate spellings fold into /policy for good.
-    # They were already thin delegations to the /policy handlers; now the pointer is the only
-    # stub — one spelling to learn, zero parallel registrations to audit.
-    "risk": "policy risk",
-    "allow": "policy allow",
-    "autoapprove": "policy open",
-    "yolo": "policy open",
-    # 2026-07-07 command fold: three surfaces collapsed into their canonical homes — the Glass Box
-    # and the citation drill-down become /trace subviews (both already read the same trace DB /
-    # accumulators), and the runtime readout joins /config (the one runtime-settings front door).
-    "glass": "trace answer",
-    "glassbox": "trace answer",
-    "source": "trace source",
-    "sources": "trace source",
-    "context": "config context",
-    "ctx": "config context",
+    "plan": "help",
+    # Args are not forwarded, so a `/privacy …` pointer never runs (or flips) anything.
+    "privacy": "policy",
 }
 
 # A second, parenthesized line for redirects whose one-line pointer doesn't tell the whole story.
-_DRYRUN_NOTE = ("dry-run mode was removed — /plan review pauses at every step boundary, and the "
-                "approval gate shows every gated call before it runs")
-_RENAMED_NOTES: dict[str, str] = {"dryrun": _DRYRUN_NOTE, "dry": _DRYRUN_NOTE}
+_RENAMED_NOTES: dict[str, str] = {
+    "plan": ("the plan engine was removed in v2 — Esc pauses a running turn (Enter continues, "
+             "typed text steers it, q aborts), and the approval gate shows every gated call "
+             "before it runs"),
+    "privacy": ("the ledger is /policy egress, the seal /policy airgap; bare /policy "
+                "shows the whole posture"),
+}
 
 
 def _print_renamed(key: str) -> bool:
     """Print the moved-pointer for a legacy command name — the SAME line whether it arrives via
-    dispatch (`/why`) or `/help why`, so neither spelling dead-ends. True when `key` was renamed."""
+    dispatch (`/privacy`) or `/help privacy`, so neither spelling dead-ends. True when `key` was renamed."""
     moved = _RENAMED.get(key)
     if not moved:
         return False

@@ -1,15 +1,17 @@
+import csv
 import hashlib
+import io
 import json
 import re
 import shutil
 import time
-from collections import Counter
 from pathlib import Path
 
 from langchain_core.vectorstores import InMemoryVectorStore
 from langchain_core.documents import Document
 
 from config import get_config
+from core.doctext import docx_to_text, pdf_pages
 from core.llms import get_embeddings
 from stores.document_registry import (
     manifest_entries,
@@ -22,7 +24,7 @@ from stores.document_registry import (
 # What the corpus ingests. Text formats load directly; PDFs are cleaned (furniture/hyphenation);
 # HTML goes through trafilatura (already a dependency for web_extract) with a tag-strip fallback;
 # CSV is prefixed with a column summary so chunks keep their schema; DOCX needs python-docx
-# (requirements.txt) and fails that one file with a clear message when it's missing.
+# (core/doctext.py) and fails that one file with a clear message when it's missing.
 SUPPORTED_EXTENSIONS = {".txt", ".md", ".pdf", ".html", ".htm", ".csv", ".docx"}
 
 
@@ -202,62 +204,6 @@ def retrieval_k() -> int:
     return int(get_config().get("rag.k", 6))
 
 
-# ── PDF text cleanup ──────────────────────────────────────────────────────────────────────────
-# pypdf's raw extraction keeps page furniture (running headers/footers, page numbers) and hard
-# line breaks mid-word. Both poison retrieval: furniture lines repeat into many chunks and match
-# everything weakly; split words match nothing. Cleaned BEFORE chunking so the vectors only ever
-# see content.
-_DIGITS_RE = re.compile(r"\d+")
-
-
-def _furniture_key(line: str) -> str:
-    """Normalize a candidate header/footer line for cross-page comparison: digits collapse so
-    'Page 3 of 12' and 'Page 4 of 12' read as the same repeated line."""
-    return _DIGITS_RE.sub("#", line.strip().lower())
-
-
-def _strip_repeated_furniture(pages: list[str], edge: int = 2, ratio: float = 0.6) -> list[str]:
-    """Drop running headers/footers: a (digit-normalized) line that opens or closes most pages is
-    page furniture, not content. Only the `edge` outermost lines of each page are candidates, so a
-    sentence legitimately repeated mid-page is never touched. No-op for short documents (<3 pages),
-    where 'repeated across pages' isn't meaningful."""
-    if len(pages) < 3:
-        return pages
-    heads: Counter = Counter()
-    feet: Counter = Counter()
-    split_pages = [p.splitlines() for p in pages]
-    edges = []  # per page: (head line indices, foot line indices) — the furniture candidates
-    for lines in split_pages:
-        content_idx = [i for i, ln in enumerate(lines) if ln.strip()]
-        head_idx, foot_idx = content_idx[:edge], content_idx[-edge:]
-        edges.append((head_idx, foot_idx))
-        for i in head_idx:
-            heads[_furniture_key(lines[i])] += 1
-        for i in foot_idx:
-            feet[_furniture_key(lines[i])] += 1
-    threshold = max(3, int(len(pages) * ratio))
-    head_junk = {k for k, c in heads.items() if c >= threshold}
-    foot_junk = {k for k, c in feet.items() if c >= threshold}
-    if not head_junk and not foot_junk:
-        return pages
-
-    cleaned = []
-    for lines, (head_idx, foot_idx) in zip(split_pages, edges):
-        drop = {i for i in head_idx if _furniture_key(lines[i]) in head_junk}
-        drop |= {i for i in foot_idx if _furniture_key(lines[i]) in foot_junk}
-        cleaned.append("\n".join(ln for i, ln in enumerate(lines) if i not in drop))
-    return cleaned
-
-
-def _normalize_pdf_text(text: str) -> str:
-    """Repair extraction artifacts: rejoin words hyphenated across line breaks, strip trailing
-    whitespace, collapse blank-line runs."""
-    text = re.sub(r"(\w)-\n(\w)", r"\1\2", text)
-    text = re.sub(r"[ \t]+\n", "\n", text)
-    text = re.sub(r"\n{3,}", "\n\n", text)
-    return text.strip()
-
-
 # Markdown heading levels that become section breadcrumbs on a chunk (deeper levels stay inline).
 _MD_HEADERS = [("#", "h1"), ("##", "h2"), ("###", "h3")]
 
@@ -289,36 +235,13 @@ def _csv_to_text(raw: str) -> str:
     including ones far from the first row — can be traced back to the schema. The rows themselves
     stay verbatim (the chunker splits long files; values are what retrieval matches on)."""
     try:
-        import csv as _csv
-        import io
-
-        first = next(_csv.reader(io.StringIO(raw)), None)
+        first = next(csv.reader(io.StringIO(raw)), None)
         if first and any(c.strip() for c in first):
             cols = ", ".join(c.strip() for c in first if c.strip())
             return f"[columns: {cols}]\n{raw}"
     except Exception:
         pass
     return raw
-
-
-def _docx_to_text(path: Path) -> str:
-    """Text from a .docx: paragraphs in order, plus table cells row by row (tab-joined) — the two
-    places Word documents keep their prose. Needs python-docx; a missing package raises a clear,
-    actionable error that sync() reports for THIS file while the rest of the corpus proceeds."""
-    try:
-        import docx  # python-docx
-    except ImportError as exc:
-        raise RuntimeError(
-            "reading .docx needs the python-docx package — run `pip install python-docx`"
-        ) from exc
-    d = docx.Document(str(path))
-    parts = [p.text for p in d.paragraphs if p.text.strip()]
-    for table in d.tables:
-        for row in table.rows:
-            cells = [c.text.strip() for c in row.cells if c.text.strip()]
-            if cells:
-                parts.append("\t".join(cells))
-    return "\n\n".join(parts)
 
 
 def _load_file_docs(path: Path):
@@ -336,11 +259,7 @@ def _load_file_docs(path: Path):
     suffix = path.suffix.lower()
     docs = []
     if suffix == ".pdf":
-        import pypdf  # lazy (~56ms): only a PDF ingest needs it, never a plain launch
-
-        reader = pypdf.PdfReader(str(path))
-        raw_pages = [page.extract_text() or "" for page in reader.pages]
-        page_texts = [_normalize_pdf_text(t) for t in _strip_repeated_furniture(raw_pages)]
+        page_texts = pdf_pages(path)
         for page_num, text in enumerate(page_texts):
             if text.strip():
                 docs.append(
@@ -360,7 +279,7 @@ def _load_file_docs(path: Path):
         full_text = _csv_to_text(path.read_text(encoding="utf-8", errors="replace"))
         docs.append(Document(page_content=full_text, metadata={"source": source}))
     elif suffix == ".docx":
-        full_text = _docx_to_text(path)
+        full_text = docx_to_text(path)
         docs.append(Document(page_content=full_text, metadata={"source": source}))
     else:
         full_text = path.read_text(encoding="utf-8", errors="replace")
@@ -459,14 +378,14 @@ def sync(*, force: bool = False, verbose: bool = True, on_file=None) -> dict:
 
     Loads the cached store, then by content hash: embeds new/changed files, drops vectors +
     manifest entries for removed files, and leaves unchanged files alone. An embedder OR
-    chunking-config change (or `force=True`, used by /docs sync --force) triggers a full
+    chunking-config change (or `force=True`, used by /docs rebuild) triggers a full
     re-embed. The manifest is additionally reconciled against disk directly, so a removed file
     loses its manifest entry even on a full rebuild (where the index was just reset and cannot
     name it). Re-dumps the store and rewrites the index only when something actually changed.
     Returns a stats dict: added / updated / removed / unchanged / rebuilt.
 
     `on_file(source, i, n)` (optional) is called before each file is embedded — the progress
-    hook the /docs sync command renders, so a long re-embed isn't silent.
+    hook /docs rebuild renders, so a long re-embed isn't silent.
 
     A startup whose corpus hasn't changed does zero embedding calls — that's the whole point."""
     embedder = get_config().embedder_model
@@ -520,9 +439,9 @@ def sync(*, force: bool = False, verbose: bool = True, on_file=None) -> dict:
 
     # Manifest orphans: entries for documents no longer on disk that the index walk above cannot
     # see. On a full rebuild `files` was just reset to {} (and a wiped cache/ dir — documented
-    # "safe to delete" — has no index at all), so a deleted document's manifest block + cached
-    # summary would otherwise survive forever: the fresh index only records on-disk files, so no
-    # FUTURE sync would notice the orphan either. Reconcile the manifest against disk directly.
+    # "safe to delete" — has no index at all), so a deleted document's manifest block would
+    # otherwise survive forever: the fresh index only records on-disk files, so no FUTURE sync
+    # would notice the orphan either. Reconcile the manifest against disk directly.
     # Vectors need no cleanup here — a rebuilt store starts empty, and the loop above already
     # deleted every indexed source's chunks. An orphan is, by definition, absent from `files`,
     # so this pass never touches the store or the index.
@@ -540,19 +459,17 @@ def sync(*, force: bool = False, verbose: bool = True, on_file=None) -> dict:
         entry = files.get(source)
         stat = _stat_key(path)
         if _unchanged(entry, stat):
-            # Size and mtime both match what was recorded — skip reading the file at all. This is
-            # the whole-corpus common case on every launch; hashing it meant a full read of every
-            # document under the splash.
+            # Size and mtime both match what was recorded — skip reading the file at all (the
+            # whole-corpus common case on every launch).
             stats["unchanged"] += 1
             continue
         h = _file_hash(path)
         if entry and entry.get("hash") == h:
             # Same bytes after all: a touched file, an entry written before stat keys were
             # recorded, or one still inside the racy window. Backfill the stat so the NEXT sync
-            # can skip the read — but only when there IS a stat to record (a None stat merged
-            # nothing, yet used to flag `backfilled` and rewrite the index on every launch) AND
-            # the racy window has passed (a backfill inside it would be untrusted by _unchanged
-            # anyway, so writing it only rewrote the index on every sync until it aged).
+            # can skip the read — but only when there IS a stat to record AND the racy window has
+            # passed (a backfill inside it would be untrusted by _unchanged anyway); otherwise
+            # the index would be rewritten on every launch for nothing.
             if stat and stat["mtime_ns"] + _RACY_WINDOW_NS <= time.time_ns():
                 files[source] = {**entry, **stat, "indexed_at_ns": time.time_ns()}
                 backfilled = True
@@ -566,7 +483,7 @@ def sync(*, force: bool = False, verbose: bool = True, on_file=None) -> dict:
         # Load BEFORE deleting the old vectors: if the loader fails (corrupt file, missing
         # optional package), the previously-embedded version stays searchable and the failure is
         # reported per-file instead of aborting the sync for the whole corpus. An EMBEDDING
-        # failure (daemon down) still raises out as before — nothing can proceed without it.
+        # failure (daemon down) still raises — nothing can proceed without it.
         try:
             screened = _SCREENED.pop(h, None)
             if screened is not None:
@@ -599,8 +516,7 @@ def sync(*, force: bool = False, verbose: bool = True, on_file=None) -> dict:
     # a startup whose corpus hasn't changed — must not rewrite a multi-MB vectors.json on every
     # launch: besides the waste, each rewrite widens the crash window in which a kill mid-write
     # leaves a truncated dump that _load_store() treats as corrupt, silently forcing a full
-    # re-embed of the whole corpus next run. Behavior-preserving: an unchanged store/index
-    # round-trips to identical content anyway. Manifest-orphan cleanup above deliberately does
+    # re-embed of the whole corpus next run. Manifest-orphan cleanup above deliberately does
     # not trigger a rewrite (it changes neither the store nor `files`).
     if full_rebuild or to_embed or removed_sources:
         store.dump(str(_store_path()))
@@ -672,10 +588,9 @@ def forget_document(name: str) -> bool:
     vectors + manifest entry. Returns False if no matching file exists."""
     root = documents_dir().resolve()
     target = (root / name).resolve()
-    # The corpus is the jail. This is the only file-DELETING path in the repo that did not route
-    # through a sandbox resolver: `root / "../secret.txt"` resolved outside and was unlinked.
-    # Not reachable from /docs remove (the handler basenames its input first), but the guard
-    # belongs in the primitive, not in the one caller that happens to be careful.
+    # The corpus is the jail: `root / "../secret.txt"` must never resolve outside and be
+    # unlinked. /docs remove basenames its input first, but the guard belongs in the primitive,
+    # not in the one caller that happens to be careful.
     if not target.is_relative_to(root) or not target.exists():
         matches = [p for p in iter_documents() if p.name == Path(str(name)).name]
         if not matches:

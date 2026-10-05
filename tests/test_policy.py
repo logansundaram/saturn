@@ -111,10 +111,10 @@ def test_shell_allowed_routes_through_the_one_screen(isolated_paths, monkeypatch
 
 def test_risk_override_roundtrip(isolated_paths):
     assert policy.risk_overrides() == {}
-    policy.set_risk_override("run_shell", "side_effecting")
-    assert policy.risk_overrides() == {"run_shell": "side_effecting"}
-    assert policy.clear_risk_override("run_shell")
-    assert not policy.clear_risk_override("run_shell")  # already gone
+    policy.set_risk_override("web_search", "side_effecting")
+    assert policy.risk_overrides() == {"web_search": "side_effecting"}
+    assert policy.clear_risk_override("web_search")
+    assert not policy.clear_risk_override("web_search")  # already gone
     assert policy.risk_overrides() == {}
 
 
@@ -201,6 +201,27 @@ def test_approves_tier_threshold_and_allowlist(isolated_paths):
         _restore_tier(prev)
 
 
+def test_airgap_holds_the_shell_and_mcp_for_the_human(isolated_paths, monkeypatch):
+    """Air-gap cannot see inside a shell command or an MCP server process, so under it neither
+    is ever auto-approved — not by an allowlisted prefix, not by an open gate. Every other tool
+    keeps its tier."""
+    from config import get_config
+
+    prev = policy.tier()
+    try:
+        policy.add_shell_allow("git pull")
+        policy.set_tier("destructive")
+        assert policy.approves("run_shell", "destructive", {"command": "git pull"})
+        monkeypatch.setitem(get_config()._data["runtime"], "airgap", True)
+        assert policy.airgap_holds("run_shell") and policy.airgap_holds("mcp_srv_post")
+        assert not policy.airgap_holds("write_file")
+        assert not policy.approves("run_shell", "destructive", {"command": "git pull"})
+        assert not policy.approves("mcp_srv_post", "read_only", {})
+        assert policy.approves("write_file", "side_effecting", {})
+    finally:
+        _restore_tier(prev)
+
+
 def test_set_gate_off_round_trip_restores_threshold(isolated_paths):
     """/autoapprove is a view of the threshold: on -> destructive (everything approves),
     off -> the PREVIOUS threshold, not a guess."""
@@ -214,9 +235,9 @@ def test_set_gate_off_round_trip_restores_threshold(isolated_paths):
         policy.set_gate_off(False)
         assert not policy.gate_off()
         assert policy.tier() == "side_effecting"
-        # Turning it off twice (or with nothing recorded) fails closed to read_only.
+        # Turning it off again is a no-op: the gate is not open, so there is nothing to restore.
         policy.set_gate_off(False)
-        assert policy.tier() == "read_only"
+        assert policy.tier() == "side_effecting"
     finally:
         _restore_tier(prev)
 
@@ -230,7 +251,7 @@ def test_set_tier_unknown_fails_closed(isolated_paths):
         _restore_tier(prev)
 
 
-# --- the argument-tail screen (transplanted from the gating isolate) -------------------------
+# --- the argument-tail screen ---------------------------------------------------------------
 #
 # A token-prefix grant validated only its HEAD, so `git log --output=<abs>` and
 # `git -c core.pager=!sh -c id` rode in on a benign-looking grant. The screen re-runs at USE
@@ -265,7 +286,7 @@ def test_arg_tail_screen_is_defense_in_depth_not_a_boundary(isolated_paths):
     assert policy.approves("run_shell", "destructive",
                            {"command": "tar --use-compress-program=sh -cf x ."}) is False
     assert policy.approves("run_shell", "destructive",
-                           {"command": "tar --totals=/bin/sh -cf x ."}) is True
+                           {"command": "tar --checkpoint-action=exec=id -cf x ."}) is True
 
 
 _EVASION_CORPUS = [
@@ -274,6 +295,9 @@ _EVASION_CORPUS = [
     ("cp", "cp notes.txt /dev/stdout", "versatile copy"),
     ("awk", 'awk \'BEGIN{system("id")}\'', "versatile interpreter -> exec"),
     ("cat", "cat *", "glob expansion"),
+    ("cat", "cat {..,x}/secret", "brace expansion builds a parent path"),
+    ("sort", "sort --files0-from=/etc/passwd", "a flag's value names a path outside"),
+    ("sort", "sort -o../x notes.txt", "a short flag's glued value"),
     ("git status", "git status ； rm a.txt", "unicode lookalike ';' (inert in sh/pwsh)"),
     ("python", "python evil.py", "unlisted-by-a-denylist interpreter runs a script"),
     ("npm", "npm run pwn", "package script is arbitrary code"),
@@ -339,7 +363,7 @@ def test_grant_shell_prefix_refuses_a_prefix_the_tail_screen_would_never_honor(i
 
 
 def test_wrong_typed_policy_fields_fail_closed(isolated_paths, monkeypatch):
-    """Transplanted from the gating isolate: a wrong-TYPED field is a garbled file. A string
+    """A wrong-TYPED field is a garbled file. A string
     `shell_allow` would otherwise iterate as characters into allowlist prefixes (`g` exempting
     every command starting with g) and a list `risk_overrides` would raise in the registry.
     Both degrade LOUDLY to strict defaults (recorded, file moved aside), never iterated as-is."""
@@ -366,7 +390,7 @@ def test_wrong_typed_policy_fields_fail_closed(isolated_paths, monkeypatch):
 
 
 def test_explicit_tier_choice_supersedes_the_gate_off_snapshot(isolated_paths):
-    """Transplanted from the gating isolate: `/policy open on`, then an explicit tier choice
+    """`/policy open on`, then an explicit tier choice
     (Shift+Tab / /config) while open, then `/policy open off` must land on the tier the user
     set LAST — never restore a tier ABOVE it from the pre-open snapshot."""
     prev = policy.tier()
@@ -387,3 +411,48 @@ def test_explicit_tier_choice_supersedes_the_gate_off_snapshot(isolated_paths):
         assert policy.tier() == "side_effecting"
     finally:
         _restore_tier(prev)
+
+
+def test_set_gate_off_false_on_a_closed_gate_is_a_no_op(isolated_paths):
+    """Closing a gate that is not open restores nothing — the configured threshold stands.
+    Only a gate that IS open with no snapshot (a tier set to destructive by hand) fails closed."""
+    prev = policy.tier()
+    try:
+        policy.set_tier("side_effecting")
+        policy.set_gate_off(False)
+        assert policy.tier() == "side_effecting"
+        policy.set_tier("destructive")  # open by hand: no snapshot to restore
+        policy.set_gate_off(False)
+        assert policy.tier() == "read_only"
+    finally:
+        _restore_tier(prev)
+
+
+def test_risk_override_refuses_a_no_blanket_grant_tool(isolated_paths):
+    """The mechanism refuses what the front door refuses, and a persisted override that slipped
+    in by hand is ignored when the registry applies the file."""
+    from tools import registry
+
+    for name in policy.NO_BLANKET_GRANT:
+        with pytest.raises(ValueError, match="always"):
+            policy.set_risk_override(name, "read_only")
+    assert policy.risk_overrides() == {}
+    data = policy._load()
+    data["risk_overrides"]["run_shell"] = "read_only"
+    policy._save(data)
+    registry.apply_risk_overrides()
+    assert registry.risk_of("run_shell") == "destructive"
+    assert not policy.approves("run_shell", registry.risk_of("run_shell"), {"command": "rm -rf ~"})
+
+
+def test_grant_shell_prefix_outlives_a_shorter_lived_cover(isolated_paths):
+    """A task-scoped grant already covers the command, but the user asked for a persisted one:
+    'already covered' would drop the longer lifetime they were promised. Stored; and a cover of
+    the same or longer life still short-circuits."""
+    assert policy.add_shell_allow("git status", scope="task")
+    ok, why = policy.grant_shell_prefix("git status", "git status --short", scope="persist")
+    assert ok and "persisted" in why
+    assert "git status" in policy.shell_allow_by_scope()["persist"]
+    ok, why = policy.grant_shell_prefix("git status --short", "git status --short", scope="task")
+    assert ok and "already covered" in why
+    assert "git status --short" not in policy.shell_allow()

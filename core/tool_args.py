@@ -1,11 +1,10 @@
 """
-Tool-argument recovery for the execute node (transplanted from the agentic_benchmark harness,
-2026-07-03).
+Tool-argument recovery for the agent node's hygiene step.
 
 Small local models emit almost-right tool calls: the right tool with the wrong key ("file"
-instead of "file_path"), a text-format call instead of a native one, or an empty call. Instead
-of failing the step, this layer maps known aliases onto each tool's real schema, parses gemma's
-text-format calls, and hands the execute node a precise schema hint for its retry.
+instead of "file_path"), or an empty call. Instead of failing the call, this layer maps known
+aliases onto each tool's real schema and hands the agent node a precise schema hint for the
+model's retry.
 
 The alias tables cover the built-in registry; a tool without a table (MCP tools) passes its
 args through unchanged when they are a dict — the remote schema is the server's business.
@@ -60,6 +59,11 @@ _ARG_ALIASES: dict[str, dict[str, list[str]]] = {
     "remember": {
         "fact": ["fact", "text", "note", "content", "memory"],
     },
+    "create_skill": {
+        "name": ["name", "skill", "skill_name", "title"],
+        "description": ["description", "summary", "desc", "about"],
+        "steps": ["steps", "body", "content", "instructions", "procedure", "text"],
+    },
     "recall": {},  # query is optional (empty returns everything)
     "ask_user": {
         "question": ["question", "prompt", "query", "q", "text", "message", "ask"],
@@ -80,17 +84,18 @@ _EMPTY_OK: dict[str, set[str]] = {
 
 # Optional args passed through when present — never required, never invented. A bare name is
 # accepted under that exact key; a list is the alias order, drawn from keys no REQUIRED arg
-# consumed (schedule_notification's detail under "message" was silently dropped when "message"
-# also aliased the title — an empty body at the gate, review 2026-09-06).
+# consumed (else schedule_notification's detail under "message" would be dropped when "message"
+# also aliases the title — an empty body at the gate).
+_DIRECTORY = ["directory", "dir", "folder", "path"]
 _OPTIONAL: dict[str, list] = {
-
-    "list_directory": ["directory"],
-    "find_files": ["directory"],
-    "search_files": ["directory", "file_glob"],
+    "list_directory": [_DIRECTORY],
+    "find_files": [_DIRECTORY],
+    "search_files": [_DIRECTORY, "file_glob"],
     "write_file": ["overwrite"],
     "edit_file": ["replace_all"],
     "remember": ["category", "layer", "replaces", "sensitivity"],
-    "recall": ["query"],
+    "create_skill": ["replace"],
+    "recall": [["query", "q", "text", "search", "keywords", "keyword"]],
     "schedule_notification": [
         ["body", "detail", "details", "description", "message", "text", "note", "content"],
     ],
@@ -99,6 +104,9 @@ _OPTIONAL: dict[str, list] = {
 
 # The exact call shape quoted back at the model when its attempt was rejected.
 _SCHEMA_SHAPES: dict[str, str] = {
+    "create_skill": "create_skill(name=<lowercase-hyphenated name>, description=<one line>, "
+    "steps=<the procedure as a numbered markdown list>, replace=<true to change an existing "
+    "skill, optional>)",
     "read_file": "read_file(file_path=<workspace-relative file path>)",
     "list_directory": "list_directory(directory=<workspace-relative directory, '.' for the root>)",
     "find_files": "find_files(pattern=<filename or glob like *.csv>)",
@@ -119,105 +127,6 @@ _SCHEMA_SHAPES: dict[str, str] = {
     "schedule_notification": "schedule_notification(when=<future time: ISO 8601, 'in 20 minutes', "
     "'tomorrow at 09:00'>, title=<short headline>, body=<optional detail>)",
 }
-
-
-# ── concrete-step argument fill (2026-09-03) ──────────────────────────────────────────────────
-#
-# A planned step whose ONLY argument is already spelled out in its label ("Read notes.md") does
-# not need a model call to produce {"file_path": "notes.md"}: the call is a copy. Measured
-# before this: a "read all files" turn spent one ~3 s tool-call generation per read_file step
-# (15 calls, 143 s on the 9b) to emit paths the plan had already named. Deliberately narrow —
-# the fill is a copy, never a guess:
-#   - current_time takes no arguments;
-#   - read_file / list_directory only when the label names EXACTLY ONE path-like token and the
-#     caller's `kind_of` says it is a file / a directory in the workspace (the spelling is taken
-#     from the label as written, so the tool sees what the plan said);
-#   - find_files only when the label carries EXACTLY ONE glob ("*.csv", "report*",
-#     "**/drafts/*.md") and no other path, searched from the workspace root.
-# Two paths, a placeholder ("the file the listing names"), a folder named in words ("the
-# reports folder"), or a name that isn't there all fall through to the model as before.
-# Everything downstream (the review revocation lock, effect authorization, the stall detector,
-# the approval gate) reads the arguments and runs unchanged — the fill only replaces WHO wrote
-# them.
-# A slash-joined path (optionally ending in "/"), a bare name ending in "/" ("data/"), or a
-# name with an extension. Tokens keep the label's spelling; a trailing "/" is dropped.
-_LABEL_PATH_RE = re.compile(
-    r"[A-Za-z0-9_.\-]*(?:/[A-Za-z0-9_.\-]+)+/?|[A-Za-z0-9_.\-]+/|[A-Za-z0-9_\-]+\.[A-Za-z0-9]{1,8}"
-)
-_LABEL_GLOB_RE = re.compile(r"[A-Za-z0-9_.\-/*?\[\]]*[*?][A-Za-z0-9_.\-/*?\[\]]*")
-
-_CONCRETE_NO_ARG_TOOLS = ("current_time",)
-
-
-def _label_tokens(label, pattern: "re.Pattern") -> list:
-    out: list = []
-    for m in pattern.finditer(str(label or "")):
-        tok = m.group(0).strip(".,;:").rstrip("/")
-        if tok and tok not in out:
-            out.append(tok)
-    return out
-
-
-def concrete_args(tool_name: str, label, kind_of) -> Optional[dict]:
-    """Arguments copied from the step label when they are unambiguous, else None (generate them).
-    `kind_of(rel_path)` answers "file", "dir", or None for a workspace-relative path."""
-    if tool_name in _CONCRETE_NO_ARG_TOOLS:
-        return {}
-    if tool_name == "find_files":
-        globs = _label_tokens(label, _LABEL_GLOB_RE)
-        # plain paths are scanned with the globs blanked out, so "**/drafts/*.md" is one glob,
-        # not a glob plus the path "/drafts"
-        plain = _label_tokens(_LABEL_GLOB_RE.sub(" ", str(label or "")), _LABEL_PATH_RE)
-        if len(globs) == 1 and not plain:
-            return {"pattern": globs[0]}
-        return None
-    if tool_name not in ("read_file", "list_directory"):
-        return None
-    tokens = _label_tokens(label, _LABEL_PATH_RE)
-    if len(tokens) != 1:
-        return None
-    (path,) = tokens
-    try:
-        kind = kind_of(path)
-    except Exception:
-        kind = None
-    if tool_name == "read_file" and kind == "file":
-        return {"file_path": path}
-    if tool_name == "list_directory" and kind == "dir":
-        return {"directory": path}
-    return None
-
-
-def parse_text_call(content: str) -> Optional[dict]:
-    """Recover key/value args from a TEXT-format tool call (gemma's `key: <|"|>value<|"|>`
-    dialect, or bare JSON-ish "key": "value" pairs). None when nothing parses."""
-    pairs = re.findall(r'(\w+)\s*:\s*<\|"\|>(.*?)<\|"\|>', content, re.DOTALL)
-    if not pairs:
-        pairs = re.findall(r'"(\w+)"\s*:\s*"(.*?)"', content, re.DOTALL)
-    return {k: v for k, v in pairs} if pairs else None
-
-
-# --- the laundering refusal (transplanted from the engine isolate, 2026-08-15) ---------------
-#
-# calculate(expression="551") computes nothing: it mints TOOL provenance for a number the model
-# already worked out — a value a reasoning step invented, laundered into a "computed" result that
-# nothing downstream can tell from a real one. The test is decidable and needs no judgment: an
-# expression with no infix operator and no function call is a bare value. Function names track
-# tools/calculator._ALLOWED_FUNCS; `**` matches on `*`.
-
-_ARITH_OP_RE = re.compile(r"[+\-*/%^]|\b(?:abs|round|min|max|pow|sum)\s*\(")
-
-
-def launders_a_value(tool_name: str, args) -> bool:
-    """Whether this call would manufacture provenance for a value instead of computing one."""
-    if tool_name != "calculate" or not isinstance(args, dict):
-        return False
-    expr = str(args.get("expression") or "").strip()
-    if not expr:
-        return False  # an empty expression is coercion's failure, not laundering
-    # A LEADING sign is part of the literal, not an operation: "-551" computes nothing. Strip
-    # leading signs/brackets/space so only an INFIX operator or a function counts as arithmetic.
-    return not _ARITH_OP_RE.search(expr.lstrip("+-( \t"))
 
 
 def coerce_args(name: str, args) -> Optional[dict]:
@@ -248,6 +157,31 @@ def coerce_args(name: str, args) -> Optional[dict]:
             used.add(key)
     return out
 
+
+
+def tool_for_args(name: str, args) -> Optional[str]:
+    """The OTHER tool whose required arguments `args` supplies when none of them fits `name` —
+    the small-model slip `recall(fact=…, replaces=…)` for `remember`. None when the arguments
+    fit `name` (or nothing else), so a legitimate call is never second-guessed. A no-required-
+    args tool like recall would otherwise swallow foreign arguments silently and run.
+
+    The other tool is matched on its arguments' REAL names, and only when exactly one tool
+    fits: the alias lists are for forgiving a call to the right tool, and a loose alias
+    (`name`, `query`, `text`) fits half the registry — `list_directory(name=…)` is not a
+    find_files call."""
+    if not isinstance(args, dict) or not args:
+        return None
+    keys = {k.lower() for k in args if isinstance(k, str)}
+    own = _ARG_ALIASES.get(name)
+    if own is None:
+        return None
+    own_names = {a for names in own.values() for a in names}
+    own_names |= {n for opt in _OPTIONAL.get(name, []) for n in ([opt] if isinstance(opt, str) else opt)}
+    if keys & own_names:
+        return None
+    fits = [other for other, required in _ARG_ALIASES.items()
+            if other != name and required and all(arg in keys for arg in required)]
+    return fits[0] if len(fits) == 1 else None
 
 
 def schema_hint(name: str, problem: str) -> str:

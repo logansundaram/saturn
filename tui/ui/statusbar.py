@@ -1,69 +1,20 @@
 """
-The bottom-pinned live status bar + its off-thread system-metrics sampler, plus `reset_turn`
-(per-turn state seeding). One high-signal `rich.live.Live` line — posture · progress · session ·
-hardware — re-evaluated on every refresh so the elapsed clock and the sampled gauges tick even
-between node updates. The `Live` handle, the metrics snapshot, and the type-ahead preview stay
-private here; only the per-turn timing/plan state (in `_base`) is shared with the trace/plan/
-response renderers.
+The bottom-pinned live status bar, plus `reset_turn` (per-turn state seeding). One
+high-signal `rich.live.Live` line — posture · progress · session — re-evaluated on every
+refresh so the elapsed clock ticks even between node updates. The `Live` handle and the
+type-ahead preview stay private here; only the per-turn timing/plan state (in `_base`) is shared
+with the trace/plan/response renderers.
 """
 
+import threading
 import time
 
 from . import _base
 from ._base import (
-    Live, Text, _console, _RICH,
-    _ACCENT, _DIM, _NODE_STARTING, _RAIL, _RISK,
-    _active_ctx_window, _fmt_dur, _meter_color, _mini_bar,
+    Live, Text, _console,
+    _ACCENT, _DIM, _NODE_STARTING, _POSTURE_STYLE, _RAIL,
+    _active_ctx_window, _fmt_dur, _meter_color, _mini_bar, _posture_flags,
 )
-
-
-# ── live system-metrics sampler ───────────────────────────────────────────────
-# cpu/ram/gpu/vram are sampled off the render path: nvidia-smi can block up to 2s, which must
-# never stall the trace or the 4 Hz bar refresh. A lone daemon thread refreshes `_metrics` on a
-# slow cadence; the bar just reads the latest cached snapshot (None until the first sample lands).
-_METRICS_INTERVAL = 1.5  # seconds between samples
-_metrics = None          # latest system_monitor.SystemMetrics (or None)
-_metrics_thread = None
-_metrics_wanted = None   # threading.Event — set while the bar is live; the loop parks otherwise
-
-
-def _metrics_loop(interval: float) -> None:
-    from tui.system_monitor import get_system_metrics
-
-    global _metrics
-    while True:
-        # Park while the bar is torn down (idle at the input prompt between turns): each sample
-        # spawns an nvidia-smi subprocess, and an ungated loop would keep paying that ~2,400
-        # times an hour to feed a bar that isn't even displayed.
-        _metrics_wanted.wait()
-        try:
-            _metrics = get_system_metrics()
-        except Exception:
-            pass
-        time.sleep(interval)
-
-
-def _metrics_start() -> None:
-    """Lazily spin up the sampler (once per process) and un-park it. Daemon, so it dies with
-    the interpreter; _metrics_stop() parks it again whenever the bar is torn down."""
-    global _metrics_thread, _metrics_wanted
-    import threading
-
-    if _metrics_wanted is None:
-        _metrics_wanted = threading.Event()
-    _metrics_wanted.set()
-    if _metrics_thread is not None:
-        return
-    _metrics_thread = threading.Thread(
-        target=_metrics_loop, args=(_METRICS_INTERVAL,), daemon=True
-    )
-    _metrics_thread.start()
-
-
-def _metrics_stop() -> None:
-    """Park the sampler (the bar is gone; nobody reads the snapshot until the next turn)."""
-    if _metrics_wanted is not None:
-        _metrics_wanted.clear()
 
 
 # ── live status bar (bottom-pinned) ───────────────────────────────────────────
@@ -74,6 +25,54 @@ _live = None
 # already queued. Fed by typeahead.InputQueue's on_change callback (set_input_preview); rendered in
 # the pinned status bar so queuing follow-ups while the agent works has live feedback.
 _input_state = {"buffer": "", "queued": 0}
+
+
+# Machine gauges: the last GPU / memory sample and when it was taken, as (LiveUsage, monotonic).
+# A background thread takes it while the bar is up (`_sample_loop`) — the readers spawn ioreg and
+# vm_stat, which must never run inside a repaint. A reading older than `_USAGE_FRESH_S` is not
+# drawn: the gauge shows a real, recent number or nothing.
+_usage = None
+_sampler_stop = None        # the running sampler's stop Event; None when no bar is up
+_SAMPLE_EVERY_S = 2.0
+_USAGE_FRESH_S = 6.0
+_MEM_FULL_PCT = 85
+
+
+def _read_usage():
+    """One GPU / memory sample (core.hardware.live), or None. The seam tests replace —
+    tests/conftest.py turns it off for the whole suite."""
+    from core import hardware
+
+    return hardware.live()
+
+
+def _sample_loop(reader, stop) -> None:
+    """Store a reading every `_SAMPLE_EVERY_S` until `stop` is set. A reader that fails clears
+    the gauge rather than leave the last number standing."""
+    global _usage
+    while True:
+        try:
+            reading = reader()
+        except Exception:
+            reading = None
+        _usage = (reading, time.monotonic()) if reading is not None else None
+        if stop.wait(_SAMPLE_EVERY_S):
+            return
+
+
+def _fresh_usage():
+    if _usage is None or time.monotonic() - _usage[1] > _USAGE_FRESH_S:
+        return None
+    return _usage[0]
+
+
+def set_thinking(on: bool) -> None:
+    """A thought began (True) or ended (False) — nodes/agent._generate's `thinking` events,
+    through app/turn.run_turn. While one is in flight the bar's progress zone leads with
+    `thinking 3s` on its own clock and the key legend says Esc stops it: a thinking pass streams
+    nothing into the response region, and silence must not read as a stalled model."""
+    _base._status["thinking"] = time.perf_counter() if on else None
+    _live_refresh()
 
 
 def set_input_preview(buffer: str, queued: int) -> None:
@@ -87,11 +86,10 @@ def set_input_preview(buffer: str, queued: int) -> None:
 
 class _StatusBar:
     """Renderable for the pinned bar. `__rich__` is re-evaluated on every Live refresh, so the
-    elapsed clock and the sampled system gauges tick even when no node update has fired. Five
-    quiet zones — posture · [type-ahead] · progress · session · hardware — plus the trailing key
-    legend; each zone is short and most appear only when they have something to say. Set no-wrap
-    + ellipsis so a narrow terminal trims the right edge instead of wrapping to two rows (the bar
-    must stay exactly one line for the Live region)."""
+    elapsed clock ticks even when no node update has fired. Quiet zones — posture · [type-ahead]
+    · progress · session — plus the trailing key legend; most appear only when they have
+    something to say. No-wrap + ellipsis so a narrow terminal trims the right edge instead of
+    wrapping to two rows (the bar must stay exactly one line for the Live region)."""
 
     def __rich__(self) -> "Text":
         elapsed = time.perf_counter() - _base._turn_start if _base._turn_start else 0.0
@@ -110,37 +108,21 @@ class _StatusBar:
                 bar.append("  │  ", style=_RAIL)
             started = True
 
-        # ── posture ── deviation-only (2026-07-06 declutter, like receipt.posture_spans): the
-        # calm read_only/no-airgap default renders NOTHING — the zone speaks when the gate is
-        # loosened or OPEN (`destructive` isn't "a tier", and the /policy open banner scrolls
-        # away; this indicator doesn't) or the air-gap seal holds. Leftmost on purpose: the bar
-        # trims from the right edge, and "the gate is open" must be the last thing a narrow
-        # terminal sacrifices. An UNREADABLE posture still marks itself: under
+        # ── posture ── deviation-only: the calm default renders nothing. Leftmost on purpose:
+        # the bar trims from the right edge, and "the gate is open" must be the last thing a
+        # narrow terminal sacrifices. An UNREADABLE posture still marks itself: under
         # silence-means-default, omitting it would show a SAFER posture than reality on exactly
         # the surface that exists to shout ⚠ GATE OFF.
         bar.append("  ", style=_DIM)
-        try:
-            from config import get_config
-            _cfg = get_config()
-            _perm = _cfg.auto_approve
-            _airgap = bool(_cfg.get("runtime.airgap", False))
-        except Exception:
-            _perm, _airgap = None, False
-        posture = []
-        if _perm == "destructive":
-            posture.append(("⚠ GATE OFF", f"bold {_RISK.get('destructive', 'red')}"))
-        elif _perm is None:
-            posture.append(("posture ?", _DIM))
-        elif _perm != "read_only":
-            posture.append((_perm, _RISK.get(_perm, _DIM)))
-        if _airgap:
-            posture.append(("⛓ AIRGAP", f"bold {_ACCENT}"))
+        posture = _posture_flags()
+        if posture is None:
+            posture = [("posture ?", "dim")]
         if posture:
             zone()
-            for i, (label, style) in enumerate(posture):
+            for i, (label, kind) in enumerate(posture):
                 if i:
                     dot()
-                bar.append(label, style=style)
+                bar.append(label, style=_POSTURE_STYLE[kind])
 
         # ── type-ahead ── only present while the user is queuing input mid-turn. Ahead of
         # progress so the line being typed is never the part trimmed by the bar's ellipsis
@@ -158,11 +140,12 @@ class _StatusBar:
         # ── progress ── how far the turn has got, then counts · time · rate. The node is named in
         # the PAST tense: show_node is fed from a node's *update* event, which LangGraph emits
         # when the node COMPLETES (app/turn.py), so this is the last node that FINISHED — not the
-        # one running now. Rendering it as `▸ plan` in active styling claimed the opposite, and
-        # directly contradicted the `✓ plan` rail line sitting above it while `execute` worked.
-        # There is no active-node signal to render: that would need a graph-level hook, which is
-        # deliberately out of scope here. So it says what it knows, dimly.
+        # one running now. There is no active-node signal to render, so it says what it knows.
         zone()
+        thinking = status.get("thinking")
+        if thinking:
+            bar.append(f"thinking {_fmt_dur(time.perf_counter() - thinking).strip()}", style=_ACCENT)
+            dot()
         if status["node"] == _NODE_STARTING:
             bar.append(_NODE_STARTING, style=_DIM)
             dot()
@@ -180,61 +163,60 @@ class _StatusBar:
             bar.append(f"{tps:.0f} tok/s", style="default")
 
         # ── session ── the turn-spanning gauges, one zone: context fill (it drives the agent, so
-        # it keeps its meter) and the egress counter (the live twin of /privacy egress — the
-        # boundary, visible). Egress appears only once non-zero, so a fresh, fully-local session
-        # stays calm.
+        # it keeps its meter), the egress counter (the live twin of /policy egress — the
+        # boundary, visible), then the machine: GPU utilisation and unified memory in use.
+        # Egress appears only once non-zero, so a fresh, fully-local session stays calm; the
+        # machine gauges come last, the first of the zone a narrow terminal gives up.
         window = status["ctx_window"]
         try:
             from trust import egress as _eg
             _ne = _eg.count()
         except Exception:
             _ne = 0
-        if window or _ne:
+        usage = _fresh_usage()
+        if window or _ne or usage:
             zone()
+            first = True
+
+            def gauge():  # the dot between this zone's gauges, whichever of them are present
+                nonlocal first
+                if not first:
+                    dot()
+                first = False
+
             if window:
+                gauge()
                 _append_meter(bar, "ctx", status["ctx_used"] / window * 100, cells=4)
             if _ne:
-                if window:
-                    dot()
+                gauge()
                 bar.append("⇅ ", style=_DIM)
                 bar.append(f"{_ne} egress", style="default")
-
-        # ── hardware ── tertiary, bare load-colored percentages (sampled off-thread).
-        m = _metrics
-        if m is not None:
-            zone()
-            _append_meter(bar, "cpu", m.cpu_usage_percent)
-            ram_pct = m.ram_used_gb / m.total_ram_gb * 100 if m.total_ram_gb else 0.0
-            bar.append("  ", style=_DIM)
-            _append_meter(bar, "ram", ram_pct)
-            if m.gpu_usage_percent is not None:
-                bar.append("  ", style=_DIM)
-                _append_meter(bar, "gpu", m.gpu_usage_percent)
-            if m.vram_used_gb is not None and m.total_vram_gb:
-                bar.append("  ", style=_DIM)
-                _append_meter(bar, "vram", m.vram_used_gb / m.total_vram_gb * 100)
+            if usage and usage.gpu_pct is not None:
+                gauge()
+                bar.append("gpu ", style=_DIM)
+                bar.append(f"{usage.gpu_pct:.0f}%", style="default")
+            if usage and usage.mem_used_gb is not None:
+                gauge()
+                total = usage.mem_total_gb
+                full = total > 0 and usage.mem_used_gb / total * 100 >= _MEM_FULL_PCT
+                bar.append("mem ", style=_DIM)
+                bar.append(f"{usage.mem_used_gb:.1f}/{total:g} GB" if total
+                           else f"{usage.mem_used_gb:.1f} GB", style="yellow" if full else "default")
 
         # ── key legend ── the turn-time keys, taught ambiently while they're usable. Trails the
         # whole line ON PURPOSE: the bar trims from the right edge on a narrow terminal (no-wrap
         # + ellipsis), so the hint is the first thing sacrificed — never the posture or progress.
-        # While the answer is streaming, Esc means freeze (interrupt-and-correct) — the legend
-        # reads the live latch so it teaches the key's CURRENT meaning.
         zone()
-        try:
-            from core.continuation import get_freeze_controller
-
-            esc = "esc freeze+edit" if get_freeze_controller().armed else "esc pause"
-        except Exception:
-            esc = "esc pause"
-        bar.append(f"{esc} · ctrl-c cancel", style=_DIM)
+        # Esc on an EMPTY line is the pause that stops a thought; with text typed it is a steer,
+        # which does not (tui/typeahead) — so the legend only promises it for an empty line.
+        bar.append(("esc stops thinking" if thinking and not buf else "esc pause")
+                   + " · ctrl-c cancel", style=_DIM)
         return bar
 
 
 def _append_meter(bar: "Text", label: str, pct: float, cells: int = 0) -> None:
     """`label NN%` (load-colored), optionally trailed by a tiny `▰▱` fill bar when `cells > 0` —
-    the compact gauge form used in the bar. Meters are opt-in: only the context gauge carries one
-    (it's what drives the agent); the hardware readouts stay bare percentages so the resources zone
-    reads calm rather than like a dashboard."""
+    the compact gauge form used in the bar."""
     col = _meter_color(pct)
     bar.append(f"{label} ", style=_DIM)
     bar.append(f"{pct:.0f}%", style=col)
@@ -243,25 +225,31 @@ def _append_meter(bar: "Text", label: str, pct: float, cells: int = 0) -> None:
 
 
 def _live_start() -> None:
-    """Pin a fresh status bar at the bottom. No-op without rich or if one is already running.
+    """Pin a fresh status bar at the bottom. No-op if one is already running.
     `transient=True` erases the bar on stop (the scrolling trace stays); rich's default
     stdout/stderr redirect keeps node `print()`s flowing above the live region."""
-    global _live
-    if not _RICH or _live is not None:
+    global _live, _sampler_stop
+    if _live is not None:
         return
-    _metrics_start()  # ensure the off-thread cpu/ram/gpu sampler is running
     _live = Live(_StatusBar(), console=_console, transient=True,
                  auto_refresh=True, refresh_per_second=4)
     _live.start()
+    # The machine gauges' sampler lives exactly as long as the bar. The reader is handed over
+    # here, so a sampler that outlives a test keeps that test's stub.
+    _sampler_stop = threading.Event()
+    threading.Thread(target=_sample_loop, args=(_read_usage, _sampler_stop), daemon=True,
+                     name="saturn-usage").start()
 
 
 def _live_stop() -> None:
     """Tear the bar down (before any input()) so it never fights a blocking prompt."""
-    global _live
+    global _live, _sampler_stop
     if _live is not None:
         _live.stop()
         _live = None
-    _metrics_stop()  # no bar -> no reader; stop burning nvidia-smi spawns while idle
+    if _sampler_stop is not None:
+        _sampler_stop.set()
+        _sampler_stop = None
 
 
 def _live_refresh() -> None:
@@ -282,7 +270,7 @@ def reset_turn() -> None:
     # there is no finished node to name and an empty zone would read as a stalled bar.
     _base._status = {"node": _NODE_STARTING, "iteration": 0, "tools": 0, "tok_per_sec": 0.0,
                      "ctx_used": _base._status.get("ctx_used", 0), "ctx_window": _active_ctx_window(),
-                     "gates": 0}
+                     "gates": 0, "thinking": None, "thought_s": 0.0}
     # Mark the egress ledger so the trust receipt can summarize exactly this turn's slice.
     # receipt.py owns the mark (receipt-domain state, not UI state); on failure the mark keeps
     # its previous value rather than being forced to 0 — readers treat 0 as "unknown", and a

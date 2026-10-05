@@ -2,13 +2,15 @@
 
 The invariant: nothing reaches the memory file without a y at the review screen. Candidates are
 collected mechanically from a turn's state (steer notes → agent, vetoes + gate denials →
-negative, unfinished steps → commitments, failed steps → agent) and from a compaction summary
+negative; a failed tool call is never one) and from a compaction summary
 (memo / user / commitments by shape), queued in a pending file that survives a crash, and
 accepted one at a time — with the run id stamped as provenance on every accepted fact. All
 offline: the model-proposal seam is monkeypatched wherever a test reaches it.
 """
 
 import json
+
+import pytest
 
 from langchain.messages import AIMessage, HumanMessage
 
@@ -38,35 +40,46 @@ def test_collect_turn_maps_each_signal_to_its_layer():
         messages=[HumanMessage("old turn"), AIMessage("done"),
                   HumanMessage("rename the reports"),
                   HumanMessage(f"{STEER_PREFIX} keep the original file names as a prefix")],
-        plan_vetoes=["delete the originals"],
         gate_events=[{"calls": [{"id": "1", "name": "run_shell", "approved": False}],
                       "decision": "rejected", "quarantine": False, "step": "run the rename"},
                      {"calls": [{"id": "2", "name": "write_file", "approved": True}],
                       "decision": "approved", "quarantine": False, "step": None}],
-        plan=[_step("list the reports"), _step("rename them", status="blocked", result="blocked"),
-              _step("verify", status="error", result="Error: permission denied on /x")],
     )
     cands = rv.collect_turn(state, run_id=9)
     by_source = {c["source"]: c for c in cands}
-    assert set(by_source) == {"steer", "veto", "gate", "unfinished", "failed"}
+    assert set(by_source) == {"steer", "gate"}
     assert by_source["steer"]["layer"] == "agent" and "prefix" in by_source["steer"]["text"]
-    assert by_source["veto"]["layer"] == "negative" and "delete the originals" in by_source["veto"]["text"]
     assert by_source["gate"]["layer"] == "negative" and "run_shell" in by_source["gate"]["text"]
     assert "run the rename" in by_source["gate"]["text"]
-    assert by_source["unfinished"]["layer"] == "commitments" and "rename them" in by_source["unfinished"]["text"]
-    assert by_source["failed"]["layer"] == "agent" and "permission denied" in by_source["failed"]["text"]
     assert all(c["run"] == 9 for c in cands)
     # A steer note from an OLDER turn is not this turn's signal.
     assert sum(1 for c in cands if c["source"] == "steer") == 1
 
 
-def test_collect_turn_is_quiet_on_a_clean_turn_and_reads_aborted_steps():
+def test_collect_turn_is_quiet_on_a_clean_turn():
     assert rv.collect_turn(_state(plan=[_step("a"), _step("b")])) == []
-    cands = rv.collect_turn(_state(aborted=True, plan=[_step("a"), _step("b", status="pending",
-                                                                      result=None)]))
-    assert [c["layer"] for c in cands] == ["commitments"]
-    # Approved gates and user-skipped steps are not incidents to learn from.
-    assert rv.collect_turn(_state(plan=[_step("s", status="skipped", result="skipped")])) == []
+    # Approved gates and successful calls are not incidents to learn from.
+    ok_call = {"name": "read_file", "args": {}, "ok": True, "result": "hello", "dur": 0.0}
+    assert rv.collect_turn(_state(tool_events=[ok_call])) == []
+
+
+def test_a_failed_tool_call_is_not_a_memory_candidate(isolated_paths):
+    """A failed call says what went wrong once — a missing permission, a malformed argument
+    (the 2026-10-02 session queued four such lines and the user dropped all four). The trace
+    and the answer's incidents note carry it; the memory review never does, and a queue
+    written before this change sheds them on load."""
+    failed = [{"name": "read_messages", "args": {"contact": "stanly"}, "ok": False,
+               "result": "Error: `contact` must be a phone number or email address", "dur": 0.0},
+              {"name": "read_messages", "args": {"contact": "+16505550100"}, "ok": False,
+               "result": "Error: macOS did not let this terminal read the Messages history",
+               "dur": 0.0}]
+    assert rv.collect_turn(_state(tool_events=failed), run_id=44) == []
+    legacy = [{"layer": "agent", "text": "Tool call failed: read_messages(contact='stanly')",
+               "source": "failed", "run": 44},
+              {"layer": "user", "text": "prefers tea", "source": "model", "run": 45}]
+    rv.pending_path().parent.mkdir(parents=True, exist_ok=True)
+    rv.pending_path().write_text(json.dumps({"candidates": legacy}), encoding="utf-8")
+    assert [c["text"] for c in rv.load_pending()] == ["prefers tea"]
 
 
 def test_summary_candidates_sort_bullets_by_shape():
@@ -120,7 +133,7 @@ def _scripted(answers):
 
 def test_review_writes_only_on_yes_with_provenance(isolated_paths):
     cands = [
-        rv._candidate("agent", "PDFs need /docs add first", "failed", 7),
+        rv._candidate("agent", "PDFs need /docs add first", "steer", 7),
         rv._candidate("negative", "do not suggest Postgres", "veto", 7),
         rv._candidate("commitments", "send the summary", "unfinished", 8),
         rv._candidate("memo", "decided X", "compaction", 8),
@@ -200,7 +213,7 @@ def test_quit_runs_review_unless_skipped(isolated_paths, monkeypatch):
     assert len(calls) == 1 and ctx.should_quit
 
 
-def test_memory_command_add_edit_why_and_pending(isolated_paths, capsys):
+def test_memory_command_add_edit_why_and_done(isolated_paths, capsys):
     from commands import dispatch
 
     ctx = CommandContext(state={"messages": []}, make_initial_state=dict, db_path="")
@@ -211,12 +224,11 @@ def test_memory_command_add_edit_why_and_pending(isolated_paths, capsys):
     rv.add_pending([rv._candidate("negative", "do not: z", "veto", 6)])
     dispatch("/memory", ctx)
     dispatch("/memory why 3", ctx)
-    dispatch("/memory pending", ctx)
     dispatch("/memory done 3", ctx)
     out = capsys.readouterr().out
     assert "Remembered #1 (entities)" in out and "replaces #2" in out
     assert "Q3_final" in out and "1 candidate(s) pending review" in out
-    assert "you said it" in out and "+ [negative] do not: z" in out
+    assert "you said it" in out
     assert "done: " in out
     assert [e["id"] for e in mr.entries()] == [1]
     assert json.loads(rv.pending_path().read_text(encoding="utf-8"))["candidates"][0]["run"] == 6
@@ -290,3 +302,47 @@ def test_quit_survives_an_interrupted_review(isolated_paths, monkeypatch):
     ctx = CommandContext(state={"messages": []}, make_initial_state=dict, db_path="")
     system._quit(ctx, [])
     assert ctx.should_quit
+
+
+class _ReviewModel:
+    """A utility model stub for llm_candidates' one constrained call."""
+
+    def __init__(self, reply):
+        self.reply, self.calls = reply, []
+
+    def invoke(self, msgs, **kw):
+        from langchain.messages import AIMessage
+
+        self.calls.append((msgs, kw))
+        if isinstance(self.reply, Exception):
+            raise self.reply
+        return AIMessage(content=self.reply)
+
+
+def _transcript_msgs():
+    from langchain.messages import AIMessage, HumanMessage
+
+    return [HumanMessage("my lease ends in March"), AIMessage("Noted.")]
+
+
+def test_llm_candidates_makes_one_constrained_call_and_salvages_json(monkeypatch):
+    from core import llms
+    from core.messages import MEMORY_REVIEW_FORMAT, MEMORY_REVIEW_SHAPE
+
+    model = _ReviewModel('Sure: {"facts":[{"layer":"commitments","text":"lease ends in March"}]} ok')
+    monkeypatch.setattr(llms, "get_model", lambda: model)
+    out = rv.llm_candidates(_transcript_msgs())
+    assert [(c["layer"], c["text"], c["source"]) for c in out] == [
+        ("commitments", "lease ends in March", "model")]
+    msgs, kw = model.calls[0]
+    assert len(model.calls) == 1
+    assert msgs[-1].content == MEMORY_REVIEW_SHAPE  # the shape hint rides as a trailing HumanMessage
+    assert kw["format"] == MEMORY_REVIEW_FORMAT
+
+
+@pytest.mark.parametrize("reply", ["no json here", '{"facts": "not a list"}', RuntimeError("down")])
+def test_llm_candidates_is_empty_on_any_failure(monkeypatch, reply):
+    from core import llms
+
+    monkeypatch.setattr(llms, "get_model", lambda: _ReviewModel(reply))
+    assert rv.llm_candidates(_transcript_msgs()) == []

@@ -1,5 +1,6 @@
 """
-AppleScript runner — the one seam every native macOS app tool (Notes, Calendar) goes through.
+AppleScript runner — the one seam every native macOS app tool (Notes, Calendar, Mail, Contacts,
+Reminders, Messages, Safari, Finder) goes through.
 
 Why AppleScript and not a framework binding: a terminal-launched Python only gets Calendar /
 Contacts access through EventKit if the *terminal app* itself carries Apple's usage-description
@@ -7,7 +8,7 @@ keys (iTerm does, Terminal.app and VS Code don't), and the request fails silentl
 prompting. Apple-event automation is uniform: one "Terminal wants to control Notes" dialog per
 target app on first use, from any terminal, then it works. Measured 2026-09-06: Notes queries
 sub-second warm, a two-week Calendar window across eight calendars ~6.5s — slow but bounded, and
-it is one planner step.
+it is one tool call.
 
   run(script)   — `osascript -e script`, stdout stripped; every failure is an AppleScriptError
                   whose message is written for the model to relay (not macOS, Automation denied,
@@ -18,7 +19,8 @@ it is one planner step.
                   commas, pipes or newlines can never split a field.
 
 Nothing here is egress: Apple events stay on this machine (tests/test_no_new_egress.py needs no
-allowlist entry). This module imports nothing project-side, so the tool modules import it freely.
+allowlist entry). This module imports nothing project-side but the `toolspec` leaf, so the tool
+modules import it freely.
 """
 
 from __future__ import annotations
@@ -27,12 +29,19 @@ import re
 import subprocess
 import sys
 
+from tools.toolspec import ToolError
+
 RS = "\x1e"   # record separator — between records
 US = "\x1f"   # unit separator — between fields of one record
+
+FS = "\x1c"   # file separator — between a label and its value inside one field
+GS = "\x1d"   # group separator — between the items of a list packed into one field
 
 # `RS`/`US` as AppleScript expressions, for building output lines inside a script.
 AS_RS = "(ASCII character 30)"
 AS_US = "(ASCII character 31)"
+AS_FS = "(ASCII character 28)"
+AS_GS = "(ASCII character 29)"
 
 
 # Handlers appended to a script that emits dates: an ISO-8601 minute-precision local timestamp
@@ -49,13 +58,52 @@ end pad
 """
 
 
+# The handler behind `mkdate()`: an AppleScript date built field by field (the `date "…"`
+# literal form is locale-dependent and never used).
+MKDATE_HANDLER = """
+on mkdate(y, m, d, secs)
+  set dt to current date
+  set day of dt to 1
+  set year of dt to y
+  set month of dt to m
+  set day of dt to d
+  set time of dt to secs
+  return dt
+end mkdate
+"""
+
+
+def mkdate(dt) -> str:
+    """The AppleScript expression building `dt` (a datetime) as a local date; the script must
+    carry MKDATE_HANDLER. App dates are local wall-clock, so a time given with an offset
+    (`15:00Z`) is converted first — its raw hour would land hours off."""
+    dt = dt.astimezone()
+    secs = dt.hour * 3600 + dt.minute * 60 + dt.second
+    return f"my mkdate({dt.year}, {dt.month}, {dt.day}, {secs})"
+
+
+def local_iso(dt) -> str:
+    """`dt` as local wall-clock time to the minute — the form the `iso` handler reports app
+    dates in, so the two compare as strings."""
+    return dt.astimezone().isoformat(timespec="minutes")[:16]
+
+
 class AppleScriptError(Exception):
     """A script could not run or failed. The message is written for the model/user to read
-    verbatim (it always starts with a lowercase clause the tool prefixes with 'Error: ')."""
+    verbatim (it always starts with a lowercase clause; the tool re-raises it as ToolError and the tools
+    node prefixes 'Error: ')."""
 
 
 def _platform() -> str:
     return sys.platform
+
+
+def mac_only() -> None:
+    """The first line of a native tool that does not start with `run` (a database read, a
+    command line, a process check): refuse off macOS, in the words `run` uses."""
+    plat = _platform()
+    if plat != "darwin":
+        raise ToolError(f"this tool is only available on macOS (this is {plat})")
 
 
 def _run(argv: list[str], timeout: float) -> subprocess.CompletedProcess:

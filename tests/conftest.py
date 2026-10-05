@@ -1,18 +1,17 @@
 """
 Shared pytest fixtures.
 
-The suite tests the INVARIANT / SECURITY surfaces the docs call load-bearing (the plan/execute
-engine's data-bus invariants — test_engine.py, which replaced the deleted positional
-plan-accounting walkers' tests in the 2026-07-03 transplant — the shell allowlist matcher, the
-observation clamp, the surgical YAML persist, the snapshot/undo layer) plus the pure helpers
-behind newer features (citations, RAG loaders, sessions). Everything runs offline: no test calls
-an LLM, the network, or the embedder.
+The suite tests the INVARIANT / SECURITY surfaces the docs call load-bearing (the agent loop's
+deterministic checks, the shell allowlist matcher, the observation clamp, the surgical YAML
+persist, the snapshot/undo layer) plus the pure helpers behind newer features (citations, RAG
+loaders, sessions). Everything runs offline: no test calls an LLM, the network, or the embedder.
 
 `isolated_paths` points every `paths.*` entry in the live config at a throwaway tmp directory so
 no test can touch the real database/ — config resolves paths against the repo root, but an
 absolute path wins the join, which is exactly what tmp_path provides.
 """
 
+import subprocess
 import sys
 from pathlib import Path
 
@@ -49,6 +48,25 @@ def isolated_paths(tmp_path, monkeypatch):
     return tmp_path
 
 
+@pytest.fixture
+def ctx():
+    """A bare CommandContext for driving slash commands. Importing anything under commands/ runs
+    the package __init__, which registers every command."""
+    from commands._framework import CommandContext
+
+    return CommandContext(state={}, make_initial_state=dict, db_path="")
+
+
+@pytest.fixture
+def recording_persist(monkeypatch):
+    """Capture config.persist calls instead of writing the real config.yaml."""
+    import config
+
+    saved: list[str] = []
+    monkeypatch.setattr(config, "persist", lambda key: saved.append(key) or config._CONFIG_PATH)
+    return saved
+
+
 @pytest.fixture(autouse=True)
 def _reset_grant_lifecycle():
     """The always-allow grant lifecycle (trust/policy: task/session-scoped grants, task-boundary
@@ -61,6 +79,35 @@ def _reset_grant_lifecycle():
     policy.reset_grants()
 
 
+@pytest.fixture(scope="session")
+def _empty_saturn_home(tmp_path_factory):
+    return tmp_path_factory.mktemp("saturn_home")
+
+
+@pytest.fixture(autouse=True)
+def _isolated_saturn_home(_empty_saturn_home, monkeypatch, tmp_path_factory):
+    """The user's own ~/.saturn (the global SATURN.md, hooks.yaml) must never reach a test —
+    a real hook would run commands mid-suite. Every test sees an EMPTY $SATURN_HOME; a test
+    that needs files there points SATURN_HOME at its own tmp_path.
+
+    HOME too: core/workspace falls back to the home folder for a launch folder that doesn't
+    exist, so a fixture that forgot to create its folder would write into the real ~.
+    Every test gets a throwaway HOME; a test about home points HOME at its own tmp_path."""
+    monkeypatch.setenv("SATURN_HOME", str(_empty_saturn_home))
+    monkeypatch.setenv("HOME", str(tmp_path_factory.mktemp("home")))
+
+
+@pytest.fixture(autouse=True)
+def _reset_workspace():
+    """core/workspace holds the launch folder and the /add-dir folders as process state —
+    clear it around every test so a root set in one test never leaks into another."""
+    from core import workspace
+
+    workspace.reset()
+    yield
+    workspace.reset()
+
+
 @pytest.fixture(autouse=True)
 def _no_prefix_priming(monkeypatch):
     """The idle prefix primes (core/prime.py) are real model requests fired from background
@@ -69,3 +116,54 @@ def _no_prefix_priming(monkeypatch):
     from core import prime
 
     monkeypatch.setattr(prime, "ENABLED", False)
+
+
+@pytest.fixture(autouse=True)
+def _no_spotlight(monkeypatch):
+    """search_files asks macOS's Spotlight index (`mdfind`) for a plain phrase. No test may run
+    it — the answer would depend on the machine — so the seam gives "no index answer" unless a
+    test replaces it (tests/test_move_and_spotlight.py)."""
+    from tools import files
+
+    monkeypatch.setattr(files, "_spotlight", lambda literal, directory: None)
+
+
+@pytest.fixture(autouse=True)
+def _no_live_usage(monkeypatch):
+    """The status bar samples GPU and memory use through ioreg / vm_stat while it is up. No
+    test may run them — the gauge would depend on the machine — so the reader answers "no
+    reading" unless a test replaces it (tests/test_tui_polish.py)."""
+    from tui.ui import statusbar
+
+    monkeypatch.setattr(statusbar, "_read_usage", lambda: None)
+
+
+@pytest.fixture
+def mac(monkeypatch):
+    """Pin the platform to macOS and capture osascript invocations. Yields a controller whose
+    `.calls` lists every argv and whose `.reply(stdout)` sets the next canned output."""
+
+    class Ctl:
+        calls: list[list[str]] = []
+        stdout = ""
+        returncode = 0
+        stderr = ""
+
+        def reply(self, stdout, returncode=0, stderr=""):
+            self.stdout, self.returncode, self.stderr = stdout, returncode, stderr
+
+        def script(self, i=-1):
+            argv = self.calls[i]
+            return argv[argv.index("-e") + 1] if "-e" in argv else argv[-1]
+
+    ctl = Ctl()
+
+    def fake_run(argv, timeout):
+        ctl.calls.append(list(argv))
+        return subprocess.CompletedProcess(argv, ctl.returncode, ctl.stdout, ctl.stderr)
+
+    from tools import applescript
+
+    monkeypatch.setattr(applescript, "_platform", lambda: "darwin")
+    monkeypatch.setattr(applescript, "_run", fake_run)
+    return ctl

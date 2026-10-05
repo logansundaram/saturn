@@ -1,218 +1,73 @@
 """
-The provenance-tagged answer buffer — the canonical artifact of an interrupt-and-correct turn.
+Where the conversation's text came from — the one reading of provenance the gate's holds share.
 
-While the final answer streams, it accumulates in a buffer that tracks WHO authored every
-character range: `model` spans (generated) and `human` spans (typed at the freeze editor). The
-buffer — not "the model's output" — is the canonical turn artifact: generation appends to it,
-the freeze editor edits it, and everything downstream reads from it (the continuation prompt
-reads clean `text`; the TUI marks human spans distinctly; the trace/audit record and the /trace
-replay carry the spans and edit records). The model itself never sees provenance markers —
-`text` is clean; the two representations diverge on purpose.
+  of(state) -> Provenance(typed, seen, untrusted)
 
-Shape (plain dicts, like the plan — gotcha #4: state must round-trip the checkpointer):
+`typed` is every message the user typed, in order: each turn's request and each mid-turn steer
+note (core.state.is_turn_start / is_steer_message — a compaction summary is neither: it is the
+model's words about earlier turns). `seen` is everything else that ENTERED the conversation
+(completed tool results, attachments, the grounding, a summary). `untrusted` is whether any of
+that came from outside the trust boundary: an attachment (`@file`, `@clipboard`, piped stdin,
+`!cmd` output), a ToolMessage from a tool declared untrusted (trust.quarantine.is_untrusted),
+or `state["outside_seen"]` — the conversation's own record that either happened in an EARLIER
+turn. The record is what makes it last: a turn's attachment is reset at the next turn and its
+tool messages are compacted away one turn later (app/session._compact_history), while the
+answer that restated the page stays in history. A call the human DECLINED ran nothing and
+brought nothing in (`saturn_status` skipped), so it does not count.
 
-    {"text": str,
-     "spans": [{"start": int, "end": int, "author": "model"|"human"}, ...],   # cover text exactly
-     "edits": [{"at": int, "cut": str, "typed": str}, ...],                   # audit previews
-     "confidence": [{"start": int, "end": int, "logprob": float}, ...]}       # per-token overlay
+The model's own messages are skipped: they are what the holds check, so a URL the model wrote
+in a preamble (the issuing message is already in state) or an earlier answer must not vouch
+for itself. A tool result counts as `seen` only when the call COMPLETED (`saturn_status`
+done): a refusal, a decline or an error is text about the model's own arguments, and usually
+repeats them ("+1305… appears nowhere in this conversation"), so counting it let one retry of
+an invented number through (review 2026-10-03). A failed call still counts as outside content
+having entered.
 
-`confidence` is the token-confidence overlay (core/confidence.py builds + grades it): unlike the
-author spans it does NOT tile the text — it covers exactly the model-generated characters whose
-logprobs the daemon reported, and gaps mean "unmeasured", never "confident". An edit clears the
-overlay inside the changed region (a human-typed character has no model confidence) and shifts
-the suffix like the spans.
-
-plus a `state` key managed by the ENGINE (nodes/synthesize + nodes/answer_gate), which this
-module preserves but never reads — provenance is pure text+span math.
-
-Every operation is copy-and-return, never in-place mutation: checkpointing, resume, and audit
-replay all depend on an earlier buffer staying exactly what it was.
-
-Edits operate on the buffer as a STRING (the user selects characters; the model thinks in
-tokens): a truncation may cut mid-token, and that is fine — the continuation layer re-tokenizes
-the whole assistant prefix at resume time, so no token-index surgery can ever produce an
-invalid sequence.
-
-Leaf module: imports only textutil, so the tests exercise it fully offline.
+Read by the URL hold and the handle / chat holds (nodes/approval.provenance →
+trust.quarantine), by auto-learn (core/auto_memory) and by the memory review's transcript
+(core/memory_review): all ask "did the user type this, or could something else have written
+it?", and all must answer from the same facts.
 """
 
 from __future__ import annotations
 
-from textutil import clip
+from dataclasses import dataclass
 
-MODEL = "model"
-HUMAN = "human"
+from langchain.messages import AIMessage, ToolMessage
 
-# Edit-record previews (`cut`/`typed`) are clipped for the audit trail — the spans mark the exact
-# ranges and the resulting `text` is carried in full, so the record loses nothing by bounding the
-# quoted excerpts.
-_EDIT_PREVIEW_CAP = 200
+from core.state import is_steer_message, is_turn_start
+from trust import quarantine
 
 
-def new_buffer() -> dict:
-    return {"text": "", "spans": [], "edits": [], "confidence": []}
+@dataclass(frozen=True)
+class Provenance:
+    typed: tuple
+    seen: str
+    untrusted: bool
 
 
-def clone(buf: dict) -> dict:
-    """A structurally independent copy (fresh span/edit/confidence dicts): the entry point for a
-    consumer that will `extend_model` a buffer someone else still holds (nodes/synthesize's
-    continuation loop clones the frozen buffer once, then extends the clone in place)."""
-    return {
-        **buf,
-        "spans": [dict(s) for s in buf.get("spans") or []],
-        "edits": [dict(e) for e in buf.get("edits") or []],
-        "confidence": [dict(c) for c in buf.get("confidence") or []],
-    }
+def is_typed(m) -> bool:
+    """Whether the user typed this message: a turn's request or a mid-turn steer note. A
+    compaction summary is a HumanMessage too, and is not."""
+    return is_turn_start(m) or is_steer_message(m)
 
 
-def extend_model(buf: dict, text: str, confidence=None) -> None:
-    """`append_model`, IN PLACE — the streaming hot path (one call per streamed chunk). The
-    copy-and-return contract exists for buffers other code can see (checkpoint/replay); the
-    per-chunk copies it forced inside the stream loops re-copied the whole text, span list, and
-    confidence overlay on every token — quadratic in answer length. Use this ONLY on a buffer
-    still private to its producer (fresh from new_buffer(), or clone()d first); everything that
-    leaves a node keeps the immutable contract via append_model."""
-    if not text:
-        return
-    old_len = len(buf.get("text", ""))
-    spans = buf.setdefault("spans", [])
-    last = spans[-1] if spans else None
-    if last and last.get("author") == MODEL and last.get("end") == old_len:
-        last["end"] = old_len + len(text)  # merge into the trailing model span (what _merged does)
-    else:
-        spans.append({"start": old_len, "end": old_len + len(text), "author": MODEL})
-    conf = buf.setdefault("confidence", [])
-    for c in confidence or []:
-        conf.append({"start": int(c["start"]) + old_len, "end": int(c["end"]) + old_len,
-                     "logprob": float(c["logprob"])})
-    buf["text"] = buf.get("text", "") + text
-
-
-def _merged(spans: list[dict]) -> list[dict]:
-    """Normalize a span list: drop empties, merge adjacent same-author runs. Spans arrive
-    in text order (every producer appends/rebuilds in order), so one linear pass suffices."""
-    out: list[dict] = []
-    for s in spans:
-        if s["end"] <= s["start"]:
+def of(state) -> Provenance:
+    typed: list[str] = []
+    seen = [str(state.get("attachments") or ""), str(state.get("context") or "")]
+    untrusted = bool(state.get("attachments")) or bool(state.get("outside_seen"))
+    for m in state.get("messages") or []:
+        text = str(getattr(m, "content", "") or "")
+        if is_typed(m):
+            typed.append(text)
             continue
-        if out and out[-1]["author"] == s["author"] and out[-1]["end"] == s["start"]:
-            out[-1] = {**out[-1], "end": s["end"]}
-        else:
-            out.append(dict(s))
-    return out
-
-
-def append_model(buf: dict, text: str, confidence=None) -> dict:
-    """A new buffer with `text` appended as model-authored (streamed tokens land here).
-    `confidence`, when given, is the chunk's CHUNK-RELATIVE confidence entries
-    (core/confidence.align_chunk) — shifted onto the buffer's offsets here, so callers never
-    track the running length themselves. Copy-and-return (clone + extend_model), so an earlier
-    buffer stays exactly what it was."""
-    if not text:
-        return dict(buf)
-    new = clone(buf)
-    new["spans"] = _merged(new.get("spans") or [])  # normalize inherited spans exactly as before
-    extend_model(new, text, confidence)
-    return new
-
-
-def apply_edit(buf: dict, new_text: str) -> dict:
-    """A new buffer whose text is `new_text`, with the changed region recorded as ONE
-    human-authored span and an audit edit record. The change is located by longest common
-    prefix/suffix — the freeze editor produces a single contiguous edit (truncate-and-append or
-    replace-in-place), so that diff is exact for the operations offered. A no-op edit returns a
-    plain copy (no span change, no edit record)."""
-    old = buf.get("text", "")
-    if new_text == old:
-        return dict(buf)
-
-    # Longest common prefix, then longest common suffix over what remains — the two must not
-    # overlap, or a repeated region would be counted twice.
-    limit = min(len(old), len(new_text))
-    p = 0
-    while p < limit and old[p] == new_text[p]:
-        p += 1
-    s = 0
-    while s < limit - p and old[len(old) - 1 - s] == new_text[len(new_text) - 1 - s]:
-        s += 1
-
-    cut = old[p:len(old) - s]
-    typed = new_text[p:len(new_text) - s]
-    shift = len(new_text) - len(old)
-
-    spans: list[dict] = []
-    for sp in buf.get("spans") or []:
-        # The part of the old span living in the untouched prefix survives as-is …
-        if sp["start"] < p:
-            spans.append({"start": sp["start"], "end": min(sp["end"], p), "author": sp["author"]})
-    if typed:
-        spans.append({"start": p, "end": p + len(typed), "author": HUMAN})
-    for sp in buf.get("spans") or []:
-        # … and the part living in the untouched suffix survives shifted by the length delta.
-        tail_start = len(old) - s
-        if sp["end"] > tail_start:
-            spans.append({
-                "start": max(sp["start"], tail_start) + shift,
-                "end": sp["end"] + shift,
-                "author": sp["author"],
-            })
-
-    # The confidence overlay follows the same prefix/suffix split: entries wholly in the
-    # untouched prefix survive, entries wholly in the untouched suffix shift, and anything
-    # touching the changed region is DROPPED — the text those tokens measured no longer exists
-    # (and the human's replacement carries no model confidence at all).
-    tail_start = len(old) - s
-    conf: list[dict] = []
-    for c in buf.get("confidence") or []:
-        cs, ce = int(c.get("start", 0)), int(c.get("end", 0))
-        if ce <= p:
-            conf.append(dict(c))
-        elif cs >= tail_start:
-            conf.append({**c, "start": cs + shift, "end": ce + shift})
-
-    edits = list(buf.get("edits") or [])
-    edits.append({"at": p, "cut": clip(cut, _EDIT_PREVIEW_CAP), "typed": clip(typed, _EDIT_PREVIEW_CAP)})
-    return {**buf, "text": new_text, "spans": _merged(spans), "edits": edits, "confidence": conf}
-
-
-def rstrip_trailing(buf: dict, chars: str = " \t") -> dict:
-    """A new buffer with trailing `chars` (spaces/tabs by default — newlines KEPT) removed from
-    the text, the spans and confidence overlay clamped to the new length so they still tile the
-    text exactly, and an all-whitespace trailing span dropped rather than surviving empty. A
-    MECHANICAL trim: no human span, no edit record — this is not an edit, it is the transport's
-    tokenizer hygiene (transplanted from the token_steering isolate: BPE tokens carry their
-    LEADING space, so a prefix ending in a space is a tail the model never produces and the
-    daemon has no token healing). A no-op returns a plain copy."""
-    text = buf.get("text", "")
-    new_text = text.rstrip(chars)
-    if new_text == text:
-        return dict(buf)
-    n = len(new_text)
-    spans = []
-    for sp in buf.get("spans") or []:
-        start, end = int(sp.get("start", 0)), int(sp.get("end", 0))
-        if start >= n:
+        if isinstance(m, AIMessage):
             continue
-        spans.append({**sp, "start": start, "end": min(end, n)})
-    conf = []
-    for c in buf.get("confidence") or []:
-        cs, ce = int(c.get("start", 0)), int(c.get("end", 0))
-        if cs >= n:
-            continue
-        conf.append({**c, "start": cs, "end": min(ce, n)})
-    return {**buf, "text": new_text, "spans": spans, "confidence": conf}
-
-
-def human_spans(buf: dict) -> list[tuple[int, int]]:
-    """The human-authored character ranges, for display marking and the audit record."""
-    return [
-        (int(s["start"]), int(s["end"]))
-        for s in buf.get("spans") or []
-        if s.get("author") == HUMAN and s.get("end", 0) > s.get("start", 0)
-    ]
-
-
-def corrected(buf) -> bool:
-    """Whether this buffer carries at least one human edit — the fact the receipt, the rail
-    echo, and the answer render all key on. Tolerates None/garbage (absent-as-no)."""
-    return bool(isinstance(buf, dict) and buf.get("edits"))
+        if isinstance(m, ToolMessage):
+            status = (getattr(m, "additional_kwargs", None) or {}).get("saturn_status") or "done"
+            if status != "skipped" and quarantine.is_untrusted(str(m.name or "")):
+                untrusted = True
+            if status != "done":
+                continue
+        seen.append(text)
+    return Provenance(tuple(typed), "\n".join(seen), untrusted)

@@ -1,6 +1,5 @@
 """
-System commands — the app itself, in one module (the /help "system" theme; consolidated from
-one-file-per-command 2026-06-11):
+System commands — the app itself (the /help "system" theme):
 
   /help    the themed command list (+ per-command detail)
   /quit    exit (autosaving the session)
@@ -31,24 +30,22 @@ from commands._session import write_autosave
 # once — tests/test_help.py cross-checks this against the live registry, so a future command
 # can't silently vanish from /help.
 _GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("conversation", ("clear", "resume")),
-    ("knowledge & workspace", ("docs", "init", "memory", "undo")),
-    ("trust & control", ("draft", "plan", "policy", "privacy", "quick")),
-    ("observability", ("confidence", "mcp", "models", "tools", "trace")),
+    ("conversation", ("clear", "copy", "resume")),
+    ("knowledge & workspace", ("add-dir", "docs", "init", "memory", "rm-dir", "skills", "undo")),
+    ("trust & control", ("policy", "think")),
+    ("observability", ("mcp", "models", "tools", "trace")),
     ("system", ("config", "help", "notify", "quit", "update")),
 )
-# (The legacy gate spellings — /risk · /allow · /autoapprove — were CUT 2026-07-06: they were
-# thin delegations to /policy's subcommands and now land on _RENAMED pointers, so the listing
-# carries ONE gate-policy surface instead of four. The 2026-07-07 command fold likewise dropped
-# /glass and /source into /trace subviews and /context into /config — all three are _RENAMED
-# pointers now, so the observability row lists one process surface (/trace) and the runtime
-# inventory, not five.)
+# Bare /help lists only the commands a person needs on a Tuesday; everything else (the auditor's
+# and operator's surfaces) stays registered and listed by `/help --all`. Order is display order.
+_DAILY: tuple[str, ...] = ("memory", "skills", "policy", "think", "trace", "help", "quit")
+_ALL_FLAGS = {"--all", "-a", "all"}
 
 # The three-line trust-stack map /help opens with: where the boundary POSTURE is set, where the
 # live ACTIVITY shows, and where the shareable RECORD comes from.
 _TRUST_MAP = (
-    ("posture", "/privacy · /policy"),
-    ("activity", "receipt · /trace answer · /trace"),
+    ("posture", "/policy"),
+    ("activity", "receipt · /trace"),
     ("record", "/trace export · replay"),
 )
 
@@ -64,13 +61,14 @@ def _names(cmd) -> str:
     "help",
     "List all slash commands by theme, or detail one.",
     aliases=("?", "h"),
-    usage="/help [command]",
+    usage="/help [--all | command]",
     details="""
-With no argument, opens with the trust-stack map (posture · activity · record) then lists every
-command grouped by theme.
+With no argument, lists the handful of commands a person needs day to day. `/help --all` opens
+with the trust-stack map (posture · activity · record) then lists EVERY command grouped by
+theme — nothing is hidden, only unlisted by default.
 
 With a command name, prints its detailed help — identical to `/<command> --help`. Renamed
-commands answer here too: `/help why` prints the same pointer as typing /why.
+commands answer here too: `/help privacy` prints the same pointer as typing /privacy.
 
 Every command also accepts a standalone --help / -h token as its FIRST or LAST argument; it
 shows this detail view instead of executing (`/trace export --help` explains export, never
@@ -78,19 +76,21 @@ runs it). A mid-position token is data, so `/memory add prefer -h over --help in
 the fact.
 
 Examples:
-  /help              the grouped command list
+  /help              the everyday commands
+  /help --all        every command, grouped by theme
   /help policy       detail one command
   /policy --help     same thing, the git-style way
 """,
 )
 def _help(ctx, args):
-    if args and args[0].lower() not in _HELP_FLAGS:
+    show_all = bool(args) and args[0].lower() in _ALL_FLAGS
+    if args and not show_all and args[0].lower() not in _HELP_FLAGS:
         key = args[0].lstrip("/").lower()
         name = key if key in COMMANDS else _ALIASES.get(key)
         cmd = COMMANDS.get(name) if name else None
         if cmd is None:
-            # Same moved-pointer dispatch prints for the bare legacy name — /help why must
-            # land exactly where /why does, not on "unknown command".
+            # Same moved-pointer dispatch prints for the bare legacy name — /help privacy must
+            # land exactly where /privacy does, not on "unknown command".
             if not _print_renamed(key):
                 _print(f"  unknown command: /{key} - try /help")
             return
@@ -98,6 +98,15 @@ def _help(ctx, args):
         return
 
     from tui import ui
+
+    if not show_all:
+        rows = [(_names(COMMANDS[n]), (COMMANDS[n].summary, "dim")) for n in _DAILY if n in COMMANDS]
+        more = len(COMMANDS) - len(rows)
+        ui.section("slash commands", "/help <command> details one · /help --all lists every command")
+        ui.table(rows)
+        _print(f"  {more} more (config, docs, models, mcp, …): /help --all")
+        _print("")
+        return
 
     ui.section("slash commands", "/help <command> or /<command> --help for details on one")
     ui.table(list(_TRUST_MAP), styles=("dim", "accent"))
@@ -158,7 +167,7 @@ def _quit(ctx, args):
 
 
 # ── /update ──────────────────────────────────────────────────────────────────────────────────
-# Saturday ships as a git clone (install.sh / install.ps1), so the repo root IS the install.
+# Saturn ships as a git clone (install.sh), so the repo root IS the install.
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -179,14 +188,14 @@ def _git(*args: str, timeout: float = 60):
 
 @command(
     "update",
-    "Update Saturday to the latest version (git pull at the install root).",
+    "Update Saturn to the latest version (git pull at the install root).",
     usage="/update [--check]",
     details="""
-Pulls the latest Saturday from the git remote it was installed from (the install scripts clone
+Pulls the latest Saturn from the git remote it was installed from (the install scripts clone
 the repo, so the repo root IS the install).
 
   /update          fast-forward pull; lists what came in; reinstalls Python dependencies if
-                   requirements.txt changed in the pull
+                   pyproject.toml changed in the pull
   /update --check  fetch only and report how many commits behind you are, without changing
                    anything
 
@@ -206,7 +215,7 @@ def _update(ctx, args):
         _print("  git did not respond — cannot self-update.")
         return
     if rc != 0:
-        _print(f"  {_REPO_ROOT} is not a git repository — was Saturday installed by hand?")
+        _print(f"  {_REPO_ROOT} is not a git repository — was Saturn installed by hand?")
         _print("  installed via pipx/uv? update with `pipx upgrade saturn-agent` "
                "(or `uv tool upgrade saturn-agent`).")
         _print("  otherwise re-install with the install script, or replace the files yourself.")
@@ -259,10 +268,10 @@ def _update(ctx, args):
         # If the pull changed the dependency list, install it — an updated module importing a
         # package that isn't there yet would otherwise greet the next launch with a stack trace.
         rc, changed, _ = _git("diff", "--name-only", old, new)
-        if rc == 0 and "requirements.txt" in changed.splitlines():
-            _print("  requirements.txt changed — installing dependencies (this can take a minute)…")
+        if rc == 0 and "pyproject.toml" in changed.splitlines():
+            _print("  pyproject.toml changed — installing dependencies (this can take a minute)…")
             proc = subprocess.run(
-                [sys.executable, "-m", "pip", "install", "-r", "requirements.txt"],
+                [sys.executable, "-m", "pip", "install", "-e", "."],
                 cwd=str(_REPO_ROOT),
                 capture_output=True,
                 text=True,
@@ -275,8 +284,8 @@ def _update(ctx, args):
             else:
                 tail = (proc.stderr or proc.stdout or "").strip().splitlines()[-1:]
                 _print(f"  pip install failed: {tail[0] if tail else 'unknown error'}")
-                _print(f"  run it yourself: {sys.executable} -m pip install -r requirements.txt")
+                _print(f"  run it yourself: {sys.executable} -m pip install -e {_REPO_ROOT}")
 
-        _print("  restart Saturday (/quit and relaunch) to run the new version.")
+        _print("  restart Saturn (/quit and relaunch) to run the new version.")
     except subprocess.TimeoutExpired:
         _print("  update timed out — check your network and try again.")

@@ -3,12 +3,9 @@ Tool registration primitive — `@register_tool`.
 
 A tool declares ALL of its own metadata at definition time: it is wrapped as a LangChain tool and
 registered (added to the active list, given a risk tier for the approval gate, flagged if its
-output is a retrieved document) in ONE place — its own module — instead of being defined here and
-then re-listed in three more (`registry.tool`, `registry.TOOL_RISK`, the retrieval set). Adding a
-tool is now a single edit; nothing in `registry.py` changes.
-
-Registration also wraps the function with per-call timing to `diag.log` — every tool used to
-hand-roll the same start/try/finally block; now it comes with the decorator.
+output is a retrieved document) in ONE place — its own module. Adding a tool is a single edit;
+nothing in `registry.py` changes. Registration also wraps the function with per-call timing to
+`diag.log`.
 
 This lives apart from `registry.py` on purpose: `registry.py` imports the tool modules to trigger
 their registration, so if the decorator lived there the tool modules would import back into a
@@ -20,6 +17,7 @@ their established names.
 
 from __future__ import annotations
 
+import contextvars
 import time
 from functools import wraps
 
@@ -38,6 +36,34 @@ _TOOLS: list = []          # the active tool objects, in registration order
 _RISK: dict = {}           # tool name -> risk tier
 _RETRIEVAL: set = set()    # tool names whose results are recorded as retrieved documents
 _UNTRUSTED: set = set()    # tool names whose OUTPUT crosses the trust boundary (quarantine scans)
+
+
+class ToolError(Exception):
+    """A tool call that did not do its job — raised, never returned, so the tools node stamps
+    the round `error`: the adaptive think wakes on it and the answer's incidents note tells the
+    user. The message is written for the model; the node hands it back as the observation."""
+
+
+# Whether the call now executing was approved by a human at the gate — set by the tools node
+# around each call from state["gate_events"], read by a tool whose record depends on it
+# (`remember` stamps a fact by=user only for a call a person said yes to). False anywhere else:
+# an auto-approved call, a direct invoke.
+_HUMAN_APPROVED: contextvars.ContextVar = contextvars.ContextVar("human_approved", default=False)
+
+
+def human_approved() -> bool:
+    return bool(_HUMAN_APPROVED.get())
+
+
+# Whether the call now executing skipped the gate because the user typed every word of it —
+# set by the tools node from core/auto_memory.qualifies (the same check the approval node
+# exempted the call on), read by `remember` to stamp the fact by=user src=said. False anywhere
+# else.
+_USER_STATED: contextvars.ContextVar = contextvars.ContextVar("user_stated", default=False)
+
+
+def user_stated() -> bool:
+    return bool(_USER_STATED.get())
 
 
 def register_tool(risk: str = "destructive", *, retrieval: bool = False, untrusted: bool = False):
@@ -89,7 +115,7 @@ def register_tool_object(t, risk: str = "destructive", *, retrieval: bool = Fals
     The dynamic-source counterpart of @register_tool: a tool that can't be written as a decorated
     local function — e.g. a remote MCP tool built at runtime from a server's listing
     (mcp_client.py) — registers through here and flows into the exact same collections, so the
-    approval gate, /tools, /policy risk, and the planner catalog treat it like any local tool.
+    approval gate, /tools, /policy risk, and the tool catalog treat it like any local tool.
 
     Unlike @register_tool (a developer-facing decorator, where an unknown tier is a programming
     error worth crashing on), `risk` here may originate from user config or a remote source, so an

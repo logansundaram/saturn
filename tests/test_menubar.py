@@ -1,5 +1,5 @@
 """
-The macOS menu bar item (2026-09-05): `notify/menubar.py` — the Cocoa-free half. Plist shape
+The macOS menu bar item: `notify/menubar.py` — the Cocoa-free half. Plist shape
 and Python pinning, idempotent ensure, stop, the agent pidfile, the menu model the AppKit
 renderer draws, `quit_all`, and the config knob. `launchctl` is captured through the same
 runner seam the notification backend uses; the LaunchAgents dir is a tmp path; the platform is
@@ -135,9 +135,11 @@ def test_stop_boots_out_and_removes_the_plist(agents):
 def test_enabled_reads_the_config_knob(isolated_paths, monkeypatch):
     from config import get_config
     cfg = get_config()
+    notify_cfg = {k: v for k, v in cfg._data.get("notify", {}).items() if k != "menubar"}
+    monkeypatch.setitem(cfg._data, "notify", notify_cfg)
+    assert menubar.enabled() is False  # off unless asked for
+    monkeypatch.setitem(notify_cfg, "menubar", True)
     assert menubar.enabled() is True
-    monkeypatch.setitem(cfg._data.setdefault("notify", {}), "menubar", False)
-    assert menubar.enabled() is False
 
 
 # ── the agent pidfile ────────────────────────────────────────────────────────────────────────
@@ -244,13 +246,6 @@ def test_quit_summary_text():
 
 
 # ── /notify icon ─────────────────────────────────────────────────────────────────────────────
-
-@pytest.fixture
-def ctx():
-    import commands.notify  # noqa: F401
-    from commands._framework import CommandContext
-    return CommandContext(state={}, make_initial_state=dict, db_path="")
-
 
 def test_notify_icon_status_start_stop(agents, ctx, capsys):
     from commands._framework import dispatch

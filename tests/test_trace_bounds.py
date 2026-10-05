@@ -1,11 +1,8 @@
-"""The trace record drops nothing SILENTLY (transplanted from the visibility isolate, 0.2.1).
-
-An oversized node delta used to be bounded by slicing the JSON text at _DATA_CAP — an
-undecodable blob, so `decode_json` fell back to None and the WHOLE delta (tool events, the plan
-update) vanished from `/trace`, exports carried `data: null`, and the Glass Box reconstruction
-rendered INCOMPLETE for the wrong reason. `_bound_delta` keeps the record parseable: leaf clip
-with a halving cap, then per-key salvage with an explicit `truncated` marker naming what was
-dropped and the original size — and the replay says so under the node row.
+"""The trace record drops nothing SILENTLY. Slicing an oversized delta's JSON text would store
+an undecodable blob — the WHOLE delta (tool events, the plan update) gone from `/trace` and
+`data: null` in exports. `_bound_delta` keeps the record parseable: leaf clip with a halving cap,
+then per-key salvage with an explicit `truncated` marker naming what was dropped and the
+original size — and the replay says so under the node row.
 """
 
 from stores import trace as trace_mod
@@ -47,10 +44,7 @@ def test_huge_plan_delta_keeps_what_fits_and_names_what_it_dropped():
     delta = decode_json(data, None)
     assert isinstance(delta, dict)
     assert delta["iteration"] == 3
-    # The plan is THINNED (entries dropped from the tail, the loss named) rather than the
-    # whole key discarded — the salvage rung below it is the last resort, not the first.
-    assert delta["truncated"]["dropped"] == ["plan[349 of 399 entries]"]
-    assert len(delta["plan"]) == 50
+    assert "plan" not in delta and delta["truncated"]["dropped"] == ["plan"]  # the loss is named
     assert delta["truncated"]["original_chars"] > trace_mod._DATA_CAP
 
 

@@ -2,11 +2,8 @@
 Structured run trace -> SQLite (database/db.sqlite).
 
 Every turn becomes a row in `runs`; every node update streamed during that turn becomes a row
-in `events`. This is the transparency/observability layer: it makes
-every run inspectable after the fact and is the data source the frontend will render later.
-
-It supersedes the scattered `print(perf_counter)` lines — those now go to `diag.log()` (the file
-diagnostic log), while the durable, queryable per-turn record lives here.
+in `events`; every model call a row in `llm_calls`. This is the transparency/observability layer:
+it makes every run inspectable after the fact. Timing diagnostics go to `diag.log()` instead.
 """
 
 import json
@@ -38,15 +35,14 @@ def parse_ts(ts):
 # Write-time truncation marker for the recorded final answer (end_run). The stable PREFIX is the
 # detection key — the cap value is appended after it so the stored row is self-describing even if
 # the cap changes between recording and reading. One constant + one detector, shared by every
-# reader (show_run's label, the /glass #id reconstruction), so they can't drift.
+# reader (show_run's label, the export), so they can't drift.
 _RESPONSE_TRUNCATION_MARKER = "… [recorded answer truncated at "
 
 
 def response_truncated(text) -> bool:
     """True when a recorded `runs.response` carries end_run's write-time truncation marker.
-    Readers treat a marked row as INCOMPLETE (show_run says "truncated", the Glass Box
-    reconstruction passes complete=False). Historical rows cut at the old 2000-char cap carry no
-    marker and read False here — absent-as-unknown (the gotcha #7 convention): never try to
+    Readers treat a marked row as INCOMPLETE (show_run says "truncated", the export
+    reconstruction passes complete=False). Legacy rows cut without a marker read False here — absent-as-unknown (the gotcha #7 convention): never try to
     infer truncation for legacy rows."""
     return _RESPONSE_TRUNCATION_MARKER in str(text or "")
 
@@ -75,7 +71,7 @@ CREATE TABLE IF NOT EXISTS llm_calls (
     run_id        INTEGER,
     seq           INTEGER,
     ts            TEXT,
-    node          TEXT,    -- the langgraph node the call was made from (plan/agent/replan/synthesize)
+    node          TEXT,    -- the langgraph node the call was made from (agent)
     model         TEXT,
     dur           REAL,    -- wall-clock seconds for the single model call
     prompt_tokens INTEGER,
@@ -92,137 +88,23 @@ CREATE INDEX IF NOT EXISTS ix_events_run ON events(run_id);
 CREATE INDEX IF NOT EXISTS ix_llm_calls_run ON llm_calls(run_id);
 """
 
-# Full-text index over the runs the agent may search (`recall_runs`, `/trace search`). SQLite's
-# FTS5 ships in every CPython wheel we target, but a distro build can omit it, so this is applied
-# separately from _SCHEMA and its absence degrades to a LIKE scan (search_runs) — never a failed
-# tracer. External-content table: the runs row stays the record; the index is rebuilt from it
-# when first created, and the triggers keep it current from then on.
-_FTS_SCHEMA = """
-CREATE VIRTUAL TABLE IF NOT EXISTS runs_fts USING fts5(
-    query, response, content='runs', content_rowid='run_id'
-);
-CREATE TRIGGER IF NOT EXISTS runs_fts_ai AFTER INSERT ON runs BEGIN
-  INSERT INTO runs_fts(rowid, query, response) VALUES (new.run_id, new.query, new.response);
-END;
-CREATE TRIGGER IF NOT EXISTS runs_fts_ad AFTER DELETE ON runs BEGIN
-  INSERT INTO runs_fts(runs_fts, rowid, query, response)
-    VALUES ('delete', old.run_id, old.query, old.response);
-END;
-CREATE TRIGGER IF NOT EXISTS runs_fts_au AFTER UPDATE ON runs BEGIN
-  INSERT INTO runs_fts(runs_fts, rowid, query, response)
-    VALUES ('delete', old.run_id, old.query, old.response);
-  INSERT INTO runs_fts(rowid, query, response) VALUES (new.run_id, new.query, new.response);
-END;
-"""
+# A DB written by an earlier build carries three SQL triggers feeding an FTS5 index over
+# runs.query/response (the cut `/trace search`) — and an INSERT on `runs` compiles
+# them, so on a SQLite build without fts5 every start_run would fail "no such module: fts5", and
+# on one with it every run would keep feeding an index nothing reads. Tracer.__init__ drops them
+# (plain DDL, no module needed). The orphaned `runs_fts` table itself is left alone: dropping a
+# virtual table needs its module, and the user's DB gets no destructive migration.
+_LEGACY_FTS_TRIGGERS = ("runs_fts_ai", "runs_fts_ad", "runs_fts_au")
 
 
-_FTS_TRIGGERS = ("runs_fts_ai", "runs_fts_ad", "runs_fts_au")
-
-
-def ensure_fts(conn) -> bool:
-    """Create the runs full-text index (and backfill it from the existing rows when the table or
-    its triggers were missing). Returns True when FTS5 is usable on this connection. Best-effort:
-    a build without FTS5 returns False and search_runs falls back to LIKE.
-
-    The triggers are the hazard: they live in the DB file, and an INSERT on `runs` compiles them
-    — on a build WITHOUT fts5 a trigger left behind by a build WITH it fails every start_run with
-    "no such module: fts5". So when the probe fails, the triggers are dropped (plain DDL, no
-    module needed) and the tracer keeps recording; the next fts5-capable open recreates them and
-    rebuilds the index from the rows written meanwhile."""
+def _drop_legacy_fts_triggers(conn) -> None:
+    """Best-effort: a failure here costs nothing the tracer needs."""
     try:
-        have = {row[0] for row in conn.execute(
-            "SELECT name FROM sqlite_master WHERE name IN (?, ?, ?, ?)",
-            ("runs_fts", *_FTS_TRIGGERS)).fetchall()}
-        # Probe the module before touching the schema: a virtual table whose module is missing
-        # still shows in sqlite_master, and the CREATE ... IF NOT EXISTS below would not notice.
-        conn.execute("SELECT count(*) FROM runs_fts" if "runs_fts" in have
-                     else "CREATE VIRTUAL TABLE IF NOT EXISTS runs_fts USING fts5("
-                          "query, response, content='runs', content_rowid='run_id')")
-        conn.executescript(_FTS_SCHEMA)
-        if not have.issuperset({"runs_fts", *_FTS_TRIGGERS}):
-            conn.execute("INSERT INTO runs_fts(runs_fts) VALUES ('rebuild')")
+        for trig in _LEGACY_FTS_TRIGGERS:
+            conn.execute(f"DROP TRIGGER IF EXISTS {trig}")
         conn.commit()
-        return True
     except Exception:
-        try:
-            for trig in _FTS_TRIGGERS:
-                conn.execute(f"DROP TRIGGER IF EXISTS {trig}")
-            conn.commit()
-        except Exception:
-            pass
-        return False
-
-
-# Filler the natural-language queries the tool is advertised for carry ("what did we do last
-# week"): dropped before matching so they never veto a hit. A query that is ALL filler has
-# nothing to search for and matches nothing (never a false hit on "what").
-_SEARCH_STOPWORDS = frozenset("""
-the and for with that this from what when where which who how are was were will would can
-could should did does done do into onto about after before over under then than them they
-there here have has had not but all any some our your their its his her you we us me my it
-is be been being on in at to of by or as an a if so up out no yes please make give find show
-tell let get use using run take need want like just also last week month ago yesterday today
-""".split())
-
-
-def _search_terms(text: str) -> list[str]:
-    import re
-
-    words = [t for t in re.findall(r"[\w'\-]+", str(text or "")) if len(t) > 1]
-    return [t for t in words if t.lower() not in _SEARCH_STOPWORDS][:12]
-
-
-def search_runs(db_path, text: str, limit: int = 5) -> list[dict]:
-    """Past runs whose query or recorded answer matches `text`, newest-relevant first:
-    `[{run_id, started_at, status, query, response}]`. Stopwords are dropped, then every
-    content term must match (AND); when nothing does, runs matching ANY term are returned
-    instead, best match first — so "the report we made Monday" still finds the report. FTS5
-    (bm25-ranked) when the index exists, else a LIKE scan. Terms are quoted individually so user
-    text can never inject FTS syntax, and `%`/`_` are escaped in the LIKE path. Read-side helper
-    (its own short-lived connection) — shared by the `recall_runs` tool and `/trace search`."""
-    terms = _search_terms(text)
-    if not terms:
-        return []
-    limit = max(1, min(int(limit or 5), 50))
-    conn = sqlite3.connect(str(db_path))
-    try:
-        rows = None
-        if ensure_fts(conn):
-            quoted = ['"' + t.replace('"', '""') + '"' for t in terms]
-            try:
-                for match in (" ".join(quoted), " OR ".join(quoted)):
-                    rows = conn.execute(
-                        "SELECT r.run_id, r.started_at, r.status, r.query, r.response "
-                        "FROM runs_fts f JOIN runs r ON r.run_id = f.rowid "
-                        "WHERE runs_fts MATCH ? ORDER BY bm25(runs_fts), r.run_id DESC LIMIT ?",
-                        (match, limit),
-                    ).fetchall()
-                    if rows or len(quoted) == 1:
-                        break
-            except sqlite3.Error:
-                rows = None
-        if rows is None:
-            clause = ("(LOWER(COALESCE(query,'')) LIKE ? ESCAPE '\\' "
-                      "OR LOWER(COALESCE(response,'')) LIKE ? ESCAPE '\\')")
-            params: list = []
-            for t in terms:
-                like = "%" + t.lower().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
-                params += [like, like]
-            for joiner in (" AND ", " OR "):
-                rows = conn.execute(
-                    f"SELECT run_id, started_at, status, query, response FROM runs "
-                    f"WHERE {joiner.join(clause for _ in terms)} ORDER BY run_id DESC LIMIT ?",
-                    (*params, limit),
-                ).fetchall()
-                if rows or len(terms) == 1:
-                    break
-    finally:
-        conn.close()
-    return [
-        {"run_id": rid, "started_at": started, "status": status, "query": query or "",
-         "response": response or ""}
-        for rid, started, status, query, response in rows
-    ]
+        pass
 
 
 # The run the live turn is recording into, for provenance stamps made from inside a tool
@@ -238,8 +120,7 @@ def current_run_id():
 
 # How much of each message / delta the trace retains. These bound the durable execution log the
 # /trace replay reads, so they're generous: the replay is the full-fidelity record (reasoning +
-# tool decisions), not the abbreviated live rail. Bumped from 300/4000 — at the old caps a turn's
-# reasoning was clipped to a sentence and a busy delta lost its tail.
+# tool decisions), not the abbreviated live rail.
 _CONTENT_CAP = 1500
 _DATA_CAP = 16000
 
@@ -263,17 +144,6 @@ def _json_default(o):
 # Per-string-leaf cap when a delta overruns _DATA_CAP (see _summarize).
 _LEAF_CAP = 2000
 
-# Entries kept from an oversized list of NON-string leaves. The shape that makes this necessary
-# is answer_buffer["confidence"]: one small numeric dict per GENERATED TOKEN, which map_strings
-# cannot shrink by a single byte. Past roughly 320 tokens the overlay alone clears _DATA_CAP, so
-# the halving string ladder below spun to its floor without progress and per-key salvage dropped
-# the whole answer_buffer — taking the provenance spans and edit records with it. The delta stayed
-# parseable (that invariant always held), but /trace replay and the "complete replayable record"
-# an export promises lost the corrected-answer history for essentially every non-trivial answer.
-# Truncating the ledger degrades gracefully by design: core.confidence.low_runs already treats a
-# GAP as a run break, so a shortened overlay marks less, never something wrong.
-_LIST_CAP = 400
-
 
 def _summarize(delta: dict) -> tuple[str, str]:
     parts = []
@@ -293,95 +163,40 @@ def _summarize(delta: dict) -> tuple[str, str]:
     return summary, data
 
 
-def _thin_lists(obj, cap: int, dropped: list, path: str = ""):
-    """Truncate every list longer than `cap`, naming each loss in `dropped`. Entries are dropped
-    from the TAIL and nothing is substituted in their place — a marker entry inside the list would
-    reach consumers that read `.get("start")` off every element. The loss is recorded once, at the
-    top level, in the same `truncated` record the rest of this ladder uses."""
-    if isinstance(obj, dict):
-        return {k: _thin_lists(v, cap, dropped, f"{path}.{k}" if path else str(k))
-                for k, v in obj.items()}
-    if isinstance(obj, list):
-        items = [_thin_lists(v, cap, dropped, f"{path}[]") for v in obj]
-        if len(items) > cap:
-            dropped.append(f"{path or 'root'}[{len(items) - cap} of {len(items)} entries]")
-            return items[:cap]
-        return items
-    return obj
-
-
 def _bound_delta(data: str, original: int) -> str:
-    """Bring an oversized delta under _DATA_CAP while keeping it PARSEABLE (transplanted from
-    the visibility isolate). Clip long string LEAVES (head+tail, marker inside the text) with a
-    cap that halves until the JSON fits; a delta that still overflows (a plan with hundreds of
-    steps, a thousand tiny messages) keeps every key that fits on its own and replaces the rest
-    with an explicit `truncated` record naming what was dropped and the original size. Never a
-    slice of the JSON text: a mid-token cut stores an undecodable blob — decode_json -> default,
-    the whole delta (tool events, the plan update) silently gone from /trace replay, `data: null`
-    in an export, and the Glass Box reconstruction INCOMPLETE for the wrong reason."""
+    """Bring an oversized delta under _DATA_CAP while keeping it PARSEABLE. Clip long string
+    LEAVES (head+tail, marker inside the text) with a cap that halves until the JSON fits; a
+    delta that still overflows (a plan with hundreds of steps) keeps every key that fits on its
+    own and replaces the rest with an explicit `truncated` record naming what was dropped and the
+    original size. Never a slice of the JSON text: a mid-token cut stores an undecodable blob —
+    the whole delta silently gone from /trace replay, `data: null` in an export."""
     note = f"delta exceeded the {_DATA_CAP}-char record cap at write time"
     try:
         obj = json.loads(data)
-    except Exception:
-        # json.dumps produced `data`, so this is belt and braces.
-        return json.dumps({"truncated": {"original_chars": original, "dropped": ["*"],
-                                         "note": "delta could not be re-encoded"}})
-    def _string_ladder(o):
-        """Halve the per-string-leaf cap until the encoding fits; None if it never does."""
         cap = _LEAF_CAP
         while cap >= 50:
-            try:
-                clipped = json.dumps(map_strings(o, lambda s, c=cap: head_tail(s, c)))
-            except Exception:
-                return None
+            clipped = json.dumps(map_strings(obj, lambda s, c=cap: head_tail(s, c)))
             if len(clipped) <= _DATA_CAP:
                 return clipped
             cap //= 2
-        return None
-
-    fitted = _string_ladder(obj)
-    if fitted is not None:
-        return fitted
-    # Clipping strings could not do it, so the bulk is in NON-string leaves (the confidence
-    # overlay). Thin the long lists before falling back to dropping whole keys — a shortened list
-    # with the loss NAMED beats losing answer_buffer entirely — and re-run the string ladder at
-    # each rung, so text is only clipped as hard as that rung actually needs.
-    if isinstance(obj, dict):
-        list_cap = _LIST_CAP
-        while list_cap >= 25:
-            thinned_drops: list = []
-            try:
-                thinned = _thin_lists(obj, list_cap, thinned_drops)
-                if thinned_drops:
-                    thinned = {**thinned, "truncated": {"original_chars": original,
-                                                        "dropped": thinned_drops, "note": note}}
-            except Exception:
-                break
-            fitted = _string_ladder(thinned)
-            if fitted is not None:
-                return fitted
-            list_cap //= 2
-    # Per-key salvage: keep the keys that fit, drop the rest with a marker.
-    if isinstance(obj, dict):
-        kept: dict = {}
-        dropped = []
-        budget = _DATA_CAP - 200  # room for the marker itself
-        for k, v in obj.items():
-            try:
+        if isinstance(obj, dict):
+            kept: dict = {}
+            dropped = []
+            budget = _DATA_CAP - 200  # room for the marker itself
+            for k, v in obj.items():
                 small = map_strings(v, lambda s: head_tail(s, 100))
                 piece = json.dumps({k: small})
-            except Exception:
-                dropped.append(str(k))
-                continue
-            if len(piece) <= budget:
-                kept[k] = small
-                budget -= len(piece)
-            else:
-                dropped.append(str(k))
-        kept["truncated"] = {"original_chars": original, "dropped": dropped, "note": note}
-        out = json.dumps(kept)
-        if len(out) <= _DATA_CAP + 400:
-            return out
+                if len(piece) <= budget:
+                    kept[k] = small
+                    budget -= len(piece)
+                else:
+                    dropped.append(str(k))
+            kept["truncated"] = {"original_chars": original, "dropped": dropped, "note": note}
+            out = json.dumps(kept)
+            if len(out) <= _DATA_CAP + 400:
+                return out
+    except Exception:
+        pass
     return json.dumps({"truncated": {"original_chars": original, "dropped": ["*"], "note": note}})
 
 
@@ -403,7 +218,7 @@ class Tracer:
             pass
         self.conn.executescript(_SCHEMA)
         self.conn.commit()
-        ensure_fts(self.conn)  # best-effort; absent FTS5 degrades to LIKE
+        _drop_legacy_fts_triggers(self.conn)
         self._seq = 0
         self._llm_seq = 0
         self._broken = False  # one-shot circuit breaker — see _trip
@@ -494,18 +309,18 @@ class Tracer:
         _CURRENT_RUN_ID = None
         text = response or ""
         # The recorded answer is capped like a delta (_DATA_CAP — it IS the headline record every
-        # after-the-fact surface reads: show_run, the export, /glass #id's reconstruction).
+        # after-the-fact surface reads: show_run, the export).
         # When it still overflows, the cut gets an explicit write-time marker so the stored row
         # is self-describing: readers render "truncated" / complete=False instead of presenting
         # a mid-sentence cut as the whole answer, and the export's digest commits the marker
-        # honestly. (The old silent [:2000] cut even lost the Sources: footer.)
+        # honestly.
         if len(text) > _DATA_CAP:
             text = text[:_DATA_CAP] + f"\n{_RESPONSE_TRUNCATION_MARKER}{_DATA_CAP} chars]"
         # Deliberately EXEMPT from the circuit breaker: end_run is ONE write at turn end (not
         # the per-delta hot path the breaker protects from repeated busy-timeout stalls) and it
         # carries the run's terminal status + answer — a transient lock that tripped the breaker
         # early in the turn and cleared since must not leave this run 'running' forever with no
-        # recorded response (/trace, /glass #id, and exports all read that row). Worst case one
+        # recorded response (/trace and exports both read that row). Worst case one
         # more busy-timeout wait per turn; a failure still just trips/diag-logs.
         try:
             self.conn.execute(
@@ -521,8 +336,8 @@ class Tracer:
 # A LangChain callback handler that records the raw input messages + output of every model call in
 # a turn. Attached run-scoped in the graph stream config (agent.run_turn); it rides LangChain's
 # contextvar callback propagation down into each node's model.invoke()/stream(), so it sees the
-# planner, agent, judge, and synthesizer calls without any node having to thread it through. Read
-# back by `/trace invoke`.
+# agent and background calls without any node having to thread it through. Read back by
+# `/trace invoke`.
 
 _LLM_MSG_CAP = 8000  # per-message content cap stored to the DB (the display truncates further)
 
@@ -551,8 +366,10 @@ def _msg_to_dict(m) -> dict:
 
 def _llm_output(response) -> tuple[dict, int, int]:
     """Pull (output dict, prompt_tokens, output_tokens) out of an LLMResult. The output dict is the
-    model's text + any tool calls; tokens come from the message's usage_metadata, falling back to
-    Ollama's response_metadata eval counts."""
+    model's text + any tool calls, plus `reasoning` when the pass thought (langchain-ollama's
+    `reasoning_content` — recorded HERE, not on the conversation's AIMessage, where the adapter
+    would send it back to the model as `thinking` on every later call); tokens come from the
+    message's usage_metadata, falling back to Ollama's response_metadata eval counts."""
     gens = getattr(response, "generations", None) or []
     msg = None
     text = ""
@@ -579,6 +396,9 @@ def _llm_output(response) -> tuple[dict, int, int]:
         # /trace invoke renderer can disclose the recording cut — without it, --full presents
         # a capped output as the model's complete reply.
         out["truncated"] = len(text)
+    reasoning = str((getattr(msg, "additional_kwargs", None) or {}).get("reasoning_content") or "")
+    if reasoning.strip():
+        out["reasoning"] = reasoning[:_LLM_MSG_CAP]
     return out, int(ptok or 0), int(otok or 0)
 
 
@@ -618,6 +438,9 @@ class LLMTraceHandler(BaseCallbackHandler):
                 "node": node,
                 "model": model,
                 "input": [_msg_to_dict(m) for m in flat],
+                # What the call was SENT with (core/llms.invoke_kwargs' `reasoning`), so a
+                # thinking call that produced no reasoning is still told from a think-off one.
+                "think": bool((kwargs.get("invocation_params") or {}).get("reasoning")),
             }
         except Exception as exc:
             import diag
@@ -629,6 +452,7 @@ class LLMTraceHandler(BaseCallbackHandler):
             return
         try:
             out, ptok, otok = _llm_output(response)
+            out["think"] = bool(rec.get("think"))
             self._tracer.log_llm_call(
                 self._run_id, rec["node"], rec["model"], perf_counter() - rec["start"],
                 ptok, otok, json.dumps(rec["input"], default=str), json.dumps(out, default=str), "ok",
@@ -643,16 +467,26 @@ class LLMTraceHandler(BaseCallbackHandler):
             return
         try:
             # A GeneratorExit is not a model failure: the CONSUMER closed the stream on purpose
-            # (the freeze latch breaking out of synthesize's loop, a cancelled turn) — langchain's
-            # stream wrapper routes it here before re-raising. Record it as `cancelled`, not
-            # `error` (whose message would be the blank str(GeneratorExit())), or /trace invoke
-            # misreports every frozen interrupt-and-correct turn as a failed synthesize call.
+            # (a cancelled turn abandoning the stream mid-generation) — langchain's stream wrapper
+            # routes it here before re-raising. Record it as `cancelled`, not `error` (whose
+            # message would be the blank str(GeneratorExit())), or /trace invoke misreports
+            # every cancelled turn as a failed model call.
             cancelled = isinstance(error, GeneratorExit)
             note = "stream closed before completion (freeze/cancel)" if cancelled else str(error)
+            out = {"content": "", "tool_calls": [], "error": note, "think": bool(rec.get("think"))}
+            if cancelled and rec.get("think"):
+                # A thought cut at its budget or by Esc (nodes/agent._generate closes the
+                # stream): keep what it had reasoned — langchain hands the partial generation.
+                note = out["error"] = "stream closed before completion (a thought was cut, or the turn cancelled)"
+                try:
+                    partial = _llm_output(kwargs.get("response"))[0].get("reasoning")
+                except Exception:
+                    partial = None
+                if partial:
+                    out["reasoning"] = partial
             self._tracer.log_llm_call(
                 self._run_id, rec["node"], rec["model"], perf_counter() - rec["start"],
-                0, 0, json.dumps(rec["input"], default=str),
-                json.dumps({"content": "", "tool_calls": [], "error": note}),
+                0, 0, json.dumps(rec["input"], default=str), json.dumps(out, default=str),
                 "cancelled" if cancelled else "error",
             )
         except Exception as exc:

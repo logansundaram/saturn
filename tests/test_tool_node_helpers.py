@@ -3,11 +3,11 @@ never overflow the context window) and the call/preview formatters the trace rid
 
 from nodes.tools import (
     _clamp_observation,
-    _fmt_call,
     _preview,
     _MAX_OBSERVATION,
     _MAX_RESULT_PREVIEW,
 )
+from textutil import fmt_call as _fmt_call
 
 
 def test_clamp_short_passthrough():

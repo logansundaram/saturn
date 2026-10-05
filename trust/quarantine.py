@@ -8,7 +8,7 @@ indistinguishable from the user's own intent — the classic indirect prompt-inj
 This module is the boundary:
 
   scan(text)            high-signal patterns for instruction-shaped content inside a tool
-                        observation. Conservative on purpose (like redaction.py): it flags the
+                        observation. Conservative on purpose (like secret_scan.py): it flags the
                         canonical injection phrasings, it is not a classifier.
   is_untrusted(name)    whether a tool's output comes from outside the trust boundary (web tools,
                         remote MCP tools, the ingested-document corpus).
@@ -19,24 +19,29 @@ This module is the boundary:
                         leaf; the approval gate shows the flags so the human knows the batch they
                         are approving follows injection-flagged content.
   gate_pending() /      the control escalation (mode `gate`): after a flagged observation, the
-  consume_gate()        NEXT tool batch faces the approval gate regardless of risk tier — a tool
-                        call whose arguments may derive from injected text gets one fresh human
-                        look. The approval node PEEKS (gate_pending) to decide gating and consumes
-                        only after its interrupt resolves — LangGraph re-runs an interrupted node
-                        from the top, so consuming up front would spend the escalation before the
-                        human ever answered — and only when the batch was not fully REJECTED (a
-                        rejected escalation stays armed, so a re-issued copy of the declined call
-                        faces the human again instead of auto-approving past their 'no'). Consumed
-                        once per let-through flag so it costs one extra prompt, not a prompt per
-                        call forever.
+  consume_gate()        next tool batch that can ACT — send something out (is_outbound) or change
+                        something (a tier above read_only) — faces the approval gate regardless
+                        of risk tier: a call whose arguments may derive from injected text gets
+                        one fresh human look. A batch of local read-only calls (a plan update, a
+                        re-read) passes and leaves it armed. The approval node PEEKS to decide
+                        gating and consumes only after its interrupt resolves, and only when the
+                        batch was not fully rejected (see consume_gate). One extra prompt per
+                        let-through flag, not a prompt per call forever.
+
+  url_hold(...)         the exfiltration hold (mode `gate`), independent of the scanner: a
+                        read_only fetch still SENDS its URL. A web_extract address that the
+                        model composed after external content entered the conversation, or one
+                        on this machine / a private network that the user did not type, faces
+                        the human. A URL the user typed or a tool returned runs as before.
 
 `runtime.quarantine` (read live): off | warn | gate (default gate — safe by default).
   off   no scanning at all.
   warn  scan + fence + show flags in the rail/gate, but never escalate gating.
-  gate  warn, plus the one-batch gate escalation above.
+  gate  warn, plus the gate escalation and the URL hold above.
 
-Per-turn state is reset by `reset_turn()` (called from agent._fresh_turn). Imports only config +
-textutil (leaf), so tool_node, the approval node, and the TUI can all import it freely.
+Per-turn state is reset by `reset_turn()` (called from app.session._fresh_turn). Imports only config,
+textutil and trust.egress (leaves), so tool_node, the approval node, and the TUI can all import
+it freely.
 """
 
 from __future__ import annotations
@@ -46,19 +51,24 @@ from dataclasses import dataclass
 
 from config import get_config
 from textutil import clip
+from trust import egress
 
 _MODES = ("off", "warn", "gate")
 
-# Tools whose observations cross the trust boundary. Workspace file tools are deliberately NOT
-# untrusted — the workspace is the user's own data; the boundary is content that arrived from
-# outside (the web, remote servers, the ingested corpus which may hold downloaded documents).
+# Tools whose observations cross the trust boundary: the web, remote servers, the ingested corpus,
+# and the file tools that return file CONTENTS (read_file, search_files). The workspace is the
+# launch folder (all of home when launched from ~), which holds downloaded and third-party files,
+# so what they return is data, not the user's own words. list_directory and find_files return
+# names only and stay trusted. run_shell is untrusted too: `cat` of that same downloaded file, or
+# `curl`, prints exactly what read_file / web_extract would have returned.
 #
 # The classification is DECLARED AT REGISTRATION (@register_tool(untrusted=True) /
 # register_tool_object(untrusted=True)) and PUSHED here by tools/registry at startup and by
-# /mcp reload — quarantine stays a leaf (imports config + textutil only), so the registry pushes
+# /mcp reload — quarantine stays a leaf (imports only leaves), so the registry pushes
 # instead of being imported. The hard-coded set below is only the fallback for code paths that
 # never load the registry (unit tests, partial imports); with a push in effect it is unused.
-UNTRUSTED_TOOLS = {"web_search", "web_extract", "search_knowledge_base"}
+UNTRUSTED_TOOLS = {"web_search", "web_extract", "search_knowledge_base", "read_file", "search_files",
+                   "run_shell"}
 _UNTRUSTED_PREFIX = "mcp_"  # every remote MCP tool (fallback-mode heuristic)
 _UNTRUSTED_OVERRIDE: "set[str] | None" = None  # the registry-pushed set; None = fallback mode
 
@@ -69,6 +79,17 @@ def set_untrusted_tools(names) -> None:
     a new external-fetch tool is untrusted because its own registration says so."""
     global _UNTRUSTED_OVERRIDE
     _UNTRUSTED_OVERRIDE = set(names)
+
+
+# Tools that SEND model-chosen text off this machine (the web tools, a text message; every MCP
+# tool, by the same reserved prefix as above). They mirror the egress chokepoints
+# tests/test_no_new_egress.py pins.
+OUTBOUND_TOOLS = {"web_search", "web_extract", "send_message"}
+
+
+def is_outbound(tool_name: str) -> bool:
+    """Whether a call to this tool sends its arguments off the machine."""
+    return tool_name in OUTBOUND_TOOLS or tool_name.startswith(_UNTRUSTED_PREFIX)
 
 
 @dataclass(frozen=True)
@@ -103,13 +124,20 @@ _PATTERNS: list[tuple[str, "re.Pattern[str]"]] = [
     ("chat-markup", re.compile(
         r"<\|im_start\|>|\[/?INST\]|</?system>|^#{1,6}\s*system\s*:?\s*$",
         re.IGNORECASE | re.MULTILINE)),
+    # Terminal escape sequences (2026-10-01): an OSC / DCS / APC / PM string, or a CSI that
+    # moves the cursor, erases or switches modes. Matched raw (ESC, 8-bit CSI/OSC) and in the
+    # visible form nodes/tools.py writes (␛). Colour (SGR, `…m`) and erase-to-end-of-line
+    # (`[K` / `[0K`, which grep and GCC write after each colour code) are excluded: harmless,
+    # removed at the source, and common in shell output.
+    ("terminal-escape", re.compile(
+        "[\x1b␛](?:[\\]PX^_]|\\[(?!0?K)[0-9;?]*[A-HJKSTfhlsu])|[\x9b\x9d]")),
 ]
 
 # Fetched content naming Saturn's own GATED tools as calls is a coercion attempt, not data.
 # The alternation is rebuilt from the live registry (every non-read_only tool, MCP included)
 # via set_gated_tools — pushed by tools/registry at startup and /mcp reload, so the pattern
-# tracks the actual gated surface instead of a frozen snapshot of four built-in names. The
-# default below is only the no-registry fallback (unit tests, partial imports).
+# tracks the actual gated surface. The default below is only the no-registry fallback (unit
+# tests, partial imports).
 _GATED_DEFAULT = ("run_shell", "write_file", "edit_file")
 
 
@@ -182,7 +210,149 @@ def wrap_observation(observation: str, findings: list[Finding]) -> str:
     )
 
 
-# --- per-turn flag state (reset by agent._fresh_turn) ---------------------------------------
+# --- the URL hold ----------------------------------------------------------------------------
+
+_SCHEME = re.compile(r"^[a-z][a-z0-9+.-]*://", re.IGNORECASE)
+
+COMPOSED_URL_NOTE = ("this address was composed by the model after it read external content — "
+                     "it appears in nothing you typed and nothing a tool returned")
+PRIVATE_URL_NOTE = ("this address is on this machine or a private network, and you did not "
+                    "type it")
+
+
+def _url_forms(url: str) -> "set[str]":
+    """The spellings under which a URL counts as already present: as given, without the scheme,
+    without a leading www., each with and without a trailing slash."""
+    bare = _SCHEME.sub("", url.strip())
+    forms = {url.strip(), bare}
+    if bare.lower().startswith("www."):
+        forms.add(bare[4:])
+    return {f.lower() for form in forms for f in (form, form.rstrip("/")) if f}
+
+
+def _mentions(text: str, url: str) -> bool:
+    low = (text or "").lower()
+    return any(form in low for form in _url_forms(url))
+
+
+def url_hold(url: str, user_text: str, seen_text: str, after_untrusted: bool) -> "str | None":
+    """Why a fetch of `url` must face the human, or None. `user_text` is everything the user
+    typed; `seen_text` everything else that entered the conversation (tool results,
+    attachments, the grounding — never the model's own messages); `after_untrusted` whether
+    any of that came from outside the trust boundary.
+
+    A URL the user typed is theirs. Otherwise a private address is held always (a local service
+    trusts localhost), and a URL found nowhere in the conversation is held once external content
+    could have steered it: carrying what the model read out in a query string is the one thing
+    a read_only fetch can do with injected instructions. Verbatim presence is the test — a URL
+    copied from a search result passes; one built around private text cannot."""
+    if mode() != "gate" or not url or _mentions(user_text, url):
+        return None
+    if egress.is_private_host(egress.host_of(url)):
+        return PRIVATE_URL_NOTE
+    if after_untrusted and not _mentions(seen_text, url):
+        return COMPOSED_URL_NOTE
+    return None
+
+
+# --- the handle hold -------------------------------------------------------------------------
+#
+# A recipient the model invented. On 2026-10-02 a 4b answered "summarize my texts with ian" by
+# calling read_messages with a number that appeared in nothing the user typed and nothing a
+# tool returned — and the next turn re-used it, because its own answer now carried it. The
+# agent's hygiene asks this of every argument that names a person; the model's own messages
+# are never provenance (nodes.approval.provenance skips them).
+
+HANDLE_ARGS = {"send_message": "to", "read_messages": "contact"}
+UNKNOWN_HANDLE_NOTE = ("this number or address appears in nothing you typed and nothing a tool "
+                       "returned — the model composed it")
+
+_PHONE_RUN = re.compile(r"\+?\d[\d\s().-]{5,}\d")
+_EMAIL_RUN = re.compile(r"[^@\s'\"]+@[^@\s'\"]+\.[^@\s'\",;)\]}]+")
+_MIN_DIGITS = 7
+_MAX_DIGITS = 15       # E.164
+
+
+def _digits(text: str) -> str:
+    return re.sub(r"\D", "", text or "")
+
+
+def _same_number(a: str, b: str) -> bool:
+    """Two digit strings name one number when the shorter is the tail of the longer — the
+    national form against the international one — and is long enough to be a number."""
+    short, long_ = sorted((a, b), key=len)
+    return len(short) >= _MIN_DIGITS and long_.endswith(short)
+
+
+def _numbers_in(text: str) -> "list[str]":
+    """Every digit string in `text` that may be a phone number. The pattern runs across spaces
+    ("305 555 0100"), so "+13055550100 10 minutes late" is ONE run to it, ending in digits
+    that are no part of the number: besides the whole run, every stretch of adjacent
+    space-separated pieces is a candidate — up to the first that is longer than any number."""
+    out: list = []
+    for run in _PHONE_RUN.findall(text or ""):
+        pieces = [d for d in (_digits(p) for p in run.split()) if d]
+        out.append("".join(pieces))
+        for i in range(len(pieces)):
+            joined = ""
+            for piece in pieces[i:]:
+                joined += piece
+                out.append(joined)
+                if len(joined) > _MAX_DIGITS:
+                    break
+    return [d for d in out if len(d) >= _MIN_DIGITS]
+
+
+def same_handle(a: str, b: str) -> bool:
+    """Whether two spellings name one person: emails compare case-insensitively, numbers by
+    their digits with the national form a tail of the international one."""
+    a, b = str(a or "").strip(), str(b or "").strip()
+    if "@" in a or "@" in b:
+        return a.lower() == b.lower()
+    return _same_number(_digits(a), _digits(b))
+
+
+def handle_hold(handle: str, user_text: str, seen_text: str) -> "str | None":
+    """Why a call naming `handle` — a phone number or an email address — must not run, or
+    None. `user_text` is everything the user typed, `seen_text` everything else that entered
+    the conversation (tool results, attachments, the grounding — never the model's words).
+    A number matches however it was written: digits only, with the national form a tail of the
+    international one. Something too short to be a number, or a name, is left to the tool's own
+    argument check."""
+    handle = str(handle or "").strip()
+    text = (user_text or "") + "\n" + (seen_text or "")
+    if "@" in handle:
+        return None if handle.lower() in text.lower() else UNKNOWN_HANDLE_NOTE
+    digits = _digits(handle)
+    if len(digits) < _MIN_DIGITS:
+        return None
+    if any(_same_number(digits, n) for n in _numbers_in(text)):
+        return None
+    return UNKNOWN_HANDLE_NOTE
+
+
+# The same hold for a group chat: its ref (tools/messages.chat_ref) only ever comes from
+# find_group_chats or a read_messages row label, so one found in neither — nor typed by the user
+# — is the model's invention. Matched whole: `g7f3a2` is not `g7f3a2b`.
+CHAT_ARGS = {"send_message": "chat", "read_messages": "chat"}
+UNKNOWN_CHAT_NOTE = ("this group chat ref appears in nothing you typed and nothing a tool "
+                     "returned — the model composed it")
+CHAT_REF = re.compile(r"g[0-9a-f]{5,40}")     # the one pattern; tools/messages reads refs by it
+
+
+def chat_hold(ref: str, user_text: str, seen_text: str) -> "str | None":
+    """Why a call naming group chat `ref` must not run, or None. Something that is not a ref
+    at all is left to the tool's own argument check."""
+    ref = str(ref or "").strip()
+    if not CHAT_REF.fullmatch(ref):
+        return None
+    text = (user_text or "") + "\n" + (seen_text or "")
+    if re.search(rf"(?<![0-9a-z]){re.escape(ref)}(?![0-9a-z])", text):
+        return None
+    return UNKNOWN_CHAT_NOTE
+
+
+# --- per-turn flag state (reset by app.session._fresh_turn) ---------------------------------
 
 _TURN_FLAGS: list[dict] = []  # [{"tool": name, "kinds": [...]}] in flag order
 _GATE_PENDING = False

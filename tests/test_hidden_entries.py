@@ -1,6 +1,6 @@
 """Hidden entries are not workspace content (2026-09-02).
 
-The workspace directory carries the registry's own `.manifest.md`, and users' directories carry
+A workspace may carry dotfiles (an old `.manifest.md`, `.git`, editor state), and users' directories carry
 `.DS_Store`, `.git`, editor droppings. `list_directory` returned them, so "read all files" on an
 empty workspace listed the manifest, read it, and relayed the agent's bookkeeping as the user's
 data. One rule across the navigation tools: an entry whose name starts with '.' is never listed,

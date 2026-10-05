@@ -8,9 +8,15 @@ notification …'` is on every Mac (the alert shows under "Script Editor" until 
 it once in System Settings → Notifications).
 
 One plist per notification at `~/Library/LaunchAgents/com.saturn.notify.<id>.plist`. Its
-program is a `/bin/sh -c` line that (1) shows the notification, (2) deletes its own plist, and
-(3) boots its own label out of launchd — so a one-shot can never re-fire on the same calendar
-date next year. The listing metadata (`SaturnNotification`) rides inside the plist, so the
+program is a `/bin/sh -c` line that (0) exits unless the scheduled moment has arrived, (1) shows
+the notification, (2) deletes its own plist, and (3) boots its own label out of launchd — so a
+one-shot can never re-fire on the same calendar date next year.
+
+`StartCalendarInterval` has no year, which is what step 0 is for: a reminder more than twelve
+months out is started by launchd on THIS year's date, finds its moment has not come, and stays
+loaded for the next one. `RunAtLoad` covers the opposite miss — a job whose minute passed while
+the Mac was off is started again at the next login, finds itself due, and shows then instead of
+a year later. The listing metadata (`SaturnNotification`) rides inside the plist, so the
 plists on disk ARE the pending set: no second registry to drift.
 
 `_run`, `agents_dir`, and `_uid` are the three seams the tests capture; nothing else touches
@@ -27,6 +33,7 @@ from datetime import datetime
 from pathlib import Path
 
 from notify import Notification, NotifyError
+from tools.applescript import quote
 
 LABEL_PREFIX = "com.saturn.notify."
 
@@ -53,15 +60,21 @@ def _run(argv: list[str]) -> str:
     return proc.stdout or ""
 
 
-def _applescript_string(text: str) -> str:
-    """An AppleScript double-quoted string literal: backslash and quote escaped, newlines
-    flattened (AppleScript literals don't interpret \\n and a raw newline would end the line)."""
-    flat = " ".join(str(text or "").split())
-    return '"' + flat.replace("\\", "\\\\").replace('"', '\\"') + '"'
+def _flat(text: str) -> str:
+    """One line: a notification shows a single line, so whitespace runs (newlines too) collapse."""
+    return quote(" ".join(str(text or "").split()))
 
 
 def _display_script(title: str, body: str) -> str:
-    return f"display notification {_applescript_string(body)} with title {_applescript_string(title)}"
+    return f"display notification {_flat(body)} with title {_flat(title)}"
+
+
+def _guard(when: datetime) -> str:
+    """The shell test that holds a job until its real date: exit quietly while the clock is
+    before the scheduled MINUTE (launchd starts the job at the minute's first second, which is
+    before a `when` that carries seconds)."""
+    due = int(when.replace(second=0, microsecond=0).timestamp())
+    return f'[ "$(date +%s)" -ge {due} ] || exit 0'
 
 
 def _label(id: str) -> str:
@@ -85,6 +98,7 @@ class LaunchdBackend:
         # Every user-controlled string is a single shell word (shlex.quote), so `$(…)`, backticks
         # and quotes in a title are inert; the AppleScript escaping happens inside that word.
         script = " ; ".join([
+            _guard(when),
             f"/usr/bin/osascript -e {shlex.quote(_display_script(n.title, n.body))}",
             f"rm -f {shlex.quote(str(path))}",
             f"launchctl bootout {_domain()}/{label}",
@@ -95,7 +109,7 @@ class LaunchdBackend:
             "StartCalendarInterval": {
                 "Month": when.month, "Day": when.day, "Hour": when.hour, "Minute": when.minute,
             },
-            "RunAtLoad": False,
+            "RunAtLoad": True,
             "SaturnNotification": {
                 "id": n.id,
                 "when": when.isoformat(timespec="minutes"),

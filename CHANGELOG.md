@@ -9,55 +9,558 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
 
 ### Added
 
-- **The quick path: a simple turn skips the planner and the judge.** A request that reads as a
-  chat question or a single lookup — nothing to change, no figure to compute, no reference to
-  follow, at most one workspace path, one clause — no longer drafts a plan, executes a step,
-  and asks the rectify judge before answering. One grammar-bound call (think off) picks
-  "answer" or ONE read-only tool (web, files, the knowledge base, the calculator, the clock,
-  memory recall, the Apple Mail / Notes / Calendar readers; up to three calls), then the answer
-  streams as before. Every call still faces the approval gate, the egress ledger and the
-  quarantine scanner, and lands on the plan, so `/trace`, replay, citations and incident
-  disclosure are unchanged. Measured on the 9b: the decision costs 0.5–0.8 s
-  warm where the plan call alone cost 5–19 s of thinking; a chat turn drops from four model calls
-  to two, a lookup from four to three; the trust benchmark's graded suites ran in 379 s against
-  581 s the same morning with every gate, injection and memory verdict unchanged. Anything the quick path cannot finish — a tool
-  outside its read-only set (a write, an event, a reminder, a question to you), a failed call,
-  or its call budget — is handed to the plan engine with what it already read. `/plan <request>`
-  and `/quick <request>` (and `--plan` / `--quick` headless) override the check for one turn;
-  `/config runtime.quick_path false` plans every turn.
+- **Saturn remembers what you tell it, without asking.** Say "I'm vegetarian", "Petra is my
+  manager" or "never book anything before 10am" and it is kept — no approval prompt — with one
+  line after the answer: `remembered #12: … · /memory forget 12 undoes it`. This happens only
+  when the fact's words come from one sentence you typed and stated (a question does not
+  count, and a "not" has to stay where you put it), and nothing from outside (a web page, mail,
+  a file, an attachment) has entered the conversation — once something has, every later fact
+  in that conversation asks, until `/clear`. Otherwise the prompt still appears and says why
+  ("'evil@x.com' is not in anything you typed"). The check proves you typed the words, not
+  that the fact means what you meant: read the line after the answer. A rule you give ("never…", "from now on…") is
+  kept where it applies to every request. `/memory` marks these facts `said`; `/memory why`
+  explains. Turn it off with `memory.auto_learn: false`; `saturn -p` / `-q` never do it.
+- **A new fact names the one it may contradict.** When "I live in Berlin" lands beside a stored
+  "I live in Paris", the line after the answer, the approval prompt and `/memory add` say so
+  (`similar: #3 "I live in Paris" — /memory forget 3 if that is no longer true`). Nothing is
+  removed for you.
+- **Recognisable secrets are refused by memory.** A card number, a Social Security number, a
+  password, a PIN, an API key or a private key in one of its common written forms is refused
+  wherever a fact is written — by the model, at a review, with `/memory add` or `/memory edit` —
+  and Saturn says why. It is a net for the usual shapes, not a guarantee for every one.
 
-- **The planner reasons inside its grammar instead of thinking.** Every plan call used to run
-  the model's free thinking (5–19 s on the 9b) because without any rationale it turned "write
-  me a story" into a lone question or a file write. The rationale is now a bounded first field
-  of the plan's JSON grammar — one to three sentences the model must write before it commits
-  to steps — and the planner runs think off like every other task. Measured on fifteen
-  requests: the story case answers directly four draws of four, twelve of fifteen plans are
-  identical to the thinking planner's and the rest defensible, at 1.7–3 s warm against 9–17 s.
+- **`/think` — how much Saturn reasons before it answers.** Three levels: `fast` (never
+  thinks), `auto` (thinks before it acts) and `deep` (thinks on every pass). `/think` shows
+  the level, what each kind of pass does and what the last turn's passes did; `/think deep`
+  sets it; `/think <your request>` runs that one request at `deep`, in the terminal or with
+  `saturn -p`.
+- **`auto` now thinks before it acts.** When Saturn is about to use a tool it thinks the move
+  through first; a plain answer never waits on a thought. It also thinks after a tool error
+  and after you steer. Before, it thought only after an error. On the benchmark of everyday
+  requests the small model (4b) completes about six more of 34 tasks this way and the 9b is
+  unchanged; turns that use tools take longer (a simple lookup on the 4b about 6 s instead of
+  3.5 s), chat does not. `/think fast` turns thinking off.
+- **You can see a thought, and stop it.** While the model thinks the status bar says
+  `thinking 3s` and Esc stops the thought; the pass then answers without it. A thought is also
+  cut at `runtime.think_budget` tokens (1024). Afterwards the trace line shows `thought 1.8s`
+  with the reason and the opening of the thought, the receipt shows the turn's thinking time,
+  and `/trace why` lists when each pass thought.
+- **`benchmark.py --loop --think <mode> --tier <tier> --runs N`** runs the loop benchmark
+  under a think mode without touching `config.yaml`, and the report records every pass's
+  thinking.
+
+- **Skills — your own procedures.** Write a procedure once in markdown and run it by typing its
+  name: `/weekly-review`, or `/weekly-review focus on work` to point it at something. A skill
+  is `~/.saturn/skills/<name>/SKILL.md` (or `<name>.md`) — the same file shape Claude Code
+  uses, so skills you already have work — and a folder can carry its own in
+  `.saturn/skills`, which wins on a shared name. `/skills` lists them, `/skills show <name>`
+  prints one, `/skills create <name>` writes a template to edit, `/skills delete <name>` moves
+  one to the Trash. Every action a skill leads to
+  still asks for approval as usual; a skill never changes what asks first, and Saturn's file
+  tools never write the skills folders. `saturn -p "/weekly-review"` runs one headless. A skill
+  named like a built-in command never runs (startup and `/skills` say so).
+  Saturn can write one for you: "save that as a skill called weekly-review". It shows you the
+  complete skill first and saves it only when you say yes. That prompt always appears, whatever
+  `/policy` is set to; there is no always-allow for it, and `saturn -p` never saves a skill.
+  `/skills` shows which skills Saturn drafted, and `/undo` takes a save back. (Reliable on the
+  9b and up; the 4b tends to carry the steps out instead of saving them.)
+- **Every pulled model on `/models`.** Below the qwen ladders the page now lists whatever else
+  Ollama holds, chat models and embedding models in separate sections, each with its size,
+  parameter count and whether it fits this machine. The rows are numbered like the rest: pick a
+  chat model to run it on the active tier, or an embedder to switch to it. A model that cannot
+  call tools is marked and cannot be picked.
+- **GPU and memory in the status bar.** While a turn runs the bar shows `gpu 31% · mem
+  21.4/36 GB`: GPU utilisation and unified memory in use (app + wired + compressed, the number
+  Activity Monitor calls Memory Used), sampled every two seconds. Memory turns yellow at 85%.
+
+- **Group chats.** "Tell the climbing group I can't make it" and "text Sam and Alex together"
+  now reach an existing group chat, and "what's the family chat saying" reads the whole group
+  with everyone named. Saturn finds the group by its name or by who is in it; when several
+  could be meant it asks which one, and it never creates a group. The approval prompt lists
+  every member and their number before a group text goes out, the egress ledger records each
+  recipient, and a group a model made up — or a name where a number belongs — is refused
+  before you are asked. "Text Sam" still
+  means Sam alone, even when Sam is in groups.
+
+- **A number from nowhere is refused.** A text or a Messages lookup names a person by phone
+  number or email address; if that handle appears in nothing you typed and nothing a tool
+  returned, the call is refused before it runs and Saturn is sent to look the person up in
+  Contacts instead. The model's own earlier words never vouch for one. (Seen 2026-10-02: a
+  model answered "summarize my texts with ian" with a number it made up.)
+- **The approval prompt says whose number it is.** A send now reads
+  `+1305… is Ian Smith's mobile number (from search_contacts)`, or `you typed it`, instead of a
+  bare number.
+- **Contacts forgives a typo.** When no card contains what you typed ("stanly"), Saturn fetches
+  the closest names and says so, rather than "no contacts match".
+
+- **Delete files you can get back.** `delete_file` moves a file or folder to the Trash instead
+  of erasing it: `/undo` puts it back, and so can Finder long after. Saturn used to delete with
+  `rm` through the shell, which nothing could reverse. It asks first, never deletes the working
+  folder itself, and never touches Saturn's own control files.
+- **Text someone.** "Text Sam I'm 15 minutes late" now works: Saturn looks Sam up in Contacts
+  and sends an iMessage through the Messages app. A send is the one action that **always**
+  asks — you see the number and the exact text every time; no setting, no "always allow" and no
+  `--yolo` skips it, and headless mode refuses it outright. Every send is on the egress ledger
+  and air-gap blocks it. Saturn reports the message as handed to Messages, not delivered: a
+  recipient who is not on iMessage fails inside Messages, where Saturn cannot see it.
+- **Contacts and Reminders.** `search_contacts` turns a name into the addresses, numbers and
+  birthday on the card, so replies and texts go to a real address instead of a guessed one.
+  "Remind me to call the dentist tomorrow at 9" now creates a reminder in the Reminders app
+  (it reaches your phone), "what's overdue" lists open reminders, and a reminder can be ticked
+  off. Reminders cannot be made to repeat or to trigger at a place from here — Saturn says so
+  when you ask for either.
+- **Your Shortcuts.** `run_shortcut` runs any shortcut you have built ("lights off", a Focus
+  mode, a HomeKit scene). It always asks first unless you allow that one shortcut by name with
+  `/policy shortcut <name>` (the name must be one of your shortcuts). A shortcut is a program Saturn cannot see inside, so each run is
+  marked untracked on the egress ledger and, under air-gap, always asks.
+- **Reply, triage, move, append.** `reply_mail` opens an unsent reply in the right thread with
+  the original quoted (you press Send). `update_mail` marks read/unread, flags, moves or
+  trashes a whole list of messages in one approval. `update_calendar_event` moves or renames
+  an event (a bare time such as "3pm" keeps it on its own day) and `delete_calendar_event`
+  removes one — a repeating event only with `whole_series`, and you are told when attendees
+  may be notified. `append_note` adds lines to an existing note instead of starting a second
+  one — the note with exactly that title, never a near match (a locked note, or one with
+  attachments, is left alone). Mail listings now say whether you have replied.
+- **Rename and move files.** `move_file` renames or moves a file or folder inside the folders
+  Saturn can reach; `/undo` moves it back. Renaming used to mean a shell command. A symlink is
+  moved as a link, and Saturn's own control files — or a folder holding one — are never moved.
+- **Search that uses Spotlight.** On macOS, searching file contents for a word or phrase now
+  also asks Spotlight's index: a search from your home folder that used to read files for the
+  full ten seconds answers in two to five, and matches inside PDF, Word and Excel files are
+  found. Every hit is still checked against the file itself, and the same folder limits apply.
+- **"This page", "these files", "what's on my clipboard".** `read_browser_tab` reads the page
+  in the front tab of the browser you used last — in Safari the page text itself, with nothing fetched; in Chrome
+  the address and title, unless you turn on *Allow JavaScript from Apple Events*.
+  `finder_selection` gives Saturn the files you have selected in Finder. Type `@clipboard` in a
+  message to attach what is on the clipboard (Saturn never reads it on its own), and `/copy`
+  puts the last answer on it.
+- **Message history** (`read_messages`), if you give your terminal Full Disk Access; without
+  it Saturn tells you where to turn that on. One person's messages are found however far back
+  they are; a text search covers the newest 4,000 messages and says so when that is not all.
+
+- **The model page prices speed, not just fit.** `/models` (and the first launch, which runs
+  it) now reads your Apple chip and its GPU core count and looks up the memory bandwidth and
+  GPU compute Apple publishes for it (M1 through M4, base / Pro / Max / Ultra, the binned Max
+  chips told apart by their core count; the M5 family is priced as the M4 family until one has
+  been measured here). Every tier shows an estimated decode speed —
+  bandwidth over the bytes it streams per token, calibrated against the 9b measured on an M4
+  Pro — and the recommendation is the largest tier that fits **and** decodes at 10 tok/s or
+  better; a tier that fits but would crawl is marked `fits · slow`, never picked by default. A
+  32 GB base M4 is now told the 27b fits but streams at ~6 tok/s and offered the 9b; the same
+  memory on an M4 Pro gets the 27b. The recommended row says what it feels like (`~37 tok/s ·
+  first prompt ~7 s cold, then cached`). A chip the table does not know — an Intel Mac, a
+  newer generation — is priced at the M1 baseline and the page says so.
+
+### Security
+
+- **A web page, email or file can no longer take over your terminal.** Text can carry hidden
+  terminal commands — escape sequences that write your clipboard, turn text into a link to a
+  different address, or move the cursor and erase lines so what you see is not what happened.
+  Saturn now shows them as visible symbols (`␛`) everywhere it prints: the trace, answers,
+  `/trace` and replays (including runs recorded before this change), slash commands, headless
+  output and the debug log. Colour codes from shell commands are removed. Content that carries
+  such sequences is flagged like an injection attempt, and the next action asks first. At the
+  approval prompt, characters that reverse text direction or print as nothing are shown by
+  code point (`⟨U+202E⟩`) and a colour code is shown as `␛[…m` rather than removed, so a
+  command cannot display differently from how it runs. A link in an answer prints as
+  `text (address)`: the address you would open is always the one you can read.
+- **A shorthand loopback address no longer reads as public.** `127.1`, `0x7f.0.0.1`,
+  `0177.0.0.1` and a bare decimal all reach 127.0.0.1, but only the spelled-out form was
+  recognised as private: a page that steered the model to `web_extract("http://127.1:11434/…")`,
+  or a redirect to one, slipped past both the URL hold at the gate and the fetch's
+  redirect-to-private refusal. The address parser now reads the same shorthand the resolver does.
+- **The model's own words no longer vouch for a URL.** The composed-URL hold asks whether a
+  `web_extract` address appeared anywhere in the conversation before the model wrote it. The
+  model's own messages counted — including the preamble of the very message issuing the call —
+  so "Next I will fetch https://…?d=<your data>" cleared its own hold. Only what you typed, what a
+  tool returned, an attachment and the grounding count now.
+- **The memory file and the standing instructions are control files.** `write_file`,
+  `edit_file`, `move_file` and `delete_file` now refuse the memory file and its pending-review
+  queue (a planted bullet stamped `by=user` would load as a fact you stated, past the review
+  gate) and both `SATURN.md` files (an instruction planted there loads into every later turn).
+  Edit them by hand, through `/memory`, or with `/init`.
+- **`/policy risk` never lowers `run_shell`, `run_shortcut` or `send_message`.**
+  `/policy risk run_shell read_only --save` used to un-gate every shell command with no
+  allowlist; it is refused now, nothing is persisted, and a hand-edited override in
+  `permissions.json` is ignored on load. `/policy allow` and `/policy shortcut` remain the
+  one-at-a-time grants.
+- **`--yolo` does not fetch a held URL.** Headless mode under `--yolo` auto-approved a
+  `web_extract` whose address the gate had held (composed by the model after external content,
+  or a private address you did not type). It is denied now, like a send and an air-gapped shell
+  command; the denial says why on stderr.
 
 ### Fixed
 
-- **A plain editing request no longer refuses its own write on the quick path.** "Prepend a
-  header to notes.md", "make a file called todo.txt", "put today's date at the top of
-  notes.md", "set the title in notes.md", "export the list as todo.txt", "log that in
-  journal.md" read as simple lookups, so the quick path read the file, then handed the write
-  to the plan engine mid-turn — where the effect-authorization rule refused it as a write the
-  request never asked for. These verbs now plan from the start (next to a workspace path or a
-  file word; in conversation — "what makes Python slow", "put simply" — they stay quick), and
-  `prepend` authorizes a redrafted write the way `append` does.
-- **`/quick <request>` while a `/draft` is pending no longer runs the quick path on top of your
-  plan** (the lookup's result landed on your first drafted step and the draft never ran). The
-  command now says the draft is pending and points at `/draft clear`; a seeded plan also
-  outranks any forced route inside the engine.
-- **The quick path's iteration cap no longer abandons a tool call it just emitted.** At the
-  cap the router lands without deciding, so no step is left active with a call that never ran.
-- **`/plan <request>` beginning with `review`, `pause` or `draft` runs the request** ("/plan
-  review the ledger for duplicates") instead of being read as the subcommand and lost; the
-  bare forms and `review on|off` behave as before.
-- **`/trace why` counts a quick turn honestly:** each router decision that made a call is one
-  step, rendered as the call it chose, and the "answer" decision is no longer a numbered step
-  showing raw JSON.
-- **The trace rail names a guarded landing on the quick path** ("a guarded outcome ended the
-  turn: … was skipped") instead of "answering directly" next to the incident it just disclosed.
+- **Saving a setting can no longer empty `config.yaml`.** Saving a key the file has no line
+  for (`/config <key> --save` after a session-only set, on a config written before the key
+  existed) opened the file for writing before finding the line, and left it empty when the
+  line was not there. The file is now untouched and the command says what to add.
+- **`think: on` in `config.yaml` now means what it says.** YAML reads a bare `on` as a boolean,
+  and Saturn then ran it as `adaptive` without a word. Booleans and the old names are read
+  correctly, and a value that is not a level runs as `auto` with a warning at startup.
+- **A model without a thinking mode is no longer asked twice.** A model that rejects the think
+  flag got a doubled output limit on a "thinking" pass and, if it came back empty, the
+  identical call again. It now runs every pass once, without thinking.
+- **Answering Saturn's question no longer triggers a thought.** When the model asked a question
+  and tried to act in the same breath, the action was told to wait, and that wait was counted
+  as an error for the next pass to think about.
+
+- **The Full Disk Access remedy names the right app.** It now says which app to grant it to
+  (Terminal, iTerm, Visual Studio Code…) and that it is not Messages; a model had told the user
+  to grant it to Messages.
+- **Shortcuts return their result.** `run_shortcut` reads the shortcut's output through the
+  `shortcuts` CLI's output file instead of its stdout, where a shortcut's result does not
+  reliably land.
+
+- **`/policy open off` on a closed gate changes nothing.** Typed to confirm the posture, it
+  used to drop a configured `side_effecting` threshold to `read_only` and report it as
+  "restored". It now prints the status and leaves the threshold alone; a gate opened by hand
+  (threshold set to `destructive`) still closes to `read_only`.
+- **A persisted shell grant is not dropped as "already covered".** Pressing `a` for a persisted
+  `git status` while a task-scoped grant from earlier in the turn already covered the command
+  reported success and stored nothing, so the next turn prompted again. A grant is only "already
+  covered" by a prefix that lives at least as long.
+- **A malformed tool call with no readable name gets a useful error.** It was answered with
+  "unknown tool ''" (and, with the name missing entirely, crashed the turn); the model is now
+  told the call was not valid JSON and how to retry.
+
+### Removed
+
+- **The NVIDIA and CPU-only branches of the hardware probe.** Saturn's platform is macOS on
+  Apple silicon; the probe no longer spawns `nvidia-smi` or reads `/proc`, and the budget is
+  always three quarters of unified memory.
+
+- **Saturn works where you launch it.** `cd` into any folder and run `saturn`: the file tools,
+  the shell, `/undo`, `/init` and the folder's `SATURN.md` all work there, the way Claude Code
+  works in a repo. Launched from `~`, your home folder is the workspace. The tools can't reach
+  anything outside it on their own: ask about a file elsewhere and Saturn suggests `/add-dir
+  <folder>`, which makes that folder reachable for the session; `/rm-dir` takes it away. Every
+  write and shell command still faces the gate. Searches skip `~/Library`, dependency folders
+  and hidden folders, and stop at 50,000 entries. `/undo` restores the exact file a turn wrote,
+  whatever folder you run it from.
+- **The loop benchmark** (`python benchmark.py --loop`). Twenty-four daily requests — chat,
+  one-tool lookups, multi-step file tasks, and the shapes a small model gets wrong (a missing
+  file, an impossible request, an under-specified one, mental arithmetic) — run through the
+  live loop and graded from the turn record: passes against the shape's bound (chat = 1,
+  lookup = 2, multi ≤ N), tool choice, a verifiable value in the answer, phantom actions
+  (text that narrates a tool call that never happened), stub answers, hygiene bounces and
+  capped turns. A measurement, not a `--strict` gate; the report lands at
+  `logging/benchmarks/loop_<ts>.json`. Fixtures are planted under `bench_*` in the workspace
+  and removed afterwards. The trust benchmark stays the default run.
+- **Read PDFs, Word documents and spreadsheets directly.** `read_file` returns a PDF as its text
+  page by page, a `.docx` as its paragraphs and tables, and an `.xlsx` as one CSV block per
+  sheet — "summarize the PDF on my desktop" no longer goes through the knowledge base or needs
+  the embedder. `@file` attachments read them the same way. Other binary files (images,
+  archives) are refused by name instead of returned as garbled bytes.
+- **Saturn knows today's date.** Every turn's grounding carries the weekday, date and time, so
+  "what day is it" and "this Thursday" resolve without a tool round.
+- **Hooks.** `~/.saturn/hooks.yaml` runs your own shell commands on `turn-start`, `turn-end`,
+  `before-write` and `after-write`, with the request, answer or file in the environment and
+  as JSON on stdin. A `before-write` hook that exits non-zero blocks the write, and the answer
+  says so. A mistake in the file is named at startup instead of silently skipped.
+- **Saturn never writes the files that control it.** `write_file` and `edit_file` refuse
+  `hooks.yaml`, the live `config.yaml` and `permissions.json`, even when approved — a write to
+  one could loosen the gate or plant an ungated command. Launched from `~`, they sit inside
+  the working folder, so this refusal is what keeps them out.
+- **The prompt explains the rounds.** The agent is told it works in rounds — the tools it
+  calls now run, the results come back, then it decides the next call — so "read the file,
+  then email whoever it names" reads the file first and writes the mail after, instead of
+  guessing the address in the same pass. The loop benchmark has a task for this shape
+  (`multi_dependent`, graded `same_pass` when the dependent call didn't wait).
+- **Arguments that belong to another tool are refused.** `recall(fact=…, replaces=…)` is
+  `remember`'s call under the wrong name; it used to run as a bare `recall()`. The model now
+  gets "those arguments belong to remember" with the right shape.
+- **`/trace why` shows what a thinking pass thought.** The reasoning of a pass that thought
+  (after a failed tool call) is kept in the run's record and shown under that pass.
+
+### Changed
+
+- **Saturn sees when you told it each thing.** Every remembered fact now reaches the model with
+  the day it was saved, and one it concluded by itself (and you accepted) is marked. When two
+  facts disagree the later one wins, and what you say in the conversation outranks both.
+- **The session review reads only your words and Saturn's answers.** The pass that proposes
+  facts at `/memory review` and `/quit` no longer reads web pages, mail, files or tool output
+  directly. An answer of Saturn's that quoted a page is still read, so a proposal from a
+  conversation that outside content entered says so on the review screen.
+
+- **The think levels are named `fast`, `auto` and `deep`** (`runtime.think`). The old `off`,
+  `adaptive` and `on` still work. `runtime.think_budget` now defaults to 1024 (was 4096) and
+  is the point where a thought is cut, not only extra output room.
+
+- **A failed tool call is no longer a memory candidate.** The review at `/quit` used to offer
+  one line per failed call ("Tool call failed: read_messages(…) — Error: …"): a missing
+  permission or a malformed argument, never a fact about you. The run's trace and the answer's
+  "could not be completed" note still show the failure; candidates already queued are dropped.
+- **`/privacy` is part of `/policy`.** One command for your trust settings: bare `/policy` shows
+  what runs without asking and what can leave the machine (the model's and embedder's
+  locality, web tools, MCP servers, air-gap, quarantine, where your data lives) — quiet when the
+  defaults hold, colored where something is loosened or leaves. `/policy egress` is the ledger
+  and `/policy airgap` the seal, with the same behavior and `--save` rules as before. `/privacy`
+  prints a pointer for this release.
+- **The old Saturday names are no longer read.** `SATURDAY_*` environment variables (including
+  `SATURDAY_DEBUG` and `SATURDAY_HOME`), a folder's `SATURDAY.md`, the `~/.saturday` data folder
+  and a tier's `roles:` block all stopped working: use `SATURN_*`, `SATURN.md`, `~/.saturn`
+  (`$SATURN_HOME`) and `model: "<id>"`. A `config.yaml` that still has a `roles:` block says
+  exactly which line to write instead.
+- **`/trace search` is gone**, with the full-text index behind it; `/memory` is where "what did
+  I decide" lives. An existing database's index triggers are dropped on launch.
+- **Runs recorded by the v1 engine (before 2026-09-27) no longer render specially** in `/trace`
+  and `--replay`: their plan-review and synthesize steps and old step statuses show as plain
+  entries.
+- **Fewer slash commands to learn.** The first launch runs only `/models`, which now also offers
+  to pull the model of a tier you keep; `/config setup` is gone (later launches warn about
+  anything missing, `/mcp` shows MCP status). Also gone: `/config context` (the status bar shows
+  the fill; `/config runtime.num_ctx <size|auto>` sets the window), `/config persist` (use
+  `--save`), `/models rescan` and `/models tier` (pick a tier by its number on the page), the
+  `/scan` alias, `/docs sync` (every launch syncs; `/docs rebuild` re-embeds everything),
+  `/memory pending` (`/memory review` shows the same list), and `/clear --screen` with the
+  `/cls`, `/reset` and `/new` aliases. The cut `/config`, `/models` and `/docs` spellings say
+  where their job went for this release.
+- **`/trace context` is `/trace invoke --full`.** The input-only inspector duplicated what the
+  full invoke view already shows; the spelling still works and now shows the same calls whole,
+  outputs included. Its `--node` filter (a leftover from the multi-node engine) is gone.
+- **Headless `-q` progress says `answering…`** when the answer starts, not `synthesizing…`.
+- **Pointers for v0.1.0-era command names are gone.** `/ingest`, `/forget`, `/remove`,
+  `/reingest`, `/workspace`, `/ws`, `/system`, `/save`, `/load`, `/egress`, `/airgap`, `/why`,
+  `/commands`, `/dryrun`, `/risk`, `/allow`, `/autoapprove`, `/yolo`, `/source`, `/context`
+  and their short forms now answer "unknown command"; `/plan`, `/draft` and `/quick` keep
+  their pointer for this release. None of the old spellings ever changes a setting.
+- **One model per tier.** A tier now binds one chat model (`model:` in `config.yaml`) instead of
+  the `tool_caller` and `utility` roles, which every shipped tier bound to the same tag anyway;
+  compaction, the memory review and `/init` use the agent's model. `/models use <id>` replaces
+  `/models all <id>` and `/models <role> <id>` (the old spellings print a pointer). An existing
+  `config.yaml` with a `roles:` block keeps working unedited, and `/models use` updates it in
+  place.
+- **`/init` writes `SATURN.md`.** The old name, `SATURDAY.md`, is still read when no
+  `SATURN.md` exists, and `/init` won't overwrite either without `--force`.
+- **Content search has a 10-second budget.** Launched from `~`, a `search_files` that matched
+  nothing used to read every text file under home (80 s measured). It now stops after 10
+  seconds and says the search was partial, so it never reports "no matches" for files it didn't
+  search.
+- **The menu bar icon is off by default.** It no longer installs a login item on first launch;
+  set `notify.menubar: true` to start it with every launch, or `/notify icon start` once.
+  Existing configs keep their setting.
+- **One dependency list.** `requirements.txt` is gone: the installer installs the checkout
+  from `pyproject.toml` (`pip install -e`), and `/update` reinstalls when that file changes.
+- **`SATURN_*` environment variables.** `SATURN_DEBUG`, `SATURN_NO_SPLASH`, `SATURN_NO_ANIM`
+  and the installer's `SATURN_TIER` / `SATURN_MODELS` / `SATURN_BRANCH` / `SATURN_REPO` /
+  `SATURN_BIN` / `SATURN_MIN_OLLAMA`; the old `SATURDAY_*` spellings still work.
+  The installer's clone folder is `SATURN_INSTALL_DIR` (old name `SATURDAY_HOME`).
+- **One home folder, `~/.saturn`.** A new pipx/uv install keeps its `config.yaml` and data there,
+  beside `SATURN.md` and `hooks.yaml` (`SATURN_HOME` moves all of it). An existing
+  `~/.saturday` install keeps being used where it is, and an explicit `SATURDAY_HOME` still wins.
+
+### Removed
+
+- **Outbound redaction (`runtime.redaction`).** The off-by-default warn/redact modes that
+  rewrote prompts to a remote Ollama and MCP arguments are gone; the egress ledger still records
+  every byte that leaves. The approval gate still warns when a call carries a secret.
+- **`recall_runs`,** the model-facing search over past runs. Remembering what you decided is
+  memory's job; `/trace search` still searches past runs for you.
+
+### Security
+
+- **A shell command no longer hides from the egress ledger.** `git pull`, `curl` or `pip` can
+  reach the network without Saturn seeing it, and the ledger used to say nothing left the
+  machine. Every `run_shell` run and every call to a stdio MCP server is now recorded as
+  `untracked`: the answer's receipt counts it and `/policy egress` lists the command, so
+  neither ever claims the boundary stayed closed over one. With the air-gap on, a shell
+  command or MCP call always asks first — an allowlisted prefix or an open gate no longer
+  lets it through — and a headless run refuses it even with `--yolo`.
+- **A fetch can't carry your data out unasked.** `web_extract` never prompts, but it sends
+  its URL. When the model composes an address after reading a file, a note, an email or a web
+  page — one that appears in nothing you typed and nothing a tool returned — the gate now
+  shows it to you first. A URL you typed or one a search returned runs as before. The same
+  goes for an address on this machine or your local network that you did not type, and a
+  public page can no longer redirect a fetch onto one. `runtime.quarantine: warn` turns the
+  holds off.
+- **The injection scan covers failures and the shell.** An MCP server's error text and a
+  failed command's output are scanned and fenced like any other outside content, and so is
+  everything `run_shell` prints. After flagged content, the extra approval now waits for the
+  first call that can send or change something instead of being spent on a plan update.
+- **A remote Ollama can't pass as local.** `OLLAMA_HOST=http://127.evil.example.com` was
+  classified as loopback because its name starts with `127.`; the address is now parsed.
+- **`remember` records who confirmed a fact.** A fact stored by a call you approved is
+  `by=user`; one stored while the gate was open is `by=inferred`, as a review candidate is.
+
+### Fixed
+
+- **Contacts search puts the person you named first.** "Ian" came back fifth, behind Brian,
+  Brian Ling and anyone whose name merely contains "ian", so a short list could cut him off.
+  An exact name (first, last, full or nickname) now ranks first, then a first or last name that
+  starts with what you typed, then everything else.
+- **The "could not be completed" note shows the whole error.** It cut errors at 160 characters,
+  so "give the terminal app Full Disk Access under System Settings > …" stopped before saying
+  where; errors now keep up to 300.
+- **A turn that fills the context window is trimmed before the next one.** Auto-compaction
+  only folded older turns, so a single long research turn left the window full and the next
+  request pushed the system prompt off the front. The finished turn's tool results are now cut
+  to a head and a tail when it is the one that filled the window.
+- **The last pass of a long turn no longer re-reads the whole prompt.** At the pass limit the
+  tools used to be taken away, which changed the start of the prompt and cost a full prefill
+  (10 s at 7.5k tokens on the 4b; over a minute on a full window, enough to time the turn
+  out). The pass now keeps its tools: a further call is refused, and the model answers from
+  what it has.
+- **Calendar times with an offset land at the right hour.** `15:00Z` was written as 15:00
+  local. `list_calendar_events` also accepts the bare days its description offered (`today`,
+  `tomorrow`, `next monday`) and `in 1 week`; reminders accept a weekday (`monday at 9am`).
+- **A reminder more than a year out fires on its real date.** launchd's calendar has no year,
+  so it fired on this year's date and deleted itself. A reminder whose minute passed while the
+  Mac was off now shows at the next login instead of a year later.
+- **The answer's notes and Sources say what happened.** A read that succeeded twice and was
+  refused a third time is no longer reported as "could not be completed"; the Sources list no
+  longer cites failed or blocked calls, or writes. Re-running the same test command after an
+  edit is no longer refused as a repeat.
+- **`list_directory(name=…)` and `current_time(query=…)` run** instead of being refused as
+  another tool's call.
+- **`web_extract` stops reading a response at 5 MB.**
+
+### The v2 cut (2026-09-27)
+
+#### Removed
+
+- **Confidence coloring and token steering (freeze-edit-continue).** Parked with the v2 loop
+  and never armed by it; deleted rather than carried: `/confidence`, `runtime.confidence`,
+  `runtime.confidence_threshold`, the per-model calibration table, the freeze editor, the
+  `calibrated` column on `/models`, and the answer buffer on state. Every model call stops
+  requesting per-token logprobs — a chat turn no longer pays for a marking nothing rendered.
+- **The Glass Box (`/trace answer`, the old `/glass`).** Answer-level provenance built on the
+  synthesizer's inline `[n]` citations, which the loop no longer asks for; the Sources footer
+  is the receipt now, and the egress facts it repeated live in the receipt and `/privacy
+  egress`. The per-source trust coloring on the Sources footer goes with it.
+- **The trust benchmark's grounding and fabrication suites.** They graded the plan engine's
+  rectify judge and semantic write gate, neither of which exists any more. The gate-coverage,
+  injection-quarantine and memory probes remain the regression floor.
+- **The `planner`, `synthesizer` and `judge` model roles.** Every tier binds two roles now:
+  `tool_caller` (the agent's call) and `utility` (compaction, the memory review, `/init`).
+  An existing `config.yaml` that still lists the old three loads unchanged — the keys are
+  simply unused; `/models all <id>` rewrites only the two that remain.
+- **The qwen-only model gate.** `/models` and `/config` no longer refuse a model outside the
+  qwen3.5–3.8 line, and a config binding one is no longer silently substituted with the nearest
+  ladder tag (the "is running as" startup warning goes with it). The gate existed for the
+  per-model confidence calibration; without it, any Ollama model with native tool-calling
+  binds. The size ladder stays as the recommended default per size and `/models` prices an
+  off-ladder tag by the size in its name.
+- **Windows.** The daily-life tools are AppleScript and notifications are launchd, so Windows
+  was a file-and-shell agent with none of the product. `install.ps1`, `saturn.cmd`, the
+  PowerShell shell branch and the Windows console readers are gone; CI runs macOS and Linux.
+- **The cloud-provider abstraction and the pre-ladder scaffolding.** A role binds a bare
+  Ollama model id; the `{provider, model}` mapping form, the shelved-cloud refusals, the
+  `--provider` grammar, the legacy-tier (`laptop` / `workstation`) advice and the pre-ladder
+  capability fallback are gone. A remote `OLLAMA_HOST` is still the one network boundary and
+  still shows on the posture line, in `/privacy` and on the ledger.
+- **The `800m` and `2b` tiers and two dead capability fields.** Neither small tier was
+  validated at native tool-calling and the hardware probe never recommended one; the ladder
+  starts at `4b`. `supports_structured_output` and `supports_vision` were parsed and never
+  read. An existing `config.yaml` that still carries them loads unchanged.
+- **The workspace manifest.** Saturn no longer writes a `.manifest.md` into the workspace or
+  re-scans the directory every turn to keep it current; the grounding block's "Workspace
+  files" section goes with it (the agent has `list_directory`), as does the workspace half of
+  `/docs`. A leftover `database/workspace/.manifest.md` is inert and can be deleted. The
+  knowledge-base manifest is unchanged.
+- **The embedder from the installer, and the seeded welcome document.** A fresh install pulls
+  the chat model only; the first `/docs add` (or `/docs sync`) offers to pull
+  `qwen3-embedding:8b`, and a launch with an empty knowledge base never touches the embedder.
+  The one shipped corpus document (`welcome-to-saturn.md`) existed to make that first sync
+  meaningful and goes with it.
+- **CPU / RAM / GPU gauges** on the status bar and under `/config context`, and the `psutil`
+  dependency with them. The bar keeps the context gauge and tok/s.
+- **Stale documents.** `PLAN.md` (replaced by `pivot.md`), `docs/FEATURE_INVENTORY.md`, the
+  qwen-family-lock plan and specs, and the quick-path spec described mechanisms that no
+  longer exist; the quick-path and planner entries further down this section, which never
+  shipped in a release, are dropped rather than annotated.
+
+### v2 — one loop replaces the engine (2026-09-27)
+
+_The entries under this heading supersede the quick-path / planner / rectify entries further down
+this section, which describe v1 mechanisms that no longer exist._
+
+#### Changed
+
+- **The engine is one ReAct loop.** `ground → agent → [approval → tools → agent]*`. The agent
+  makes one native tool-calling call per pass (think off, streamed) and its first message
+  without tool calls IS the answer — a chat question costs one model call, a single read two.
+  Multi-step tasks run the same loop; deterministic guards replace the judge: a repeat of a
+  call you declined is refused without re-prompting, a third identical call is refused, an
+  unknown tool or malformed arguments go back to the model with the schema, and past
+  `runtime.max_iterations` the last pass answers from what it has and says what is undone.
+- **The rail shows the work.** Every tool call now renders a one-line result preview by
+  default (`/trace calls` and `/trace full` keep the full output); the agent's pre-call
+  thought shows as a leaf under its row; an auto-approved gate pass no longer prints a row.
+- **Esc pauses a running turn** into a small prompt — Enter continues, typed text steers the
+  running turn, `q` aborts — replacing the plan editor. Esc with text still steers immediately.
+- **The answer's Sources footer is a receipt** of every tool call and document the turn
+  gathered; the model is no longer asked for inline `[n]` markers. The incidents note still
+  discloses every declined, blocked or failed call.
+- `/trace why` renders each agent pass (thought + chosen calls, or the answer).
+
+#### Added
+
+- **Adaptive thinking (`runtime.think`).** A pass thinks, under a bounded
+  `runtime.think_budget`, only when the tool round just before it had an error: a tool
+  failure or a refused call, the one place the model needs a new approach. A chat question,
+  a clean lookup, the answer after a declined or blocked call, and the capped last pass stay
+  think-off, so the answer that wraps up a multi-step task no longer pays for reasoning. A
+  thinking pass that comes back with neither text nor a call is rerun once think-off: on a
+  pass whose right move is a short answer, qwen3.5 can write the answer inside its reasoning
+  and emit nothing. `off` never thinks; `on` thinks on every uncapped pass. The reasoning
+  never enters the answer stream.
+- **`~/.saturn/SATURN.md` — standing instructions everywhere.** Loaded every turn under the
+  workspace file (tone, "always metric", "never draft to my boss without asking"); the
+  workspace file wins where they conflict. A workspace `SATURN.md` is read in preference to
+  `SATURDAY.md`, which still loads when it is the only one. `$SATURN_HOME` moves the directory.
+- **`!command` at the prompt.** Runs the command in your own shell (your action — no gate,
+  no trace row), prints the output and attaches it to your next message, so `!git diff` then
+  "summarize that" works like `git diff | saturn -q "summarize"`.
+- **`/help --all`.** Bare `/help` now lists the everyday commands (`/memory`, `/policy`,
+  `/trace`, `/help`, `/quit`); `--all` lists every command by theme with the trust map, as
+  before. Nothing was removed.
+- **`/memory` names its file.** The listing (and the empty-store note) prints the path of the
+  one markdown file the store is — yours to grep, edit and version.
+- **`plan` tool.** On a task that needs several tool calls the model records its checklist
+  and updates it as steps complete; the rail, the gate's step context, `/trace why`, replay
+  and the headless `plan` field show it.
+
+#### Removed
+
+- The plan engine: the planner, plan review, rectify, replan, the semantic write gate, the
+  groundedness and computed-figure regeneration ladders, `/plan`, `/draft`, `/quick`,
+  `--plan`, `--quick`, `runtime.quick_path`, and the plan-review / `/dryrun` spellings (all now
+  print a pointer). Token steering (freeze-edit-continue) and confidence coloring are parked:
+  their modules remain, the loop does not arm them.
+
+### Fixed
+
+- **A tool call that failed now says so in the answer.** An edit whose text was not found, a
+  shell command that exited non-zero or timed out, a calendar event, note, mail draft or
+  reminder that could not be made, an MCP error, a page that could not be fetched: each used to
+  count as done, so the answer's "not done" note stayed silent and the model did not stop to
+  rethink. Each is now a failed step. A call that failed and then succeeded when retried is no
+  longer listed as failed.
+- **The file tools refuse `CONFIG.yaml` like `config.yaml`.** On macOS's case-insensitive disk,
+  a different capitalisation of `config.yaml`, `permissions.json` or `hooks.yaml` got past the
+  guard that keeps the agent from writing Saturn's own control files.
+- **An always-allowed shell command cannot reach outside the workspace through brace expansion
+  or a flag's value** (`cat {..,x}/secret`, `sort --files0-from=/etc/passwd`, `-o../x`); such a
+  command faces the gate again.
+- **Shell commands no longer read the terminal.** A command that waited for input (an editor,
+  a password prompt) shared your keystrokes with Saturn's Esc watcher and hung until the
+  timeout; it now gets an immediate end-of-input.
+- **`web_extract` records every host a redirect reaches**, each checked against the air-gap
+  and written to the egress ledger before it is contacted. Previously only the first host was
+  recorded. trafilatura's own fetch, which followed redirects out of the ledger's sight, is no
+  longer used.
+- **Compaction, the memory review and `/init` run with thinking off and a length cap**, like
+  the agent's own call. A thinking model could otherwise put its reasoning into the summary
+  that every later turn carries.
+- **A steer typed just before an Esc pause is no longer lost.**
+- **A malformed model output that is retried no longer doubles the streamed text.** The failed
+  attempt's text is cleared before the retry streams.
+- **`list_directory(path=…)` and `recall(text=…)` run as asked.** Common argument spellings
+  used to be refused and pointed at an unrelated tool (`read_file`, `search_files`).
+- **`saturn -p` no longer hangs when stdin is open but nothing is written to it** (a
+  background job, a subprocess that inherits a pipe). Piped input is attached when it arrives
+  within a second; otherwise the turn runs without it and says so on stderr.
 - **Two Saturn sessions no longer erase each other's menu bar entry.** Each interactive session
   records its pid for the menu bar icon; the first session to exit removed the file even when a
   second session had since written its own, so the icon showed no agent running and its Quit
@@ -66,38 +569,6 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
   `schedule_notification` under `message`, `text`, `details` or `note` alongside a `title`, the
   detail was silently dropped and the approval prompt showed a reminder with an empty body. Those
   names now fill the body whenever the title has its own key.
-- **The freeze editor no longer resumes on a split Alt+Enter.** Over ssh, mosh or a slow terminal
-  the Escape and Enter of an Alt/Shift+Enter newline can arrive separately; at the editor's 50 ms
-  Esc timeout that read as a bare Esc and resumed generation from a half-edited answer. The wait
-  is now 250 ms.
-- **A lone "ask the user" step no longer ends the turn.**
- When the planner drafted a question
-  with no step after it to use the answer (a calendar request missing its time, a delete it
-  wanted confirmed), the ask gate skipped the question and the run ended with "I cannot" and an
-  incident; the next message hit the same wall. The dangling question is now redrafted once —
-  keep the question, add the step that acts on the answer — and a second lone ask still lands
-  honestly through the no-call guard. Once the redraft has asked, the original refusal is
-  marked `superseded` on the plan itself — not an incident in the answer, the plan rail,
-  `/trace` or the headless status (it had the answer opening with "I cannot" under a turn that
-  asked and proceeded), and no longer arms the write gate as a "failed" step, which had a
-  "make a note in notes.md" turn refusing its own write. A lone ask refused after the redraft
-  budget is spent now lands the turn directly instead of spending two more model calls asking
-  the judge for a redraft it could not have.
-
-- **Calendar, reminder and mail effects are authorized by the words that ask for them.** A
-  replanned `create_calendar_event`, `schedule_notification` or `draft_mail` step was refused
-  as an "unauthorized effect" unless the request happened to say "create" or "write": the
-  authorization vocabulary knew only workspace verbs. "make an appointment", "remind me",
-  "schedule", "book", "draft/email Petra" now count; "my schedule", "the emails" and "send"
-  still do not — nor does a question ("is the appointment scheduled?", "did you notify Sam?")
-  or the "remind me what / of …" idiom, which asks to be told, not reminded: an effect verb in
-  those positions would otherwise have authorized a calendar or reminder step injected by a
-  file's contents. The planner prompt no longer calls reminders and email actions it has no tool
-
-  for. And effect authorization now arms only once a tool other than `ask_user` has actually
-  run this turn: a refusal the engine stamped, or the user's own typed answer, is not a result
-  a file or web page could have written, so a step redrafted before anything was read is no
-  longer refused as an effect of results that did not exist.
 
 ### Added
 

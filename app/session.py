@@ -12,6 +12,7 @@ import diag
 from config import get_config
 from core.state import AgentState
 from tui import ui
+from tui.ui._base import _human_tokens
 
 
 def _compact_history(messages: list, keep_recent_turns: int = 1) -> list:
@@ -19,29 +20,17 @@ def _compact_history(messages: list, keep_recent_turns: int = 1) -> list:
     answers), but keep the ReAct scratchpad — tool-call AIMessages and their ToolMessages — of
     the most recent `keep_recent_turns` turns verbatim.
 
-    Why a window instead of stripping everything: the scratchpad of the turn that just finished
-    is exactly what the user's *next* message refers back to — "open the second result", "what
-    did that file say", "multiply that by two". Dropping it on every boundary (the old
-    behaviour) is what made real multi-turn use brittle: the follow-up's referent had silently
-    vanished, so the model re-ran a search (getting different results) or fabricated. One turn
-    of live scratchpad covers the overwhelming majority of those references.
+    The scratchpad of the turn that just finished is exactly what the user's *next* message
+    refers back to ("open the second result", "what did that file say") — without it the model
+    re-runs a search or fabricates. Older turns are still compacted: many turns of scratchpad
+    make the model treat a long-finished tool call as "already done", bloat context with heavy
+    tool outputs, and desync `messages` from the per-turn trace accumulators
+    (`tools_called`/`tool_results`/`documents_retrieved`, reset each turn).
 
-    The original concerns still hold for OLD turns, which is why they're still compacted:
-    carrying many turns of scratchpad makes the model treat a long-finished tool call as "already
-    done" (reusing stale results instead of re-running a planned gather), bloats context with
-    heavy tool outputs, and desyncs the model's view (`messages`) from the per-turn trace
-    accumulators (`tools_called`/`tool_results`/`documents_retrieved`, reset each turn — their
-    live consumers are the benchmark's grounding/gate-coverage grading, headless `--json`'s
-    `tools` field, `/trace state`, and synthesize's per-turn source numbering).
-
-    A turn starts at a REAL user HumanMessage — not a standalone mid-turn steer note (that
-    belongs to the turn it corrected; treating it as a boundary would compact away the very
-    scratchpad this function promises to keep) and not a compaction summary (carried history).
-    Everything from the boundary onward is kept as-is (the scratchpad is intact, so no orphaned
-    tool calls); everything before it is reduced to Human + non-empty final-AI messages (also
-    orphan-free). Run only at the turn boundary.
-
-    `keep_recent_turns=0` reproduces the old strip-everything behaviour."""
+    A turn starts at a REAL user HumanMessage (core.state.is_turn_start) — not a mid-turn steer
+    note and not a compaction summary. Everything from the boundary onward is kept as-is (no
+    orphaned tool calls); everything before it is reduced to Human + non-empty final-AI messages
+    (also orphan-free). Run only at the turn boundary. `keep_recent_turns=0` strips every turn."""
     from core.state import is_turn_start
 
     human_idxs = [i for i, m in enumerate(messages) if is_turn_start(m)]
@@ -65,11 +54,22 @@ def _compact_history(messages: list, keep_recent_turns: int = 1) -> list:
     return kept + messages[boundary:]
 
 
+def _chars(messages: list) -> int:
+    return sum(len(str(getattr(m, "content", "") or "")) for m in messages)
+
+
 def _maybe_autocompact(state: AgentState, run_id=None) -> AgentState:
     """If the turn that just finished left the context filled past `runtime.compact_threshold`, fold
     the older turns into an LLM summary (compaction.summarize_messages) so the NEXT turn doesn't
     re-send — and overflow — the window. This is the heavier LLM compaction; the mechanical
     `_compact_history` still runs every turn regardless.
+
+    The summary keeps the most recent turn verbatim, and that turn is usually what filled the
+    window (one research turn of ten reads). So when folding the older turns leaves the estimated
+    fill still past the threshold — or there was nothing older to fold — the tool results that
+    remain are trimmed to a head and a tail (compaction.trim_observations). Without that the next
+    request starts over the threshold and its first tool result overflows num_ctx, where Ollama
+    drops the system prompt and tool catalog from the front with no error.
 
     Best-effort and non-fatal: disabled via `runtime.auto_compact`, skipped when the fill is unknown,
     and any summary failure leaves the history untouched (summarize_messages swallows it). Mutates +
@@ -89,19 +89,30 @@ def _maybe_autocompact(state: AgentState, run_id=None) -> AgentState:
     if used / window < threshold:
         return state
 
-    from core.compaction import summarize_messages
+    from core.compaction import summarize_messages, trim_observations
 
+    before = _chars(state["messages"])
     new_msgs, stats = summarize_messages(state["messages"])
-    if stats["summarized_turns"] > 0 and stats["after"] < stats["before"]:
-        state["messages"] = new_msgs
-        ui.note(
-            f"auto-compacted {stats['summarized_turns']} earlier turn(s) "
-            f"({stats['before']}→{stats['after']} messages) — context was "
-            f"{used / window * 100:.0f}% full ({_human_int(used)}/{_human_int(window)} tok)."
-        )
-        # The summary used to die with the session. Persist it beside the memory file (the
-        # last session's brief) and queue its bullets as memory candidates — proposals for
-        # /memory review, never facts written on their own (core/memory_review).
+    folded = stats["summarized_turns"] > 0 and stats["after"] < stats["before"]
+    kept = new_msgs if folded else state["messages"]
+    # The fill after folding, estimated from what was removed at ~4 characters a token (tool
+    # output runs denser, so this errs toward trimming).
+    trimmed = 0
+    if (used - (before - _chars(kept)) / 4) / window >= threshold:
+        kept, trimmed = trim_observations(kept)
+    if folded or trimmed:
+        state["messages"] = kept
+    fill = (f"{used / window * 100:.0f}% full "
+            f"({_human_tokens(used)}/{_human_tokens(window)} tok).")
+    if trimmed:
+        ui.note(f"auto-compacted: trimmed {trimmed} tool result(s) from the last turn — context "
+                f"was {fill}")
+    if folded:
+        ui.note(f"auto-compacted {stats['summarized_turns']} earlier turn(s) "
+                f"({stats['before']}→{stats['after']} messages) — context was {fill}")
+        # Persist the summary beside the memory file (the last session's brief) and queue its
+        # bullets as memory candidates — proposals for /memory review, never facts written on
+        # their own (core/memory_review).
         try:
             from core.compaction import is_summary
             from core.memory_review import note_compaction
@@ -117,18 +128,9 @@ def _maybe_autocompact(state: AgentState, run_id=None) -> AgentState:
     return state
 
 
-def _human_int(n: int) -> str:
-    """Compact integer for the auto-compaction notice (1800 -> 1.8k)."""
-    if n < 1000:
-        return str(int(n))
-    if n < 1_000_000:
-        return f"{n / 1000:.1f}k"
-    return f"{n / 1_000_000:.2f}M"
-
-
 # The only fields that survive a turn boundary: the conversation itself (compacted, appended
 # to below) and the context-fill gauge (the window only grows; the next LLM call overwrites it).
-_CARRY_ACROSS_TURNS = ("messages", "context_tokens")
+_CARRY_ACROSS_TURNS = ("messages", "context_tokens", "outside_seen")
 
 
 def _fresh_turn(state: AgentState, user_input: str) -> AgentState:
@@ -171,21 +173,68 @@ def _initial_state() -> AgentState:
         "current_query": "",
         "context": "",
         "attachments": "",
+        "outside_seen": False,
+        "user_stated": [],
+        "skill": "",
         "plan": [],
-        "route": "",
         "iteration": 0,
-        "rectify": False,
-        "reasoning": "",
-        "replans": 0,
-        "aborted": False,
+        "think": [],
+        "think_level": "",
         "tools_called": [],
         "tool_results": [],
         "documents_retrieved": [],
         "tool_events": [],
         "gate_events": [],
-        "plan_vetoes": [],
-        "revoked_writes": [],
-        "answer_buffer": None,
         "tok_per_sec": 0.0,
         "context_tokens": 0,
     }
+
+
+def skill_for_line(line: str):
+    """The user's skill a `/name …` line runs — (Skill, request text) — or None: not a slash
+    line, a built-in command's name (the built-in wins), or no skill by that name. Shared by the
+    REPL and headless -p, so `/weekly-review` means the same thing in both."""
+    if not str(line or "").lstrip().startswith("/"):
+        return None
+    from commands._framework import resolves
+    from core import skills
+
+    return skills.invocation(line, builtin=resolves)
+
+
+def think_for_line(line: str) -> "str | None":
+    """The request of a `/think <request>` line — one turn at `deep` (core/think) — or None:
+    not a /think line, or one the command itself handles (bare, a level word on its own,
+    --help). Shared by the REPL and headless -p, like skill_for_line. The rule: exactly one
+    level word (plus persist flags) sets the level; anything else is a request, so
+    `/think deep dive into the logs` asks about the logs."""
+    text = str(line or "").strip()
+    parts = text.split()
+    if not parts or parts[0].lower() != "/think":
+        return None
+    from commands._framework import _HELP_FLAGS
+    from commands._utils import split_persist_flags
+    from core import think
+
+    args = parts[1:]
+    if not args or args[0].lower() in _HELP_FLAGS or args[-1].lower() in _HELP_FLAGS:
+        return None
+    words, _session, _save = split_persist_flags(args)
+    if not words or (len(words) == 1 and think.is_level_word(words[0])):
+        return None
+    return text[len(parts[0]):].strip()
+
+
+def skill_completions() -> "list[tuple[str, str]]":
+    """The user's skills as `/name` prompt completions — read from disk at each prompt, so a
+    skill written in the editor completes without a restart; a name a built-in owns is left out
+    (typing it runs the built-in)."""
+    from commands._framework import resolves
+    from core import skills
+
+    try:
+        found = skills.discover()
+    except Exception as exc:  # a broken skills folder must never break the prompt
+        diag.log(f"skills: completions skipped: {exc}")
+        return []
+    return sorted((name, s.description) for name, s in found.items() if not resolves(name))

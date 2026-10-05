@@ -2,8 +2,7 @@
 Structured human-gate records (state["gate_events"]) — the chain-of-custody piece this wave
 added: the approval node's per-prompt event shape (approve-all / reject-all / partial), the
 auto-approved-silence rule (no prompt -> no record), the headless --json "gates" derivation,
-and /trace why's always-on self-correction section (the negative case must print, matching the
-Glass Box). Offline: the LangGraph interrupt is stubbed; no LLM/graph/network runs.
+and /trace why's always-on self-correction section (the negative case must print). Offline: the LangGraph interrupt is stubbed; no LLM/graph/network runs.
 """
 
 import json
@@ -15,7 +14,7 @@ from nodes.approval import approval_node, gate_event
 from core.state import summarize_gates
 
 
-# --- the event builder: ONE shape for --json, the Glass Box, and the run export --------------
+# --- the event builder: ONE shape for --json and the run export --------------
 
 _CALLS = [
     {"id": "c1", "name": "run_shell", "args": {"command": "git status"}},
@@ -99,7 +98,7 @@ def test_node_reject_all_records_event(monkeypatch):
     cmd = approval_node(_node_state(list(_CALLS)))
     # A fully-rejected batch goes to the recorder: the decline lands on the current step as a
     # `skipped` incident, and rectify retires the remaining plan.
-    assert cmd.goto == "update_plan"
+    assert cmd.goto == "agent"  # a fully-rejected batch goes back to the agent (v2 loop)
     (ev,) = cmd.update["gate_events"]
     assert ev["decision"] == "rejected"
     assert all(not c["approved"] for c in ev["calls"])
@@ -116,7 +115,7 @@ def test_node_unrecognized_resume_value_rejects(monkeypatch):
     for garbage in ("n", "y", 1, ["c1"], object()):
         _gate_everything(monkeypatch, garbage)
         cmd = approval_node(_node_state(list(_CALLS)))
-        assert cmd.goto == "update_plan", garbage
+        assert cmd.goto == "agent", garbage
         (ev,) = cmd.update["gate_events"]
         assert ev["decision"] == "rejected", garbage
         assert all(not c["approved"] for c in ev["calls"]), garbage
@@ -166,7 +165,9 @@ def test_node_auto_approved_batch_records_nothing(monkeypatch):
     )
     cmd = approval_node(_node_state(list(_CALLS)))
     assert cmd.goto == "tools"
-    assert not cmd.update  # no gate_events delta at all
+    # No gate_events delta at all. (The one thing every route to `tools` writes is
+    # user_stated — the remember calls let through on provenance, none here.)
+    assert cmd.update == {"user_stated": []}
 
 
 def test_node_quarantine_escalation_flag_recorded(monkeypatch):
@@ -205,27 +206,3 @@ def test_summarize_gates_empty_and_garbage_tolerant():
 # --- /trace why: the self-correction section always prints -----------------------------------
 # (Renamed from "verification" — the state records rectify verdicts, never a verified answer,
 # and the crypto-era word overpromised after the audit-crypto shelve.)
-
-
-def test_why_self_correction_prints_negative_case(capsys):
-    from commands.trace import _render_why
-    from tui import ui
-
-    run = (3, "what is new?", None, None, "ok", "an answer")
-    _render_why(ui, run, [], [])
-    out = capsys.readouterr().out
-    assert "self-correction" in out
-    assert "rectify judge did not run — every step resolved mechanically." in out
-
-
-def test_why_self_correction_prints_rectify_verdict(capsys):
-    from commands.trace import _render_why
-    from tui import ui
-
-    run = (4, "q", None, None, "ok", "an answer")
-    calls = [(1, "rectify", json.dumps(
-        {"content": '{"reasoning":"never looked it up","rectify":true}'}))]
-    _render_why(ui, run, [], calls)
-    out = capsys.readouterr().out
-    assert "rectify:" in out and "never looked it up" in out
-    assert "did not run" not in out

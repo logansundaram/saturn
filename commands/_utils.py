@@ -3,14 +3,10 @@ Shared utilities used by multiple command handlers.
 """
 from __future__ import annotations
 
-# All chat-model roles; used by /models and /config (incl. /config context). The canonical tuple lives in
-# config.MODEL_ROLES (shared with llms.check_models and the locality readouts).
-from config import MODEL_ROLES as _ROLES  # noqa: E402
-
 
 def parse_toggle_status(args: list[str]) -> "bool | str | None":
-    """THE on/off grammar for every status-or-set command (/policy open, /plan review,
-    /privacy airgap): no argument -> None, a STATUS readout — bare is NEVER a
+    """THE on/off grammar for every status-or-set command (/policy open,
+    /policy airgap): no argument -> None, a STATUS readout — bare is NEVER a
     flip, mutation is always an explicit verb; on/true/yes/1 -> True; off/false/no/0 -> False;
     anything else -> "invalid" (the caller prints usage). Trailing tokens are "invalid" too —
     `/policy open on garbage` must not open the gate on the strength of a half-parsed line —
@@ -32,25 +28,23 @@ def split_save_flag(args: list[str]) -> "tuple[list[str], bool]":
     """Split the standalone `--save` / `-s` persist flag out of `args`: case-insensitive, any
     position, exact token only. Returns (remaining args, flag present?). THE one --save parser —
     every command that persists a session edit to config.yaml reads the flag through this, so
-    `/config context --save` and `/privacy airgap --save` can never disagree about what counts as
+    `/config <key> --save` and `/policy airgap --save` can never disagree about what counts as
     the flag. Shared convention for `--save` with NO explicit value: persist the CURRENT value
     (it mutates nothing live, so it is safe everywhere) — never refuse, never flip."""
     rest = [a for a in args if a.lower() not in ("--save", "-s")]
     return rest, len(rest) != len(args)
 
 
-# The persist-vs-session flag names for the SETTINGS commands (/config, /config context, /models).
+# The persist-vs-session flag names for the SETTINGS commands (/config, /models).
 _SESSION_FLAGS = ("--session", "--session-only", "--once")
 _SAVE_FLAGS = ("--save", "-s")
 
 
 def split_persist_flags(args: list[str]) -> "tuple[list[str], bool, bool]":
-    """THE persist-vs-session grammar for the settings commands (/config, /config context,
-    /models). These PERSIST to config.yaml BY DEFAULT — a setting a user changes should survive
-    the next launch, which is what people expect from "change a setting"; the old session-only
-    default forced a --save on every edit and silently forgot the rest. `--session` (aliases
-    `--session-only`, `--once`) opts a single edit out: apply it live, don't write disk. `--save` /
-    `-s` is still accepted (it's the default now) so old muscle memory and older docs keep working.
+    """THE persist-vs-session grammar for the settings commands (/config, /models). These PERSIST
+    to config.yaml BY DEFAULT — a setting a user changes should survive the next launch.
+    `--session` (aliases `--session-only`, `--once`) opts a single edit out: apply it live, don't
+    write disk. `--save` / `-s` is accepted too.
 
     Returns (remaining args, session_only?, save_seen?): `session_only` is what callers branch on;
     `save_seen` is consulted only for the bare `--save`-with-no-value "persist the current value"
@@ -63,7 +57,7 @@ def split_persist_flags(args: list[str]) -> "tuple[list[str], bool, bool]":
 
 
 # THE removal-verb vocabulary, accepted identically by every command that deletes something
-# (/docs, /memory, /resume, /policy allow, /config key ...). One set so muscle memory transfers;
+# (/docs, /memory, /resume, /policy allow ...). One set so muscle memory transfers;
 # don't define a per-command subset.
 REMOVE_VERBS = ("remove", "rm", "delete", "del", "forget", "drop")
 
@@ -75,7 +69,7 @@ def is_remove_verb(token: str) -> bool:
 
 # THE listing-verb vocabulary (`git stash list` / `docker ls` style), accepted identically by
 # every command that enumerates a collection (/docs, /memory, /resume, /models, /undo,
-# /policy allow, /config key, /trace). Bare <command> stays the listing default everywhere —
+# /policy allow, /trace). Bare <command> stays the listing default everywhere —
 # these are the explicit spellings, so neither habit errors. One set, like REMOVE_VERBS.
 LIST_VERBS = ("list", "ls")
 
@@ -98,13 +92,23 @@ def pull_one(model: str) -> int:
         return 1
 
 
+def _stdin_is_tty() -> bool:
+    """Whether a human is at the keyboard to answer a y/N — off-TTY/headless never prompts."""
+    import sys
+
+    try:
+        return sys.stdin is not None and sys.stdin.isatty()
+    except (AttributeError, ValueError):
+        return False
+
+
 def run_pulls(missing: list[str], *, pull=None, retry_hint: str = "") -> bool:
-    """THE consented pull loop, shared by /config setup's doctor and the /models page (the y/N
-    prompt that precedes it is each caller's own): pull each model in turn as an ordinary
+    """THE consented pull loop behind the /models page (the y/N prompt that precedes it is the
+    caller's own): pull each model in turn as an ordinary
     foreground subprocess — ollama prints each download's size and progress, the same trust
     boundary as the installer pulling the defaults. A Ctrl-C or a failed pull stops the batch
     with the copy-paste command on screen. True when every pull landed. `pull` is the per-model
-    runner (a test seam); `retry_hint` trails the failure line. ASCII-only: the doctor is."""
+    runner (a test seam); `retry_hint` trails the failure line."""
     from commands._framework import _print
 
     pull = pull or pull_one

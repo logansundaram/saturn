@@ -1,10 +1,10 @@
 """
-Tool-execution node for the living-plan ReAct loop (Phase 1).
+Tool-execution node for the loop (agent → approval → tools → agent).
 
 tool_node executes the tool calls on the last AI message, appends the results as ToolMessages
-back into `messages` (so the model sees them next iteration), and mirrors each
-`name(args) -> result` into the trace accumulators — paired so synthesis can't divorce a value
-from the call that produced it.
+back into `messages` (so the model sees them next pass), and mirrors each completed gathering
+call as `name(args) -> result` into the source accumulators — paired so the record can't divorce
+a value from the call that produced it. Every call, whatever its outcome, is in `tool_events`.
 """
 
 import time
@@ -12,14 +12,15 @@ import time
 from langchain.messages import ToolMessage
 from langgraph.errors import GraphInterrupt
 
+import diag
 from trust import egress
 from trust import quarantine
-from tools.registry import tools_by_name, RETRIEVAL_TOOLS
-from core.state import AgentState
-from textutil import CALL_RESULT_SEP, clip, fmt_args, head_tail
-
-# Cap each argument's length so a big write_file payload doesn't bloat the trace/synthesis input.
-_MAX_ARG_REPR = 200
+from tools.registry import RETRIEVAL_TOOLS, is_action, tools_by_name
+from tools.planning import PLAN_TOOL, to_plan
+from tools.toolspec import _HUMAN_APPROVED, _USER_STATED, ToolError
+from core import auto_memory
+from core.state import AgentState, issuing_message
+from textutil import CALL_RESULT_SEP, clip, fmt_call, head_tail, visible_controls_n
 
 # Cap the one-line result preview carried in tool_events (UI tree); the full observation still
 # rides messages/tool_results untouched.
@@ -28,11 +29,16 @@ _MAX_RESULT_PREVIEW = 160
 # Hard cap on the observation length we feed BACK INTO the model (the ToolMessage + the paired
 # tool_results record). Unbounded tool output — a big read_file, a full web_extract page, a fat
 # web_search payload — silently overflows the Ollama context window: it truncates from the front,
-# dropping the system prompt and plan, and the agent starts misbehaving with no error. We keep the
+# dropping the system prompt, and the agent starts misbehaving with no error. We keep the
 # head and tail (the start usually has the answer; the tail often has a summary/conclusion) and
 # mark the elision so the model knows it isn't seeing everything. ~12k chars ≈ 3-4k tokens, which
-# leaves room for the system prompts, plan, and conversation inside an 8k+ window.
+# leaves room for the system prompt and conversation inside an 8k+ window.
 _MAX_OBSERVATION = 12000
+
+# Appended when the source layer turned control characters into symbols, so the model does not
+# read `␛` as text the page or file literally contains (and edit_file can say why a match fails).
+CONTROL_NOTE = ("\n[{n} terminal control character(s) in this output are shown as symbols such "
+                "as ␛ (escape); they are not literal text]")
 
 
 def _clamp_observation(observation: str) -> str:
@@ -52,12 +58,6 @@ def _preview(observation: str) -> str:
     return clip(observation, _MAX_RESULT_PREVIEW)
 
 
-def _fmt_call(name: str, args: dict) -> str:
-    """Render a tool call like  calculate(expression='847 * 293 + 12450')  for the trace and
-    for synthesis, so results stay linked to the call that produced them."""
-    return f"{name}({fmt_args(args, _MAX_ARG_REPR)})"
-
-
 # Cap the per-call egress annotation carried in tool_events: a call rarely produces more than a
 # couple of boundary events, but a runaway one must not bloat every delta / trace row.
 _MAX_EGRESS_EVENTS = 4
@@ -72,7 +72,9 @@ def _egress_slice(mark: int) -> list[dict]:
     else records egress while one runs, so the slice belongs to exactly this call. Best-effort:
     an unreadable ledger yields no annotation, never an error."""
     try:
-        events = egress.events_since(mark)
+        # An UNTRACKED run (a shell command, a stdio MCP call) crossed no boundary Saturn saw:
+        # the receipt counts it, but it is neither a send nor a block to annotate here.
+        events = [e for e in egress.events_since(mark) if e.status != egress.UNTRACKED]
     except Exception:
         return []
     out = [
@@ -80,7 +82,6 @@ def _egress_slice(mark: int) -> list[dict]:
             "channel": e.channel,
             "host": e.host,
             "n_bytes": e.n_bytes,
-            "redactions": e.redactions,
             "status": e.status,
         }
         for e in events
@@ -90,30 +91,82 @@ def _egress_slice(mark: int) -> list[dict]:
     return out
 
 
+def _replaced_fact(args) -> "dict | None":
+    """The stored fact a `remember(replaces=…)` is about to retire, read BEFORE the call so the
+    note after the answer can show what was removed (the tool's report is clipped to a
+    preview, and `/memory forget` on the new fact does not bring the old one back)."""
+    raw = (args or {}).get("replaces") if isinstance(args, dict) else None
+    if raw in (None, "", 0):
+        return None
+    try:
+        from stores.memory_registry import entry
+
+        old = entry(int(str(raw).strip().lstrip("#")))
+    except Exception:
+        return None
+    return {"id": old["id"], "text": old["text"]} if old else None
+
+
+def _auto_memory_marks(observation: str, replacing: "dict | None") -> dict:
+    """What the event of a fact remembered WITHOUT the gate carries, for the note after the
+    answer (app/repl._auto_memory_notes) and the trace: `auto_memory` (the new fact's id) or
+    `auto_memory_known` (it was already stored — nothing new to undo), `auto_memory_replaced`
+    (the fact it retired) and `auto_memory_similar` (the stored facts it landed beside —
+    core/auto_memory.similar; no prompt showed them). Best-effort past the id: the fact is
+    already saved, and a failed lookup must cost the line, not the turn."""
+    fid = auto_memory.fact_id(observation)
+    if not observation.startswith("Remembered"):
+        return {"auto_memory_known": fid} if fid else {}
+    marks: dict = {"auto_memory": fid}
+    try:
+        from stores.memory_registry import entry
+
+        if replacing and entry(replacing["id"]) is None:
+            marks["auto_memory_replaced"] = replacing
+        saved = entry(fid) if fid else None
+        near = auto_memory.similar(saved["text"], saved["layer"], exclude={fid}) if saved else []
+        # A sensitive neighbour's text stays out of the event: events go to the trace and
+        # to exports.
+        near = [{"id": e["id"], "text": e["text"]} for e in near if not e.get("sens")]
+        if near:
+            marks["auto_memory_similar"] = near
+    except Exception as exc:
+        diag.log(f"tool_node : auto-memory lookup failed: {exc}")
+    return marks
+
+
 def tool_node(state: AgentState):
     """Execute the pending tool calls and feed results back as ToolMessages.
 
     The batch is the most recent tool-calling AIMessage's calls MINUS any call that already has
     a ToolMessage: the approval gate answers rejected calls itself (decline ToolMessages) and
-    still routes here so the approved/ungated remainder runs. Walk back over those trailing
-    ToolMessages to find the issuing AIMessage."""
-    answered = set()
-    last = None
-    for m in reversed(state["messages"]):
-        if isinstance(m, ToolMessage):
-            answered.add(m.tool_call_id)
-            continue
-        last = m
-        break
+    still routes here so the approved/ungated remainder runs (core.state.issuing_message)."""
+    last, answered = issuing_message(state["messages"])
     pending_calls = [
         tc for tc in (getattr(last, "tool_calls", None) or []) if tc["id"] not in answered
     ]
+
+    # The calls a human said yes to at the gate (auto-approved calls have no gate event).
+    approved_ids = {
+        c.get("id")
+        for ev in state.get("gate_events") or [] if isinstance(ev, dict)
+        for c in ev.get("calls") or [] if isinstance(c, dict) and c.get("approved")
+    }
+
+    # The remember calls the approval node let through because the user typed every word of
+    # them (core/auto_memory) — the gate's own decision, carried in state. Never recomputed
+    # here: by now the gate's decline messages are in the conversation, and a second reading
+    # could disagree with the one the human was (not) asked on.
+    user_stated_ids = set(state.get("user_stated") or []) & {
+        tc["id"] for tc in pending_calls if tc["name"] == "remember"}
+    outside_ran = False   # an untrusted tool executed: outside content entered (provenance)
 
     tool_messages = []
     tools_called = []
     tool_results = []
     documents_retrieved = []
     tool_events = []
+    plan_update = None
 
     for tool_call in pending_calls:
         name = tool_call["name"]
@@ -127,33 +180,55 @@ def tool_node(state: AgentState):
             observation = f"Error: unknown tool '{name}'."
             ok = False
         else:
+            approved_token = _HUMAN_APPROVED.set(tool_call["id"] in approved_ids)
+            stated_token = _USER_STATED.set(tool_call["id"] in user_stated_ids)
+            outside_ran = outside_ran or quarantine.is_untrusted(name)
+            said = tool_call["id"] in user_stated_ids and tool_call["id"] not in approved_ids
+            replacing = _replaced_fact(args) if said and name == "remember" else None
             try:
                 observation = selected.invoke(args)
             except GraphInterrupt:
                 # An interrupting tool (ask_user) pausing the graph is CONTROL FLOW, not a tool
                 # error — swallowing it here would answer the question with the exception's repr
-                # and never reach the human. LangGraph re-runs this node from the top on resume;
-                # batches are singletons (execute emits one call per step), so nothing re-executes.
+                # and never reach the human. LangGraph re-runs this node from the top on resume,
+                # which is why nodes/agent.py lets ask_user run only ALONE in its batch: a
+                # sibling call would execute twice.
                 raise
+            except ToolError as exc:  # the tool's own "this did not happen", worded for the model
+                observation = f"Error: {exc}"
+                ok = False
             except Exception as exc:  # surface tool errors to the model instead of crashing
                 observation = f"Error calling {name}: {exc}"
                 ok = False
+            finally:
+                _HUMAN_APPROVED.reset(approved_token)
+                _USER_STATED.reset(stated_token)
         dur = time.perf_counter() - start
+        if name == PLAN_TOOL and ok:
+            # The checklist is state, not an observation: the rail, the gate's step context and
+            # /trace why read state["plan"]. The observation still lands as a ToolMessage below.
+            plan_update = to_plan(args.get("steps") if isinstance(args, dict) else None)
 
-        observation = str(observation)
+        # Terminal controls become visible symbols BEFORE anything else reads the text (the
+        # clamp, quarantine, state, the trace, the model, the rail preview): an untrusted page
+        # or file must not reach the terminal as a live escape sequence, and the record stays
+        # safe to replay (textutil.visible_controls).
+        observation, n_controls = visible_controls_n(str(observation))
         # Clamp what flows back into the model (ToolMessage + paired tool_results) so one large
         # result can't overflow the context window; the UI preview is derived from the same
         # clamped text. The _preview cap above is just for the one-line tool-I/O tree.
         clamped = _clamp_observation(observation)
-        # Prompt-injection quarantine: an UNTRUSTED observation (web, http, MCP, ingested docs)
+        if n_controls:
+            clamped += CONTROL_NOTE.format(n=n_controls)
+        # Prompt-injection quarantine: an UNTRUSTED observation (web, MCP, ingested docs)
         # that carries instruction-shaped content is flagged (rail warning + gate context — and,
         # in `gate` mode, one fresh approval prompt for the next batch) and fenced between
         # explicit data-not-instructions markers before the model sees it. Clean content passes
-        # through byte-identical. See quarantine.py.
+        # through byte-identical. A FAILED call is scanned too: a remote server writes its own
+        # error text, and a failed command's output is as external as a successful one's. See
+        # quarantine.py.
         q_kinds: list[str] = []
-        if ok and quarantine.active() and quarantine.is_untrusted(name):
-            # Scan an untrusted result (web/http/MCP/corpus) for instruction-shaped content (the
-            # data-as-instructions check) and fence it before the model sees it.
+        if quarantine.active() and quarantine.is_untrusted(name):
             findings = quarantine.scan(clamped)
             if findings:
                 quarantine.flag(name, findings)
@@ -162,10 +237,10 @@ def tool_node(state: AgentState):
         # Per-call boundary record (computed here so the outcome stamp below can see it): what
         # this call sent over the network, or what air-gap blocked.
         sent = _egress_slice(egress_mark)
-        # Structural outcome stamp for the recorder (nodes/update_plan reads it off the message):
-        # derived HERE, where the call actually ran, so a step's status never has to be sniffed
+        # Structural outcome stamp (nodes/agent.py's incidents note and guards read it off the message):
+        # derived HERE, where the call actually ran, so a call's status never has to be sniffed
         # back out of observation text — a successful read of a file whose content happens to
-        # start with "ERROR:" or "Blocked …" must not fail its step. "blocked" = every boundary
+        # start with "ERROR:" or "Blocked …" must not count as a failure. "blocked" = every boundary
         # event this call produced was an air-gap refusal (the observation is the refusal).
         boundary = [e for e in sent if isinstance(e, dict) and "status" in e]
         if not ok:
@@ -183,16 +258,26 @@ def tool_node(state: AgentState):
             )
         )
         tools_called.append(name)
-        # Retrieval results go to documents_retrieved (synthesize's "Retrieved documents"); every
-        # other tool's result is paired with its call in tool_results ("Tool results") so synthesis
-        # can't divorce the value from what it answers. Keeping retrieval OUT of tool_results avoids
-        # feeding the same passage to the synthesizer twice.
-        if name in RETRIEVAL_TOOLS:
+        # What the answer could draw on — the Sources receipt, /trace source and /trace why
+        # number these (core/sources.py). Only a call that COMPLETED and returns material: a
+        # failed or air-gap-blocked call informed nothing (it is in the incidents note), and a
+        # tool declared side_effecting (write_file, remember, schedule_notification) returns a
+        # confirmation of what it changed, not something to cite — as does a destructive one
+        # (send_message, delete_calendar_event) unless what it returns is external output
+        # (run_shell, run_shortcut, an MCP tool: the tools declared untrusted). Retrieval
+        # results go to documents_retrieved, every other tool's to tool_results paired with
+        # its call — keeping retrieval OUT of tool_results keeps a passage from being cited twice.
+        action = is_action(name)
+        if call_status != "done" or action:
+            pass
+        elif name in RETRIEVAL_TOOLS:
             documents_retrieved.append(clamped)
+        elif name == PLAN_TOOL:
+            pass  # the checklist is state, not a source the answer drew on
         else:
-            # The call paired with its observation (CALL_RESULT_SEP); synthesize's Sources labels
-            # split on it to recover the call half from the observation.
-            tool_results.append(f"{_fmt_call(name, args)}{CALL_RESULT_SEP}{clamped}")
+            # The call paired with its observation (CALL_RESULT_SEP); the Sources receipt's
+            # labels split on it to recover the call half from the observation.
+            tool_results.append(f"{fmt_call(name, args)}{CALL_RESULT_SEP}{clamped}")
         # Structured per-call record for the UI's tool-I/O tree (args + result preview + timing).
         event = {
             "name": name,
@@ -200,19 +285,29 @@ def tool_node(state: AgentState):
             "result": _preview(observation),
             "dur": dur,
             "ok": ok,
+            "pass": state.get("iteration"),  # the agent pass that issued it (benchmark ordering)
         }
         if q_kinds:
             event["quarantine"] = q_kinds
+        # A fact remembered without the gate: the REPL's after-answer note reads this
+        # (app/repl._auto_memory_notes), and the trace keeps it with the event.
+        if ok and selected is not None and said:
+            event.update(_auto_memory_marks(str(observation), replacing))
         # The per-call egress slice (computed above), rendered live as a rail leaf and persisted
         # with the event for /trace replays.
         if sent:
             event["egress"] = sent
         tool_events.append(event)
 
-    return {
+    result = {
         "messages": tool_messages,
         "tools_called": tools_called,
         "tool_results": tool_results,
         "documents_retrieved": documents_retrieved,
         "tool_events": tool_events,
     }
+    if plan_update is not None:
+        result["plan"] = plan_update
+    if outside_ran:
+        result["outside_seen"] = True
+    return result

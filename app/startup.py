@@ -11,7 +11,7 @@ import diag
 from app.graph import build_agent
 
 # RAG ingest (reconciles the disk-cached vector store the search_knowledge_base tool reads).
-from stores.rag import sync
+from stores.rag import iter_documents, sync
 
 
 def startup_load(interactive: bool = True):
@@ -19,10 +19,9 @@ def startup_load(interactive: bool = True):
     `(graph, warning_or_None)`. Runs while the ring art animates in interactive mode, or
     directly (no TUI) in headless mode."""
     warn = None
-    # Read the hardware once per launch (chip / RAM / VRAM) so /models — and the first-launch
+    # Read the hardware once per launch (chip / GPU cores / RAM) so /models — and the first-launch
     # tier pick — price the ladder against a cached profile instead of re-probing. Interactive
-    # only: headless (-p) never renders /models, and the probe spawns sysctl / nvidia-smi (up to
-    # its 3 s timeout on a waking driver). Wrapped: probe() never raises, but a launch must not
+    # only: headless (-p) never renders /models, and the probe spawns sysctl / ioreg. Wrapped: probe() never raises, but a launch must not
     # depend on that.
     if interactive:
         try:
@@ -32,55 +31,76 @@ def startup_load(interactive: bool = True):
         except Exception:
             pass
     # Reconcile the knowledge base against the disk cache at startup: only new/changed
-    # documents are embedded, the rest load from the persisted store. Non-fatal if it fails
-    # (e.g. embedding model not pulled) — search_knowledge_base just returns "no documents";
-    # the warning is shaped by _ingest_warning (one line, daemon-down stated plainly).
+    # documents are embedded, the rest load from the persisted store. An EMPTY corpus (the
+    # fresh-install state — the embedder is pulled lazily on the first /docs add) skips the
+    # sync entirely, so a launch never touches the embedder it may not have. Non-fatal if it
+    # fails — search_knowledge_base just returns "no documents"; the warning is shaped by
+    # _ingest_warning (one line, daemon-down and embedder-missing stated plainly).
     try:
-        sync(verbose=False)
+        if any(True for _ in iter_documents()):
+            missing = embedder_missing()
+            if missing:
+                warn = (f"knowledge base not synced: the embedder {missing} is not pulled — "
+                        "`/docs rebuild` pulls it on consent")
+            else:
+                sync(verbose=False)
     except Exception as exc:
         warn = _ingest_warning(exc, interactive=interactive)
     return build_agent(), warn
 
 
-def warm_model(role: str = "tool_caller") -> bool:
-    """Load `role`'s model into the daemon with ONE minimal request, so the session's first turn
-    does not pay the weight load inside its planner call (measured 2026-09-02: 50 s and 37 s
+def embedder_missing() -> "str | None":
+    """The active tier's embedder tag when the daemon is reachable and has NOT pulled it; None
+    when it is pulled, the daemon is down (the sync's own error says so), or the check fails."""
+    try:
+        from config import get_config
+        from core.llms import _model_present, list_local_models, ollama_reachable
+
+        tag = get_config().embedder_model
+        local = list_local_models()
+        if not local and not ollama_reachable():
+            return None
+        return None if _model_present(tag, {m.name for m in local}) else tag
+    except Exception:
+        return None
+
+
+def warm_model() -> bool:
+    """Load the chat model into the daemon with ONE minimal request, so the session's first turn
+    does not pay the weight load inside its first agent call (measured 2026-09-02: 50 s and 37 s
     for a cold "hello" against 15 s warm — the difference between an agent that looks hung and
     one that answers). The request rides the same `num_ctx` every turn uses: Ollama keys the
     loaded runner on the context size, so warming at another window would load a runner the
-    first turn then evicts. Every role on a tier binds the same model, so one role suffices.
+    first turn then evicts.
     Never raises — a down daemon is the health check's report, not this one's."""
     from langchain.messages import HumanMessage
 
     from core.llms import generate, get_model
-    from core.structured import _invoke_kwargs, _model_tag
+    from core.llms import invoke_kwargs, model_tag
 
     try:
-        kwargs = _invoke_kwargs(role, None, 0.0, task="judge")
+        kwargs = invoke_kwargs(None, 0.0, task="agent")
         kwargs.setdefault("options", {})["num_predict"] = 1
-        generate(get_model(role), [HumanMessage(content="ok")], tag=_model_tag(role), **kwargs)
+        generate(get_model(), [HumanMessage(content="ok")], tag=model_tag(), **kwargs)
         return True
     except Exception as exc:
         diag.log(f"startup: model warm-up skipped ({exc})")
         return False
 
 
-def _warm_and_prime(role: str) -> None:
-    """The warm-up thread's body: load the weights, then plant the quick router's and the
-    planner's prefix checkpoints (core/prime.py) so the first turn's first call prefills only
-    its request. Those two lineages ONLY here: priming every lineage cold is ~15 s of prefill
-    each, and a first query typed meanwhile would queue behind all of it."""
-    warm_model(role)
+def _warm_and_prime() -> None:
+    """The warm-up thread's body: load the weights, then plant the agent's prefix checkpoint
+    (core/prime.py) so the first turn's first call prefills only its request."""
+    warm_model()
     from core import prime
 
-    prime.prime_now(only=("quick", "planner"))
+    prime.prime_now(only=("agent",))
 
 
-def start_warm_up(role: str = "tool_caller") -> threading.Thread:
-    """`warm_model` + the planner prime on a daemon thread: the REPL keeps starting while the
-    weights load, and a first query typed early simply queues behind the load at the daemon —
-    as it did before, minus the second load it used to pay."""
-    t = threading.Thread(target=_warm_and_prime, args=(role,), name="model-warm-up", daemon=True)
+def start_warm_up() -> threading.Thread:
+    """`warm_model` + the agent prime on a daemon thread: the REPL keeps starting while the
+    weights load, and a first query typed early simply queues behind the load at the daemon."""
+    t = threading.Thread(target=_warm_and_prime, name="model-warm-up", daemon=True)
     t.start()
     return t
 

@@ -4,10 +4,6 @@ module (the /help "conversation" theme):
 
   /clear    start over (fresh state + clean screen)
   /resume   session persistence (autosave + named sessions)
-
-(/compact, /rewind, and /retry were CUT 2026-07-07 to trim the "go back / redo" pile-up down to
-/clear + /resume here and /undo for files. Auto-compaction still runs on its own — the engine
-lives in core/compaction.py + app/session._maybe_autocompact, never needing a manual trigger.)
 """
 
 from commands._framework import command, _print
@@ -21,61 +17,46 @@ from commands._session import (
     write_session_file,
 )
 from commands._utils import LIST_VERBS, REMOVE_VERBS
+from textutil import visible_controls
 
 
 # ── /clear ───────────────────────────────────────────────────────────────────────────────────
 @command(
     "clear",
     "Start a fresh conversation: reset state + clear the screen.",
-    aliases=("cls", "reset", "new"),
     details="""
 The "new conversation" button. Drops the in-memory conversation — the message history and every
 per-turn field (plan, iteration, accumulators) — AND clears the visible terminal, then reprints
 the session header. One command for a clean slate.
 
 What is NOT touched: config, model/tier bindings, the RAG corpus, the durable memory store
-(remember/recall), and the on-disk trace. The trace survives, so /trace and /trace calls still
-show past runs after a clear.
+(remember/recall), and the on-disk trace — /trace still shows past runs after a clear.
 
 The autosave slot IS dropped when a non-empty conversation is cleared — "fresh start" means the
 cleared conversation is not silently restorable via /resume.
-
-Pass --screen (-s) to ONLY repaint the terminal, leaving the conversation intact.
-
-Aliases /reset and /new are the same fresh-start; /cls too.
-
-Examples:
-  /clear            new conversation + clean screen
-  /clear --screen   just repaint the terminal, keep the conversation
 """,
 )
 def _clear(ctx, args):
     import subprocess
-    import sys
 
-    screen_only = bool(args) and args[0].lower() in ("--screen", "-s", "screen")
-    # Any OTHER argument must error, never fall through to the destructive default — a typo'd
-    # `--scren` asking for a repaint must not wipe the conversation (the /mcp precedent: an
-    # unrecognized verb stops instead of degrading into the default action).
-    if args and not screen_only:
-        _print(f"  unknown argument {args[0]!r} — usage: /clear [--screen]")
+    # An argument must error, never fall through to the destructive default — a typo'd flag
+    # must not wipe the conversation (the /mcp precedent: an unrecognized verb stops instead of
+    # degrading into the default action).
+    if args:
+        _print(f"  unknown argument {args[0]!r} — usage: /clear")
         return
 
-    if not screen_only:
-        # Drop the autosave slot only when a non-empty conversation was actually discarded —
-        # write_autosave's empty-guard contract (_session.py): a caller that deliberately empties
-        # the conversation clears the slot, or /clear → /quit → /resume resurrects exactly what
-        # the user cleared. Unconditional clearing would instead wipe the PREVIOUS session's
-        # autosave when /clear is typed at a fresh launch — the case the empty-guard protects.
-        had_messages = bool(ctx.state.get("messages"))
-        ctx.state = ctx.make_initial_state()
-        if had_messages:
-            clear_autosave()
+    # Drop the autosave slot only when a non-empty conversation was actually discarded —
+    # write_autosave's empty-guard contract (_session.py): a caller that deliberately empties
+    # the conversation clears the slot, or /clear → /quit → /resume resurrects exactly what
+    # the user cleared. Unconditional clearing would instead wipe the PREVIOUS session's
+    # autosave when /clear is typed at a fresh launch — the case the empty-guard protects.
+    had_messages = bool(ctx.state.get("messages"))
+    ctx.state = ctx.make_initial_state()
+    if had_messages:
+        clear_autosave()
 
-    subprocess.run("cls" if sys.platform == "win32" else "clear", shell=True, check=False)
-
-    if screen_only:
-        return
+    subprocess.run("clear", shell=True, check=False)
 
     _reprint_banner(ctx)
     _print("  new conversation — fresh state, no message history.")
@@ -98,7 +79,7 @@ def _reprint_banner(ctx) -> None:
 
         cfg = get_config()
         n_docs = sum(1 for _ in iter_documents())
-        ui.banner(f"{cfg.active_tier}:{model_id('tool_caller')}", len(_tools), n_docs, ctx.db_path)
+        ui.banner(f"{cfg.active_tier}:{model_id()}", len(_tools), n_docs)
     except Exception:
         pass
 
@@ -110,8 +91,7 @@ def _reprint_banner(ctx) -> None:
     aliases=("continue",),
     usage="/resume [<name> | save [name] | list]",
     details="""
-The one front door to session persistence. (The old /save and /load were folded in here —
-one command, not three.)
+The one front door to session persistence.
 
   /resume                   restore the autosave slot — the live conversation is autosaved on
                             /quit and after every turn (per-turn db.sqlite checkpoints are
@@ -124,8 +104,7 @@ one command, not three.)
   /resume list              list the named sessions on disk.
 
 Sessions are plain .json files under database/sessions/ (paths.sessions) — delete or rename
-one there. (The in-app delete/rename verbs were CUT 2026-07-16: crash-safe resume is the
-feature; a session library to manage was surface.)
+one there.
 
 Restoring rebuilds a fresh state seeded with the saved messages — config, model bindings, and
 the RAG corpus are untouched.
@@ -143,8 +122,8 @@ def _resume(ctx, args):
     if verb == "list":
         return _list_saved()
     if verb in ("remove", "rename"):
-        # CUT 2026-07-16 — intercepted (not treated as a session name) so a habit-typed
-        # `/resume rm old` can't misparse; the files are the interface now.
+        # Intercepted (not treated as a session name) so a habit-typed `/resume rm old` can't
+        # misparse; the files are the interface.
         _print("  session delete/rename was cut — sessions are plain files; manage them in:")
         _print(f"    {_sessions_dir()}")
         return
@@ -168,12 +147,11 @@ def _resume(ctx, args):
 
 # The /resume subcommand vocabulary — ONE table drives both the router (`_resume_verb`) and the
 # reserved-stem screen below, so a subcommand cannot be added without its name being refused as
-# a session name at save time (the stranded-session trap this hunk fixed: `/resume save list`
-# used to succeed and the session was then only reachable by list number). Per subcommand:
-# (bare spellings — these are also the reserved stems, flag spellings — safe_stem strips their
-# dashes back to the bare words, so they need no separate reservation). The remove/rename verbs
-# stay ROUTED even though the features were cut 2026-07-16: the router intercepts them with the
-# cut note (never a load-by-name misparse), and their stems stay unreserved-name-proof.
+# a session name at save time (a session saved as `list` would only be reachable by list
+# number). Per subcommand: (bare spellings — these are also the reserved stems, flag spellings —
+# safe_stem strips their dashes back to the bare words, so they need no separate reservation).
+# The remove/rename verbs are routed only so the router can intercept them with the cut note
+# (never a load-by-name misparse).
 _RESUME_VERBS = {
     "save": (("save",), ("--save", "-s")),
     "list": (LIST_VERBS, ("--list", "-l")),
@@ -195,9 +173,8 @@ def _resume_verb(token: str) -> "str | None":
 # could never be loaded by typing its name (`/resume list` would list, not load, list.json). The
 # refusal happens at CREATION (mirroring /policy allow's lone-verb reservation) and compares the
 # SANITIZED stem case-insensitively — the router lowercases args[0], so `/resume save LIST`
-# strands too, and safe_stem turns flag spellings like `--list` into these same words. Load /
-# delete / rename RESOLUTION stays unchanged, so a pre-existing colliding file remains reachable
-# (by /resume list number). Derived from the router's own table — never a second hand-kept copy.
+# strands too, and safe_stem turns flag spellings like `--list` into these same words. Derived
+# from the router's own table — never a second hand-kept copy.
 _RESERVED_SESSION_STEMS = frozenset(
     w for bare, _flags in _RESUME_VERBS.values() for w in bare
 )
@@ -232,8 +209,7 @@ def _save_named(ctx, args):
 
 
 def _named_sessions() -> list:
-    """The named session files, sorted — the one ordering /resume list shows and the numeric
-    arguments of delete resolve against, so the numbers always agree."""
+    """The named session files, sorted — the one ordering /resume list shows."""
     return sorted(f for f in _sessions_dir().glob("*.json") if not f.stem.startswith("_"))
 
 
@@ -262,3 +238,49 @@ def _load_named(ctx, name: str):
     _swap_to_messages(ctx, messages)
     _print(f"  loaded {len(messages)} message(s) from {path.name} (saved {saved_at}).")
     _print("  fresh state — conversation history restored.")
+
+
+# ── /copy ────────────────────────────────────────────────────────────────────────────────────
+
+def _pbcopy(text: str) -> bool:
+    """Put `text` on the clipboard (macOS `pbcopy`); False when that is not possible here."""
+    import subprocess
+    import sys
+
+    if sys.platform != "darwin":
+        return False
+    try:
+        proc = subprocess.run(["pbcopy"], input=text.encode("utf-8"), capture_output=True, timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return proc.returncode == 0
+
+
+@command(
+    "copy",
+    "Copy Saturn's last answer to the clipboard.",
+    details="""
+Puts the text of the most recent answer on the clipboard, without the Sources receipt or the
+incidents note. macOS only (pbcopy).
+
+The other direction is a mention, not a command: type @clipboard in a message and whatever is
+on the clipboard is attached to that message, like an @file ("fix the tone of @clipboard").
+Saturn never reads the clipboard on its own.
+""",
+)
+def _copy(ctx, args):
+    from nodes.agent import strip_trailers
+
+    answer = ""
+    for m in reversed((ctx.state or {}).get("messages") or []):
+        if getattr(m, "type", "") == "ai" and not getattr(m, "tool_calls", None):
+            answer = strip_trailers(str(getattr(m, "content", "") or ""))
+            if answer:
+                break
+    if not answer:
+        _print("  nothing to copy yet — there is no answer in this conversation.")
+        return
+    if _pbcopy(visible_controls(answer)):
+        _print(f"  copied the last answer ({len(answer)} characters) to the clipboard.")
+    else:
+        _print("  could not reach the clipboard (this needs macOS's pbcopy).")

@@ -1,131 +1,127 @@
-import time
-import diag
-
-from langchain.messages import HumanMessage, AIMessage
-
-from core.state import AgentState
-from config import get_config
-from textutil import clip
-from stores.memory_registry import memory_context_split, mark_used
-from stores.document_registry import (
-    read_workspace_manifest,
-    read_documents_manifest,
-    sync_workspace_manifest,
-)
-
 """
-Grounding node (re-scoped from the old context_builder).
-
-Its ONLY job is to load the things that are NOT already available to the model:
-  - the document + workspace manifests (so the planner knows what docs/files exist),
-  - the per-workspace SATURDAY.md instructions, and
+Grounding node: loads what is NOT already available to the model —
+  - the standing instructions (~/.saturn/SATURN.md, then the workspace's SATURN.md),
+  - the knowledge-base manifest (so the agent knows what documents it can search), and
   - persistent memory (stores/memory_registry): the user layer + open commitments + the recent
     memo digest always, agent/entities/negative facts by match against the request, all under
-    one cap. (The old user_profile.md / agent_profile.md files were folded into the user and
-    agent layers 2026-09-02 — nothing ever wrote them.)
+    one cap.
 
-It deliberately does NOT include:
-  - the tool inventory  -> the planner's system prompt carries the catalog and the execute
-                           step names its one tool; duplicating them here hurts small models.
-  - the chat history    -> `messages` is already passed to the model directly.
+It deliberately does NOT include the tool inventory (the native tool bind carries the catalog;
+duplicating it hurts small models) or the chat history (`messages` goes to the model directly).
+Built once per turn; tool results flow through `messages`, never this grounding string.
 
-Built once per turn (manifests/memory are static within a turn). Dynamic information —
-tool results — flows through `messages`, never this frozen grounding string.
-
-The block is built in TWO halves (2026-09-04): `context_stable` — instructions, manifests, the
-query-independent memory layers — is byte-identical across turns while nothing on disk
-changed, and `context_dynamic` — memory's by-match selection, the recent-conversation recap,
-attachments — changes every turn. Every node's prompt sends the stable half as its own message
-right after the system prompt and the dynamic half after it, and the idle prime (core/prime.py)
-re-sends exactly `stable_grounding()` between turns so the daemon holds a checkpoint at that
-message boundary: the next turn's plan/execute/synthesize calls then prefill only what is new
-(core/serving.py, "the prefix cache"). `context` stays the joined block for every reader that
-wants the whole thing (/trace context, older checkpoints).
+The block is built in TWO halves: `context_stable` — instructions, the manifest, the
+query-independent memory layers — is byte-identical across turns while nothing on disk changed,
+and `context_dynamic` — the date, memory's by-match selection, attachments — changes every turn.
+The prompt sends the stable half as its own message right after the system prompt and the
+dynamic half with the request, and the idle prime (core/prime.py) re-sends exactly
+`stable_grounding()` between turns so the daemon holds a checkpoint at that message boundary: the
+next turn's agent call then prefills only what is new (docs/OPTIMIZATIONS.md, "the prefix
+cache"). `context` stays the joined block for every reader that wants the whole thing.
 """
 
-# Per-workspace instructions (the CLAUDE.md/AGENTS.md equivalent): a SATURDAY.md at the workspace
-# root is loaded into context EVERY turn, so the user can durably steer how the agent treats this
-# workspace (conventions, goals, what matters) without re-typing it. Drafted by /init, hand-edited
-# freely. Capped so a runaway instructions file can't eat the context window.
-_INSTRUCTIONS_FILE = "SATURDAY.md"
+import time
+from datetime import datetime
+from pathlib import Path
+
+import diag
+
+from core.state import AgentState
+from stores.memory_registry import memory_context_split, mark_used
+from stores.document_registry import read_documents_manifest
+
+# Standing instructions (the CLAUDE.md equivalent), loaded into context EVERY turn:
+#   ~/.saturn/SATURN.md       global — tone, standing rules; hand-written, follows the user
+#                             everywhere ($SATURN_HOME overrides the directory);
+#   <workspace>/SATURN.md     per-workspace — conventions, goals; drafted by /init. Where the two
+#                             conflict the workspace file wins, and the prompt says so.
+# Each is capped so a runaway file can't eat the context window.
+INSTRUCTIONS_FILE = "SATURN.md"
 _INSTRUCTIONS_CAP = 6000
 
 
-def _read_instructions() -> str:
-    path = get_config().path("workspace") / _INSTRUCTIONS_FILE
-    if not path.exists():
+def global_instructions_path() -> Path:
+    """Where the global standing instructions live: `$SATURN_HOME/SATURN.md`, else
+    `~/.saturn/SATURN.md` (config.saturn_home)."""
+    from config import saturn_home
+
+    return saturn_home() / INSTRUCTIONS_FILE
+
+
+def _read_capped(path: Path) -> str:
+    if not path.is_file():
         return ""
     # errors="replace": a hand-edited file with a stray non-UTF-8 byte must not fail every turn
     # at the first node.
     text = path.read_text(encoding="utf-8", errors="replace").strip()
     if len(text) > _INSTRUCTIONS_CAP:
-        text = text[:_INSTRUCTIONS_CAP] + "\n… (SATURDAY.md truncated — keep it concise)"
+        text = text[:_INSTRUCTIONS_CAP] + f"\n… ({path.name} truncated — keep it concise)"
     return text
 
-# How many prior Q&A exchanges to recap into context, and how much of each to keep. Small on
-# purpose: enough for the planner/synthesizer to resolve a follow-up ("do that for the other
-# file") without re-bloating context — the full prior turn already rides `messages`.
-_RECAP_EXCHANGES = 2
-_RECAP_CHARS = 240
+
+def _read_instructions() -> str:
+    """The workspace instructions; "" when there are none."""
+    from core import workspace as _ws
+
+    return _read_capped(_ws.root() / INSTRUCTIONS_FILE)
 
 
-def _recent_exchanges(messages: list) -> str:
-    """A compact recap of the last few completed Q&A exchanges, for the planner/synthesizer —
-    which read `context` but are NOT given the raw `messages` the agent sees. Without this they
-    are blind to the conversation, so a follow-up turn gets planned/synthesized as if it arrived
-    cold. Pairs each user question with the assistant's final (non-tool-call) answer; skips the
-    current in-flight query (the trailing HumanMessage with no answer yet)."""
-    from core.state import is_turn_start
-
-    pairs = []
-    pending_q = None
-    for m in messages:
-        if isinstance(m, HumanMessage):
-            # Not every HumanMessage is a question: a compaction summary is carried history and a
-            # standalone mid-turn steer note is a correction — pairing either with the next answer
-            # corrupts the recap (is_turn_start owns that rule). With those skipped, the LATEST
-            # question wins, so a question left unanswered by a failed turn is superseded instead
-            # of mis-pairing with the next turn's answer.
-            if not is_turn_start(m):
-                continue
-            text = str(m.content).strip()
-            if text:
-                pending_q = text
-        elif isinstance(m, AIMessage) and not getattr(m, "tool_calls", None):
-            answer = str(m.content).strip()
-            if pending_q and answer:
-                pairs.append((pending_q, answer))
-                pending_q = None
-            elif pairs and answer:
-                # A LATER no-tool AIMessage in the same turn supersedes the pair's answer: a
-                # normal turn carries TWO consecutive no-tool AIMessages — the agent's draft
-                # (the finish that routed to replan/synthesize) then synthesize's final answer —
-                # and the recap must show the answer the user actually saw, never the draft.
-                # Worst case otherwise is the replan-repair path: the recap would carry the very
-                # ungrounded draft the judge rejected. The `and answer` guard keeps an empty
-                # trailing AIMessage from blanking a real final answer.
-                pairs[-1] = (pairs[-1][0], answer)
-    if not pairs:
+def _read_global_instructions() -> str:
+    try:
+        return _read_capped(global_instructions_path())
+    except Exception as exc:  # an unreadable home must not fail the first node of every turn
+        diag.log(f"grounding_node : global SATURN.md unreadable: {exc}")
         return ""
 
-    lines = []
-    for q, a in pairs[-_RECAP_EXCHANGES:]:
-        lines.append(f"- User: {clip(q, _RECAP_CHARS)}\n  You: {clip(a, _RECAP_CHARS)}")
-    return "\n".join(lines)
+
+def _working_folder_section() -> str:
+    """Where Saturn is working (core/workspace): the launch folder and the session's /add-dir
+    folders. In the STABLE half — the root is fixed for the session, so the prefix cache holds;
+    /add-dir and /rm-dir miss it once, like editing SATURN.md."""
+    from core import workspace as _ws
+
+    lines = [f"You are working in {_ws.display(_ws.root())}. Relative paths resolve here."]
+    extra = _ws.extra()
+    if extra:
+        lines.append("Also reachable this session (added with /add-dir): "
+                     + ", ".join(_ws.display(p) for p in extra))
+    lines.append("Any other folder needs the user to run /add-dir <folder> first.")
+    return "### Working folder\n" + "\n".join(lines)
 
 
-def stable_grounding() -> str:
+def now_section(now: "datetime | None" = None) -> str:
+    """Today's date, weekday and the time. In the DYNAMIC half — it
+    changes every turn, and the dynamic half rides only the current request, never the history,
+    so the cached prefix is untouched. With it, "Thursday" and "what's the date" resolve on the
+    first pass instead of a current_time round trip."""
+    now = now or datetime.now().astimezone()
+    offset = now.strftime("%z")
+    return ("### Now\n"
+            f"{now.strftime('%A')} {now.strftime('%Y-%m-%d')} ({now.day} {now.strftime('%B %Y')}), "
+            f"{now.strftime('%H:%M')} local time (UTC{offset[:3]}:{offset[3:]})")
+
+
+def stable_grounding(memory_always: "str | None" = None) -> str:
     """The query-independent half of the grounding block — what the idle prime re-sends between
     turns. Byte-identical to the `context_stable` the next turn's grounding_node builds unless
-    the workspace, the knowledge base, SATURDAY.md or the always-loaded memory layers changed
-    in between (in which case the prime simply misses and the turn prefills it, as before)."""
-    sections = ["## Grounding context"]
+    the knowledge base, the instructions files or the always-loaded memory layers changed
+    in between (in which case the prime simply misses and the turn prefills it).
+    `memory_always` is the always-loaded memory block when the caller already selected it
+    (grounding_node, which needs the by-match half of the same selection); None reads it here."""
+    sections = ["## Grounding context", _working_folder_section()]
 
+    global_instructions = _read_global_instructions()
+    if global_instructions:
+        sections.append(
+            "### Standing instructions (~/.saturn/SATURN.md — the user's standing guidance "
+            "everywhere; follow it)\n" + global_instructions
+        )
     instructions = _read_instructions()
     if instructions:
         sections.append(
-            "### Workspace instructions (SATURDAY.md — the user's standing guidance "
-            "for this workspace; follow it)\n" + instructions
+            f"### Workspace instructions ({INSTRUCTIONS_FILE} — the user's standing guidance for this "
+            "workspace; follow it, and where it conflicts with the standing instructions above "
+            "it wins)\n" + instructions
         )
 
     docs_manifest = read_documents_manifest().strip()
@@ -134,30 +130,15 @@ def stable_grounding() -> str:
         + (docs_manifest or "No ingested documents yet.")
     )
 
-    # Reconcile the manifest with the workspace on disk FIRST: a file deleted or dropped in
-    # outside the agent would otherwise leave this block naming a phantom (which the planner
-    # then reads, fails, and replans around) or missing a real file. Best-effort — a sync
-    # failure must never fail the first node of every turn.
-    try:
-        removed, added = sync_workspace_manifest()
-        if removed or added:
-            diag.log(f"grounding_node : workspace manifest synced "
-                     f"(-{len(removed)} phantom, +{len(added)} unregistered)")
-    except Exception as exc:
-        diag.log(f"grounding_node : workspace manifest sync failed: {exc}")
-    ws_manifest = read_workspace_manifest().strip()
-    sections.append(
-        "### Workspace files (accessible via read_file / write_file / list_directory)\n"
-        + (ws_manifest or "No workspace files yet.")
-    )
-
     # The always-loaded memory layers (user, commitments, the memo digest) are query-independent
     # — the stable half. The by-match facts land in the dynamic half below.
-    always, _matched, _ids = memory_context_split("")
+    always = memory_context_split("")[0] if memory_always is None else memory_always
     if always:
         sections.append(
-            "### Persistent memory (what the user asked me to remember and what I learned; "
-            "#id lets `remember(..., replaces=<id>)` correct a fact)\n" + always
+            "### Persistent memory (what the user told me and the day they said it; a later "
+            "day outranks an earlier one, and what the user says in this conversation or a "
+            "tool returns now outranks all of it; [inferred] = my conclusion, which the user "
+            "accepted; #id lets `remember(..., replaces=<id>)` correct a fact)\n" + always
         )
     return "\n\n".join(sections)
 
@@ -165,8 +146,18 @@ def stable_grounding() -> str:
 def grounding_node(state: AgentState) -> dict:
     start = time.perf_counter()
 
-    stable = stable_grounding()
-    sections = []
+    # ONE memory selection per turn: its always half is query-independent and rides the
+    # stable block, its by-match half the dynamic one below.
+    always, matched, matched_ids = memory_context_split(state.get("current_query", ""))
+    stable = stable_grounding(always)
+    sections = [now_section()]
+
+    # A skill the user ran this turn by typing /<name> (core/skills): their own procedure for
+    # THIS request — the dynamic half, so the stable prefix is untouched and the next turn,
+    # which resets `skill`, does not carry it.
+    skill = state.get("skill", "")
+    if skill:
+        sections.append(skill)
 
     # Selected against THIS request (memory_registry.select_for_context): agent/entities/
     # negative facts only when they share tokens with the query, plus the trailer naming what
@@ -175,7 +166,6 @@ def grounding_node(state: AgentState) -> dict:
     # get their last-used stamped (the expiry signal /memory flags stale on) — the one
     # read-path write, and it touches no fact text; best-effort — a stamp failure must never
     # fail the first node of every turn.
-    _always, matched, matched_ids = memory_context_split(state.get("current_query", ""))
     if matched:
         sections.append(
             "### Memory facts matched to this request (same store; #id as above)\n" + matched
@@ -186,18 +176,9 @@ def grounding_node(state: AgentState) -> dict:
         except Exception as exc:
             diag.log(f"grounding_node : memory last-used stamp failed: {exc}")
 
-    # Per turn: the recap changes every turn and the request follows it.
-    recap = _recent_exchanges(state.get("messages", []))
-    if recap:
-        sections.append(
-            "### Recent conversation (this session — for resolving follow-up references)\n"
-            + recap
-        )
-
     # Files the user attached to THIS message with `@path` (resolved + read by mentions.expand in the
-    # REPL loop, stashed on state). Folded in here so the planner/agent/synthesize — which read this
-    # context, not the raw messages — all see the file contents inline. Empty on a turn with no
-    # resolvable mentions.
+    # REPL loop, stashed on state). Folded in here so the agent sees the file contents inline in the
+    # request's dynamic grounding. Empty on a turn with no resolvable mentions.
     attachments = state.get("attachments", "")
     if attachments:
         sections.append(attachments)
@@ -205,4 +186,10 @@ def grounding_node(state: AgentState) -> dict:
     dynamic = "\n\n".join(sections)
     context = stable + ("\n\n" + dynamic if dynamic else "")
     diag.log(f"grounding_node : {time.perf_counter() - start:.4f}s")
-    return {"context": context, "context_stable": stable, "context_dynamic": dynamic}
+    out = {"context": context, "context_stable": stable, "context_dynamic": dynamic}
+    # An attachment is outside content, and `attachments` is reset at the next turn — so the
+    # conversation's own record is set here, the first node of the turn that carried it
+    # (core/provenance.of reads it; auto-learn stays off from then on).
+    if state.get("attachments"):
+        out["outside_seen"] = True
+    return out

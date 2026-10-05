@@ -3,10 +3,16 @@ evaluator (a security surface: calculate is read_only, so anything it can execut
 the approval gate entirely)."""
 
 from tools.calculator import calculate
+from tools.toolspec import ToolError
 
 
 def _calc(expr: str) -> str:
-    return calculate.invoke({"expression": expr})
+    """The observation the model sees: a refusal is RAISED (stamped error by the tools node)
+    and rendered as "Error: …"."""
+    try:
+        return calculate.invoke({"expression": expr})
+    except ToolError as exc:
+        return f"Error: {exc}"
 
 
 def test_basic_arithmetic():

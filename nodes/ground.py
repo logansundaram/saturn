@@ -124,11 +124,15 @@ def stable_grounding(memory_always: "str | None" = None) -> str:
             "it wins)\n" + instructions
         )
 
-    docs_manifest = read_documents_manifest().strip()
-    sections.append(
-        "### Knowledge base (searchable via `search_knowledge_base`)\n"
-        + (docs_manifest or "No ingested documents yet.")
-    )
+    # The manifest names search_knowledge_base — it goes with the toolkit (/tools off knowledge).
+    from tools import registry
+
+    if registry.toolkit_on("knowledge"):
+        docs_manifest = read_documents_manifest().strip()
+        sections.append(
+            "### Knowledge base (searchable via `search_knowledge_base`)\n"
+            + (docs_manifest or "No ingested documents yet.")
+        )
 
     # The always-loaded memory layers (user, commitments, the memo digest) are query-independent
     # — the stable half. The by-match facts land in the dynamic half below.

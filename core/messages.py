@@ -8,7 +8,8 @@ from langchain.messages import SystemMessage
 # --- the agent node -------------------------------------------------------------------------
 # The ONE prompt the loop sends. No tool catalog here: the tools ride the native bind, and the
 # chat template renders their schemas into the system section — a stable prefix the idle prime
-# caches (core/prime.py). Byte-stable across calls: it is a primed lineage.
+# caches (core/prime.py). Byte-stable across calls: it is a primed lineage, and it changes only
+# when the user turns a toolkit on or off (agent_sys_text below).
 _AGENT_SYS = """\
 You are Saturn, a local assistant that runs on this machine and works with the user's own \
 files, notes, calendar, mail and messages. Everything you do is visible to the user as it happens.
@@ -53,8 +54,68 @@ not retry a call the user declined.
 - Write plainly. Do not mention tools, steps or the plan in your answer."""
 
 
+# Toolkits (tools/toolspec.TOOLKITS, /tools). With every toolkit on the prompt IS the literal
+# above, byte for byte. A switchable toolkit the prompt names owns the sentences that name its
+# tools: (toolkit, the sentence exactly as it stands above, what replaces it when the toolkit
+# is off). A mid-bullet sentence carries its leading space, a bullet's first sentence its
+# trailing one, so a cut leaves the bullet clean. tests/test_toolkits.py pins that each occurs
+# exactly once above — a prompt edit that breaks a cut fails there, not in front of a model.
+_TOOLKIT_SENTENCES = (
+    ("web",
+     "Current or external facts (prices, news, versions, who a real person or company is) "
+     "come from web_search, even when you think you know them. ", ""),
+    ("contacts",
+     "A person's address or number comes from search_contacts — never guess one.",
+     "Never guess a person's address or number — ask the user for it."),
+    ("files",
+     " Files are read with read_file; relative paths are in the working folder shown in the "
+     "grounding. For a folder outside it, ask the user to run /add-dir <folder>.", ""),
+    ("files",
+     "- Change or append to an existing file with edit_file after reading it; create or "
+     "replace a whole file with write_file; rename or move one with move_file; delete one "
+     "with delete_file (never rm — a delete goes to the Trash so it can be undone).\n", ""),
+    ("knowledge", " The knowledge base is searched with search_knowledge_base.", ""),
+)
+# The sentence that lists the user's own material by the toolkit that reads it.
+_READERS = (("notes", "notes"), ("files", "documents"), ("mail", "mail"),
+            ("calendar", "calendar"), ("reminders", "reminders"), ("contacts", "contacts"),
+            ("messages", "messages"))
+_OFF_LINE = ("- These toolkits are turned off by the user: {keys}. Their tools do not exist "
+             "right now. When a request needs one, say that it is turned off and that "
+             "`/tools on <name>` turns it on.")
+
+
+def _reader_sentence(off: frozenset) -> str:
+    """"The user's own notes, … and messages come from the matching reader tools. " over the
+    toolkits that are on; "" when none of them is."""
+    what = [noun for kit, noun in _READERS if kit not in off]
+    if not what:
+        return ""
+    listed = what[0] if len(what) == 1 else ", ".join(what[:-1]) + " and " + what[-1]
+    verb = "comes" if len(what) == 1 else "come"
+    return f"The user's own {listed} {verb} from the matching reader tools. "
+
+
+def agent_sys_text(off: frozenset = frozenset()) -> str:
+    """The agent's system prompt with the toolkits in `off` turned off: their sentences cut,
+    and one line that says what is off and how to turn it on. A pure function of `off`, so
+    the cached prefix moves only when the user flips a toolkit."""
+    if not off:
+        return _AGENT_SYS
+    from tools.toolspec import TOOLKITS
+
+    text = _AGENT_SYS.replace(_reader_sentence(frozenset()), _reader_sentence(off), 1)
+    for kit, sentence, instead in _TOOLKIT_SENTENCES:
+        if kit in off:
+            text = text.replace(sentence, instead, 1)
+    keys = ", ".join(k for k in TOOLKITS if k in off)
+    return text.replace("\n\nRules:", "\n" + _OFF_LINE.format(keys=keys) + "\n\nRules:", 1)
+
+
 def agent_sys_msg() -> SystemMessage:
-    return SystemMessage(content=_AGENT_SYS)
+    from tools import registry
+
+    return SystemMessage(content=agent_sys_text(frozenset(registry.off_toolkits())))
 
 
 # ── background prompts (the out-of-loop LLM calls) ────────────────────────────────────────────

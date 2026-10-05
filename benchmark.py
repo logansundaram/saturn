@@ -756,6 +756,9 @@ def summarize_loop(results: list[dict]) -> dict:
     (by tag family), and the three counts the pivot's loop items target."""
     by_shape: dict = {}
     tags: Counter = Counter()
+    # A task skipped because its toolkit is off (--off) neither passed nor failed.
+    skipped = [r["id"] for r in results if r.get("skipped")]
+    results = [r for r in results if not r.get("skipped")]
     for r in results:
         s = by_shape.setdefault(r["shape"], {"n": 0, "passed": 0, "_passes": 0, "_lat": 0.0})
         s["n"] += 1
@@ -772,6 +775,7 @@ def summarize_loop(results: list[dict]) -> dict:
         "total": len(results),
         "passed": sum(1 for r in results if not r["tags"]),
         "failed": [r["id"] for r in results if r["tags"]],
+        "skipped": skipped,
         "by_shape": by_shape,
         "tags": dict(tags),
         "phantom": tags.get("phantom", 0),
@@ -821,12 +825,48 @@ def apply_think(mode: str) -> str:
     return runtime["think"] if runtime["think"] != "auto" else think.policy()
 
 
+def _toolkits_off() -> list[str]:
+    """The toolkits that are off for this run (--off, or the user's own config), for the report."""
+    from tools import registry
+
+    return registry.off_toolkits()
+
+
 def think_label() -> str:
     """The think mode a run is under, for the report: fast, deep, or auto's policy."""
     from core import think
 
     level = think.level()
     return level if level != "auto" else think.policy()
+
+
+def apply_off(spec: str) -> list[str]:
+    """`--off messages,shortcuts`: turn toolkits off for this process (tools/registry — the
+    switch behind /tools), in memory only. Returns every toolkit that is off for the run."""
+    from tools import registry
+
+    keys = [k.strip().lower() for k in str(spec or "").split(",") if k.strip()]
+    try:
+        registry.set_toolkits(keys, False)
+    except ValueError as exc:
+        raise SystemExit(f"--off: {exc} (the toolkits are listed by /tools)")
+    return registry.off_toolkits()
+
+
+def task_off(task: dict) -> "str | None":
+    """The off toolkit a loop task cannot run without, else None: a required tool whose every
+    alternative is off, or the send / the skill save the task expects to reach the gate. A
+    task that expects NO send or save still runs."""
+    from tools import registry
+    from tools.toolspec import toolkit_of
+
+    for group in task["required"]:
+        if group and all(registry.is_off(name) for name in group):
+            return toolkit_of(sorted(group)[0])
+    for field, name in (("send", "send_message"), ("skill", "create_skill")):
+        if task.get(field) is not None and registry.is_off(name):
+            return toolkit_of(name)
+    return None
 
 
 def apply_tier(tier: str) -> str:
@@ -947,6 +987,12 @@ def run_loop_benchmark(graph) -> dict:
     results = []
     with _loop_fixtures(), _messaging_world():
         for i, task in enumerate(LOOP_TASKS, 1):
+            off = task_off(task)
+            if off:
+                results.append({"id": task["id"], "shape": task["shape"],
+                                "query": task["query"], "tags": [], "skipped": off})
+                print(f"  [{i:2d}/{len(LOOP_TASKS)}] {task['id']:<24} SKIP  ({off} is off)")
+                continue
             entry = run_query(graph, task["query"])
             tags = grade_loop_task(task, entry)
             result = {
@@ -992,7 +1038,9 @@ def run_loop(output_path: Path | None = None, runs: int = 1) -> "tuple[Path, dic
         s = out["summary"]
         th = s["thinking"]
         print(f"\n{s['passed']}/{s['total']} passed · phantom {s['phantom']} · "
-              f"hygiene bounces {s['hygiene']} · capped {s['capped']}")
+              f"hygiene bounces {s['hygiene']} · capped {s['capped']}"
+              + (f" · {len(s['skipped'])} skipped (toolkits off: {', '.join(_toolkits_off())})"
+                 if s["skipped"] else ""))
         print(f"thinking: {th['thought']} of {th['passes']} passes thought ({th['seconds']}s) · "
               f"{th['drafts']} drafts rethought · {th['empty']} empty · {th['cut']} cut")
         for shape, v in s["by_shape"].items():
@@ -1002,7 +1050,7 @@ def run_loop(output_path: Path | None = None, runs: int = 1) -> "tuple[Path, dic
             output_path.with_name(f"{output_path.stem}_{run}{output_path.suffix}")
             if output_path is not None else loop_report_path(tier, label, run, runs))
         payload = {"timestamp": datetime.now().isoformat(), "model": tier, "think": label,
-                   "loop_summary": s, "loop": out["results"]}
+                   "toolkits_off": _toolkits_off(), "loop_summary": s, "loop": out["results"]}
         path.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
         print(f"Loop benchmark report written to {path}")
     return path, s
@@ -1224,6 +1272,7 @@ def run_trust(output_path: Path | None = None) -> "tuple[Path, dict]":
         output_path = _log_dir() / f"trust_{timestamp}.json"
     payload = {
         "timestamp": datetime.now().isoformat(),
+        "toolkits_off": _toolkits_off(),
         "trust_summary": trust["summary"],
         "trust": trust,
     }
@@ -1274,6 +1323,14 @@ def main():
              "In memory only.",
     )
     parser.add_argument(
+        "--off",
+        default=None,
+        metavar="TOOLKITS",
+        help="Turn these toolkits off for the run, comma-separated (the names /tools lists): "
+             "their tools are unbound, and a loop task that needs one is skipped and counted "
+             "apart. In memory only.",
+    )
+    parser.add_argument(
         "--runs",
         type=int,
         default=1,
@@ -1286,6 +1343,8 @@ def main():
         apply_tier(args.tier)
     if args.think:
         apply_think(args.think)
+    if args.off:
+        print(f"toolkits off for this run: {', '.join(apply_off(args.off))}")
 
     if args.loop:
         run_loop(Path(args.output) if args.output else None, runs=args.runs)

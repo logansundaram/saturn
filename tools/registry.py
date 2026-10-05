@@ -7,7 +7,8 @@
 # To add a tool: write the @tool function in the right tools/ module and decorate it with
 # @register_tool(<risk>[, retrieval=True]). Nothing in this file changes.
 
-from tools.toolspec import _TOOLS, _RISK, _RETRIEVAL  # collected as the imports below run
+from tools.toolspec import _ALL, _TOOLS, _RISK, _RETRIEVAL  # collected as the imports below run
+from tools.toolspec import TOOLKITS, toolkit_of
 
 # Importing each module runs its @register_tool decorators, populating the toolspec collections.
 # Module imports on purpose (not per-name): registration needs the module to RUN, not its names,
@@ -44,8 +45,10 @@ from tools import mcp_client  # noqa: E402
 mcp_client.startup()
 
 # --- collected views (established public names) ---------------------------------------------
-tool = _TOOLS                      # the active tool list (bound to the agent)
+tool = _TOOLS                      # the BOUND tool list: the tools whose toolkit is on
 tools_by_name = {t.name: t for t in tool}
+all_tools = _ALL                   # every registered tool, on or off (/tools, /policy risk)
+all_by_name = {t.name: t for t in all_tools}
 TOOL_RISK = _RISK                  # name -> risk tier; mutable — /policy risk edits this live
 RETRIEVAL_TOOLS = _RETRIEVAL       # names whose results are recorded as retrieved documents
 
@@ -69,11 +72,121 @@ def apply_risk_overrides() -> None:
     for _name, _tier in _policy.risk_overrides().items():
         if _name in _policy.NO_BLANKET_GRANT:
             TOOL_RISK[_name] = DECLARED_RISK.get(_name, "destructive")
-        elif _name in tools_by_name and _tier in _RISK_TIERS:
+        elif _name in all_by_name and _tier in _RISK_TIERS:
             TOOL_RISK[_name] = _tier
 
 
 apply_risk_overrides()
+
+
+# --- toolkits: which registered tools are bound ----------------------------------------------
+# A toolkit (toolspec.TOOLKITS) is a group of tools the user turns on or off as one with /tools.
+# Off means UNBOUND: the tools leave `tool` and `tools_by_name`, so the model is not shown
+# their schemas and the tools node cannot run them. Everything about trust — TOOL_RISK,
+# DECLARED_RISK, the quarantine's sets — keeps covering every registered tool, on or off: a
+# toggle never shrinks the injection scan and never changes a tier.
+
+
+def _toolkit_block() -> dict:
+    """`toolkits:` from the config, {} when it is absent or not a mapping."""
+    from config import get_config
+
+    block = get_config().get("toolkits")
+    return block if isinstance(block, dict) else {}
+
+
+def _switchable(key: str) -> bool:
+    kit = TOOLKITS.get(key)
+    return kit is not None and not kit.core and not kit.managed_by
+
+
+def toolkit_on(key: str) -> bool:
+    """Whether a toolkit's tools are bound. Only an explicit `false` on a switchable toolkit
+    turns one off — the core, a toolkit another command manages, and any other value are on."""
+    return not (_switchable(key) and _toolkit_block().get(key) is False)
+
+
+def off_toolkits() -> list[str]:
+    """The toolkits that are off, in the table's order."""
+    return [k for k in TOOLKITS if not toolkit_on(k)]
+
+
+def is_off(tool_name: str) -> bool:
+    """A REGISTERED tool whose toolkit is off (an unknown name is not "off")."""
+    kit = toolkit_of(tool_name)
+    return kit is not None and not toolkit_on(kit)
+
+
+def toolkit_tools(key: str) -> list:
+    """A toolkit's tool objects, in registration order, on or off."""
+    return [t for t in all_tools if toolkit_of(t.name) == key]
+
+
+def apply_toolkits() -> None:
+    """Recompute the bound views from the config. IN PLACE: `tool` is the list the agent binds
+    and the prime caches, `tools_by_name` the dict the tools node executes from — every holder
+    sees the change (the way mcp_client.reload does it)."""
+    tool[:] = [t for t in all_tools if not is_off(t.name)]
+    tools_by_name.clear()
+    tools_by_name.update((t.name, t) for t in tool)
+
+
+def set_toolkits(keys, on: bool) -> list[str]:
+    """Turn toolkits on or off for this session (the caller persists). Refuses the whole
+    request — nothing changes — when any key is unknown, the core, or managed by another
+    command. Returns the keys whose state changed; the model is rebound only when one did."""
+    from config import get_config
+    from core import llms
+
+    keys = list(dict.fromkeys(keys))
+    for key in keys:
+        kit = TOOLKITS.get(key)
+        if kit is None:
+            raise ValueError(f"no toolkit named {key!r}")
+        if kit.core:
+            raise ValueError(f"{key} is always on")
+        if kit.managed_by:
+            raise ValueError(f"{key} is managed by {kit.managed_by}")
+    changed = [k for k in keys if toolkit_on(k) != on]
+    if not changed:
+        return []
+    cfg = get_config()
+    if not isinstance(cfg.get("toolkits"), dict):
+        cfg._data["toolkits"] = {}
+    for key in changed:
+        cfg.set(f"toolkits.{key}", on)
+    apply_toolkits()
+    llms.reset_models()  # rebind the model so the agent sees the new tool set
+    return changed
+
+
+def toolkit_problems() -> list[str]:
+    """What is wrong with `toolkits:` in the config, for the startup report. Every problem
+    fails toward ON — a typo never silently unbinds a tool."""
+    from config import get_config
+
+    raw = get_config().get("toolkits")
+    if raw is None:
+        return []
+    if not isinstance(raw, dict):
+        return ["toolkits in config.yaml must be a mapping of toolkit -> true/false; "
+                "every toolkit is on"]
+    names = ", ".join(k for k in TOOLKITS if _switchable(k))
+    problems = []
+    for key, value in raw.items():
+        if not _switchable(str(key)):
+            kit = TOOLKITS.get(str(key))
+            why = ("is always on" if kit is not None and kit.core
+                   else f"is managed by {kit.managed_by}" if kit is not None
+                   else f"is not a toolkit (have: {names})")
+            problems.append(f"toolkits.{key} in config.yaml {why} — ignored")
+        elif not isinstance(value, bool):
+            problems.append(f"toolkits.{key} in config.yaml must be true or false, not "
+                            f"{value!r} — {key} is on")
+    return problems
+
+
+apply_toolkits()
 
 
 def refresh_trust_classifications() -> None:

@@ -36,7 +36,7 @@ def to_plan(steps) -> list:
     return out
 
 
-@register_tool("read_only")
+@register_tool("read_only", toolkit="core")
 def plan(steps: list[dict]):
     """Record or update your checklist for a multi-step task so the user can follow along.
     `steps` is the FULL list in order, each {"label": "<what this step does>", "status":

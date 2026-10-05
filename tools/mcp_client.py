@@ -47,7 +47,7 @@ import diag
 from trust import egress
 from config import get_config
 from textutil import truncate
-from tools.toolspec import RISK_TIERS, ToolError, register_tool_object
+from tools.toolspec import RISK_TIERS, Toolkit, ToolError, add_toolkit, register_tool_object
 
 # Fallbacks when config.yaml lacks the knobs.
 _DEFAULT_CONNECT_TIMEOUT = 20.0   # seconds to start + handshake a server at startup
@@ -371,6 +371,11 @@ def _make_func(server: str, mcp_tool: str):
     return _call
 
 
+def toolkit_key(server: str) -> str:
+    """The /tools toolkit an MCP server's tools are listed under."""
+    return f"mcp:{server}"
+
+
 def _register_server_tools(st: _ServerState) -> list[str]:
     """Build + register a StructuredTool for each tool a connected server listed. Names are
     prefixed `mcp_<server>_` so provenance is visible everywhere a name appears (the gate prompt,
@@ -380,6 +385,8 @@ def _register_server_tools(st: _ServerState) -> list[str]:
     from tools.toolspec import _RISK  # the live name->tier view; membership == "name is taken"
 
     registered: list[str] = []
+    # The server is one toolkit in /tools — listed there, turned on and off here (/mcp).
+    kit = toolkit_key(st.spec.name)
     for t in st.tools:
         mcp_name = getattr(t, "name", "") or ""
         lc_name = _safe_name(f"mcp_{st.spec.name}_{mcp_name}")
@@ -406,7 +413,11 @@ def _register_server_tools(st: _ServerState) -> list[str]:
         # untrusted=True for EVERY transport: even a stdio server is another process whose
         # output Saturn didn't produce (and it may itself fetch remote content) — conservative
         # on purpose; the quarantine scan costs a regex pass, not a prompt.
-        register_tool_object(lc_tool, st.spec.risk, untrusted=True)
+        if not registered:
+            add_toolkit(kit, Toolkit(f"MCP {st.spec.name}",
+                                     f"tools from the MCP server '{st.spec.name}'",
+                                     managed_by="/mcp"))
+        register_tool_object(lc_tool, st.spec.risk, toolkit=kit, untrusted=True)
         registered.append(lc_name)
     return registered
 

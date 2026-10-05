@@ -26,7 +26,7 @@ def _now() -> datetime:
     return datetime.now().astimezone()
 
 
-@register_tool("side_effecting")
+@register_tool("side_effecting", toolkit="notifications")
 def schedule_notification(when: str, title: str, body: str = ""):
     """Schedule a native desktop notification (a reminder) to appear at a future time, even if
     the assistant has been closed by then. `when` is a future time: ISO 8601 like

@@ -167,3 +167,17 @@ def mac(monkeypatch):
     monkeypatch.setattr(applescript, "_platform", lambda: "darwin")
     monkeypatch.setattr(applescript, "_run", fake_run)
     return ctl
+
+
+@pytest.fixture(autouse=True)
+def _all_toolkits_on(monkeypatch):
+    """Which toolkits are on is the developer's own config.yaml (`toolkits:`), and a toggle is
+    process state (tools/registry) — every test STARTS with all of them bound, so neither a
+    personal setting nor an earlier test can unbind a tool under a test. Nothing is re-applied
+    afterwards: a test may leave config unreadable (it patches get_config), and the next
+    test's start is what resets the registry."""
+    from config import get_config
+    from tools import registry
+
+    monkeypatch.setitem(get_config()._data, "toolkits", {})
+    registry.apply_toolkits()

@@ -115,7 +115,7 @@ def _safe_eval(expression: str):
     return _eval_node(ast.parse(expression, mode="eval").body)
 
 
-@register_tool("read_only")
+@register_tool("read_only", toolkit="core")
 def calculate(expression: str) -> str:
     """Evaluates a mathematical expression and returns the result as a string.
     Supports basic arithmetic (+, -, *, /), exponentiation (**), modulo (%),
@@ -146,7 +146,7 @@ def calculate(expression: str) -> str:
 # `calculate` exists so the model never does arithmetic from memory; `current_time` is the same
 # idea applied to time. Local models confabulate dates constantly ("today" resolved against a
 # training cutoff), and without this tool the only cure was a pointless web_search.
-@register_tool("read_only")
+@register_tool("read_only", toolkit="core")
 def current_time():
     """The current local date and time, with timezone, UTC equivalent, and weekday. Today's
     date is already in the grounding's Now line; call this when you need the exact time again

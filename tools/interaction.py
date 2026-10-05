@@ -26,7 +26,7 @@ from langgraph.types import interrupt
 from tools.toolspec import register_tool
 
 
-@register_tool("read_only")
+@register_tool("read_only", toolkit="core")
 def ask_user(question: str):
     """Ask the human user ONE question and pause until they type an answer. Use when a needed
     value, choice, or confirmation is missing from the request and no file, note, or search can

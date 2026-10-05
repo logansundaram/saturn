@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import contextvars
 import time
+from dataclasses import dataclass
 from functools import wraps
 
 from langchain.tools import tool as _lc_tool
@@ -31,8 +32,44 @@ import diag
 # tier is at or below the configured `runtime.auto_approve` tier (see nodes/approval.py).
 RISK_TIERS = ("read_only", "side_effecting", "destructive")
 
+
+@dataclass(frozen=True)
+class Toolkit:
+    """A group of tools the user turns on or off as one (/tools). `core` cannot be turned off;
+    `managed_by` names the command that owns a toolkit /tools only lists (an MCP server)."""
+
+    label: str
+    about: str
+    core: bool = False
+    managed_by: str = ""
+
+
+# THE toolkits, in the order /tools lists them. The key is what the user types. A toolkit is an
+# app or a capability, so it lines up with the macOS permission it needs. An MCP server's tools
+# land under `mcp:<server>`, added by add_toolkit when the server connects.
+TOOLKITS: "dict[str, Toolkit]" = {
+    "core": Toolkit("Core", "checklist, questions, memory, calculator, clock", core=True),
+    "files": Toolkit("Files", "read, write, edit, move, delete and search files"),
+    "web": Toolkit("Web", "search the web, read a page"),
+    "shell": Toolkit("Shell", "run a shell command"),
+    "knowledge": Toolkit("Knowledge base", "search the documents added with /docs"),
+    "notes": Toolkit("Notes", "Apple Notes: search, read, create, append"),
+    "calendar": Toolkit("Calendar", "Apple Calendar: list, create, update, delete events"),
+    "mail": Toolkit("Mail", "Apple Mail: list, search, read, draft, reply, file"),
+    "contacts": Toolkit("Contacts", "Apple Contacts: look a person up"),
+    "reminders": Toolkit("Reminders", "Apple Reminders: list, create, complete"),
+    "messages": Toolkit("Messages", "iMessage: find a group chat, read, send"),
+    "shortcuts": Toolkit("Shortcuts", "list and run your Shortcuts"),
+    "desktop": Toolkit("Desktop", "the front browser tab, the Finder selection"),
+    "notifications": Toolkit("Notifications", "schedule a one-off alert"),
+    "skills": Toolkit("Skills", "save a procedure as a skill"),
+}
+
 # Collected at import time as each tool module's @register_tool runs. registry.py re-exports these.
-_TOOLS: list = []          # the active tool objects, in registration order
+_TOOLS: list = []          # the BOUND tool objects, in registration order (registry filters it
+                           # to the toolkits that are on — registry.apply_toolkits)
+_ALL: list = []            # every registered tool object, on or off, in registration order
+_TOOLKIT_OF: dict = {}     # tool name -> toolkit key
 _RISK: dict = {}           # tool name -> risk tier
 _RETRIEVAL: set = set()    # tool names whose results are recorded as retrieved documents
 _UNTRUSTED: set = set()    # tool names whose OUTPUT crosses the trust boundary (quarantine scans)
@@ -66,7 +103,31 @@ def user_stated() -> bool:
     return bool(_USER_STATED.get())
 
 
-def register_tool(risk: str = "destructive", *, retrieval: bool = False, untrusted: bool = False):
+def toolkit_of(name: str) -> "str | None":
+    """The toolkit a registered tool belongs to; None for a name that is not registered."""
+    return _TOOLKIT_OF.get(name)
+
+
+def add_toolkit(key: str, toolkit: Toolkit) -> None:
+    """Add a toolkit that is not known until runtime (an MCP server's, when it connects)."""
+    TOOLKITS[key] = toolkit
+
+
+def _record(t, risk: str, toolkit: str, retrieval: bool, untrusted: bool):
+    """The one place a tool object enters the collections."""
+    _TOOLS.append(t)
+    _ALL.append(t)
+    _TOOLKIT_OF[t.name] = toolkit
+    _RISK[t.name] = risk
+    if retrieval:
+        _RETRIEVAL.add(t.name)
+    if untrusted:
+        _UNTRUSTED.add(t.name)
+    return t
+
+
+def register_tool(risk: str = "destructive", *, retrieval: bool = False, untrusted: bool = False,
+                  toolkit: "str | None" = None):
     """Decorator: wrap a function as a LangChain tool AND register it (list + risk tier + retrieval
     flag + trust classification) in one place.
 
@@ -81,11 +142,19 @@ def register_tool(risk: str = "destructive", *, retrieval: bool = False, untrust
     `untrusted=True` marks tools whose output arrives from OUTSIDE the trust boundary (the web, a
     remote server, an ingested corpus) — the prompt-injection quarantine scans and fences those
     observations (registry.py pushes this set into trust/quarantine at startup). Declare it here,
-    next to the risk tier, so a new external-fetch tool can't silently land inside the boundary."""
+    next to the risk tier, so a new external-fetch tool can't silently land inside the boundary.
+    `toolkit` is the group the user turns on or off as one (TOOLKITS); left out, it is the
+    tool module's own name (tools/mail.py -> "mail"), so only a tool that lives outside its
+    toolkit's module says it."""
     if risk not in RISK_TIERS:
         raise ValueError(f"unknown risk tier {risk!r}; expected one of {RISK_TIERS}")
 
     def decorate(fn):
+        kit = toolkit or fn.__module__.rsplit(".", 1)[-1]
+        if kit not in TOOLKITS:
+            raise ValueError(f"unknown toolkit {kit!r} for {fn.__name__}; expected one of "
+                             f"{tuple(TOOLKITS)}")
+
         # functools.wraps keeps the name/docstring/signature, so the LangChain schema (and the
         # model-facing tool description) is exactly what the undecorated function would produce.
         @wraps(fn)
@@ -96,19 +165,12 @@ def register_tool(risk: str = "destructive", *, retrieval: bool = False, untrust
             finally:
                 diag.log(f"{fn.__name__} : {time.perf_counter() - start:.4f}s")
 
-        t = _lc_tool(timed)
-        _TOOLS.append(t)
-        _RISK[t.name] = risk
-        if retrieval:
-            _RETRIEVAL.add(t.name)
-        if untrusted:
-            _UNTRUSTED.add(t.name)
-        return t
+        return _record(_lc_tool(timed), risk, kit, retrieval, untrusted)
 
     return decorate
 
 
-def register_tool_object(t, risk: str = "destructive", *, retrieval: bool = False,
+def register_tool_object(t, risk: str = "destructive", *, toolkit: str, retrieval: bool = False,
                          untrusted: bool = False):
     """Register an ALREADY-CONSTRUCTED LangChain tool object (list + risk tier + retrieval flag).
 
@@ -124,13 +186,10 @@ def register_tool_object(t, risk: str = "destructive", *, retrieval: bool = Fals
     before calling. A tool must NEVER self-declare its tier (a remote server claiming read_only is
     exactly the attack the gate exists for); only the user's own config/overrides may relax it.
     `untrusted=True` marks the tool's output as external content for the quarantine scanner —
-    mcp_client passes it for every remote tool."""
+    mcp_client passes it for every remote tool. `toolkit` must already be in TOOLKITS
+    (add_toolkit)."""
     if risk not in RISK_TIERS:
         risk = "destructive"
-    _TOOLS.append(t)
-    _RISK[t.name] = risk
-    if retrieval:
-        _RETRIEVAL.add(t.name)
-    if untrusted:
-        _UNTRUSTED.add(t.name)
-    return t
+    if toolkit not in TOOLKITS:
+        raise ValueError(f"unknown toolkit {toolkit!r} for {t.name}")
+    return _record(t, risk, toolkit, retrieval, untrusted)

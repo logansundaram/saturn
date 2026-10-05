@@ -38,7 +38,7 @@ def search_knowledge_base(query: str):
     )
 
 
-@register_tool("side_effecting")
+@register_tool("side_effecting", toolkit="core")
 def remember(fact: str, category: str = "general", layer: str = "user", replaces: "str | int" = "",
              sensitivity: str = ""):
     """Save a durable fact to persistent memory so it is remembered in future sessions. Use this
@@ -77,7 +77,7 @@ def remember(fact: str, category: str = "general", layer: str = "user", replaces
         raise ToolError(str(exc)) from None
 
 
-@register_tool("read_only")
+@register_tool("read_only", toolkit="core")
 def recall(query: str = ""):
     """Retrieve durable facts previously saved to persistent memory (every layer: user
     preferences, entities, commitments, notes, operating knowledge, things not to do). `query`

@@ -314,3 +314,94 @@ def test_the_knowledge_base_manifest_follows_its_toolkit(isolated_paths, rebinds
     assert "### Knowledge base" in ground.stable_grounding("")
     registry.set_toolkits(["knowledge"], False)
     assert "Knowledge base" not in ground.stable_grounding("")
+
+
+# ── the backstop: a call to a tool whose toolkit is off (nodes/agent.py, nodes/tools.py) ─────
+
+from langchain.messages import AIMessage, HumanMessage, ToolMessage  # noqa: E402
+
+
+def _call(name, args, cid="c1"):
+    return {"name": name, "args": args, "id": cid, "type": "tool_call"}
+
+
+def _state(msgs):
+    return {"messages": msgs, "current_query": str(msgs[0].content), "context": "", "plan": [],
+            "iteration": 0, "tools_called": [], "tool_results": [], "documents_retrieved": [],
+            "tool_events": [], "gate_events": []}
+
+
+def test_hygiene_answers_a_call_to_a_tool_that_is_off(monkeypatch, rebinds):
+    from nodes import agent
+    from tools import registry
+
+    registry.set_toolkits(["calendar"], False)
+    monkeypatch.setattr(agent, "_generate", lambda i, *, tools, think=False: AIMessage(
+        content="", tool_calls=[_call("list_calendar_events", {})]))
+    out = agent.agent_node(_state([HumanMessage(content="what's on tomorrow?")]))
+
+    answer = [m for m in out["messages"] if isinstance(m, ToolMessage)]
+    assert len(answer) == 1
+    assert answer[0].content == agent.TOOLKIT_OFF_TEXT.format(
+        name="list_calendar_events", key="calendar")
+    assert "/tools on calendar" in answer[0].content
+    assert answer[0].additional_kwargs["saturn_status"] == "error"
+    assert agent.route_after_agent({"messages": out["messages"]}) == "agent"   # no gate
+
+
+def test_the_off_answer_comes_before_every_other_check(rebinds):
+    from nodes import agent
+    from tools import registry
+
+    registry.set_toolkits(["messages"], False)
+    off = agent.TOOLKIT_OFF_TEXT.format(name="send_message", key="messages")
+    invented = _call("send_message", {"text": "hi", "to": "+15550001"})
+
+    assert agent._hygiene(invented, [], provenance=("", ""))[1].content == off
+    assert agent._hygiene(invented, [], malformed=True)[1].content == off
+
+
+def test_the_wrong_arguments_redirect_never_points_at_a_tool_that_is_off(rebinds):
+    from nodes import agent
+    from tools import registry
+
+    slip = _call("calculate", {"file_path": "notes.txt"})
+    assert "read_file" in agent._hygiene(slip, [])[1].content
+
+    registry.set_toolkits(["files"], False)
+    answer = agent._hygiene(slip, [])[1].content
+    assert "read_file" not in answer and "calculate(" in answer
+
+
+def test_the_incidents_note_words_an_off_toolkit_for_the_user(rebinds):
+    from nodes import agent
+    from tools import registry
+
+    registry.set_toolkits(["calendar"], False)
+    off = agent.TOOLKIT_OFF_TEXT.format(name="list_calendar_events", key="calendar")
+    turn = [HumanMessage(content="q"),
+            AIMessage(content="", tool_calls=[_call("list_calendar_events", {})]),
+            ToolMessage(content=off, tool_call_id="c1", name="list_calendar_events",
+                        additional_kwargs={"saturn_status": "error"})]
+
+    assert agent.incidents(turn) == [
+        "list_calendar_events() — not run: the calendar toolkit is turned off "
+        "(/tools on calendar)"]
+
+
+def test_the_tools_node_cannot_run_a_tool_that_is_off(isolated_paths, rebinds):
+    from nodes.tools import tool_node
+    from tools import registry
+
+    def run():
+        out = tool_node(_state([HumanMessage(content="q"),
+                                AIMessage(content="", tool_calls=[_call("list_directory", {})])]))
+        return out["messages"][0]
+
+    (isolated_paths / "database" / "workspace").mkdir(parents=True)
+    assert "unknown tool" not in run().content                 # on: it runs
+
+    registry.set_toolkits(["files"], False)
+    refused = run()
+    assert "unknown tool" in refused.content
+    assert refused.additional_kwargs["saturn_status"] == "error"

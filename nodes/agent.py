@@ -79,6 +79,11 @@ MALFORMED_NOTE = ("Your previous reply was not a valid tool call (its arguments 
 MALFORMED_TEXT = ("I could not complete this: the model produced a malformed tool call twice. "
                   "Please rephrase the request.")
 UNKNOWN_TOOL_TEXT = "Error: unknown tool {name!r}. Use only the tools you were given."
+# A call to a tool whose toolkit the user turned off (/tools). The prompt already says what is
+# off; this answers the call a tool description or an earlier turn still led the model to.
+TOOLKIT_OFF_TEXT = ("Not executed: {name} is part of the {key} toolkit, which the user has "
+                    "turned off. Do not look for another way to do it. Tell the user it is "
+                    "turned off and that `/tools on {key}` turns it on.")
 UNKNOWN_HANDLE_TEXT = ("Not executed: {handle} appears nowhere in this conversation — not in what "
                        "the user wrote and not in any tool result — so it cannot be used. Look the "
                        "person up with search_contacts and use the number or address from their "
@@ -471,7 +476,8 @@ def _hygiene(call: dict, rounds: list, malformed: bool = False,
     `provenance` is (what the user typed, what else entered the conversation) for the handle
     check — a recipient the model composed is refused here, before any gate sees it."""
     from tools.messages import route_target
-    from tools.registry import tools_by_name
+    from tools.registry import is_off, tools_by_name
+    from tools.toolspec import toolkit_of
 
     name = str(call.get("name") or "")
 
@@ -479,6 +485,10 @@ def _hygiene(call: dict, rounds: list, malformed: bool = False,
         return call, ToolMessage(content=text, tool_call_id=call["id"], name=name,
                                  additional_kwargs={"saturn_status": status})
 
+    # Before everything else: a tool whose toolkit is off is not "unknown", and nothing about
+    # its arguments matters.
+    if is_off(name):
+        return refuse(TOOLKIT_OFF_TEXT.format(name=name, key=toolkit_of(name)))
     if malformed:
         # Before the unknown-tool check: broken JSON can leave the name unreadable too, and
         # "unknown tool ''" is a corrective the model cannot act on.
@@ -489,7 +499,7 @@ def _hygiene(call: dict, rounds: list, malformed: bool = False,
         return refuse(UNKNOWN_TOOL_TEXT.format(name=name))
     raw = call.get("args")
     other = tool_for_args(name, raw)
-    if other:
+    if other and not is_off(other):  # never point the model at a tool that is turned off
         return refuse("Error: " + schema_hint(
             other, f"those arguments belong to {other}, not {name}; the call was not run"))
     args = coerce_args(name, raw)
@@ -542,6 +552,15 @@ _INCIDENT_WORDING = {
     "blocked": "blocked by the air-gap — nothing was sent",
 }
 _BUDGET_WORDING = "not run: the turn's action budget was spent"
+_TOOLKIT_OFF_WORDING = "not run: the {key} toolkit is turned off (/tools on {key})"
+
+
+def _off_toolkit(name: str, obs: str) -> "str | None":
+    """The toolkit when `obs` is hygiene's answer to a call into one that is off, else None."""
+    from tools.toolspec import toolkit_of
+
+    key = toolkit_of(name)
+    return key if key and obs == TOOLKIT_OFF_TEXT.format(name=name, key=key) else None
 
 
 def incidents(this_turn: list) -> list:
@@ -552,7 +571,8 @@ def incidents(this_turn: list) -> list:
     outcome decides — one that failed and then ran when re-issued is not an incident. The stall
     guard's and the cap's refusals are not outcomes: a stalled call already ran twice, and those
     runs are what happened to it; a call refused at the cap is reported as not run, unless the
-    same call did run earlier in the turn."""
+    same call did run earlier in the turn. A call into a toolkit that is off is worded as
+    that, with the switch."""
     rounds = [r for r in _rounds(this_turn) if r[4] != STALL_TEXT]
     last = {key: status for key, _n, _a, status, obs in rounds if obs != BUDGET_TEXT}
     out = []
@@ -566,6 +586,8 @@ def incidents(this_turn: list) -> list:
             why = _BUDGET_WORDING
         elif status not in _INCIDENT_STATUSES or last[key] not in _INCIDENT_STATUSES:
             continue
+        elif _off_toolkit(name, obs):
+            why = _TOOLKIT_OFF_WORDING.format(key=_off_toolkit(name, obs))
         else:
             why = _INCIDENT_WORDING.get(status) or f"failed: {clip(' '.join(obs.split()), _INCIDENT_CAP)}"
         seen.add(key)

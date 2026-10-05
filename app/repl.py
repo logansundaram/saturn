@@ -244,6 +244,22 @@ def run_repl() -> None:
         except Exception as exc:
             diag.log(f"first-run sentinel write failed: {exc}")
 
+    # The first-run interview (core/memory_setup): once per install, after the tier is chosen —
+    # five questions whose answers become memory facts, or one line about /memory setup for an
+    # install that already has facts. On a fresh install it runs while the warm-up thread loads
+    # the weights. Non-fatal: a failure here must never stop the REPL.
+    try:
+        from commands._framework import _print
+        from commands._utils import _stdin_is_tty
+        from core import memory_setup
+
+        memory_setup.offer_at_launch(
+            ask=lambda p: ui.ask(p, on_interrupt=memory_setup.INTERRUPT),
+            emit=_print, note=ui.note, interactive=_stdin_is_tty(),
+        )
+    except Exception as exc:
+        ui.warn(f"memory setup skipped: {exc}")
+
     # Memory candidates left over from an earlier session (a /quit that skipped the review, a
     # crash, a bare Ctrl-D) — say so once; the review itself is never forced on launch.
     try:

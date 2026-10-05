@@ -27,7 +27,9 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass
+from pathlib import Path
 
+import diag
 from config import get_config
 from stores import memory_registry as mr
 
@@ -211,3 +213,50 @@ def run_interview(*, ask, emit=print, default_name: "str | None" = None) -> dict
     emit(f"  saved {len(saved)} fact(s) · see or change them: /memory · ask again: /memory setup")
     emit(f"  file: {get_config().path('memory')}")
     return {"saved": saved, "left": left}
+
+
+HINT = ("/memory setup asks five quick questions — what to call you, your work, your people, "
+        "what you want help with, what I should never do. Your memory already has facts, so it "
+        "won't run on its own.")
+
+
+def marker_path() -> Path:
+    """Install state, not a setting: beside the first-run sentinel (database/.setup_done), so
+    deleting the database resets both."""
+    return get_config().path("database") / ".interview_done"
+
+
+def launch_action() -> str:
+    """What this launch does about the interview: "" once it has been offered; "interview" when
+    memory is empty (a fresh install, or one that never learned anything); "hint" when memory
+    already has facts — an existing install is never interviewed mid-launch."""
+    if marker_path().exists():
+        return ""
+    return "hint" if mr.entries() else "interview"
+
+
+def mark_done() -> None:
+    try:
+        path = marker_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch()
+    except OSError as exc:
+        diag.log(f"memory_setup: could not write {marker_path()}: {exc}")
+
+
+def offer_at_launch(*, ask, emit, note, interactive: bool) -> str:
+    """The REPL's once-only offer, after the first-run /models pick. Off a terminal nothing is
+    asked AND nothing is marked, so the first real session still gets it. Otherwise the offer is
+    marked made whatever happens — a skip, a Ctrl-C, even a crash inside the interview — so it is
+    never a question at every launch. Returns the action taken ("" / "interview" / "hint")."""
+    action = launch_action()
+    if not action or not interactive:
+        return ""
+    try:
+        if action == "interview":
+            run_interview(ask=ask, emit=emit, default_name=system_first_name())
+        else:
+            note(HINT)
+    finally:
+        mark_done()
+    return action

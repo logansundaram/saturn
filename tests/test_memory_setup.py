@@ -200,3 +200,73 @@ def test_rerun_adds_people_and_keeps_an_unchanged_name(isolated_paths):
     assert [e["id"] for e in ms.current(_q("name"))] == [name_id]  # same text: no write, same id
     assert [e["text"] for e in ms.current(_q("people"))] == [
         "Petra, my manager", "Jonah, an old friend"]
+
+
+def _recorder():
+    asked = []
+
+    def ask(prompt, **_kw):
+        asked.append(prompt)
+        return ""
+
+    return asked, ask
+
+
+def test_fresh_install_is_interviewed_once(isolated_paths, monkeypatch):
+    monkeypatch.setattr(ms, "system_first_name", lambda: None)
+    asked, ask = _recorder()
+    assert ms.offer_at_launch(ask=ask, emit=_quiet, note=_quiet, interactive=True) == "interview"
+    assert len(asked) == 5 and ms.marker_path().exists()
+    asked.clear()
+    assert ms.offer_at_launch(ask=ask, emit=_quiet, note=_quiet, interactive=True) == ""
+    assert asked == []
+
+
+def test_existing_memory_gets_the_hint_not_the_questions(isolated_paths):
+    mr.add_memory("I like tea")
+    asked, ask = _recorder()
+    notes = []
+    assert ms.offer_at_launch(ask=ask, emit=_quiet, note=notes.append, interactive=True) == "hint"
+    assert asked == []
+    assert notes and "/memory setup" in notes[0]
+    assert ms.marker_path().exists()  # the hint is said once
+    notes.clear()
+    ms.offer_at_launch(ask=ask, emit=_quiet, note=notes.append, interactive=True)
+    assert notes == []
+
+
+def test_no_terminal_no_questions_and_no_marker(isolated_paths):
+    asked, ask = _recorder()
+    assert ms.offer_at_launch(ask=ask, emit=_quiet, note=_quiet, interactive=False) == ""
+    assert asked == []
+    assert not ms.marker_path().exists()  # the first real terminal session still gets it
+
+
+def test_ctrl_c_at_launch_still_marks_done(isolated_paths, monkeypatch):
+    monkeypatch.setattr(ms, "system_first_name", lambda: "Logan")
+    ms.offer_at_launch(ask=_scripted([ms.INTERRUPT]), emit=_quiet, note=_quiet, interactive=True)
+    assert mr.entries() == []
+    assert ms.marker_path().exists()
+
+
+def test_a_crash_inside_the_interview_still_marks_done(isolated_paths, monkeypatch):
+    def boom(**_kw):
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(ms, "run_interview", boom)
+    try:
+        ms.offer_at_launch(ask=_scripted([]), emit=_quiet, note=_quiet, interactive=True)
+    except RuntimeError:
+        pass
+    assert ms.marker_path().exists()  # a crash must not become a question at every launch
+
+
+def test_repl_offers_the_interview_after_models():
+    import inspect
+
+    from app import repl
+
+    src = inspect.getsource(repl.run_repl)
+    assert "memory_setup.offer_at_launch(" in src
+    assert src.index('commands.dispatch("/models", cmd_ctx)') < src.index(
+        "memory_setup.offer_at_launch(")

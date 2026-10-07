@@ -1382,6 +1382,86 @@ def test_hygiene_refuses_a_send_with_both_a_person_and_a_group(monkeypatch):
     assert agent.route_after_agent({"messages": out["messages"]}) == "agent"
 
 
+_PRIYA_CARD = "[{'name': 'Priya Shah', 'phones': [{'label': 'mobile', 'value': '+1 555 000 0005'}]}]"
+
+
+def _no_group_turn(request):
+    from tools.messages import NO_GROUP_TEXT
+
+    return ([HumanMessage(content=request)]
+            + _round("find_group_chats", {"query": "Priya Jordan"}, "c1",
+                     NO_GROUP_TEXT.format(query="Priya Jordan"))
+            + _round("search_contacts", {"query": "Priya"}, "c2", _PRIYA_CARD))
+
+
+def _send_to_priya(monkeypatch, cid="c9"):
+    from nodes import agent
+
+    monkeypatch.setattr(agent, "_generate", lambda i, *, tools, think=False: AIMessage(
+        content="", tool_calls=[_call("send_message", {"to": "+15550000005", "text": "ready"}, cid)]))
+
+
+def test_hygiene_refuses_one_by_one_texts_in_place_of_a_group_that_was_not_found(monkeypatch):
+    """Loop benchmark, 2026-10-07 (and 3 of 8 earlier 9b runs): "Text Priya and Jordan
+    together", find_group_chats found no such group, its result said not to text them one by
+    one — and the 9b looked both up and sent to each. The substitute send is answered here, so
+    the user is told or asked instead of being shown a send they did not ask for."""
+    from nodes import agent
+
+    _send_to_priya(monkeypatch)
+    out = agent.agent_node(_state(_no_group_turn("Text Priya and Jordan together that the deck is ready.")))
+    reply = out["messages"][-1]
+    assert isinstance(reply, ToolMessage) and reply.additional_kwargs["saturn_status"] == "error"
+    assert reply.content == agent.NO_GROUP_SEND_TEXT
+    assert "ask_user" in reply.content
+    assert agent.route_after_agent({"messages": out["messages"]}) == "agent"
+
+
+def test_a_held_one_by_one_send_is_not_an_incident():
+    """Live 9b, 2026-10-07: held twice, the model then asked "text each of them separately?" —
+    and the answer went on to list the send under "could not be completed", a send the user
+    never asked for. The question is the answer; the trace still has the held call."""
+    from nodes import agent
+
+    turn = (_no_group_turn("Text Priya and Jordan together that the deck is ready.")
+            + _round("send_message", {"to": "+15550000005", "text": "ready"}, "c3",
+                     agent.NO_GROUP_SEND_TEXT, status="error", answered=True))
+    assert agent.incidents(turn) == []
+
+
+def test_one_by_one_texts_the_user_asked_for_go_to_the_gate(monkeypatch):
+    from nodes import agent
+
+    _send_to_priya(monkeypatch)
+    out = agent.agent_node(_state(_no_group_turn(
+        "Text Priya and Jordan that the deck is ready — in our group, or separately if there isn't one.")))
+    assert agent.route_after_agent({"messages": out["messages"]}) == "approval"
+
+
+def test_one_by_one_texts_go_to_the_gate_once_the_user_was_asked(monkeypatch):
+    """The guard holds until the user has been asked: the answer to that question is theirs,
+    and the send still faces the gate."""
+    from nodes import agent
+
+    prior = (_no_group_turn("Text Priya and Jordan together that the deck is ready.")
+             + _round("ask_user", {"question": "No such group — text each of them?"}, "c3", "yes"))
+    _send_to_priya(monkeypatch)
+    out = agent.agent_node(_state(prior))
+    assert agent.route_after_agent({"messages": out["messages"]}) == "approval"
+
+
+def test_a_group_search_that_found_the_group_does_not_hold_a_send(monkeypatch):
+    from nodes import agent
+
+    found = "[{'chat': 'g7f3a2b', 'name': 'Work', 'people': ['Priya Shah', 'Jordan Lee'], 'size': 2}]"
+    prior = ([HumanMessage(content="text Priya that the deck is ready")]
+             + _round("find_group_chats", {"query": "Priya"}, "c1", found)
+             + _round("search_contacts", {"query": "Priya"}, "c2", _PRIYA_CARD))
+    _send_to_priya(monkeypatch)
+    out = agent.agent_node(_state(prior))
+    assert agent.route_after_agent({"messages": out["messages"]}) == "approval"
+
+
 def test_the_models_own_answer_is_not_provenance_for_a_recipient(monkeypatch):
     """Run 48: the invented number sat in the previous answer; that must not vouch for it."""
     from nodes import agent

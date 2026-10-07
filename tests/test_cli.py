@@ -716,6 +716,26 @@ def test_loop_grade_a_question_is_read_without_the_answer_trailers():
         task, _loop_entry(response=told, tools_called=["find_group_chats"], iterations=2))
 
 
+def test_loop_grade_a_question_need_not_be_the_last_sentence():
+    """The 9b asked which file and what name, then offered to check Finder — a question with a
+    trailing offer, graded no_question on every run before 2026-10-07 because it did not END
+    in "?". A request for the missing facts is asking; a closing courtesy is not."""
+    import benchmark
+
+    task = {"id": "t", "shape": "robust", "query": "Rename the file.", "tools": {"ask_user"},
+            "required": [], "max_passes": 2, "must_ask": True}
+
+    def grade(response):
+        return benchmark.grade_loop_task(task, _loop_entry(response=response, iterations=1))
+
+    assert grade("I need to know which file you want to rename and what you want to name it. "
+                 "Could you please provide:\n1. The current filename\n2. The new filename you "
+                 "want\n\nOr if you have files selected in Finder, I can check those for you.") == []
+    assert grade("Which file do you mean? I can also look at your Finder selection.") == []
+    assert "no_question" in grade("I renamed the file.")
+    assert "no_question" in grade("I renamed the file. Let me know if you need anything else.")
+
+
 def test_a_declined_call_is_not_a_hygiene_bounce():
     """run_query counts a ToolMessage with no tool_events record as a call the agent answered
     itself — except a gate decline (saturn_status skipped), which the messaging tasks expect."""

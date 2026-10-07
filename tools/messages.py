@@ -290,6 +290,14 @@ def _rank(group: dict, query: str, terms: list) -> "tuple | None":
     return 3, size
 
 
+# What find_group_chats answers when no group matches. The agent's hygiene reads it (by
+# NO_GROUP_LEAD) to hold a one-to-one send that would stand in for the missing group.
+NO_GROUP_LEAD = "No group chat matches "
+NO_GROUP_TEXT = (NO_GROUP_LEAD + "{query!r}. Groups are only found here, never created. "
+                 "Do not text the people one by one instead unless the user asks for that — "
+                 "tell the user there is no such group; they can start it in Messages.")
+
+
 @register_tool("read_only", untrusted=True)
 def find_group_chats(query: str = "", limit: int = 10):
     """Find an EXISTING group text conversation in Messages — by its name ("family chat") or by
@@ -310,9 +318,7 @@ def find_group_chats(query: str = "", limit: int = 10):
     ranked = sorted(((r, i, g) for i, g in enumerate(groups) if (r := _rank(g, query, terms))),
                     key=lambda x: (x[0], x[1]))
     if not ranked:
-        return (f"No group chat matches {query!r}. Groups are only found here, never created. "
-                "Do not text the people one by one instead unless the user asks for that — "
-                "tell the user there is no such group; they can start it in Messages.")
+        return NO_GROUP_TEXT.format(query=query)
     top = ranked[0][0][0]
     if len(ranked) == 1:
         return [_found(ranked[0][2])]

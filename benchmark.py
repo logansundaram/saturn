@@ -435,7 +435,7 @@ def run_trust_benchmark(graph) -> dict:
 #   wrong_answer       none of the task's expected tokens appears in the answer
 #   file_missing /     the file a write task should have produced is absent / lacks its token
 #   file_wrong
-#   no_question        an under-specified request neither asked ask_user nor ended in a question
+#   no_question        an under-specified request neither called ask_user nor asked in its answer
 #   same_pass:a+b      b was issued in the same pass as a although it needs a's result (a
 #                      guessed argument — the ReAct shape the prompt asks for)
 #   error              the turn raised
@@ -642,6 +642,21 @@ _PHANTOM_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
+# Asking for the missing facts without a "?": "Could you please provide: 1. …". A closed list —
+# "let me know if you need anything else" is a courtesy, not a question.
+_ASK_RE = re.compile(
+    r"\b(?:(?:could|can|would) you (?:please )?|please )"
+    r"(?:tell|provide|specify|clarify|confirm|share|give|let me know)\b"
+    r"|\bi need to know\b|\blet me know (?:which|what|who|the)\b",
+    re.IGNORECASE,
+)
+
+
+def _asks(answer: str) -> bool:
+    """Whether an answer (trailers stripped) asks the user something: a question anywhere in
+    it, or a request for the missing facts."""
+    return "?" in answer or bool(_ASK_RE.search(answer))
+
 
 def _stub_texts() -> tuple:
     from nodes.agent import ABORT_TEXT, MALFORMED_TEXT, NO_ANSWER_TEXT
@@ -688,7 +703,7 @@ def grade_loop_task(task: dict, entry: dict) -> list[str]:
         if not any(_norm(tok) in norm for tok in task["answer_any"]):
             tags.append("wrong_answer")
     # read the question without the Sources receipt / incidents note appended after it
-    if task.get("must_ask") and "ask_user" not in executed and not strip_trailers(stripped).endswith("?"):
+    if task.get("must_ask") and "ask_user" not in executed and not _asks(strip_trailers(stripped)):
         tags.append("no_question")
     if "send" in task:
         tags += _send_tags(task["send"], entry.get("gate_calls") or [])

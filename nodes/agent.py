@@ -37,6 +37,7 @@ template's system section, so the catalog is part of that cached prefix.
 from __future__ import annotations
 
 import json
+import re
 import time
 import uuid
 from types import SimpleNamespace
@@ -58,6 +59,7 @@ from core.llms import stream as llm_stream
 from core import think as _think
 from core.messages import agent_sys_msg
 from core.pause import get_pause_controller
+from core.provenance import is_typed
 from core.state import (STEER_PREFIX, AgentState, grounding_parts, is_steer_message,
                         issuing_message)
 from core.state import this_turn as _this_turn, turn_start as _turn_start
@@ -99,6 +101,10 @@ UNKNOWN_HANDLE_TEXT = ("Not executed: {handle} appears nowhere in this conversat
 UNKNOWN_CHAT_TEXT = ("Not executed: group chat {ref} did not come from find_group_chats in this "
                      "conversation, so it cannot be used. Find the group with find_group_chats and "
                      "use the chat ref it returns.")
+NO_GROUP_SEND_TEXT = ("Not executed: find_group_chats found no group chat with these people "
+                      "this turn, and a text to one of them is not the group text the user asked "
+                      "for. Tell the user there is no such group (they can start it in Messages), "
+                      "or ask_user whether to text each person separately.")
 MALFORMED_CALL_TEXT = ("Error: that tool call was not valid JSON (no tool name could be read). "
                        "Emit one call with a tool name you were given and its arguments as a "
                        "JSON object; otherwise answer in plain text.")
@@ -513,8 +519,34 @@ def _skill_hygiene(args: dict) -> "tuple[dict, tuple[str, str] | None]":
     return args, None
 
 
+# The user's own leave to text the people one by one. A closed list: when it cannot tell, the
+# guard holds and the model asks.
+_ONE_BY_ONE_RE = re.compile(
+    r"\b(?:separately|individually|one by one|one at a time|each of them|each one|each person)\b",
+    re.IGNORECASE)
+
+
+def _group_missing(this_turn: list, rounds: list) -> bool:
+    """Whether a one-to-one send now would stand in for a group text the user did not get: a
+    find_group_chats call this turn found no group, no ask_user has been answered since, and
+    nothing the user typed this turn asks for separate texts. The prompt alone did not hold a
+    9b to that (tools.messages.NO_GROUP_TEXT already said it; loop benchmark, 2026-10-07)."""
+    from tools.messages import NO_GROUP_LEAD
+
+    if any(is_typed(m) and _ONE_BY_ONE_RE.search(str(m.content or "")) for m in this_turn):
+        return False
+    missing = False
+    for _key, name, _args, status, obs in rounds:
+        if name == "find_group_chats" and status == "done" and NO_GROUP_LEAD in obs:
+            missing = True
+        elif name == "ask_user" and status == "done":
+            missing = False
+    return missing
+
+
 def _hygiene(call: dict, rounds: list, malformed: bool = False,
-             provenance: "tuple | None" = None) -> "tuple[dict, ToolMessage | None]":
+             provenance: "tuple | None" = None,
+             group_missing: bool = False) -> "tuple[dict, ToolMessage | None]":
     """The corrected call, or the ToolMessage that answers it instead of running it.
     `provenance` is (what the user typed, what else entered the conversation) for the handle
     check — a recipient the model composed is refused here, before any gate sees it."""
@@ -577,6 +609,8 @@ def _hygiene(call: dict, rounds: list, malformed: bool = False,
         ref = str(args.get(chat_arg) or "").strip()
         if quarantine.chat_hold(ref, *provenance[:2]):
             return refuse(UNKNOWN_CHAT_TEXT.format(ref=ref))
+    if group_missing and name == "send_message" and str(args.get("to") or "").strip():
+        return refuse(NO_GROUP_SEND_TEXT)
     key = _call_key(name, args)
     if any(r[3] == "skipped" for r in rounds if r[0] == key):
         return refuse(ALREADY_DECLINED_TEXT, "skipped")
@@ -623,9 +657,10 @@ def incidents(this_turn: list) -> list:
     guard's, the stop's and the cap's refusals are not outcomes: a stalled call already ran
     twice, and those runs are what happened to it; a call answered with the stop is reported by
     the refusal it repeated; a call refused at the cap is reported as not run, unless the
-    same call did run earlier in the turn. A call into a toolkit that is off is worded as
-    that, with the switch."""
-    rounds = [r for r in _rounds(this_turn) if r[4] not in (STALL_TEXT, STUCK_TEXT)]
+    same call did run earlier in the turn. A one-to-one send held in place of a missing group
+    is not one either: the user never asked for it, and the answer tells them or asks. A call
+    into a toolkit that is off is worded as that, with the switch."""
+    rounds = [r for r in _rounds(this_turn) if r[4] not in (STALL_TEXT, STUCK_TEXT, NO_GROUP_SEND_TEXT)]
     last = {key: status for key, _n, _a, status, obs in rounds if obs != BUDGET_TEXT}
     out = []
     seen: set = set()
@@ -765,12 +800,14 @@ def agent_node(state: AgentState):
     # 5. hygiene
     rounds = _rounds(this_turn)
     prov = provenance({**state, "messages": messages + new})
+    group_missing = _group_missing(this_turn, rounds)
     kept, replies = [], []
     for call in calls:
         if capped:  # the budget is spent: nothing runs, whatever the call is
             fixed, reply = call, _answer(call, BUDGET_TEXT)
         else:
-            fixed, reply = _hygiene(call, rounds, malformed=call["id"] in malformed, provenance=prov)
+            fixed, reply = _hygiene(call, rounds, malformed=call["id"] in malformed, provenance=prov,
+                                    group_missing=group_missing)
         kept.append(fixed)
         replies.append(reply)
     # The repeat bound: every call in the pass was answered here, and each is one this node

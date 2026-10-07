@@ -25,7 +25,7 @@ import sys
 import time
 from pathlib import Path
 
-from textutil import has_controls, truncate, visible_controls
+from textutil import has_controls, visible_controls
 from tools.toolspec import ToolError, register_tool
 
 from core import doctext, hooks
@@ -546,6 +546,18 @@ def _is_binary(path) -> bool:
         return True
 
 
+def _around(line: str, at: int, cap: int) -> str:
+    """`line` cut to `cap` characters around the match at `at`, a third of the window before it,
+    each cut marked with "…". A long line cut from its start hid the match: a one-line file
+    returned its first sentence however far in the searched-for word was (2026-10-07)."""
+    if len(line) <= cap:
+        return line
+    end = min(len(line), max(0, at - cap // 3) + cap)
+    start = end - cap
+    lead, tail = ("…" if start > 0 else ""), ("…" if end < len(line) else "")
+    return lead + line[start + len(lead):end - len(tail)] + tail
+
+
 @register_tool("read_only", untrusted=True)
 def search_files(pattern: str, directory: str = ".", file_glob: str = "*"):
     """Searches the CONTENTS of files for a regular-expression pattern (case-insensitive) and returns matching lines as 'path:line_number: text'. Use this to find where something is mentioned without reading every file. directory is relative to the working folder ('.' = the whole working folder); file_glob filters which files are searched by name (e.g. '*.md'). On macOS a plain word or phrase is also found inside PDF / Word / Excel files. For finding files by NAME, use find_files instead."""
@@ -569,8 +581,21 @@ def search_files(pattern: str, directory: str = ".", file_glob: str = "*"):
         for lineno, line in enumerate(text.splitlines(), 1):
             if not rx.search(line):
                 continue
-            matches.append(f"{rel}:{lineno}: {truncate(line.strip(), _SEARCH_MAX_LINE)}")
-            in_file += 1
+            shown, indent = line.strip(), len(line) - len(line.lstrip())
+            # A line that fits is one entry. A longer one gives an entry per match whose
+            # surroundings differ: in a one-line file the first match can sit 16k characters
+            # before the one that matters, and repeated text would fill the caps.
+            seen: set = set()
+            for m in (rx.finditer(line) if len(shown) > _SEARCH_MAX_LINE else [None]):
+                snippet = (shown if m is None
+                           else _around(shown, max(0, m.start() - indent), _SEARCH_MAX_LINE))
+                if snippet in seen:
+                    continue
+                seen.add(snippet)
+                matches.append(f"{rel}:{lineno}: {snippet}")
+                in_file += 1
+                if in_file >= _SEARCH_MAX_PER_FILE or len(matches) >= _SEARCH_MAX_MATCHES:
+                    break
             if in_file >= _SEARCH_MAX_PER_FILE:
                 matches.append(f"{rel}: … more matches in this file (capped at {_SEARCH_MAX_PER_FILE})")
                 break

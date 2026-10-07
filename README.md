@@ -1,7 +1,7 @@
 # Saturn
 
 > A **private, local-first AI agent** that runs on your own machine — every step it takes is
-> visible, auditable, and yours to approve. Built by **Saturday.ai**.
+> visible, auditable, and yours to approve. Built by **Saturday.ai** — [saturdayai.org](https://saturdayai.org).
 
 Saturn is a personal agent you run in your terminal: a local companion you can hand your day to.
 "Reply to Petra about Thursday", "what did I decide about the lease", "rename these photos by
@@ -217,12 +217,12 @@ in an isolated virtualenv, pulls the small local chat model, and puts a `saturn`
 
 ```bash
 # macOS / Linux
-curl -fsSL https://raw.githubusercontent.com/logansundaram/saturn/main/install.sh | sh
+curl -fsSL saturdayai.org/install.sh | sh
 ```
 
 Then open a new terminal and run `saturn`. The first run pulls a few GB of models, so it takes a
-minute. Prefer to read before you pipe? The script is plain text at the URL above — download
-and inspect first.
+minute. Prefer to read before you pipe? The script is this repo's [`install.sh`](install.sh),
+served from the site — read it there or here first.
 
 The installer defaults to the lightweight **`4b`** size class (`qwen3.5:4b`). On the first launch
 `/models` reads your hardware, prices every size against it, and asks which tier and embedder to
@@ -486,7 +486,8 @@ What is not built yet, said plainly: mail is drafted, never sent; every fact Sat
 still needs your accept; there is no morning brief and no
 user-authored skills; and the macOS permission dialogs name your terminal, not Saturn.
 `docs/pivot.md` ranks that work. Contributions and feedback welcome — file issues at the GitHub
-repo.
+repo. The site is [saturdayai.org](https://saturdayai.org): the install line, real run records
+rendered from exports, and the blog.
 
 ---
 

@@ -457,3 +457,44 @@ def test_index_answers_are_recognized_under_another_spelling_of_the_folder(launc
     monkeypatch.setattr(files, "_SEARCH_WALK_SECONDS", -1.0)   # the walk reads nothing
     out = search_files.invoke({"pattern": "buy milk", "directory": "NOTES"})
     assert out.splitlines()[0] == "notes/todo.md:1: buy milk"
+
+
+# ── a match on a long line ───────────────────────────────────────────────────────────────────
+
+def test_search_files_shows_the_match_on_a_long_line(launched):
+    """Loop benchmark, 2026-10-07: a one-line 30k-character file, the fact 16k characters in.
+    Each matched line was cut to its FIRST 200 characters, so searching for the very word
+    returned filler without it — seven searches by a 9b, and the answer "no bird is named".
+    The line is cut around the match instead, each cut marked."""
+    filler = "Levels held steady and the weather stayed overcast. " * 300
+    (launched / "log.txt").write_text(filler + "The bird was a kestrel. " + filler, encoding="utf-8")
+    (launched / "short.txt").write_text("a kestrel at dawn\n", encoding="utf-8")
+
+    out = search_files.invoke({"pattern": "kestrel", "file_glob": "log.txt"})
+    assert out.startswith("log.txt:1: …") and "The bird was a kestrel." in out
+    assert out.endswith("…") and len(out) <= len("log.txt:1: ") + files._SEARCH_MAX_LINE
+    # a line that fits is shown whole, with no marks
+    assert search_files.invoke({"pattern": "kestrel", "file_glob": "short.txt"}) == \
+        "short.txt:1: a kestrel at dawn"
+    # a match near the start of a long line is not cut before it
+    head = search_files.invoke({"pattern": "levels held", "file_glob": "log.txt"}).splitlines()[0]
+    assert head.startswith("log.txt:1: Levels held steady") and head.endswith("…")
+
+
+def test_search_files_still_matches_a_pattern_on_the_indentation(launched):
+    (launched / "code.py").write_text("class A:\n    def run(self):\n        pass\n", encoding="utf-8")
+    assert search_files.invoke({"pattern": r"^\s+def", "file_glob": "code.py"}) == "code.py:2: def run(self):"
+
+
+def test_search_files_shows_each_different_match_on_a_long_line(launched):
+    """The 9b never searched for the bird's name — it searched "bird|duck|heron|…", which the
+    filler matches 16k characters before the fact (live probe, 2026-10-07). One entry per line
+    showed only that first match. A long line now gives one entry per match whose surroundings
+    differ: repeated filler collapses, the different passage shows."""
+    filler = "Levels held steady and the birds were quiet. " * 300
+    (launched / "log.txt").write_text(filler + "The bird was a kestrel. " + filler, encoding="utf-8")
+
+    out = search_files.invoke({"pattern": "bird|heron", "file_glob": "log.txt"})
+    assert "kestrel" in out
+    assert len(out.splitlines()) <= 8                       # 601 matches, a handful of entries
+    assert all(line.startswith("log.txt:1: ") for line in out.splitlines())

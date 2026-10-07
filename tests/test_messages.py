@@ -543,6 +543,9 @@ def test_find_group_chats_with_no_match_says_groups_are_not_created_here(mac):
     # the user asked for a GROUP: separate one-to-one texts are not a substitute (a 9b sent
     # two of them in the live run, 2026-10-03)
     assert "one by one" in out and "unless the user asks" in out
+    # ...and the agent's hygiene holds such a send by this lead (nodes.agent._group_missing)
+    from tools.messages import NO_GROUP_LEAD
+    assert out.startswith(NO_GROUP_LEAD)
 
 
 def test_find_group_chats_with_no_query_lists_the_groups(mac, monkeypatch):

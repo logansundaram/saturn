@@ -77,6 +77,18 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
   could not: "edit the description to basketball with MK" ended in "I'm unable to edit the
   event description". `update_calendar_event` now takes `notes` and replaces the event's
   description with it.
+- **A group text to a group that doesn't exist is not sent as separate texts.** "Text Priya
+  and Jordan together" with no such group chat could end in a send to each of them on their
+  own, put to you at the approval prompt as if that were what you asked. Saturn now tells you
+  there is no such group (you can start it in Messages) or asks whether to text each person
+  separately. Say "separately" in the request and it goes ahead, still through the approval
+  prompt.
+- **Searching a file with very long lines shows the match.** Each matching line was cut to its
+  first 200 characters, so in a one-line file (minified code, a JSON dump, a log without
+  breaks) a search for a word deep in the line came back without the word — and Saturn could
+  search again and again and still say it wasn't there. A long line now shows each match with
+  the text around it, and a match whose surroundings repeat one already shown is left out, so
+  the passage that differs comes through.
 
 ## [0.2.0] — 2026-10-05
 

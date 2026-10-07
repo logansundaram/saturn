@@ -85,7 +85,8 @@ ground → agent ─(no tool calls)─→ END
   missing arguments via `core/tool_args.coerce_args`, malformed JSON, a messaging call with both
   a person and a group chat, neither, or a name for a recipient (`tools/messages.route_target` — a
   target in the wrong slot is moved, not refused), a recipient or group chat ref the model
-  invented (`quarantine.handle_hold` / `chat_hold`), a repeat of a call the user
+  invented (`quarantine.handle_hold` / `chat_hold`), a one-to-one `send_message` standing in for a group `find_group_chats` did not
+  find this turn, before the user is asked or says "separately" (`_group_missing`), a repeat of a call the user
   DECLINED this turn, a third identical call with nothing changed in between — each answered with
   an error ToolMessage that routes straight back to `agent`, no gate, no model call; `ask_user`
   runs alone, its siblings answered the same way; the **repeat bound**: a pass that only
